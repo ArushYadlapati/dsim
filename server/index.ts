@@ -31,6 +31,7 @@ import { periodLabel } from '../src/seasons';
 import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
 import { runStarSweep, STAR_SWEEP_MS } from './stargazers';
+import { runBoostSweep, BOOST_SWEEP_MS } from './boosts';
 import { dbEnabled } from './db/pool';
 import {
   currentSeasonNumber,
@@ -3763,6 +3764,20 @@ const starSweeper = setInterval(() => {
   );
 }, STAR_SWEEP_MS);
 starSweeper.unref();
+
+/**
+ * THE DISCORD BOOST SWEEP. Same shape as the star sweep above, and a no-op until the guild
+ * and bot token are configured AND somebody has linked a Discord account — which is the
+ * state it sits in until the owner creates the application.
+ */
+const BOOST_GUILD = process.env.DISCORD_GUILD_ID ?? '';
+const boostSweeper = setInterval(() => {
+  if (!dbEnabled || !BOOST_GUILD || !process.env.DISCORD_BOT_TOKEN) return;
+  void runBoostSweep(BOOST_GUILD, process.env.DISCORD_BOT_TOKEN).catch((e) =>
+    console.error('[rewards] boost sweep failed:', e),
+  );
+}, BOOST_SWEEP_MS);
+boostSweeper.unref();
 
 // WS heartbeat — reap ghost sockets (see socketAlive above). Every interval:
 // terminate any socket that didn't pong since the last ping (fires 'close' → the

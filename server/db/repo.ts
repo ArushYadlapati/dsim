@@ -719,7 +719,7 @@ const EXTEND_SQL = `update profiles
    returning supporter_until as until`;
 
 /** where a change to `supporter_until` came from — recorded in supporter_grants */
-export type GrantSource = 'kofi' | 'admin' | 'revoke';
+export type GrantSource = 'kofi' | 'admin' | 'revoke' | 'boost';
 
 /**
  * Extend a membership by `months` and write the audit row.
@@ -759,6 +759,49 @@ export async function revokeSupporter(userId: string, note?: string): Promise<bo
   );
   if (rows.length === 0) return false;
   await logGrant(userId, 'revoke', 0, null, note ?? null);
+  return true;
+}
+
+/**
+ * THE DISCORD BOOST FLOOR — push `supporter_until` to at least `days` from now.
+ *
+ * ⚠️ **IT MUST NOT GO THROUGH `EXTEND_SQL`, AND THIS IS THE SINGLE MOST EXPENSIVE MISTAKE
+ * AVAILABLE IN THE REWARDS WORK.** That statement ADDS MONTHS. An hourly sweep through it
+ * would mint a decade of membership inside a year and nothing in the system could expire it
+ * — `supporter_until` is the one predicate behind the badge, ads-off, the saved-start cap
+ * and the palette, so it would be an unrevokable entitlement handed out by a cron. This sets
+ * a FLOOR instead: `greatest(current, now() + days)`.
+ *
+ * `greatest` also means a booster who PAYS keeps the later of the two and never has paid
+ * time truncated — the same reasoning `EXTEND_SQL`'s own comment gives for extending rather
+ * than overwriting.
+ *
+ * ⚠️ AND IT ONLY LOGS WHEN THE FLOOR ACTUALLY MOVED BY MORE THAN A DAY. `supporter_grants`
+ * is append-only and exists to answer "why does this account have a membership?"; an hourly
+ * sweep writing 24 rows per booster per day would stop it answering that. Returns true only
+ * when something really changed, so the sweep's own count is honest too.
+ */
+export async function ensureSupporterFloor(userId: string, days: number): Promise<boolean> {
+  const rows = await q<{ until: string; moved: boolean }>(
+    /* ⚠️ THE CTE SNAPSHOTS THE OLD VALUE, AND IT HAS TO. Postgres' `RETURNING` sees the
+       row AFTER the update, so `supporter_until < now() + grace` compared there is always
+       false — which silently made "did the floor move?" answer NO on every sweep including
+       the first, and with it the audit row. (`RETURNING OLD.col` is PG 18; this runs on 17.) */
+    `with prev as (select supporter_until as before from profiles where user_id = $1)
+     update profiles p
+        set supporter_until = greatest(coalesce(p.supporter_until, now()), now() + ($2 || ' days')::interval),
+            updated_at = now()
+       from prev
+      where p.user_id = $1
+      returning p.supporter_until as until,
+                (prev.before is null or prev.before < now() + ($2 || ' days')::interval - interval '1 day') as moved`,
+    [userId, String(days)],
+  );
+  const row = rows[0];
+  if (!row) return false;
+  if (!row.moved) return false;
+  // months = 0 is a real, meaningful value here and 0019 already defines it as one.
+  await logGrant(userId, 'boost', 0, row.until, 'discord server boost');
   return true;
 }
 

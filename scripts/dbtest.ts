@@ -3594,6 +3594,83 @@ async function main(): Promise<void> {
     check('⚠️ stargazers: a list that never ends hits MAX_PAGES and is INCOMPLETE', !got.complete, `${got.ids.length} ids`);
   }
 
+
+  // ---- THE BOOST FLOOR, AND THE MISTAKE IT EXISTS TO NOT MAKE ---------------------
+  /**
+   * ⚠️ **THE BOOST FLOOR DOES NOT ACCUMULATE.** `docs/rewards-round2-plan.md` §7 names this
+   * as the check to write BEFORE the code, and it is the single most expensive mistake
+   * available in the rewards work: `grantSupporter` adds MONTHS, so an hourly sweep routed
+   * through it would mint a decade of membership inside a year and nothing in the system
+   * could expire it — `supporter_until` is the one predicate behind the badge, ads-off, the
+   * saved-start cap and the palette. A thousand sweeps must leave the account inside the
+   * grace window, not a thousand months out.
+   */
+  {
+    const boosts = await import('../server/boosts');
+    await repo.ensureProfile('bo-1', 'Booster');
+    await repo.ensureProfile('bo-2', 'Payer');
+
+    const untilOf = async (u: string): Promise<Date | null> => {
+      const r = await db.query<{ supporter_until: string | null }>(
+        `select supporter_until from profiles where user_id = $1`, [u],
+      );
+      const v = r.rows[0]?.supporter_until;
+      return v ? new Date(v) : null;
+    };
+
+    const first = await repo.ensureSupporterFloor('bo-1', boosts.BOOST_GRACE_DAYS);
+    check('boost: the first sweep sets a floor', first === true);
+    const at1 = await untilOf('bo-1');
+    const days = (d: Date | null): number => (d ? (d.getTime() - Date.now()) / 86_400_000 : -1);
+    check('boost: ...roughly the grace window out', Math.abs(days(at1) - boosts.BOOST_GRACE_DAYS) < 1, `${days(at1).toFixed(2)}d`);
+
+    // A THOUSAND SWEEPS. With `EXTEND_SQL` this lands ~83 years out; with a floor it does not move.
+    for (let i = 0; i < 1000; i++) await repo.ensureSupporterFloor('bo-1', boosts.BOOST_GRACE_DAYS);
+    const at2 = await untilOf('bo-1');
+    check(
+      '⚠️ boost: A THOUSAND SWEEPS LEAVE IT INSIDE THE GRACE WINDOW (it is a floor, not an extension)',
+      Math.abs(days(at2) - boosts.BOOST_GRACE_DAYS) < 1,
+      `${days(at2).toFixed(2)}d after 1001 sweeps \u2014 EXTEND_SQL would give ~${(1001 * 30).toFixed(0)}d`,
+    );
+
+    // ...and it writes ONE audit row, not 1001. The table exists to answer "why does this
+    // account have a membership?" and an hourly heartbeat would stop it answering.
+    const grants = await db.query<{ n: number }>(
+      `select count(*)::int as n from supporter_grants where user_id = 'bo-1' and source = 'boost'`,
+    );
+    check('⚠️ boost: ...and logs ONCE, not once per sweep', Number(grants.rows[0].n) === 1, `${grants.rows[0].n} rows`);
+
+    // a PAYER who also boosts keeps the later of the two — paid time is never truncated
+    await repo.grantSupporter('bo-2', 6, 'kofi');
+    const paid = await untilOf('bo-2');
+    await repo.ensureSupporterFloor('bo-2', boosts.BOOST_GRACE_DAYS);
+    const after = await untilOf('bo-2');
+    check(
+      '⚠️ boost: a PAYER who boosts keeps the later date \u2014 the floor never truncates paid time',
+      !!paid && !!after && after.getTime() === paid.getTime(),
+      `${paid?.toISOString()} -> ${after?.toISOString()}`,
+    );
+
+    // the fetch half: an empty member list is the INTENT-IS-OFF signature, not "nobody boosts"
+    const ok = (rows: unknown[]) => ({ ok: true, status: 200, json: async () => rows }) as unknown as Response;
+    const stub = (pages: Response[]): typeof fetch => {
+      let i = 0;
+      return (async () => pages[Math.min(i++, pages.length - 1)]) as unknown as typeof fetch;
+    };
+    let got = await boosts.fetchBoosters('g', 't', stub([ok([{ user: { id: '5' }, premium_since: '2026-01-01' }, { user: { id: '6' }, premium_since: null }])]));
+    check('boost fetch: only members with premium_since count', got.complete && got.ids.join() === '5', JSON.stringify(got));
+    got = await boosts.fetchBoosters('g', 't', stub([ok([])]));
+    check(
+      '⚠️ boost fetch: an EMPTY member list is INCOMPLETE \u2014 it is what Discord returns with the intent OFF, with a 200 and no error',
+      !got.complete,
+    );
+    const bad = { ok: false, status: 403, json: async () => [] } as unknown as Response;
+    got = await boosts.fetchBoosters('g', 't', stub([bad]));
+    check('boost fetch: a non-2xx is INCOMPLETE', !got.complete);
+    const swept = await boosts.sweepBoosters([], false);
+    check('⚠️ boost sweep: an incomplete read pushes no floors at all', swept.applied === false && swept.floored.length === 0);
+  }
+
   await db.close();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

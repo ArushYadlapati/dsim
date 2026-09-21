@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { GameId } from '../src/types';
 import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
+import { authorizeUrl, exchangeForId, linkConfigured, readState } from './oauthLink';
 import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
 import { CHALLENGE_FORMATS } from '../src/net/protocol';
@@ -52,7 +53,14 @@ import {
   replayAccess,
   replayRefusalMessage,
   setReplaysPublic,
+  clearTitleIfEquipped,
   earnedTitles,
+  linkProvider,
+  providerLinks,
+  revokeCosmetic,
+  STARGAZER_TITLE,
+  unlinkProvider,
+  type LinkProvider,
   getTitle,
   setTitle,
   getUserSettings,
@@ -123,6 +131,9 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *   POST /api/user/privacy {replaysPublic}   — set it (Bearer JWT)
  *   GET  /api/user/title                     — your equipped title + what you have earned
  *   POST /api/user/title {title}             — equip one, or null to clear (Bearer JWT)
+ *   GET  /api/link/<p>/start                 — the authorize URL for github|discord (JWT)
+ *   GET  /api/link/<p>/callback              — the provider's redirect; 302s into /account
+ *   POST /api/link/<p>/unlink                — drop the link and its reward (Bearer JWT)
  *   GET  /api/user/export                    — everything we hold about you (Bearer JWT)
  *   GET  /api/replay/<id>                    — 403 when the people in it have not published it
  *
@@ -713,6 +724,93 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       const ok = await setTitle(user.userId, wanted);
       if (!ok) return json(403, { error: 'You have not earned that title.' }), true;
       return json(200, { title: wanted }), true;
+    }
+
+    /** what this account has linked, and which providers the server can actually offer. */
+    if (url.pathname === '/api/user/links' && req.method === 'GET') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      const available = (['github', 'discord'] as LinkProvider[]).filter(linkConfigured);
+      const linked = dbEnabled ? (await providerLinks(user.userId)).map((l) => l.provider) : [];
+      return json(200, { linked, available }), true;
+    }
+
+    /**
+     * LINKING AN EXTERNAL ACCOUNT — start, callback, unlink. `server/oauthLink.ts` holds the
+     * flow and says why the SERVER does the code exchange rather than trusting a client to
+     * name its own GitHub id.
+     *
+     * ⚠️ THE CALLBACK IS A BROWSER REDIRECT, NOT AN API CALL, so it cannot carry a Bearer
+     * token — which is exactly what the signed `state` is for: it carries the DSIM user id
+     * across the round trip, HMAC'd with a per-boot key and expiring in ten minutes. It also
+     * answers with a 302 back into the app rather than JSON, because a person is looking at
+     * it.
+     */
+    /**
+     * THE PUBLIC ORIGIN THIS REQUEST ARRIVED ON — what the provider must redirect back to,
+     * and it has to MATCH the authorize call exactly or the exchange is rejected.
+     *
+     * `PUBLIC_ORIGIN` wins when set, because behind Fly and the Discord `/gs` proxy the Host
+     * header is not necessarily the address a browser used. Otherwise it is derived from the
+     * forwarded proto + host, which is right for an ordinary deploy and for localhost.
+     */
+    const publicOrigin = (r: typeof req): string => {
+      const env = process.env.PUBLIC_ORIGIN;
+      if (env) return env.replace(/\/$/, '');
+      const xf = r.headers['x-forwarded-proto'];
+      const proto = (Array.isArray(xf) ? xf[0] : xf)?.split(',')[0] ?? 'https';
+      const host = r.headers.host ?? 'localhost';
+      return `${proto}://${host}`;
+    };
+    const linkMatch = url.pathname.match(/^\/api\/link\/(github|discord)\/(start|callback|unlink)$/);
+    if (linkMatch) {
+      const provider = linkMatch[1] as LinkProvider;
+      const action = linkMatch[2];
+      const origin = publicOrigin(req);
+
+      if (action === 'start') {
+        const user = await verifyAuthToken(bearer(req));
+        if (!user) return json(401, { error: 'sign in required' }), true;
+        const to = authorizeUrl(provider, origin, user.userId);
+        if (!to) return json(503, { error: 'That provider is not configured on this server.' }), true;
+        return json(200, { url: to }), true;
+      }
+
+      if (action === 'unlink') {
+        const user = await verifyAuthToken(bearer(req));
+        if (!user) return json(401, { error: 'sign in required' }), true;
+        if (!dbEnabled) return json(200, { unlinked: false }), true;
+        const ok = await unlinkProvider(user.userId, provider);
+        /* ⚠️ UNLINKING TAKES THE REWARD WITH IT. Leaving the title on an account that no
+           longer proves it starred is the same dangling state `clearTitleIfEquipped` exists
+           to prevent, one level up — and it is also the farm: unlink, keep the decal, relink
+           elsewhere. The 0047 row survives, so the PAIR still cannot earn again. */
+        if (ok && provider === 'github') {
+          await revokeCosmetic(user.userId, STARGAZER_TITLE, 'rewards', 'github unlinked');
+          await clearTitleIfEquipped(user.userId, STARGAZER_TITLE);
+        }
+        return json(200, { unlinked: ok }), true;
+      }
+
+      // ---- callback ----
+      const code = url.searchParams.get('code');
+      const state = url.searchParams.get('state');
+      const back = (q: string): true => {
+        res.writeHead(302, { location: `/account?link=${q}`, 'cache-control': 'no-store' });
+        res.end();
+        return true;
+      };
+      if (!code || !state) return back('error');
+      const who = readState(state);
+      if (!who || who.provider !== provider) return back('error');
+      const providerUserId = await exchangeForId(provider, code, origin);
+      if (!providerUserId) return back('error');
+      if (!dbEnabled) return back('error');
+      await ensureProfile(who.userId, '');
+      const linked = await linkProvider(who.userId, provider, providerUserId);
+      // `false` means that external account already belongs to a DIFFERENT DSIM account —
+      // the 0047 anti-farm. It is a refusal the person needs to see, not a silent no-op.
+      return back(linked ? 'ok' : 'taken');
     }
 
     // ---- per-account settings (read + write your own) ----------------------

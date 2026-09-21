@@ -583,6 +583,28 @@ export function fetchReplay(id: string): Promise<Replay> {
 
 /** may anyone watch your versus match replays? Default FALSE, and retroactively so — see
  * migration 0037. A match is released only when EVERY player in it has this on. */
+/** the providers a DSIM account can link. */
+export type LinkProvider = 'github' | 'discord';
+
+/** which providers this server has credentials for, and which you have linked. */
+export function fetchLinks(): Promise<{ linked: LinkProvider[]; available: LinkProvider[] }> {
+  return authedJson('/api/user/links');
+}
+
+/**
+ * Ask for the authorize URL. ⚠️ The browser is then SENT there — the client never learns or
+ * asserts the external account id; the server reads it from the provider over the back
+ * channel (`server/oauthLink.ts`), because a self-declared link is forgeable.
+ */
+export function startLink(provider: LinkProvider): Promise<{ url: string }> {
+  return authedJson(`/api/link/${provider}/start`);
+}
+
+/** disconnect. For GitHub the server also takes the star title back. */
+export function unlinkProvider(provider: LinkProvider): Promise<{ unlinked: boolean }> {
+  return authedJson(`/api/link/${provider}/unlink`, { method: 'POST' });
+}
+
 /** your equipped title and the ids you have earned (0045/0046). */
 export function fetchTitle(): Promise<{ title: string | null; earned: string[] }> {
   return authedJson('/api/user/title');

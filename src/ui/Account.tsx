@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { TitlePicker } from './TitlePicker';
+import { LinkedAccounts } from './LinkedAccounts';
 import type { GameSettings } from '../game';
 import { defaultSettings } from '../settings';
 import { authEnabled, authClient } from '../lib/authClient';
@@ -81,6 +82,7 @@ export function Account({
       {/* Above Privacy: a title is part of how a name is PRESENTED, which is what the
           identity panels above are about, whereas Privacy begins the settings half of
           the page. Renders nothing at all until the account has earned one. */}
+      {authEnabled && <LinkedAccounts />}
       {authEnabled && <TitlePicker />}
       {authEnabled && <ReplayPrivacy />}
 
