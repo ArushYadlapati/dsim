@@ -298,7 +298,14 @@ const BASELINE = {
   // its material, the clear panel's Fresnel shader chunk and its JS twin, the side plate's
   // relief ramp, and the cosmetic top caps. Every one of them is geometry or a texture that a
   // 3D scene has to carry; none of it is reachable from the main chunk.
-  scene: { gzip: 205.83 * 1000, budgetCeiling: 250 * 1000 },
+  //
+  // 2026-09-20: 205.83 -> 209.99 (+4.16), just past the 4.12 KB tolerance. The ground-beam
+  // winding fix (`fixGroundBeamWinding`, `renderFieldGlb.ts`) — `weldedComponents` grew a zMin/
+  // zMax pass, and `shellWindingStats` is a new exported measurement the RENDER lane calls
+  // directly against the shipped GLB, the same relationship `sheetFacingBalance` has to the
+  // open-sheeting check. Real load-time logic (a `THREE.DoubleSide` material clone + a per-mesh
+  // triangle partition), not a comment; scoped to the frame nodes only.
+  scene: { gzip: 209.99 * 1000, budgetCeiling: 250 * 1000 },
   graphics: { gzip: 4.01 * 1000 },
   gallery: { gzip: 7.33 * 1000 },
   // 2026-09-19: NEW. The whole admin console, lazily loaded by `App.tsx`. See the route note

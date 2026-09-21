@@ -117,7 +117,11 @@ for (let i = 0; i < epilogueFrom; i++) {
          check near the top of the file shifts every block below it and silently throws the whole
          table away — the run still passes, it just packs badly, which is exactly the kind of rot
          nobody notices. Keyed by content, editing one block invalidates one entry. */
-      key: createHash('sha1').update(text).digest('hex').slice(0, 12),
+      /* ⚠️ HASHED WITH LINE ENDINGS NORMALISED. Keyed on the raw text, a table calibrated in a
+         CRLF checkout matched NOTHING in an LF one (and the reverse): on 2026-09-20 all 281
+         blocks read "uncalibrated", every block was costed at the median, and the packer had been
+         packing blind — per-shard checks 76–444 — while the run stayed green. */
+      key: createHash('sha1').update(text.replace(/\r\n/g, '\n')).digest('hex').slice(0, 12),
     });
   else preamble.push(text);
 }
@@ -183,6 +187,19 @@ if (existsSync(COST_FILE)) {
 const known = units.map((u) => costs[u.key]).filter((v) => typeof v === 'number').sort((a, b) => a - b);
 const median = known.length ? known[known.length >> 1] : 1;
 const costOf = (u) => costs[u.key] ?? median;
+
+// `--costs[=N]`: WHERE THE TIME GOES. The N most expensive blocks with the line each starts on —
+// the table is keyed by content hash, which says nothing to a reader. Prints and exits.
+if (arg('costs', '')) {
+  const n = Number(arg('costs', '')) || 25;
+  const total = units.reduce((a, u) => a + costOf(u), 0);
+  console.log(`${units.length} blocks, ${(total / 1000).toFixed(0)}s of CPU (last calibration); the top ${n}:`);
+  for (const u of [...units].sort((a, b) => costOf(b) - costOf(a)).slice(0, n)) {
+    const first = u.text.trim().split(/\r?\n/).find((l) => /\S/.test(l.replace(/^[{\s]*/, ''))) ?? '';
+    console.log(`${(costOf(u) / 1000).toFixed(1).padStart(6)}s  ${TARGET}:${u.line}  ${costs[u.key] === undefined ? '(uncalibrated) ' : ''}${first.trim().slice(0, 90)}`);
+  }
+  process.exit(0);
+}
 
 /**
  * Calibration runs at the SAME width as an ordinary run, not serially. The greedy packer only

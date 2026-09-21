@@ -101,7 +101,6 @@ import {
   recordSetups,
   runRecordMatch,
   simulateReplay,
-  verifyReplay,
   worldResult,
   type CommandSource,
   type Replay,
@@ -340,11 +339,9 @@ export function fieldChecks(check: Check): void {
     // The two anchors per alliance exist so an alliance's robots cannot spawn on top of each
     // other; a mirrored pair that collapsed to one point would pass every other check here.
     const blue = w.robots.filter((r) => r.alliance === 'blue');
-    check(
-      'anchors: the two anchors of an alliance are distinct',
-      Math.hypot(blue[0].pos.x - blue[1].pos.x, blue[0].pos.y - blue[1].pos.y) > 18,
-      `apart=${Math.hypot(blue[0].pos.x - blue[1].pos.x, blue[0].pos.y - blue[1].pos.y).toFixed(1)}"`,
-    );
+    // (the "> 18 in apart" check that stood here is subsumed by `G304: an alliance's two anchors
+    // are far apart` below — the same distance on the same four-robot roster, asserted > 100; a
+    // start pose does not depend on the seed.)
     // RED IS THE POINT MIRROR OF BLUE, applied once in `spawn.ts`. Asserted because a second
     // mirror anywhere else would cancel this one and put both alliances on the same side.
     //
@@ -2633,7 +2630,10 @@ export function fieldChecks(check: Check): void {
           `stock ${backBB.nectarStock.blue} vs ${liveBB.nectarStock.blue}`,
       );
       const played = worldResult(rec.world);
-      const verified = verifyReplay(stored);
+      // `verifyReplay(stored)` IS `worldResult(simulateReplay(stored))` (`src/sim/replay.ts`) — and
+      // `back` above is that re-simulation already. Calling it re-ran all 6,360 ticks a second
+      // time (measured 1,526 ms, a third of this section) for a byte-identical hash and tick count.
+      const verified = worldResult(back);
       check(
         'human player: re-simulating the stored replay reproduces the match exactly',
         verified.hash === played.hash && verified.ticks === played.ticks,
@@ -2845,11 +2845,8 @@ export function fieldChecks(check: Check): void {
    */
   {
     const want = [8, 7, 6, 3, 1, 0];
-    check(
-      'hive: BB_TIP_POLLEN is the measured table [8,7,6,3,1,0], unchanged',
-      BB_TIP_POLLEN.length === want.length && want.every((v, i) => BB_TIP_POLLEN[i] === v),
-      `[${BB_TIP_POLLEN.join(',')}]`,
-    );
+    // (the literal-table check lives in the RULES lane, which owns Table 10-2: `TIP TABLE: the
+    // measured rows are [8, 7, 6, 3, 1, 0]`. It was asserted here too, word for word.)
     const bad: string[] = [];
     for (let nectar = 0; nectar < want.length; nectar++) {
       const need = want[nectar];

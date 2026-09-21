@@ -24,6 +24,8 @@ import {
   BB_PLACE_REACH,
   BB_RAMP_DEPLOY_S,
   BB_RAMP_OUT,
+  BB_SIDE_ROLLER_OUT,
+  BB_SIDE_ROLLER_R,
   BB_TURRET_AXLE_Z,
   BB_TURRET_SOLVE_PASSES,
   BB_PLACE_TOL,
@@ -1537,12 +1539,19 @@ export function bbRampSettled(r: RobotState, time: number): boolean {
  * `BbIntakeOpts.extraReach` FOR THIS ROBOT RIGHT NOW — the ONE predicate both `bbIntakeAct`
  * callers (`play.ts`'s `step2d`, `sim3d/elements3d.ts`'s `elements3dCapture`) compute it from, so
  * 2D and 3D cannot disagree about how far a deployed ramp's own pull reaches (owner report
- * 2026-09-20, ramp intake). Zero for every build but a DEPLOYED, SETTLED `ramp`: a folded or
+ * 2026-09-20, ramp intake) or a side roller's (owner ruling 2026-09-20: "it should also be
+ * colliding with everything... a physical thing" — a physical release needs the pull to reach out
+ * to where it lands, see `flowerRetrieve3d`'s side-roller branch). A DEPLOYED, SETTLED `ramp`
+ * reaches `BB_RAMP_OUT`, the crossbar's own reach past the roller line (`uOut`) — a folded or
  * still-swinging ramp has no reach hardware out there to pull an element off of, exactly the same
- * gate `bbFlowerReachOf`'s caller already uses. `BB_RAMP_OUT` is the crossbar's own reach past the
- * roller line (`uOut`), so an element sitting anywhere inside the U — on the tiles or resting on
- * the crossbar — is inside the extended eligibility bound.
+ * gate `bbFlowerReachOf`'s caller already uses. `siderollers` always reaches `BB_SIDE_ROLLER_OUT +
+ * BB_SIDE_ROLLER_R`, the wheel's own FRONT past the roller line (`chassis3dReachShapes`'s own
+ * placement) — there is no fold/settle state for a wheel that is always mounted. Every other build
+ * is zero.
  */
 export function bbIntakeExtraReach(r: RobotState, time: number): number {
-  return bbIntakeKindOf(r.spec) === 'ramp' && bbRampSettled(r, time) ? BB_RAMP_OUT : 0;
+  const kind = bbIntakeKindOf(r.spec);
+  if (kind === 'ramp') return bbRampSettled(r, time) ? BB_RAMP_OUT : 0;
+  if (kind === 'siderollers') return BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R;
+  return 0;
 }

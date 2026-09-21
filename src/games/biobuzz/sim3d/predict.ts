@@ -484,10 +484,11 @@ function buildKinematicTray(
  *
  * ⚠️ **THE ARCHETYPE REACH HARDWARE IS NOT PART OF THAT TRADE, AND IS ADDED ANYWAY** (owner,
  * 2026-09-20: "It should be a collider."). It is not the mouth-pocket compound this note is
- * about — it is two or three SMALL boxes (`chassis3dReachShapes`, `GROUP_POCKET`, same as the
+ * about — it is a handful of SMALL shapes (`chassis3dReachShapes`: two cylinders for side
+ * rollers, or two wedge boxes plus two rails for a settled ramp — `GROUP_POCKET`, same as the
  * authority), and skipping them would leave a driver with side rollers or a deployed ramp
  * rubber-banding at every wall the authority stands them off from and the predictor does not
- * (2.65 in for side rollers, 2.17 for a settled ramp — see this file's measurement in the PREDICT
+ * (1.9 in for side rollers, 2.17 for a settled ramp — see this file's measurement in the PREDICT
  * lane for the actual reconcile-cost delta this added).
  */
 function makeRobotBody(

@@ -1,13 +1,16 @@
 import type { Artifact, RobotCommand, RobotState, World } from '../../../types';
 import type { BiobuzzState } from '../state';
 import type { BbElementKind } from '../flower';
-import { rot } from '../../../math';
+import type { Vec2 } from '../../../types';
+import { dcos, dsin, rot } from '../../../math';
 import { bbBites, bbElementRadius, bbFlowerDropSlack, bbFlowerScatter } from '../flower';
 import {
   BB_FLOWERS,
   BB_FLOWER_RETRIEVE_S,
-  BB_RAMP_OUT,
+  BB_RAMP_DROP_OUT,
   BB_RAMP_RELEASE_V,
+  BB_RAMP_STALL_S,
+  BB_SIDE_ROLLER_RELEASE_CLEAR,
   FLOWER_RING_Z,
   bbFlowerReachOf,
   bbHopperCap,
@@ -209,27 +212,51 @@ export function flowerPlace3d(
  * the candidate's ACTUAL height, on top of `flowerAtRetrieval`'s coarser "is it in the opening's
  * band at all". `ball.z` is the element's BOTTOM in this pipeline, so `ball.z + r` is its centre.
  *
- * ⚠️ **A `ramp` BUILD DOES NOT `capturePollen` — IT RELEASES A `ground` ELEMENT UNDER THE BAR**
- * (owner report 2026-09-20: "The pollen should be getting intaked from the deployable ramp
- * BECAUSE it collides with the ramp and slides down towards the intake"). MEASURED: driving a
- * real `ramp` build into F1's foot with the crossbar/rails now solid (`chassis3dReachShapes`,
- * `bodies.ts`) and the intake's own pull extended by `BB_RAMP_OUT` (`bbIntakeExtraReach`) still
- * hits the SAME proximity gate below (`bbFlowerAtIntakeMouth` + the Z-bite) before the physical
- * push ever has a tick to act — over 10 runs (seeds 5001–5010, standoffs 10–25 in, stick
- * 0.35–1.0) the gate always fired first, at tick 15–39 of the approach, with the ball's centre
- * having moved under 0.6 in. So "physics alone" and "the gate" are not two competing paths here;
- * the gate is what always wins the race, and the honest fix is what the gate DOES: instead of a
- * teleport into the hopper, split the retrieval into the SAME two steps a real extraction would
- * take — leave the tube as a `ground` element, under the bar, and let the extended pull sweep it
- * in. `derive.ts`'s tube test (`flowerTubeOf`, a plain radius from the flower's own axis,
- * `BB_FLOWER_OPEN_R`) would otherwise re-tag the release right back to `element`/`flower:i` on
- * the very next `deriveTick` — MEASURED: releasing on the flower's own y (`v = 0`, dead centre)
- * sits only ~1.06 in from the axis, inside a 2.086-in radius, and is reclassified before gameplay
- * ever sees `ground`. `BB_RAMP_RELEASE_V` is the LATERAL offset (still under the crossbar, which
- * spans the whole mouth width) that clears the radius — see its own header in `config.ts`.
- * Every other archetype is UNCHANGED: `siderollers` and the direct proximity path both still
- * `capturePollen` outright, exactly as before.
+ * ⚠️ **A `siderollers` BUILD DOES NOT `capturePollen` — IT RELEASES A `ground` ELEMENT
+ * PHYSICALLY** (owner ruling 2026-09-20: "it should also be colliding with everything... a
+ * physical thing", which means the wheel can never overlap a POLLEN either). `derive.ts`'s tube
+ * test (`flowerTubeOf`, a plain radius from the flower's own axis, `BB_FLOWER_OPEN_R`) would
+ * otherwise re-tag a release right back to `element`/`flower:i` on the very next `deriveTick`, so
+ * the wheel's own release point is offset — `BB_SIDE_ROLLER_RELEASE_CLEAR`, retreating INWARD
+ * (the wheel's own inward-drawing tangent, toward the mouth) — from the FLOWER's own true axis
+ * (`i` already names it). `releaseFromFlowerGround` below is that mechanism.
+ *
+ * ⚠️ **A `ramp` BUILD IS DIFFERENT AGAIN, SINCE THE WEDGE (2026-09-20)** — see this branch's own
+ * header below. A flat crossbar's proximity gate used to always fire before the physical push had
+ * a tick to act (MEASURED, 10 runs, seeds 5001–5010: the ball's centre moved under 0.6 in before
+ * the gate released it), so the crossbar's own branch did the same two-step `ground` release the
+ * side roller does. The wedge (`config.ts`'s "THE DEPLOYABLE RAMP") changes that: it is shaped to
+ * lift a bottom POLLEN over its own crest under an ordinary forward push, so the branch below no
+ * longer releases on the gate at all — it only shoves the LEANING element as a fallback once the
+ * SAME candidate has stalled for `BB_RAMP_STALL_S`, and only teleports (the old mechanism,
+ * `BB_RAMP_RELEASE_V`) if there is nothing left to unlean.
+ *
+ * The direct proximity path (a sweeper's own `null` reach never reaches this far) is otherwise
+ * unchanged, and a `siderollers` release must spend AT LEAST ONE TICK as `ground` before it can
+ * be in the hopper.
  */
+function releaseFromFlowerGround(
+  world: World,
+  bb: BiobuzzState,
+  rob: RobotState,
+  i: number,
+  stack: readonly number[],
+  ball: Artifact,
+  worldPos: Vec2,
+  z: number,
+  vel: Vec2,
+): void {
+  ball.pos.x = worldPos.x;
+  ball.pos.y = worldPos.y;
+  ball.z = z;
+  ball.vel.x = vel.x;
+  ball.vel.y = vel.y;
+  ball.vz = 0;
+  ball.state = { kind: 'ground' };
+  rob.lastIntakeAt = world.time; // the release is the paced action now, same as a capture was
+  bb.flowers[i].stack = stack.slice(1);
+}
+
 export function flowerRetrieve3d(
   world: World,
   bb: BiobuzzState,
@@ -256,28 +283,132 @@ export function flowerRetrieve3d(
   if (!ball) return false;
   const r = ball.r ?? bbElementRadius('pollen');
   const zc = ball.z + r; // ball.z is the BOTTOM; the bite tests want the CENTRE
-  if (!flowerAtRetrieval(zc)) return false;
-  if (!bbBites(reach.z[0], reach.z[1], zc, r)) return false;
+  const zEligible = flowerAtRetrieval(zc) && bbBites(reach.z[0], reach.z[1], zc, r);
 
+  /**
+   * ⚠️ **THE STALL CLOCK RUNS OFF THE MOUTH GATE ALONE, NOT THE Z-BITE** — `hit` above
+   * (`bbFlowerAtIntakeMouth`) is a function of the ROBOT's own pose and the FLOWER's fixed axis
+   * only (it bites a POLLEN's ASSUMED position, never reads `ball.z`), so it stays true the whole
+   * time a driver holds position at the foot. `zEligible` reads the ball's REAL height, and a
+   * wedge that presses down on the ball rather than lifting it (MEASURED: a `ramp` build pushed
+   * the bottom POLLEN to an off-band height and then never fired the fallback at all, because the
+   * old code gated the stall clock behind this same z-bite — a robot could sit at the foot forever
+   * with the ball wedged just out of band and nothing would ever try again) can fail this without
+   * the ball having gone anywhere. The clock has to survive that, or the fallback it exists to
+   * reach can never fire for the one failure it was written for.
+   */
   if (kind === 'ramp') {
-    // PHYSICAL HALF-STEP: a ground element under the bar, clear of the tube's own radius (see
-    // this function's header and `BB_RAMP_RELEASE_V`'s own), nudged toward the roller. Nothing
-    // captures it here — `bbIntakeAct`'s extended reach (`bbIntakeExtraReach`) does that, at the
-    // earliest on NEXT tick's `elements3dCapture` (it runs before this stage — `step3dImpl.ts`).
-    const u = ax.uOut + BB_RAMP_OUT - 0.3 - r; // just behind the crossbar's inner face
+    // ⚠️ PHYSICS FIRST, NOW — the wedge (`chassis3dReachShapes`, `config.ts`'s "THE DEPLOYABLE
+    // RAMP") is a real collider once deployed and settled: an ordinary forward push, over several
+    // ticks of the driver holding stick, rides the bottom POLLEN up the rise and over the crest,
+    // at which point it is outside `BB_FLOWER_OPEN_R` and `derive.ts`'s own tube-membership test
+    // un-tags it to `ground` on its own — nothing here has to release it. This branch's only job
+    // now is the FALLBACK for the leaning-column failure the owner named ("I think it depends on
+    // how the pollen are stacked... when it does not work, the pollen don't budge"): track how
+    // long the SAME bottom POLLEN has sat gated here, and if the wedge alone has not cleared it
+    // within `BB_RAMP_STALL_S`, shove the LEANING element — the one resting ON the bottom ball,
+    // which is what pins it against the peanut supports — rather than teleport the ball itself.
+    if (rob.bbRampStallId !== id) {
+      rob.bbRampStallId = id;
+      rob.bbRampStallSince = world.time;
+      return false; // freshly gated: give the wedge its full window before considering a shove
+    }
+    if (world.time - (rob.bbRampStallSince ?? world.time) < BB_RAMP_STALL_S) return false;
+    if (stack.length > 1) {
+      // shove the element ABOVE the stuck one, not the stuck one itself — a small deterministic
+      // kick, the same discipline `engineImpl.ts`'s perched-element vibration follows: a hash of
+      // (id, tick, rngState), rngState READ-only and never advanced, `dsin`/`dcos` only, never
+      // `Math.random` and never a chain draw (that would fork prediction/replay).
+      const leanId = stack[1];
+      const lean = ballById.get(leanId);
+      if (lean) {
+        const h = (Math.imul(leanId + 1, 0x9e3779b1) ^ Math.imul(world.tick + 1, 0x85ebca6b) ^ world.rngState) | 0;
+        const ang = ((h >>> 0) / 0xffffffff) * Math.PI * 2;
+        const toward = rot({ x: -1 * ax.n.x, y: -1 * ax.n.y }, rob.heading); // toward the roller
+        lean.vel.x += 6 * toward.x + 4 * dcos(ang);
+        lean.vel.y += 6 * toward.y + 4 * dsin(ang);
+        lean.vz = (lean.vz ?? 0) + 3;
+      }
+      rob.bbRampStallSince = world.time; // one shove per window, then let the wedge try again
+      return false;
+    }
+    // nothing above it to unlean — a genuine geometric dead-end rather than a leaning column, so
+    // the old physical half-step (a `ground` element just behind the wedge, offset clear of the
+    // tube's own radius — see `BB_RAMP_RELEASE_V`'s own header) is the least-bad remaining option
+    // rather than an infinite stall. `u` sits behind `BB_RAMP_DROP_OUT` — the wedge's OWN
+    // innermost point now that it is two boxes wide (drop..lead), not the single point the flat
+    // crossbar was — so the release cannot spawn INSIDE the drop segment's own solid box (MEASURED:
+    // releasing at the old `BB_RAMP_OUT`-relative point did exactly that, and the ball settled at
+    // an abnormal sub-rim height and never re-cleared the tube).
+    const u = ax.uOut + BB_RAMP_DROP_OUT - 0.3 - r;
     const v = BB_RAMP_RELEASE_V;
     const local = { x: u * ax.n.x + v * ax.p.x, y: u * ax.n.y + v * ax.p.y };
     const off = rot(local, rob.heading);
-    ball.pos.x = rob.pos.x + off.x;
-    ball.pos.y = rob.pos.y + off.y;
-    ball.z = FLOWER_RING_Z.lower[1]; // resting on the lower plate's own rim — ball.z is the BOTTOM
     const nudge = rot({ x: -10 * ax.n.x, y: -10 * ax.n.y }, rob.heading); // ~10 in/s, inward (−n)
-    ball.vel.x = nudge.x;
-    ball.vel.y = nudge.y;
-    ball.vz = 0;
-    ball.state = { kind: 'ground' };
-    rob.lastIntakeAt = world.time; // the release is the paced action now, same as a capture was
-    bb.flowers[i].stack = stack.slice(1);
+    rob.bbRampStallId = undefined;
+    rob.bbRampStallSince = undefined;
+    releaseFromFlowerGround(
+      world,
+      bb,
+      rob,
+      i,
+      stack,
+      ball,
+      { x: rob.pos.x + off.x, y: rob.pos.y + off.y },
+      FLOWER_RING_Z.lower[1], // resting on the lower plate's own rim — ball.z is the BOTTOM
+      nudge,
+    );
+    return true;
+  }
+
+  // every remaining path (siderollers, and the direct sweeper/lift capture below) DOES need the
+  // real z-bite — only the ramp's own stall clock (above) had to survive it failing.
+  if (!zEligible) return false;
+
+  if (kind === 'siderollers') {
+    // PHYSICAL HALF-STEP, generalised from the ramp's own — TWO EARLIER DRAFTS of this teleported
+    // the ball somewhere along `u` (retreating INWARD past the flower's own axis, then past the
+    // wheel's own solid span) and both were measured wrong: `u` unchanged is the one direction
+    // that is ALREADY clear — the true position sits just past the wheel's own outer edge (the
+    // contact condition puts it there), and retreating INWARD in `u` at all drives it into either
+    // the wheel (a first draft) or, past that, has under 2 in of pocket depth for a 2.8-in POLLEN
+    // to occupy without touching the frame face too (a second draft, MEASURED 0.2 in of headroom
+    // — not enough). See `BB_SIDE_ROLLER_RELEASE_CLEAR`'s own header for both measurements.
+    //
+    // What actually needs to move is `v`: leaving it at the true axis (`v0`) is what a THIRD
+    // draft got wrong the other way — the ball's WORLD position is still exactly the FLOWER's own
+    // axis at that point (that is what "resting in the tube" means), so `derive.ts`'s tube test
+    // (a bare `BB_FLOWER_OPEN_R` radius from THAT axis) re-tagged it `element`/`flower:i` again on
+    // the very next tick, undoing the release in a way invisible from outside (the STACK never
+    // shrank; only `lastIntakeAt` kept climbing as the same cycle repeated every qualifying tick).
+    // `v0`'s size relative to the MOUTH's centreline was never the relevant distance — the tube
+    // test measures from the FLOWER's own world position, which the ball had not moved from at
+    // all. Shifting `v` TOWARD the centreline (magnitude `BB_SIDE_ROLLER_RELEASE_CLEAR`, more than
+    // `BB_FLOWER_OPEN_R`) is a real world-space displacement off that axis and lands inside the
+    // retrieval opening's own OPEN band (`config.ts`'s "the full plate width" — no support stands
+    // in it), clear of the wheel's own lateral span in the same move.
+    const f = BB_FLOWERS[i];
+    const trueLocal = rot({ x: f.x - rob.pos.x, y: f.y - rob.pos.y }, -rob.heading);
+    const u0 = trueLocal.x * ax.n.x + trueLocal.y * ax.n.y;
+    const v0 = trueLocal.x * ax.p.x + trueLocal.y * ax.p.y;
+    const v = v0 - Math.sign(v0 || 1) * BB_SIDE_ROLLER_RELEASE_CLEAR;
+    const local = { x: u0 * ax.n.x + v * ax.p.x, y: u0 * ax.n.y + v * ax.p.y };
+    const off = rot(local, rob.heading);
+    // the wheel's own inward-drawing tangent — toward the mouth (−n), the same direction the
+    // ramp nudges with, since a vertical roller's whole job is to walk something back over the
+    // bumper rather than centre it laterally (that is the funnel's job, once it is `ground`).
+    const nudge = rot({ x: -10 * ax.n.x, y: -10 * ax.n.y }, rob.heading);
+    releaseFromFlowerGround(
+      world,
+      bb,
+      rob,
+      i,
+      stack,
+      ball,
+      { x: rob.pos.x + off.x, y: rob.pos.y + off.y },
+      FLOWER_RING_Z.lower[1], // resting on the lower plate's own rim — ball.z is the BOTTOM
+      nudge,
+    );
     return true;
   }
 

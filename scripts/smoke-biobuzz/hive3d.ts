@@ -1,6 +1,7 @@
 import type { Check } from './harness';
 import { mkWorld3d } from './harness';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
+import { worldHash } from '../../src/net/checksum';
 import { engineFor, trayTilt } from '../../src/games/biobuzz/sim3d/engineImpl';
 import {
   __setHiveDynamicOverrideForTests,
@@ -30,6 +31,7 @@ import {
   BB3_HIVE_PIVOT_Z,
   BB3_HIVE_REST_W,
   BB3_HIVE_STOP_DEG,
+  BB3_HIVE_TIP_CREEP_W,
   BB3_HIVE_TRAY_MASS,
   BB3_REST_SPEED,
   BB_HALF_X,
@@ -40,7 +42,7 @@ import {
   BB_POLLEN_R,
   BB_TIP_POLLEN,
 } from '../../src/games/biobuzz/config';
-import { BB_TIP_SWING_S, hiveLoad, hiveWillTip } from '../../src/games/biobuzz/hive';
+import { BB_TIP_SWING_S, hiveLoad, hiveTakingSide, hiveWillTip } from '../../src/games/biobuzz/hive';
 import { bbKindIndex } from '../../src/games/biobuzz/score';
 import type { Alliance, Artifact, World } from '../../src/types';
 
@@ -1229,7 +1231,176 @@ export function hive3dChecks(check: Check): void {
     );
   });
 
+  commitChecks(check);
   settleChecks(check);
+}
+
+/**
+ * THE TIP IS COMMITTED (owner, 2026-09-20: "people are still reporting hive not tipping in some
+ * cases") — the fast subset of `scratch/hivemiss.ts`, the 420-scenario volley fuzzer that found
+ * the two causes. Every check here is one of its worst seeds, distilled to the mechanism so it
+ * runs in a fraction of a second instead of a second and a half.
+ *
+ * THE CONFUSION MATRIX the fuzzer reports, same 420 seeds either side (a scenario is ARMED when
+ * an independent geometric count — centre inside the taking cell's interior, no seat-depth rule —
+ * satisfies `BB_TIP_POLLEN`):
+ *
+ *   before  386 armed → 382 tipped, **5 MISSED** (no tip within 8 s), 8 runs left in the TRAP
+ *   after   386 armed → 386 tipped,   0 missed,                       0 trapped
+ *   phantom breakaways 0 → 0; 120 miss-rain runs, 0 tips and 0 breakaways either side
+ *   pin lift, from the threshold element entering: mean 1.0 ticks, p95 1, BOTH — the 2026-09-19
+ *     geometry membership already owns that half and nothing here touched it
+ *   swing stop-to-stop: mean 176.8 → 174.7 ticks, p95 264 → 251 (the creep only rescues; at the
+ *     0.25 rad/s first tried it was 150.3/193 and the 4 s ruling check above FAILED at 3.12 s)
+ *   spill dispersal, the "does it fling anything" control: 3895 → 3935 tagged, mean 61.0 → 61.1
+ *     in from the pivot, max 106.9 → 106.9, 0 elements lost
+ */
+function commitChecks(check: Check): void {
+  /* ── CLASS 3, THE ONE PLAYERS SEE: the RISING cell's load turns the swing around ──────────
+     Fuzz seed 9039, distilled. A 4P3N cell broke away on tick 204, spilled at level on 299,
+     reached −24.2° — five degrees short of the far stop — and was pushed back to its OWN stop by
+     1 POLLEN + 3 NECTAR that had landed in the rising cell in the meantime. `hiveTakingSide`
+     hands over at the release, so that load is the documented mechanic ("a driver who keeps
+     firing into a tipping tray"), and a free see-saw loses to it: the balls dumped on the floor
+     and NO TIP was scored. Here the same thing is staged directly — a threshold cell, and the
+     moment the bar passes level, four elements seated in the tray that is coming up. */
+  {
+    const { world: w } = loaded(4101, 8, 0);
+    const engine = engineFor(w);
+    let released = -1;
+    let tip = -1;
+    let filled = false;
+    for (let t = 0; t < 420 && tip < 0; t++) {
+      step3d(w, 1 / 60, new Map());
+      const hive = w.biobuzz!.hives[A];
+      if (hive.released && released < 0) released = t;
+      if (released >= 0 && !filled) {
+        // the RISING cell, at the tilt it is at right now — the cell `hiveTakingSide` now names.
+        const theta = trayTilt(engine.hiveTrays[A]);
+        const side: 1 | -1 = hiveTakingSide(hive) === 'north' ? 1 : -1;
+        const box = hiveCellLocalBox(side, A);
+        const innerV = side > 0 ? box.vMin : box.vMax;
+        for (let k = 0; k < 4; k++) {
+          const r = k < 3 ? BB_NECTAR_R : BB_POLLEN_R;
+          const p = cellPoint(A, theta, (k - 1.5) * 4.6, innerV + side * (r + 0.4), box.wMin + r + 0.4);
+          w.balls.push({
+            id: 400 + k,
+            color: k < 3 ? 'blue' : 'yellow',
+            state: { kind: 'ground' },
+            pos: { x: p.x, y: p.y },
+            vel: { x: 0, y: 0 },
+            z: p.z - r,
+            vz: 0,
+            r,
+          } as Artifact);
+        }
+        filled = true;
+      }
+      if (w.biobuzz!.hives[A].tips > 0) tip = t;
+    }
+    check(
+      'a tip the table called for reaches the far stop even as the RISING cell fills (seed 9039)',
+      tip >= 0,
+      `released t${released}, tipped t${tip} (free see-saw: reversed at −24.2° and returned to its own stop)`,
+    );
+  }
+
+  /* ── CLASS 4, THE STATE TRAP: a swing that ends back on its own stop ──────────────────────
+     Reached in 8 of 420 fuzz runs BEFORE the drive, and it is the failure the owner would have
+     reported as permanent: `tipping`/`released` could only be cleared at the FAR stop, so a tray
+     that came back sat with `released` latched, `hiveTakingSide` named `otherSide(up)` for the
+     rest of the match, and `contents` — the pin's list, the HUD's list, §10.5 C's list — was
+     derived from the DOWN cell. The up cell could then be filled to the brim and nothing would
+     happen. Staged here by putting a settled, EMPTY tray into exactly that state. */
+  {
+    const w = mkWorld3d('free', 4102);
+    w.balls.length = 0;
+    step3d(w, 1 / 60, new Map()); // one tick so the tray is pinned and `contents` is derived
+    const before = w.biobuzz!.hives[A];
+    w.biobuzz!.hives[A] = { ...before, tipping: 3, released: true };
+    check(
+      'the trap is real: a stale mid-swing state names the DOWN cell',
+      hiveTakingSide(w.biobuzz!.hives[A]) !== before.up,
+      `up ${before.up}, taking ${hiveTakingSide(w.biobuzz!.hives[A])}`,
+    );
+    for (let t = 0; t < 30; t++) step3d(w, 1 / 60, new Map());
+    const after = w.biobuzz!.hives[A];
+    check(
+      'a swing that ends back on its own stop resets to SETTLED, so the taking cell is the up one',
+      after.tipping === 0 && after.released === false && hiveTakingSide(after) === after.up,
+      `tipping ${after.tipping}, released ${after.released}, up ${after.up}, taking ${hiveTakingSide(after)}`,
+    );
+    check(
+      'and the reset scores NO tip — an empty tray that never left its stop owes nothing',
+      after.tips === before.tips && Math.abs(hiveTiltAngle(w, A)) >= STOP_RAD,
+      `tips ${before.tips} → ${after.tips}, tilt ${((hiveTiltAngle(w, A) * 180) / Math.PI).toFixed(2)}°`,
+    );
+  }
+
+  /* ── THE CREEP IS A FLOOR, NOT A CAP ──────────────────────────────────────────────────────
+     `hiveSwingRate`'s mechanic — more load, faster swing — has to survive a commit that works by
+     holding a MINIMUM rate. A cell at twice its threshold must still beat one at threshold, and
+     the 8-POLLEN reference swing two hundred lines up (4.12 s free, 4.08 s with this) is the
+     other half of the same statement: at 0.25 rad/s, the first value tried, it was 3.12 s and
+     that check failed. */
+  {
+    const atThreshold = tipTick(loaded(4103, 8, 0).world);
+    const heavy = tipTick(loaded(4104, 16, 0).world);
+    check(
+      'the anti-stall is a FLOOR: a 16-POLLEN cell still swings faster than an 8-POLLEN one',
+      heavy > 0 && atThreshold > 0 && heavy <= atThreshold,
+      `16P ${heavy} ticks vs 8P ${atThreshold} (the anti-stall creep is ${BB3_HIVE_TIP_CREEP_W} rad/s and never binds on either)`,
+    );
+    check(
+      'and a threshold cell is still inside the published swing',
+      atThreshold > 0 && atThreshold <= Math.round((BB_TIP_SWING_S + 0.4) * 60),
+      `${atThreshold} ticks against ${Math.round(BB_TIP_SWING_S * 60)} nominal`,
+    );
+  }
+
+  /* ── NO PHANTOM: a GRAZE RAIN over a cell that never reaches a row ────────────────────────
+     The other half of the matrix. Shots skim the up cell's open top and drop past the structure;
+     nothing is ever allowed to stay, so no row is ever satisfied and the tray must not move.
+     (The DOWN-cell block above is the 2026-09-20 repro proper; this is the continuous version.) */
+  {
+    const w = mkWorld3d('free', 4105);
+    w.balls.length = 0;
+    const engine = engineFor(w);
+    const theta0 = hiveTiltAngle(w, A);
+    const { side, box } = upBox(w);
+    let id = 700;
+    let breakaways = 0;
+    let was = true;
+    for (let t = 0; t < 240; t++) {
+      if (t % 8 === 0) {
+        // across the open top, outbound-to-inbound, at the rim rather than into the cell
+        const p = cellPoint(A, theta0, ((id % 3) - 1) * 5, (box.vMin + box.vMax) / 2, box.wMax - 0.5);
+        w.balls.push({
+          id: id++,
+          color: id % 2 === 0 ? 'yellow' : 'blue',
+          state: { kind: 'flight', target: A },
+          pos: { x: p.x, y: p.y + side * 30 },
+          vel: { x: 0, y: -side * 150 },
+          z: p.z - BB_POLLEN_R + 6,
+          vz: -20,
+          r: id % 2 === 0 ? BB_POLLEN_R : BB_NECTAR_R,
+        } as Artifact);
+      }
+      step3d(w, 1 / 60, new Map());
+      if (t % 10 === 0) {
+        for (const b of w.balls) if (b.state.kind === 'element') b.state = { kind: 'held', robot: 99 };
+        w.balls = w.balls.filter((b) => b.state.kind !== 'held');
+      }
+      const now = Math.abs(trayTilt(engine.hiveTrays[A])) >= STOP_RAD;
+      if (was && !now) breakaways++;
+      was = now;
+    }
+    check(
+      'graze rain: 30 arrivals over an up cell that never reaches a row move the tray NOT AT ALL',
+      breakaways === 0 && w.biobuzz!.hives[A].tips === 0 && engine.containmentFixes === 0,
+      `${breakaways} breakaways, ${w.biobuzz!.hives[A].tips} tips, ${engine.containmentFixes} containment fixes`,
+    );
+  }
 }
 
 /**
@@ -1337,6 +1508,151 @@ function settleChecks(check: Check): void {
       'SETTLE (3D): a field of elements parked on the HIVE finalizes on the HOLD, not on the cap',
       at > 0 && at < holdTicks * 4,
       `finalized ${at} ticks after the buzzer (hold ${holdTicks}, cap ${capTicks})`,
+    );
+  }
+
+  /**
+   * ⚠️ **A PERCH ON A NARROW HULL SHAKES LOOSE (owner report 2026-09-20: "balls are able to get
+   * stuck on top of the biobuzz panel with seemingly nothing actually holding it up").**
+   *
+   * `scratch/rain-probe.ts` (not committed) rained POLLEN/NECTAR over every physical hive-frame
+   * and flower-support CAD hull at a 1-in grid, both zero and lateral drop velocity, 600 ticks
+   * each: BEFORE `groundRoll3d`'s narrow-hull carve-out, 132/1404 drops ended at rest, elevated,
+   * untagged (`state.kind === 'ground'`, bottom > 0.5in) — most of them on the ACM PANEL (the
+   * owner's "biobuzz panel", 3–5/90), the base-level foot bar (20/90, the single worst offender)
+   * and the A-frame leg/top-corner/axle-holder cluster (10–15/90 each) — every one of them a CAD
+   * hull the ledge survey (`scratch/ledge-table.ts`) measured narrower than a POLLEN (2.8in) or
+   * with no flat top at all. AFTER: 59/1404, every hive-frame structure at 0/90 in this grid
+   * except two exact-coordinate hull-intersection corners (the A-frame leg/top-corner/axle-holder
+   * joint) the vibration cannot punch through — a true multi-hull cage, not a magnitude problem
+   * (retested at 2×–3× the shipped kick with no change) — left as a follow-up collider reshape.
+   * The three checks below pin the regression at three of the worst measured points; see
+   * `docs/area/biobuzz.md` for the full before/after table.
+   */
+  {
+    const drop = (x: number, y: number, topZ: number, ticksMax: number): { onTiles: number | null; z: number } => {
+      const w = mkWorld3d('free', 1);
+      w.balls.length = 0;
+      w.balls.push({
+        id: 1,
+        color: 'yellow',
+        state: { kind: 'flight', target: 'red' },
+        pos: { x, y },
+        vel: { x: 0, y: 0 },
+        z: topZ + 6,
+        vz: 0,
+        r: BB_POLLEN_R,
+      } as Artifact);
+      const commands = new Map();
+      let onTiles: number | null = null;
+      for (let t = 0; t < ticksMax; t++) {
+        step3d(w, 1 / 60, commands);
+        const b = w.balls[0];
+        if (onTiles === null && b.z <= 0.05 && b.state.kind === 'ground') onTiles = t;
+      }
+      return { onTiles, z: w.balls[0].z };
+    };
+    const FIVE_S = 300;
+    // hive_shared_frame_acm_panel — the owner's own "biobuzz panel" — centre of its top edge.
+    {
+      const r = drop(0, 2.9, 40.02, FIVE_S);
+      check(
+        'HIVE3D (3D): a POLLEN dropped on the ACM PANEL top edge reaches the tiles within 5s',
+        r.onTiles !== null,
+        `onTiles=${r.onTiles}, finalZ=${r.z.toFixed(3)}`,
+      );
+    }
+    // hive_*_frame_sheet_metal_foot_bar — the base curb, the single worst offender pre-fix
+    // (20/90 in the rain probe).
+    {
+      const r = drop(23.7, 0, 2.15, FIVE_S);
+      check(
+        'HIVE3D (3D): a POLLEN dropped on the hive foot bar reaches the tiles within 5s',
+        r.onTiles !== null,
+        `onTiles=${r.onTiles}, finalZ=${r.z.toFixed(3)}`,
+      );
+    }
+    // hive_shared_frame_a_frame_top_bar — the 1-in-wide ridge along the very top of the A-frame.
+    {
+      const r = drop(0, 0, 41.95, FIVE_S);
+      check(
+        'HIVE3D (3D): a POLLEN dropped on the A-frame top bar reaches the tiles within 5s',
+        r.onTiles !== null,
+        `onTiles=${r.onTiles}, finalZ=${r.z.toFixed(3)}`,
+      );
+    }
+  }
+
+  /**
+   * AND THE CARVE-OUT DOES NOT TOUCH A LEGITIMATE LOAD. The whole narrow-hull branch is gated on
+   * `state.kind !== 'element'` (`groundRoll3d`), so an element the geometry has already counted
+   * into a CELL must never reach it — this is the same fixture the "loaded tray at rest" check
+   * above uses, just read for POSITION drift rather than velocity.
+   *
+   * `DRIFT_TOL` is NOT "zero" — MEASURED, a loaded cell drifts up to 0.0435in over 600 ticks on
+   * the unpatched rest-snap too (ordinary contact-solve position bias, the same order as the
+   * "0.068in of overlap at 12Hz" / "0.127in sink" noise floors documented elsewhere in this
+   * file's header), nothing to do with the vibration. A LEAKED nudge would not look like that: it
+   * re-applies every ~6 ticks (`BB3_REST_TICKS`) at 2–5 in/s, so 100 leaked kicks over 600 ticks
+   * would move the element inches, not hundredths — `DRIFT_TOL` sits an order of magnitude above
+   * the measured noise floor and two orders below one real kick.
+   */
+  {
+    const DRIFT_TOL = 0.1;
+    const { world } = loaded(904, BB_TIP_POLLEN[0] - 1, 0, 'guide');
+    for (let t = 0; t < 240; t++) step3d(world, 1 / 60, new Map());
+    const before = world.balls.map((b) => ({ id: b.id, x: b.pos.x, y: b.pos.y }));
+    for (let t = 0; t < 600; t++) step3d(world, 1 / 60, new Map());
+    const after = new Map(world.balls.map((b) => [b.id, b]));
+    let worstDrift = 0;
+    let stillTagged = 0;
+    for (const b0 of before) {
+      const b1 = after.get(b0.id);
+      if (!b1) continue;
+      if (b1.state.kind === 'element') stillTagged++;
+      worstDrift = Math.max(worstDrift, Math.hypot(b1.pos.x - b0.x, b1.pos.y - b0.y));
+    }
+    check(
+      'HIVE3D (3D): an element already settled in an UP cell is not nudged — drift stays at the ordinary contact-solve noise floor over 600 further ticks',
+      worstDrift < DRIFT_TOL && stillTagged === before.length,
+      `worst drift ${worstDrift.toFixed(6)}in (tol ${DRIFT_TOL}), ${stillTagged}/${before.length} still tagged \`element\``,
+    );
+  }
+
+  /**
+   * DETERMINISM WITH A PERCHED BALL. The vibration is a hash of `(id, tick, world.rngState)` —
+   * pure, and `world.rngState` is read only, never advanced — so two independent runs of the
+   * exact same perch must land on the exact same `worldHash` at every tick, the same as any
+   * other authority state.
+   */
+  {
+    const runOnce = (): string[] => {
+      const w = mkWorld3d('free', 1);
+      w.balls.length = 0;
+      w.balls.push({
+        id: 1,
+        color: 'yellow',
+        state: { kind: 'flight', target: 'red' },
+        pos: { x: 0, y: 2.9 },
+        vel: { x: 0, y: 0 },
+        z: 46.02,
+        vz: 0,
+        r: BB_POLLEN_R,
+      } as Artifact);
+      const commands = new Map();
+      const hashes: string[] = [];
+      for (let t = 0; t < 300; t++) {
+        step3d(w, 1 / 60, commands);
+        if (t % 30 === 0) hashes.push(worldHash(w));
+      }
+      return hashes;
+    };
+    const a = runOnce();
+    const b = runOnce();
+    check(
+      'HIVE3D (3D): two runs of a perched-ball scene agree at every sampled tick (worldHash)',
+      a.length === b.length && a.every((h, i) => h === b[i]),
+      `${a.length} samples, first mismatch ${a.findIndex((h, i) => h !== b[i])}`,
     );
   }
 }

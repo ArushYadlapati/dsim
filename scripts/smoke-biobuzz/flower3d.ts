@@ -31,7 +31,7 @@ import {
   FLOWER_RING_Z,
 } from '../../src/games/biobuzz/config';
 import { bbFlowerDropSlack, flowerCapacity, flowerScore, flowerScoreZ, flowerStackZ, type BbElementKind } from '../../src/games/biobuzz/flower';
-import type { Artifact, RobotSpec, World } from '../../src/types';
+import type { Artifact, RobotSpec, RobotState, World } from '../../src/types';
 
 /**
  * A REACHING intake archetype (owner, 2026-09-20: "intaking from the flower should now only be
@@ -377,23 +377,30 @@ export function flower3dChecks(check: Check): void {
       `[smoke-bb flower3d] drive-in: started ${(wantX + 20).toFixed(2)}, driven to ${drivenX.toFixed(3)} ` +
         `(teleport convention wants ${wantX.toFixed(3)}, i.e. u ~= BB_PLACE_REACH ${BB_PLACE_REACH})`,
     );
-    // ⚠️ TOLERANCE WIDENED 0.2 → 1.2in (owner, 2026-09-20: side rollers relocated to the mouth's
-    // own EDGES). The wheel now drives in far off the flower's own centreline (`wantY`, a
-    // `bbSideRollerY` off it rather than dead on it), where the CAD hulls the chassis actually
-    // meets on the way to flush are not exactly the same ones the on-axis teleport fixtures were
-    // measured against — MEASURED delta 0.966in, still well inside the ≈1.17in edgeGrip standoff
-    // tolerance (the retrieval check right after this one still passes).
+    // ⚠️ TOLERANCE RE-MEASURED 2026-09-20 (owner: side rollers grew to a 3-in wheel — `R` 1.0 →
+    // 1.5, `OUT` 0.9 → 0.4, `config.ts`'s own header) — MEASURED at the new geometry: a full-stick
+    // drive settles **1.518in** past the analytic flush pose (was 1.341in at the old, smaller
+    // wheel), because a bigger wheel meets the CAD's peanut-support hulls a hair sooner. 1.6in
+    // covers the measurement with a small margin, same shape as every earlier widening of this
+    // same bound.
     check(
-      "drive-in: a SIDE-ROLLER build driven full-stick into F1's foot stops close to the flush distance the teleport fixtures assume (u ~= BB_PLACE_REACH, within 1.2in)",
-      Math.abs(drivenX - wantX) < 1.2,
+      "drive-in: a SIDE-ROLLER build driven full-stick into F1's foot stops close to the flush distance the teleport fixtures assume (u ~= BB_PLACE_REACH, within 1.6in)",
+      Math.abs(drivenX - wantX) < 1.6,
       `driven to x=${drivenX.toFixed(3)}, want ${wantX.toFixed(3)} (delta ${(drivenX - wantX).toFixed(3)})`,
     );
+    // ⚠️ NO MORE ANALYTIC RE-SEAT (owner, 2026-09-20: a previous pass here teleported the robot
+    // back to the flush pose before testing the bite, papering over the fact that the CONTACT gate
+    // — the box-BITE test this replaced — no longer matched what a real drive-in lands inside once
+    // the wheel became a solid collider. The CONTACT gate (`BB_SIDE_ROLLER_GRIP`, a RADIUS of
+    // `R + BB_POLLEN_R + BB_SIDE_ROLLER_CONTACT_TOL` ≈ 3.15in) is generous enough that the REAL
+    // driven pose above bites on its own — test it AT THE POSE THE DRIVE LEFT THE ROBOT IN, no
+    // reseat, no assumed heading.
     const ballById = new Map(w.balls.map((b) => [b.id, b] as const));
     const took = flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, ballById, kindOfIn(w));
     check(
-      'drive-in: flowerRetrieve3d then takes the bottom POLLEN through the pose a REAL drive-in reached',
+      'drive-in: a REAL drive-in (no teleport, no reseat) bites the flower directly through flowerRetrieve3d',
       took && w.biobuzz!.flowers[F].stack.length === 0,
-      `took=${took} stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)}`,
+      `took=${took} stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)} pose x=${rob.pos.x.toFixed(3)} y=${rob.pos.y.toFixed(3)} heading=${rob.heading.toFixed(3)}`,
     );
   }
   {
@@ -498,15 +505,26 @@ export function flower3dChecks(check: Check): void {
    * `bbFlowerAtIntake` is the ONE function both `retrieveFromFlower` (2D) and `flowerRetrieve3d`
    * (3D) call — so a divergence here would be a divergence in the Z-BITE half of the gate, which
    * each pipeline runs against a DIFFERENT bottom-element height (2D: the modelled
-   * `flowerStackZ`; 3D: the real settled body). Swept over the three archetypes and four
-   * standoffs the ROBOT lane's own numbers are pinned against (flush, and past/within/at the
-   * side-roller tolerance), each pipeline gets a FRESH single-pollen flower and a robot parked at
-   * the SAME nominal pose (`BB_PLACE_REACH + standoff`, chassis face flush + standoff).
+   * `flowerStackZ`; 3D: the real settled body). Swept over `siderollers` and a SETTLED `ramp` (the
+   * two archetypes with a reach) and four standoffs the ROBOT lane's own numbers are pinned
+   * against (flush, and past/within/at the side-roller tolerance), each pipeline gets a FRESH
+   * single-pollen flower and a robot parked at the SAME nominal pose (`BB_PLACE_REACH + standoff`,
+   * chassis face flush + standoff).
+   *
+   * ⚠️ **`ramp` IS EXCLUDED FROM THE ONE-CALL COMPARISON, DELIBERATELY, SINCE THE WEDGE
+   * (2026-09-20).** `flowerRetrieve3d`'s ramp branch no longer answers a gate in one call — its
+   * FIRST call on a fresh candidate always returns `false` and only starts the stall clock
+   * (`BB_RAMP_STALL_S`); 2D still answers in one call (it has no physical wedge to wait on). Diffing
+   * `took2 !== took3` for `ramp` would therefore fail on EVERY pose by design, not by a gate
+   * divergence — the real thing to pin is that the 3D call still RECOGNISES the same pose 2D does,
+   * which the loop below checks separately via `bbRampStallId`.
    */
   {
     const standoffs = [0, 0.5, 1.0, 1.5];
     let mismatches = 0;
     const detail: string[] = [];
+    let rampGateMismatches = 0;
+    const rampDetail: string[] = [];
     for (const kind of BB_INTAKE_KINDS) {
       for (const standoff of standoffs) {
         const archetype = { bbMech: { launcher: null, lift: null, intake: { kind } } as unknown as RobotSpec['bbMech'] };
@@ -544,7 +562,20 @@ export function flower3dChecks(check: Check): void {
         r3.pos = { x: f3.x + BB_PLACE_REACH + bbFootprint(r3.spec).front + standoff, y: f3.y - dy3 };
         r3.heading = Math.PI;
         const ballById3 = new Map(w3.balls.map((b) => [b.id, b] as const));
+        const bottomId = w3.biobuzz!.flowers[F].stack[0];
         const took3 = flowerRetrieve3d(w3, w3.biobuzz!, r3, cmd({ intake: true }), true, ballById3, kindOfIn(w3));
+
+        if (kind === 'ramp') {
+          // the ONE-CALL comparison does not apply (see this block's own header) — instead, when
+          // 2D takes it, the 3D call must at least have RECOGNISED the same pose: the stall clock
+          // started on the flower's own bottom POLLEN, rather than the gate refusing outright.
+          const recognised = r3.bbRampStallId === bottomId;
+          if (took2 !== recognised) {
+            rampGateMismatches++;
+            rampDetail.push(`ramp@${standoff}in: 2D=${took2} 3D-recognised=${recognised}`);
+          }
+          continue;
+        }
 
         if (took2 !== took3) {
           mismatches++;
@@ -553,9 +584,14 @@ export function flower3dChecks(check: Check): void {
       }
     }
     check(
-      'the 2D and 3D gate return the SAME verdict for the same 12 poses (3 archetypes × 4 standoffs)',
+      "the ramp's 3D gate recognises every pose 2D would take (the stall clock starts, even though the call itself answers false)",
+      rampGateMismatches === 0,
+      rampGateMismatches === 0 ? '4/4 agree' : rampDetail.join(' · '),
+    );
+    check(
+      'the 2D and 3D gate return the SAME verdict for the same 8 poses (sweeper + siderollers × 4 standoffs — ramp is checked separately above)',
       mismatches === 0,
-      mismatches === 0 ? '12/12 agree' : detail.join(' · '),
+      mismatches === 0 ? '8/8 agree' : detail.join(' · '),
     );
   }
 
@@ -991,6 +1027,7 @@ function flowerStagedScatterChecks(check: Check): void {
       rob.lastIntakeAt = -99;
       const byId = new Map(w.balls.map((b) => [b.id, b] as const));
       const took = flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, byId, kindOfIn(w));
+      if (took) sweepIntoHopper(w, rob);
       clear();
       if (!took) break;
       for (let t = 0; t < 400; t++) step3d(w, 1 / 60, new Map());
@@ -1239,11 +1276,33 @@ function placeDrain(w: World, n: number): number {
     rob.lastIntakeAt = -99;
     const byId = new Map(w.balls.map((b) => [b.id, b] as const));
     const took = flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, byId, kindOfIn(w));
+    if (took) sweepIntoHopper(w, rob);
     clear();
     if (!took) break;
     for (let t = 0; t < 400; t++) step3d(w, 1 / 60, new Map());
   }
   return w.biobuzz!.flowers[F].stack.length;
+}
+
+/**
+ * SWEEP A PHYSICALLY-RELEASED FLOWER ELEMENT INTO THE HOPPER before the caller moves the robot
+ * away — `flowerRetrieve3d`'s `ramp`/`siderollers` branches release a `ground` element rather
+ * than `capturePollen`ing outright (owner ruling 2026-09-20, side rollers: "it should also be
+ * colliding with everything" — a solid wheel cannot swallow a POLLEN where it sits), so a fixture
+ * that immediately parks the robot elsewhere (as `placeDrain`'s settle window does) leaves the
+ * released element sitting on the field: it never reaches the hopper, and it becomes a physical
+ * obstacle a LATER release can carom off — MEASURED, a chain of un-swept releases along the same
+ * approach line deflected a later one back inside `BB_FLOWER_OPEN_R` of the flower's own axis,
+ * where `derive.ts` re-tagged it `element`/`flower:i` and the tube never fully drained. Holding
+ * the parked pose with the intake commanded lets `bbIntakeAct`'s own extended reach
+ * (`bbIntakeExtraReach`) do what a real drive-in does — the same mechanism the ramp's own
+ * transit check already exercises by driving.
+ */
+function sweepIntoHopper(w: World, rob: RobotState): void {
+  const before = rob.hopper.length;
+  for (let t = 0; t < 90 && rob.hopper.length <= before; t++) {
+    step3d(w, 1 / 60, new Map([[rob.id, cmd({ intake: true })]]));
+  }
 }
 
 function flowerScatterChecks(check: Check): void {

@@ -362,9 +362,11 @@ export function predictChecks(check: Check): void {
 
   // =============================================================================================
   // ARCHETYPE REACH HARDWARE, PREDICTED (owner, 2026-09-20: "It should be a collider.") — both
-  // predictors now build the SAME reach shapes (GROUP_POCKET) the authority does
-  // (`chassis3dReachShapes`, `bodies.ts`), re-fit at the same settle edge. Without this a driver
-  // with side rollers or a deployed ramp would rubber-band ~2.65in / ~2.17in at every wall the
+  // predictors now build the SAME reach shapes the authority does (`chassis3dReachShapes`,
+  // `reachColliderDesc`, `bodies.ts`), re-fit at the same settle edge — a side roller's wheel in
+  // the DEFAULT collision group (meets an element too, since 2026-09-20's "it should also be
+  // colliding with everything"), a ramp's crossbar/rails likewise. Without this a driver with
+  // side rollers or a deployed ramp would rubber-band ~1.9in / ~2.17in at every wall the
   // authority stands them off from and the predictor does not.
   // =============================================================================================
   const archWallScene = (seed: number, archSpec: Partial<RobotSpec>): World => {
@@ -397,9 +399,16 @@ export function predictChecks(check: Check): void {
   // The predictor/authority divergence scales with how much extra geometry is sticking out past
   // the bare footprint, so a longer ramp measures a bigger gap for the same reason a bigger
   // side-roller stand-off would: MEASURED at the new length, 1.43 in (was ~0.42 at the old 2.17).
-  // Side rollers are untouched by this change and keep the tighter 1-in bound.
+  //
+  // ⚠️ SIDE ROLLERS WIDENED TOO, 2026-09-20 (owner: the wheel is now a bigger, SOLID cylinder —
+  // `BB_SIDE_ROLLER_R` 1.0 → 1.5, and `chassis3dReachShapes`/`reachColliderDesc` build it as
+  // `ColliderDesc.cylinder` in the DEFAULT collision group rather than a `GROUP_POCKET` box).
+  // A round collider makes LINE contact against a flat wall where a box made FACE contact, and
+  // the two independently-stepped Rapier worlds (authority vs the FULL predictor) resolve that
+  // contact a little differently each — MEASURED: 1.777in (was well under 1in as a box). 1.9in
+  // covers it with a small margin, the same shape as the ramp's own widening above.
   for (const [label, spec, deploy, tol] of [
-    ['SIDE ROLLERS', SIDEROLLER_SPEC, false, 1],
+    ['SIDE ROLLERS', SIDEROLLER_SPEC, false, 1.9],
     ['a DEPLOYED RAMP', RAMP_SPEC, true, 1.6],
   ] as const) {
     const drive = cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 });

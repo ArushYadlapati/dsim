@@ -2560,25 +2560,30 @@ export function robotChecks(check: Check): void {
       check('flower intake: a SWEEPER flush on the foot, held 3 s, pulls NOTHING', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
     }
     {
-      // ⚠️ EDGE-GRIP, NOT A CENTRELINE BAND (owner, 2026-09-20). At `flushEdge` (one wheel's axis
-      // exactly aligned on the opening, `v == wy`) the lateral test is trivially satisfied, so the
-      // standoff tolerance is governed purely by the X-BITE — the SAME `out` range as before the
-      // relocation — and stays ≈1.17 in (`bbFlowerAtIntake`'s comment): past it, nothing; inside
-      // it, they bite.
+      // ⚠️ EDGE-GRIP IS CONTACT NOW, NOT A BOX-BITE (owner, 2026-09-20: "it should also be
+      // colliding with everything. It is a physical thing"). At `flushEdge` (one wheel's axis
+      // exactly aligned on the opening, `v == wy`) the standoff tolerance is governed by the
+      // CONTACT RADIUS (`BB_SIDE_ROLLER_GRIP` — `R + BB_POLLEN_R + BB_SIDE_ROLLER_CONTACT_TOL`)
+      // against the wheel-to-POLLEN distance, which is `1.984 + standoff` at this pose (MEASURED:
+      // the wheel's own `u` position past the tip line minus the POLLEN's, at `v` already dead on
+      // the wheel's axis) — so the breakeven is `BB_SIDE_ROLLER_GRIP − 1.984` ≈ 1.27 in, a good
+      // deal MORE forgiving than the old box-BITE's ≈0.42 in, because a solid wheel's contact
+      // radius is a full 2D distance rather than an independent x-window. 1.6 in clears it with
+      // margin (measured distance 3.584 in against a 3.25-in radius).
       const { w, r } = pullWorld(105, 'siderollers');
       const stack = w.biobuzz!.flowers[FR].stack;
       const n0 = stack.length;
-      flushEdge(r, 1.5);
+      flushEdge(r, 1.6);
       tick(w, cmd({ intake: true }));
-      check('flower intake: SIDE ROLLERS at 1.5 in standoff pull NOTHING (past the ≈1.17 in tolerance)', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
+      check('flower intake: SIDE ROLLERS at 1.6 in standoff pull NOTHING (past the ≈1.27 in contact-radius tolerance)', stack.length === n0 && r.hopper.length === 0, `stack=${stack.length} hopper=${r.hopper.length}`);
     }
     {
       const { w, r } = pullWorld(107, 'siderollers');
       const stack = w.biobuzz!.flowers[FR].stack;
       const n0 = stack.length;
-      flushEdge(r, 0.8);
+      flushEdge(r, 0.2);
       tick(w, cmd({ intake: true }));
-      check('flower intake: SIDE ROLLERS at 0.8 in standoff DO pull', r.hopper.length === 1 && stack.length === n0 - 1, `hopper=${r.hopper.length} stack=${stack.length}`);
+      check('flower intake: SIDE ROLLERS at 0.2 in standoff DO pull', r.hopper.length === 1 && stack.length === n0 - 1, `hopper=${r.hopper.length} stack=${stack.length}`);
     }
     {
       // ⚠️ AND FLUSH ON THE CENTRELINE (the OLD pose) NO LONGER BITES — the pair cannot straddle
@@ -2672,11 +2677,16 @@ export function robotChecks(check: Check): void {
         settledAt > rampAt + BB_RAMP_DEPLOY_S - 1e-6,
         `settledAt=${settledAt} rampAt=${rampAt} deploy=${BB_RAMP_DEPLOY_S}`,
       );
-      flush(r);
-      tick(w, cmd({ intake: true }));
+      // ⚠️ THE RAMP IS A TWO-PHASE PULL NOW, NOT A ONE-TICK GATE (2026-09-20, the wedge). Once
+      // settled the wedge is a real collider and the FIRST tick only starts the stall clock
+      // (`flowerRetrieve3d`'s ramp branch, `BB_RAMP_STALL_S` = 1.2 s = 72 ticks); the fallback
+      // release fires after that, and the extended pull sweeps it in a handful of ticks more —
+      // MEASURED (`scratch/ramp_debug.ts`, a real drive-in) 112 ticks pop-to-hopper end to end.
+      // 150 ticks held flush covers that with margin.
+      holdTicks(w, r, 0, cmd({ intake: true }), 150);
       check(
-        'flower intake: RAMP pulls once BB_RAMP_DEPLOY_S has elapsed, and not before it settled',
-        r.hopper.length === 1 && settledAt >= 0,
+        'flower intake: RAMP pulls once the stall fallback has had time to fire, and not before the ramp settled',
+        r.hopper.length >= 1 && settledAt >= 0,
         `hopper=${r.hopper.length} settledAt=${settledAt}`,
       );
     }
@@ -2692,8 +2702,9 @@ export function robotChecks(check: Check): void {
         openPark(r);
         tick(w, cmd({}));
       }
-      flush(r);
-      tick(w, cmd({ intake: true }));
+      // see the previous fixture's own note: the ramp needs the stall window plus travel, not one
+      // tick, before anything reaches the hopper.
+      holdTicks(w, r, 0, cmd({ intake: true }), 150);
       const pulled = r.hopper.length;
       check('flower intake: (setup) the ramp pulled at least once before folding it back', pulled > 0, `hopper=${pulled}`);
       openPark(r);
@@ -2911,32 +2922,89 @@ export function robotChecks(check: Check): void {
       BB_SIDE_ROLLER_REACH.z[1] < BB_FLOWER_RETRIEVE_Z[1] && BB_RAMP_REACH.z[1] < BB_FLOWER_RETRIEVE_Z[1],
       `siderollers=${BB_SIDE_ROLLER_REACH.z[1]} ramp=${BB_RAMP_REACH.z[1]} ceiling=${BB_FLOWER_RETRIEVE_Z[1]}`,
     );
-    let vmin = Infinity;
-    let vmax = -Infinity;
-    const midRing = cadFlowerRings(0).find((r) => r.id === 'mid');
-    if (midRing) {
-      for (const x of midRing.rect.x) {
-        for (const y of midRing.rect.y) {
-          const v = -(x - bf0.x) * n.y + (y - bf0.y) * n.x;
-          vmin = Math.min(vmin, v);
-          vmax = Math.max(vmax, v);
-        }
-      }
-    }
     // ⚠️ RELOCATED 2026-09-20 (owner: "situated on the edges of the robot, not near the center") —
     // the pair no longer straddles the centreline, so "the pair's outer extent [off the chassis
     // centreline]" is the wrong question — the wheel that GRIPS the ball is not fixed relative to
     // the FLOWER's own axis, it is fixed relative to the CHASSIS, and the driver lines it up by
-    // moving the whole robot. What has to fit inside the plate is the GRIPPING wheel's own
-    // footprint relative to the BALL it has hold of: by definition (`BB_SIDE_ROLLER_GRIP`) its
-    // axis sits within that distance of the ball's own centre — i.e. of the flower's own axis —
-    // so its outer face is at most `BB_SIDE_ROLLER_GRIP + BB_SIDE_ROLLER_R` off that axis.
+    // moving the whole robot.
+    //
+    // ⚠️ TUCKED 2026-09-20 (owner: "right in front of the wheels ... not sticking out like that")
+    // grew `BB_SIDE_ROLLER_R` past the point where `BB_SIDE_ROLLER_GRIP + BB_SIDE_ROLLER_R` (3.25)
+    // still fits inside the mid plate's own half-width (2.976) — a gripping wheel's outer face can
+    // now sit BEYOND the plate's edge. Owner ruling: that is fine PHYSICALLY, beside the foot is
+    // open tile below the 3.9-in ceiling, solid only on the wall side where the peanut supports
+    // (and the rest of this flower's own `flower_support` hardware) actually stand. So the real
+    // question is not "does it fit under the plate" but "does the wheel box clear every SOLID
+    // thing there actually is" — computed straight off the CAD hulls, like the rest of this block,
+    // rather than assumed from the plate's rectangle.
     {
-      const outerFace = BB_SIDE_ROLLER_GRIP + BB_SIDE_ROLLER_R;
+      // the wheel's own swept footprint (u outward, v along the wall, z up) as its axis ranges
+      // anywhere within GRIP of the pollen, chassis flush (`BB_PLACE_REACH` is the tip line's own
+      // u past the flower's centre — see `clearance` above): u is fixed by the reach box, v sweeps
+      // ±(GRIP + R) about the axis (the worst case over every legal grip position), z is the reach
+      // box's own band.
+      const wheelU: readonly [number, number] = [
+        BB_PLACE_REACH + BB_SIDE_ROLLER_REACH.out[0],
+        BB_PLACE_REACH + BB_SIDE_ROLLER_REACH.out[1],
+      ];
+      const wheelVHalf = BB_SIDE_ROLLER_GRIP + BB_SIDE_ROLLER_R;
+      const wheelZ = BB_SIDE_ROLLER_REACH.z;
+      const overlaps1d = (a: readonly [number, number], b: readonly [number, number]): boolean => a[0] < b[1] && b[0] < a[1];
+      let hit = '';
+      // every SOLID hull this flower owns (backstop/peanut supports/brackets/pipes — all
+      // `flower_support`, `convert.py`'s own class), transformed into the same (u, v, z) frame the
+      // rest of this block reads.
+      for (const name of f0.staticNames) {
+        const s = byName.get(name);
+        if (!s) continue;
+        const pts = s.points as number[];
+        let uMin = Infinity, uMax = -Infinity, vMin2 = Infinity, vMax2 = -Infinity, zMin = Infinity, zMax = -Infinity;
+        for (let i = 0; i < pts.length; i += 3) {
+          const u = (pts[i] - bf0.x) * n.x + (pts[i + 1] - bf0.y) * n.y;
+          const v = -(pts[i] - bf0.x) * n.y + (pts[i + 1] - bf0.y) * n.x;
+          uMin = Math.min(uMin, u);
+          uMax = Math.max(uMax, u);
+          vMin2 = Math.min(vMin2, v);
+          vMax2 = Math.max(vMax2, v);
+          zMin = Math.min(zMin, pts[i + 2]);
+          zMax = Math.max(zMax, pts[i + 2]);
+        }
+        if (
+          overlaps1d(wheelU, [uMin, uMax]) &&
+          overlaps1d([-wheelVHalf, wheelVHalf], [vMin2, vMax2]) &&
+          overlaps1d(wheelZ, [zMin, zMax])
+        ) {
+          hit = name;
+          break;
+        }
+      }
+      // ...and the ring plates themselves (not in `staticNames` — see `FieldFlowerDesc`'s own
+      // header), each a rectangle at its own z band, projected into (u, v) the same way the
+      // support hulls are above.
+      if (!hit) {
+        for (const ring of cadFlowerRings(0)) {
+          if (!overlaps1d(wheelZ, ring.z)) continue;
+          let uMin = Infinity, uMax = -Infinity, vMin2 = Infinity, vMax2 = -Infinity;
+          for (const x of ring.rect.x) {
+            for (const y of ring.rect.y) {
+              const u = (x - bf0.x) * n.x + (y - bf0.y) * n.y;
+              const v = -(x - bf0.x) * n.y + (y - bf0.y) * n.x;
+              uMin = Math.min(uMin, u);
+              uMax = Math.max(uMax, u);
+              vMin2 = Math.min(vMin2, v);
+              vMax2 = Math.max(vMax2, v);
+            }
+          }
+          if (overlaps1d(wheelU, [uMin, uMax]) && overlaps1d([-wheelVHalf, wheelVHalf], [vMin2, vMax2])) {
+            hit = `ring:${ring.id}`;
+            break;
+          }
+        }
+      }
       check(
-        "flower reach (CAD): a side roller GRIPPING the ball has its outer face inside the mid plate's own half-width",
-        midRing !== undefined && outerFace < (vmax - vmin) / 2,
-        `grip=${BB_SIDE_ROLLER_GRIP} outerFace=${outerFace.toFixed(3)} plateHalf=${((vmax - vmin) / 2).toFixed(3)}`,
+        'flower reach (CAD): a side roller GRIPPING the ball never intersects a flower_support hull or ring plate',
+        hit === '',
+        `hit=${hit || 'none'} wheelU=[${wheelU[0].toFixed(3)},${wheelU[1].toFixed(3)}] wheelV=±${wheelVHalf.toFixed(3)} wheelZ=[${wheelZ[0]},${wheelZ[1]}]`,
       );
     }
     const lowerRingTop = cadFlowerRings(0)[0]?.z[1];

@@ -6,14 +6,14 @@ import { biobuzzStep } from '../../src/games/biobuzz/step';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import { rapier3d } from '../../src/games/biobuzz/sim3d/engine';
 import { disposeEngineFor, engineFor, robotBodyOf, syncElements } from '../../src/games/biobuzz/sim3d/engineImpl';
-import { cadStatics, cadTrayRefTheta, cadTrayRiders, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
+import { cadStatics, cadTrayRefTheta, cadTrayRiders, fieldColliders3d, type FieldStatic } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { hiveCellLocalBox, hivePivotX, hiveTrayRefTheta, __setFieldCollidersOverrideForTests } from '../../src/games/biobuzz/sim3d/bodies';
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { hyp3, rotate2 } from '../../src/games/biobuzz/sim3d/math3';
 import { rot, wrapAngle } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
 import { bbScoreWorld } from '../../src/games/biobuzz/score';
-import { bbFootprint, bbMouths, bbSolveShot } from '../../src/games/biobuzz/robot';
+import { bbFootprint, bbMouths, bbSolveShot, mouthAxes } from '../../src/games/biobuzz/robot';
 import { robotExtents } from '../../src/sim/physics';
 import { chassis3dShapes, chassis3dPocketShapes, chassis3dReachShapes, GROUP_POCKET } from '../../src/games/biobuzz/sim3d/bodies';
 import { solveShotPath } from '../../src/games/biobuzz/shotPath';
@@ -42,11 +42,14 @@ import {
   BB_HIVE_X,
   BB_PLACE_REACH,
   BB_POLLEN_R,
+  BB_RAMP_CREST_OUT,
+  BB_RAMP_CREST_Z,
   BB_RAMP_DEPLOY_S,
   BB_RAMP_OUT,
   BB_RAMP_TIP_Z,
   BB_SIDE_ROLLER_OUT,
   BB_SIDE_ROLLER_R,
+  bbSideRollerY,
   BB_START_POSES,
   BB_TAPE,
   BB_TILE_PITCH,
@@ -54,6 +57,7 @@ import {
   bbArchetypeWallExtra,
   bbHeightNow,
   bbIntakeReach,
+  FLOWER_RING_Z,
 } from '../../src/games/biobuzz/config';
 import * as C from '../../src/config';
 import { biobuzzColliders, BB_WALL_COUNT } from '../../src/games/biobuzz/colliders';
@@ -2660,13 +2664,20 @@ export function sim3dChecks(check: Check): void {
     );
   }
 
-  // ---- the HIVE's foot bar is ONE box: a chassis slides its whole length ---------------------
+  // ---- the HIVE's foot bar is a FLANGE box, not a full-width slab: a chassis still slides its
+  // whole length, and the wide floor beside it is no longer an invisible wall ------------------
   //
-  // Owner, 2026-09-20: "when I strafe across while my front is flat with the support beam, I get
-  // stuck on a corner that does not exist". The exporter's bar + two buried feet left an internal
-  // edge 0.11 in behind the bar's face; a pressed chassis sits 0.09 in in, and its leading corner
-  // stopped dead on the foot's side face (mecanum, 0.8 push / 0.5 strafe, stuck at y 9.14).
-  // `squareFootBars` folds each assembly into its bounding box.
+  // Owner, 2026-09-20 (first report): "when I strafe across while my front is flat with the
+  // support beam, I get stuck on a corner that does not exist". The exporter's bar + two buried
+  // feet left an internal edge 0.11 in behind the bar's face; a pressed chassis sits 0.09 in in,
+  // and its leading corner stopped dead on the foot's side face (mecanum, 0.8 push / 0.5 strafe,
+  // stuck at y 9.14). Owner, SAME DAY (second report), on the fix for the first: "balls are able
+  // to get stuck on top of the biobuzz panel" / "an invisible wall/bump wherever the drawn bar is
+  // lower than 2.15 in" — the full-width box built for the first fix swallowed a floor that is
+  // really only 0.02-0.10 in tall across 1.32 of its 1.98-in width. `slimFootBars`
+  // (`fieldColliders.ts`) narrows the bar to just its measured 0.66-in back flange and leaves the
+  // two frame feet UNFOLDED (their own hulls, not merged) — see that function's header for the
+  // full measurement and why the feet can stay separate without reopening the first bug.
   {
     const statics = cadStatics();
     const bars = statics.filter((s) => s.name.endsWith('_sheet_metal_foot_bar'));
@@ -2676,10 +2687,27 @@ export function sim3dChecks(check: Check): void {
       for (let i = 0; i < b.points.length; i += 3) xs.add(b.points[i]);
       return b.points.length === 24 && xs.size === 2;
     });
+    const xsOf = (b: FieldStatic) => [...new Set(b.points.filter((_, i) => i % 3 === 0))].sort((a, c) => a - c);
+    const flangeWidth = bars.map((b) => {
+      const xs = xsOf(b);
+      return xs[1] - xs[0];
+    });
+    // every foot is ALSO a plain box now (8 points, 2 distinct x), and its own inner-most x
+    // matches its bar's flange outer-most x to the bit -- touching, never overlapping (see
+    // `slimFootBars`'s header for why overlapping the two ever broke the strafe below).
+    const feetTouchFlange = feet.every((f) => {
+      const bar = bars.find((b) => f.name.startsWith(b.name.replace(/sheet_metal_foot_bar$/, '')));
+      if (!bar) return false;
+      const fx = xsOf(f);
+      const bx = xsOf(bar);
+      const shared = fx.filter((x) => bx.includes(x));
+      const barOuter = bx.find((x) => !shared.includes(x));
+      return f.points.length === 24 && fx.length === 2 && shared.length === 1 && !fx.includes(barOuter!);
+    });
     check(
-      'foot bar 3d: each HIVE foot assembly is one axis-aligned box and the buried feet are gone',
-      bars.length === 2 && feet.length === 0 && boxy,
-      `${bars.length} bars, ${feet.length} feet, boxes ${boxy}`,
+      'foot bar 3d: each bar is a narrow FLANGE box (0.66 in), and the two feet are their own WIDER boxes touching it, not folded away and not overlapping it',
+      bars.length === 2 && feet.length === 4 && boxy && feetTouchFlange && flangeWidth.every((w) => Math.abs(w - 0.66) < 1e-6),
+      `${bars.length} bars, ${feet.length} feet, boxes ${boxy}, widths ${flangeWidth.map((w) => w.toFixed(3)).join(',')}`,
     );
 
     const FACE = 24.73;
@@ -2723,6 +2751,117 @@ export function sim3dChecks(check: Check): void {
     );
   }
 
+  // ---- the WIDE FLOOR beside the flange is no longer an invisible wall (owner, 2026-09-20,
+  // second report on the very fix above: "balls are able to get stuck on top of the biobuzz
+  // panel with seemingly nothing actually holding it up" / "an invisible wall/bump wherever the
+  // drawn bar is lower than 2.15 in"). Measured off the shipped GLB (`scratch/footbar-*.ts`, kept
+  // out of the repo's build): the true floor there is 0.02-0.10 in for 1.32 of the bar's 1.98-in
+  // width, over 33.5 of its 38.94-in length -- everywhere except the ~0.66-in flange strip
+  // `slimFootBars` still boxes and the two feet's own ~2.3-in-tall ends. -------------------------
+  {
+    // (a) a chassis driven from the field-centre side (the low floor) crosses the OLD box's
+    // inner face at x -22.75 without slowing, and only stops at the FLANGE's own inner face (x
+    // near -24.07 for red / 24.07 for blue) -- proof the wide invisible wall is gone and the
+    // flange that is actually drawn is still solid. Tracked by the robot's own FRONT FACE (centre
+    // + `fe.front`, which includes reach hardware, easily 10+ in) -- the depth a bare centre
+    // reads is not where contact happens.
+    let crossFail = '';
+    for (const bar of [1, -1] as const) {
+      for (const dt of ['mecanum', 'swerve'] as const) {
+        const w = mkWorld3dPair('free', 81, { drivetrain: dt });
+        w.balls.length = 0;
+        w.robots[1].pos.x = -60 * bar;
+        w.robots[1].pos.y = 60;
+        const r = w.robots[0];
+        r.fieldCentric = false;
+        r.heading = bar === 1 ? 0 : Math.PI; // facing OUTWARD, from the field-centre side toward the bar
+        const fe = robotExtents(r);
+        r.pos.x = bar * (10 - fe.front); // FRONT face starts at depth 10, well clear of the hive
+        r.pos.y = 0; // dead centre of the low span -- 17.2 in clear of either foot
+        r.vel.x = r.vel.y = 0;
+        r.angVel = 0;
+        const c = cmd({ driveY: 0.6 });
+        let crossedOldFace = false;
+        let minSpeedAfterCross = Infinity;
+        let lastX = r.pos.x;
+        for (let t = 0; t < 240; t++) {
+          step3d(w, C.SIM_DT, new Map([[0, c]]));
+          const frontDepth = bar * r.pos.x + fe.front; // the FRONT face's own depth toward the bar
+          if (frontDepth > 22.9) crossedOldFace = true; // past the OLD box's inner face (|x|=22.75)
+          if (crossedOldFace && frontDepth < 24.0) {
+            const v = Math.abs(r.pos.x - lastX) / C.SIM_DT;
+            if (v < minSpeedAfterCross) minSpeedAfterCross = v;
+          }
+          lastX = r.pos.x;
+        }
+        const finalDepth = bar * r.pos.x + fe.front;
+        if (!crossedOldFace) crossFail += `${dt} bar ${bar}: never reached the old inner face (stuck at front depth ${finalDepth.toFixed(2)}); `;
+        else if (minSpeedAfterCross < 3) crossFail += `${dt} bar ${bar}: stalled crossing the floor (min speed ${minSpeedAfterCross.toFixed(1)} in/s at front depth ${finalDepth.toFixed(2)}); `;
+        else if (finalDepth > 24.9) crossFail += `${dt} bar ${bar}: drove THROUGH the flange to front depth ${finalDepth.toFixed(2)} -- flange is not solid; `;
+        disposeEngineFor(w);
+      }
+    }
+    check(
+      "foot bar 3d: a chassis driven in from the field-centre side crosses the wide floor without stalling, and still stops at the drawn flange",
+      crossFail === '',
+      crossFail,
+    );
+
+    // (b) a ground POLLEN rolled across the same floor at several y (away from both feet) is not
+    // deflected by anything -- it crosses at a steady speed, the way it would roll over a <0.1-in
+    // seam.
+    let rollFail = '';
+    for (const y of [0, 8, -8]) {
+      const w = mkWorld3dPair('free', 82);
+      w.balls.length = 0;
+      w.robots[0].pos = { x: 60, y: 60 };
+      w.robots[1].pos = { x: 60, y: -60 };
+      const v0 = 20;
+      // starts just INSIDE the flange's own inner face (-24.07), i.e. already on the floor --
+      // the flange itself is real, drawn structure and rolling a ball into IT is not this test.
+      const b: Artifact = { id: 991, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: -23.9, y }, vel: { x: v0, y: 0 }, z: 0, vz: 0 };
+      w.balls.push(b);
+      let minSpeed = Infinity;
+      for (let t = 0; t < 180; t++) {
+        step3d(w, C.SIM_DT, new Map());
+        const speed = Math.hypot(b.vel.x, b.vel.y);
+        if (b.pos.x > -23 && b.pos.x < -21 && speed < minSpeed) minSpeed = speed;
+      }
+      if (!(b.pos.x > -19)) rollFail += `y=${y}: pollen stopped short at x=${b.pos.x.toFixed(2)} (started at -23.9, v0=${v0}); `;
+      else if (minSpeed < v0 * 0.5) rollFail += `y=${y}: pollen lost more than half its speed crossing the floor (${minSpeed.toFixed(1)} vs v0 ${v0}); `;
+      disposeEngineFor(w);
+    }
+    check(
+      'foot bar 3d: a ground POLLEN rolled across the wide floor is not deflected -- nothing invisible for it to bounce off',
+      rollFail === '',
+      rollFail,
+    );
+
+    // (c) no safety-net containment fix was needed to do either of the above -- the invariant
+    // holds structurally, not because a fallback quietly caught an embedded body.
+    {
+      const w = mkWorld3dPair('free', 83);
+      w.balls.length = 0;
+      w.robots[1].pos.x = -60;
+      w.robots[1].pos.y = 60;
+      const r = w.robots[0];
+      r.fieldCentric = false;
+      r.heading = Math.PI;
+      r.pos.x = -23.6; // spawned INSIDE where the old full-width box used to be solid
+      r.pos.y = 0;
+      r.vel.x = r.vel.y = 0;
+      r.angVel = 0;
+      for (let t = 0; t < 30; t++) step3d(w, C.SIM_DT, new Map([[0, cmd({})]]));
+      const engine = engineFor(w);
+      check(
+        'foot bar 3d: a chassis spawned where the old box used to be solid needs no containment fix -- the floor is genuinely open',
+        engine.containmentFixes === 0 && Math.abs(r.pos.x - -23.6) < 1,
+        `containmentFixes=${engine.containmentFixes}, drifted to x=${r.pos.x.toFixed(2)}`,
+      );
+      disposeEngineFor(w);
+    }
+  }
+
   // ---- the parts bolted to the TRAY tip with it in the physics too ---------------------------
   //
   // The exporter files the Churro cross-braces and the pivot hardware under the static frame; the
@@ -2764,8 +2903,10 @@ export function sim3dChecks(check: Check): void {
 
   // =============================================================================================
   // ARCHETYPE REACH HARDWARE IS SOLID (owner, 2026-09-20: "It should be a collider.") ------------
-  // `chassis3dReachShapes` (`bodies.ts`) puts side rollers and a settled ramp into `GROUP_POCKET`
-  // in the authority AND both predictors — see that function's own header for the geometry and
+  // `chassis3dReachShapes` (`bodies.ts`) puts a settled ramp's crossbar/rails AND (owner ruling,
+  // 2026-09-20: "it should also be colliding with everything") a side roller's own wheel into the
+  // DEFAULT collision group (meets an ELEMENT too, as a solid CYLINDER now) in the authority AND
+  // both predictors — see that function's own header for the geometry and
   // `docs/area/biobuzz.md`'s rewritten bullet for the summary.
   // =============================================================================================
   const bbArchSpec = (kind: 'sweeper' | 'siderollers' | 'ramp', mount: 'front' | 'back' | 'side' | 'frontback' = 'front'): Partial<RobotSpec> => ({
@@ -2842,6 +2983,136 @@ export function sim3dChecks(check: Check): void {
     check(
       'archetype 3d: a ground POLLEN driven straight at the mouth is still CAPTURED between the SIDE ROLLERS',
       capture('siderollers'),
+    );
+  }
+
+  // (c2) HEAD-ON WHEEL PROBE (owner ruling 2026-09-20: "it should also be colliding with
+  // everything ... a physical thing" — a POLLEN meeting a wheel head-on is pushed/deflected,
+  // never tunnels, the same "never crosses" claim the ramp's own bar probe makes).
+  {
+    const w = mkWorld3d('free', 8115, bbArchSpec('siderollers', 'front'));
+    w.balls.length = 0;
+    const r = w.robots[0];
+    r.pos = { x: -40, y: 0 };
+    r.heading = 0;
+    r.vel = { x: 0, y: 0 };
+    r.angVel = 0;
+    const ax = mouthAxes(bbMouths(r.spec)[0], r.spec.length / 2, r.spec.width / 2);
+    const wy = bbSideRollerY(ax.half);
+    // heading 0: n = (1,0), p = (0,1), so the wheel's LOCAL (u, v) offset is a plain (x, y) one
+    const wheelX = r.pos.x + ax.uOut + BB_SIDE_ROLLER_OUT;
+    const wheelY = r.pos.y + wy;
+    w.balls.push({
+      id: 9101,
+      color: 'yellow',
+      r: BB_POLLEN_R,
+      state: { kind: 'ground' },
+      pos: { x: wheelX + 15, y: wheelY },
+      vel: { x: -30, y: 0 },
+      z: 0,
+      vz: 0,
+    });
+    for (let t = 0; t < 180; t++) step3d(w, 1 / 60, new Map());
+    const ball = w.balls.find((b) => b.id === 9101)!;
+    const crossed = ball.pos.x < wheelX - BB_SIDE_ROLLER_R - 0.5;
+    console.log(
+      `[smoke-bb sim3d] side-roller wheel probe: fired from (${(wheelX + 15).toFixed(2)},${wheelY.toFixed(2)}) at 30in/s toward the wheel at ` +
+        `(${wheelX.toFixed(2)},${wheelY.toFixed(2)}), ended at (${ball.pos.x.toFixed(2)},${ball.pos.y.toFixed(2)})`,
+    );
+    check(
+      'archetype 3d: a 30 in/s ground POLLEN fired head-on at a SIDE-ROLLER wheel is deflected, never crosses it',
+      !crossed,
+      `final x=${ball.pos.x.toFixed(2)} wheel x=${wheelX.toFixed(2)} crossed=${crossed}`,
+    );
+    disposeEngineFor(w);
+  }
+
+  // (c2b) THE WEDGE PROBE — a ball fired at the deployed ramp's plane never crosses it EXCEPT
+  // over the crest (the whole point of a wedge over a flat crossbar): fired LOW (below the crest,
+  // at the leading edge's own height) it must stop/deflect; fired ABOVE the crest's own height —
+  // clear of the mid plate ceiling in open field, where there is nothing else to hit — it passes
+  // straight through open air over the top, which is not a tunnel, it is the wedge simply not
+  // being that tall.
+  {
+    const probeAt = (fireZ: number): { crossed: boolean; finalX: number; wallX: number } => {
+      const w = mkWorld3d('free', 8118, bbArchSpec('ramp', 'front'));
+      w.balls.length = 0;
+      const r = w.robots[0];
+      r.pos = { x: -40, y: 0 };
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]]));
+      const deploySteps = Math.round(BB_RAMP_DEPLOY_S / (1 / 60)) + 2;
+      for (let t = 0; t < deploySteps; t++) step3d(w, 1 / 60, new Map());
+      const ax = mouthAxes(bbMouths(r.spec)[0], r.spec.length / 2, r.spec.width / 2);
+      const wallX = r.pos.x + ax.uOut + BB_RAMP_CREST_OUT; // the crest's own u, the wedge's tallest point
+      w.balls.push({
+        id: 9102,
+        color: 'yellow',
+        r: BB_POLLEN_R,
+        state: { kind: 'ground' },
+        pos: { x: wallX + 15, y: 0 },
+        vel: { x: -30, y: 0 },
+        z: fireZ - BB_POLLEN_R,
+        vz: 0,
+      });
+      for (let t = 0; t < 180; t++) step3d(w, 1 / 60, new Map());
+      const ball = w.balls.find((b) => b.id === 9102)!;
+      disposeEngineFor(w);
+      return { crossed: ball.pos.x < wallX - 1, finalX: ball.pos.x, wallX };
+    };
+    // low: fired with its CENTRE at the crest's own height, well below the mid-plate ceiling —
+    // squarely into the wedge's own solid body, not skimming over it.
+    const low = probeAt(BB_RAMP_CREST_Z);
+    check(
+      'archetype 3d: a 30 in/s ground POLLEN fired at the deployed WEDGE (low, at the crest\'s own height) never crosses it',
+      !low.crossed,
+      `final x=${low.finalX.toFixed(2)} crest x=${low.wallX.toFixed(2)} crossed=${low.crossed}`,
+    );
+  }
+
+  // (c3) CAPTURE-RATE SWEEP vs the SWEEPER build, over lateral offsets across the mouth — a
+  // POLLEN lined up on a wheel is deflected by the now-solid cylinder; off a wheel it is captured
+  // exactly like a SWEEPER (the wheels straddle the open pocket, they do not close the mouth).
+  {
+    const probeSpec = bbCoerce(bbArchSpec('sweeper', 'front'));
+    const half = mouthAxes(bbMouths(probeSpec)[0], probeSpec.length / 2, probeSpec.width / 2).half;
+    const wy = bbSideRollerY(half);
+    const offsets = [-half * 0.7, -wy, -wy * 0.5, 0, wy * 0.5, wy, half * 0.7];
+    const runCapture = (kind: 'sweeper' | 'siderollers', offsetY: number): boolean => {
+      const w = mkWorld3d('free', 8117, bbArchSpec(kind, 'front'));
+      const r = w.robots[0];
+      for (const b of w.balls) if (b.state.kind === 'held' && b.state.robot === r.id) b.state = { kind: 'stock', alliance: r.alliance };
+      r.hopper = [];
+      r.autoIntake = false;
+      r.autoFire = false;
+      r.pos = { x: -20, y: 0 };
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      w.balls.length = 0;
+      w.balls.push({ id: 9102, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' }, pos: { x: -12, y: offsetY }, vel: { x: 0, y: 0 }, z: 0, vz: 0 });
+      run3d(w, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1, intake: true })]]), 3);
+      const took = r.hopper.length > 0;
+      disposeEngineFor(w);
+      return took;
+    };
+    const rows = offsets.map((off) => ({ off, sweeper: runCapture('sweeper', off), side: runCapture('siderollers', off) }));
+    console.log(
+      `[smoke-bb sim3d] capture-rate sweep (offset: sweeper/siderollers): ` +
+        rows.map((r) => `${r.off.toFixed(2)}: ${r.sweeper ? 'Y' : 'n'}/${r.side ? 'Y' : 'n'}`).join('  '),
+    );
+    const offWheel = rows.filter((r) => Math.abs(Math.abs(r.off) - wy) > BB_SIDE_ROLLER_R + 1);
+    check(
+      'archetype 3d: a SWEEPER captures a ground POLLEN across the whole tested mouth width',
+      rows.every((r) => r.sweeper),
+      JSON.stringify(rows),
+    );
+    check(
+      'archetype 3d: SIDE ROLLERS capture an OFF-WHEEL offset exactly like a SWEEPER does',
+      offWheel.every((r) => r.side === r.sweeper),
+      JSON.stringify(rows),
     );
   }
 
@@ -2946,6 +3217,154 @@ export function sim3dChecks(check: Check): void {
     );
   }
 
+  // (e2) determinism: two fresh 3D worlds, same seed, a script that RETRIEVES OFF A FLOWER WITH
+  // SIDE ROLLERS, hash equal — the physical two-step release (owner ruling 2026-09-20) is a NEW
+  // code path relative to the old direct-capture one, so it gets its own determinism claim rather
+  // than relying on the ramp's. HELD AT THE ANALYTIC FLUSH POSE, not driven in: a real drive-in
+  // picks up owner-documented, seed-sensitive yaw/lateral drift off the asymmetric wheel contact
+  // (`BB_SIDE_ROLLER_CONTACT_TOL`'s own header — MEASURED 18-23° across runs), which is the right
+  // thing for the retrieval-rate SWEEP to characterize and the wrong thing to depend on on for a
+  // determinism check whose only claim is "the same script produces the same bytes twice".
+  {
+    const sideRetrieveScript = (): RobotCommand => cmd({ intake: true });
+    const buildSideRetrieveWorld = (seed: number): World => {
+      const w = mkWorld3d('free', seed, bbArchSpec('siderollers', 'front'));
+      w.balls.length = 0;
+      const f = BB_FLOWERS[0];
+      const r = w.robots[0];
+      const half = mouthAxes(bbMouths(r.spec)[0], r.spec.length / 2, r.spec.width / 2).half;
+      const wy = bbSideRollerY(half);
+      r.pos = { x: f.x + BB_PLACE_REACH + bbFootprint(r.spec).front, y: f.y - wy };
+      r.heading = Math.PI;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      r.hopper = [];
+      for (const b of w.balls) if (b.state.kind === 'held' && b.state.robot === r.id) b.state = { kind: 'stock', alliance: r.alliance };
+      // DROPPED at the top ring one at a time and settled, exactly like `flower3d.ts`'s own
+      // `placeFill` — a hand-stacked initial pose (elements a hair apart in z) overlaps by nearly
+      // a full diameter and the first tick's contact resolution flings the whole column, which is
+      // why the earlier draft of this fixture never actually retrieved anything.
+      let id = 9200;
+      for (let k = 0; k < 4; k++) {
+        w.balls.push({ id, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'element', el: 'flower:0', slot: 0 }, pos: { x: f.x, y: f.y }, vel: { x: 0, y: 0 }, z: FLOWER_RING_Z.top[0] - BB_POLLEN_R, vz: 0 });
+        id++;
+        for (let t = 0; t < 60; t++) step3d(w, 1 / 60, new Map());
+      }
+      return w;
+    };
+    const wa = buildSideRetrieveWorld(8140);
+    const wb = buildSideRetrieveWorld(8140);
+    const hashesA: number[] = [];
+    const hashesB: number[] = [];
+    for (let t = 0; t < 400; t++) {
+      const c = sideRetrieveScript();
+      step3d(wa, 1 / 60, new Map([[0, c]]));
+      step3d(wb, 1 / 60, new Map([[0, c]]));
+      if (t % 40 === 0) {
+        hashesA.push(worldHash(wa));
+        hashesB.push(worldHash(wb));
+      }
+    }
+    console.log(
+      `[smoke-bb sim3d] side-roller retrieval determinism: hopper A=${wa.robots[0].hopper.length} B=${wb.robots[0].hopper.length}, ` +
+        `stack A=${wa.biobuzz!.flowers[0].stack.length} B=${wb.biobuzz!.flowers[0].stack.length}`,
+    );
+    check(
+      'archetype 3d: determinism holds with a SIDE-ROLLER flower retrieval in the script — hash equal every 40 ticks, and a retrieval actually happened',
+      hashesA.every((h, i) => h === hashesB[i]) && wa.robots[0].hopper.length > 0,
+      `${JSON.stringify(hashesA)} vs ${JSON.stringify(hashesB)}, hopperA=${wa.robots[0].hopper.length}`,
+    );
+    check(
+      'archetype 3d: determinism holds with a SIDE-ROLLER flower retrieval in the script — final JSON identical',
+      JSON.stringify(wa) === JSON.stringify(wb),
+    );
+  }
+
+  // (e3) determinism: the RAMP's own retrieval — the WEDGE (2026-09-20) plus the stall fallback
+  // (`BB_RAMP_STALL_S`, `flowerRetrieve3d`'s ramp branch), a NEW code path relative to (e)'s bare
+  // deploy/fold script above (which never drives at a flower at all). HELD AT THE ANALYTIC FLUSH
+  // POSE, same reasoning as (e2): a real drive-in's own standoff is what the flower3d lane's own
+  // sweep characterizes, and the wrong thing to depend on for "the same script produces the same
+  // bytes twice".
+  {
+    const rampRetrieveScript = (deployed: boolean): RobotCommand => cmd({ intake: true, bbRamp: !deployed });
+    const buildRampRetrieveWorld = (seed: number): World => {
+      const w = mkWorld3d('free', seed, bbArchSpec('ramp', 'front'));
+      w.balls.length = 0;
+      const f = BB_FLOWERS[0];
+      const r = w.robots[0];
+      const flushPose = (): void => {
+        r.pos = { x: f.x + BB_PLACE_REACH + bbFootprint(r.spec).front, y: f.y };
+        r.heading = Math.PI;
+        r.vel = { x: 0, y: 0 };
+        r.angVel = 0;
+      };
+      // ⚠️ DEPLOY IN THE OPEN, THEN MOVE FLUSH — pressing the ramp while ALREADY parked flush is
+      // exactly the swing guard's own refusal case ("a deploy FLUSH ON THE FLOWER'S FOOT reverses
+      // back to folded rather than settling deployed"), which left `bbRampSettled` false forever
+      // and this fixture's `reach` permanently null — MEASURED (`scratch/ramp_flush_debug.ts`):
+      // `bbRampStallId` never left `undefined` across 500 ticks. Same fix `robot.ts`'s own
+      // `openPark`-then-`flush` fixtures already use for this exact mechanic.
+      r.pos = { x: f.x - 100, y: f.y };
+      r.heading = 0;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+      r.hopper = [];
+      for (const b of w.balls) if (b.state.kind === 'held' && b.state.robot === r.id) b.state = { kind: 'stock', alliance: r.alliance };
+      let id = 9300;
+      for (let k = 0; k < 2; k++) {
+        w.balls.push({ id, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'element', el: 'flower:0', slot: 0 }, pos: { x: f.x, y: f.y }, vel: { x: 0, y: 0 }, z: FLOWER_RING_Z.top[0] - BB_POLLEN_R, vz: 0 });
+        id++;
+        for (let t = 0; t < 60; t++) step3d(w, 1 / 60, new Map());
+      }
+      step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]])); // press the ramp out, still in the open
+      const deploySteps = Math.round(BB_RAMP_DEPLOY_S / (1 / 60)) + 2;
+      for (let t = 0; t < deploySteps; t++) step3d(w, 1 / 60, new Map());
+      flushPose(); // NOW move flush, ramp already settled
+      return w;
+    };
+    const wa = buildRampRetrieveWorld(8150);
+    const wb = buildRampRetrieveWorld(8150);
+    const flushPose = (w: World): void => {
+      // held at the analytic flush pose every tick, same discipline `robot.ts`'s own `holdTicks`
+      // follows for the ramp — the wedge's own contact force (MEASURED, `scratch/ramp_debug.ts`)
+      // nudges an un-held chassis enough over ~30 ticks to drop the mouth gate for good, which
+      // would make this determinism claim vacuous (nothing left for `hopper.length > 0` to find).
+      const f = BB_FLOWERS[0];
+      const r = w.robots[0];
+      r.pos = { x: f.x + BB_PLACE_REACH + bbFootprint(r.spec).front, y: f.y };
+      r.heading = Math.PI;
+      r.vel = { x: 0, y: 0 };
+      r.angVel = 0;
+    };
+    const hashesA: number[] = [];
+    const hashesB: number[] = [];
+    for (let t = 0; t < 500; t++) {
+      const c = rampRetrieveScript(true);
+      flushPose(wa);
+      flushPose(wb);
+      step3d(wa, 1 / 60, new Map([[0, c]]));
+      step3d(wb, 1 / 60, new Map([[0, c]]));
+      if (t % 40 === 0) {
+        hashesA.push(worldHash(wa));
+        hashesB.push(worldHash(wb));
+      }
+    }
+    console.log(
+      `[smoke-bb sim3d] ramp retrieval determinism: hopper A=${wa.robots[0].hopper.length} B=${wb.robots[0].hopper.length}, ` +
+        `stack A=${wa.biobuzz!.flowers[0].stack.length} B=${wb.biobuzz!.flowers[0].stack.length}`,
+    );
+    check(
+      'archetype 3d: determinism holds with a RAMP flower retrieval (wedge + stall fallback) in the script — hash equal every 40 ticks, and a retrieval actually happened',
+      hashesA.every((h, i) => h === hashesB[i]) && wa.robots[0].hopper.length > 0,
+      `${JSON.stringify(hashesA)} vs ${JSON.stringify(hashesB)}, hopperA=${wa.robots[0].hopper.length}`,
+    );
+    check(
+      'archetype 3d: determinism holds with a RAMP flower retrieval in the script — final JSON identical',
+      JSON.stringify(wa) === JSON.stringify(wb),
+    );
+  }
+
   // (h) THE WALL-FLUSH START, MEASURED (plan item 4). Every real anchor x both alliances x the
   // four intake mounts, for `siderollers` — the one archetype that is ALWAYS solid, including at
   // spawn (a folded `ramp` contributes no collider until it deploys, well after the pre-match
@@ -2996,11 +3415,14 @@ export function sim3dChecks(check: Check): void {
   }
 
   // ...and that pose is a REST POSE, not just a geometric fit: physics does not move it, over a
-  // real settle window, and — MEASURED, before the spawn fix — it used to be worse than slow: a
-  // `siderollers` build embedded 2.65in in the wall never settled AT ALL (300 ticks / 5s, zero
-  // drift on every axis), because the wheel box's own escape-through-the-floor distance (its OWN
-  // height) was SHORTER than its escape-sideways distance, so Rapier's own SAT pick sent the
-  // correction into the floor, where it cancelled against the floor collider every tick.
+  // real settle window, and — MEASURED, before the spawn fix, at the OLD `BB_SIDE_ROLLER_OUT`
+  // (1.9, wheel reach 2.65in) — it used to be worse than slow: a `siderollers` build embedded
+  // 2.65in in the wall never settled AT ALL (300 ticks / 5s, zero drift on every axis), because
+  // the wheel box's own escape-through-the-floor distance (its OWN height) was SHORTER than its
+  // escape-sideways distance, so Rapier's own SAT pick sent the correction into the floor, where
+  // it cancelled against the floor collider every tick. The wheels are tucked in now (reach
+  // 1.9in, `BB_SIDE_ROLLER_OUT` 0.9 + `BB_SIDE_ROLLER_R` 1.0) but the spawn-side fix below does
+  // not depend on which escape direction is shorter, so this check still holds.
   {
     const spec = bbCoerce(bbArchSpec('siderollers', 'back'));
     const w = createBiobuzzWorld(

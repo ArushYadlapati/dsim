@@ -500,6 +500,13 @@ export interface RobotState {
    * cleared on the next fresh press (`bbRampStep`), which is what lets a later, different swing
    * test again. Every other intake leaves this absent, same as the other `bbRamp*` fields. */
   bbRampBlocked?: boolean;
+  /** the FALLBACK STALL GUARD's own memory (3D only; `flowerRetrieve3d`'s ramp branch) — which
+   * POLLEN id has sat gated at a FLOWER's retrieval opening, physically un-extracted, and since
+   * when. Absent/mismatched id resets the clock, so a NEW candidate (the wedge just cleared the
+   * old one) always gets the full `BB_RAMP_STALL_S` before the shove fires again. Plain JSON,
+   * same convention as `lastIntakeAt` — every other intake and every 2D world leaves both absent. */
+  bbRampStallId?: number;
+  bbRampStallSince?: number;
   hopper: ArtifactColor[]; // FIFO, max 3
   fieldCentric: boolean;
   aimAssist: boolean;

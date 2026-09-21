@@ -28,10 +28,19 @@ import {
   BB_INTAKE_DRAW_IN,
   BB_LAUNCH_Z0,
   BB_RAMP_ANGLE,
+  BB_RAMP_CREST_OUT,
+  BB_RAMP_CREST_Z,
   BB_RAMP_DEPLOY_S,
+  BB_RAMP_DROP_OUT,
+  BB_RAMP_DROP_Z,
   BB_RAMP_L,
+  BB_RAMP_LEAD_Z,
+  BB_RAMP_OUT,
   BB_RAMP_PIVOT_BACK,
   BB_RAMP_PIVOT_Z,
+  BB_RAMP_WEDGE_DROP_ANGLE,
+  BB_RAMP_WEDGE_RISE_ANGLE,
+  BB_RAMP_WEDGE_THICK,
   BB_SIDE_PLATE_BOTTOM_Z,
   BB_SIDE_PLATE_FRONT_X,
   BB_SIDE_PLATE_TOP_Z,
@@ -256,6 +265,27 @@ function platePlane(along: number, up: number, t: number, holes: number): THREE.
 function boxAt(sx: number, sy: number, sz: number, x: number, y: number, z: number): THREE.BoxGeometry {
   const g = new THREE.BoxGeometry(sx, sy, sz);
   g.translate(x, y, z);
+  return g;
+}
+
+/** a square-section strut spanning two arbitrary points (world-space, pre-placed like `boxAt`) —
+ *  for a gusset that is not axis-aligned, e.g. the side-roller bracket below, which drops from
+ *  the side arm's nose to the wheel's own axis on a diagonal that is neither level nor a plain
+ *  vertical. `thick` is the cross-section on both remaining axes. */
+function strutBetween(
+  ax: number,
+  ay: number,
+  az: number,
+  bx: number,
+  by: number,
+  bz: number,
+  thick: number,
+): THREE.BoxGeometry {
+  const len = Math.hypot(bx - ax, by - ay, bz - az);
+  const g = new THREE.BoxGeometry(len, thick, thick);
+  const dir = new THREE.Vector3(bx - ax, by - ay, bz - az).normalize();
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir));
+  g.translate((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2);
   return g;
 }
 
@@ -637,7 +667,7 @@ interface BbWheels {
  * Every wheel sits at `y = ±(width/2 − plate − gap/2)`, i.e. in the channel between the inner
  * and outer side plate, which is what "wheels protected between parallel plates" means.
  */
-function buildWheels(spec: RobotSpec, accent: string = TREAD): BbWheels {
+export function buildWheels(spec: RobotSpec, accent: string = TREAD): BbWheels {
   const out: BbWheels = { nodes: [], pods: [], traction: [], roller: [] };
   const wheelY = spec.width / 2 - BB_PLATE_T - BB_PLATE_GAP / 2;
   const hl = spec.length / 2;
@@ -782,6 +812,111 @@ export function buildFrame(spec: RobotSpec): THREE.Object3D[] {
   const frameMesh = new THREE.Mesh(frame, solidMat(ALU_DK, 0.45, 0.4));
   frameMesh.name = 'robot:frame:rails';
   return [cast(skinMesh), cast(frameMesh)];
+}
+
+/**
+ * ── END PLATES (owner, 2026-09-20: "cover up the back of the chassis with a full back plate,
+ * and cover up the front with two small plates just to hide the wheels") ───────────────────────
+ *
+ * The frame above is two SIDE plates only — front and back are open by construction (a side
+ * plate is edge-on from either end, a 0.22-in sliver), so the drivetrain and the inside of the
+ * channel show straight through both ends. This closes that picture, and it is COSMETIC ONLY:
+ * `chassis3dShapes(spec, h)[0]` and the 2D `bbRobotSolids(...).chassis` are already the full
+ * solid `[-hl,hl] × [-hw,hw]` box at every height a plate can occupy, so anything built with its
+ * outer face at ±hl sits inside solid collider already and gets none of its own — `endPlateChecks`
+ * (RENDER lane, `scripts/smoke-biobuzz/render.ts`) proves the containment instead of assuming it.
+ *
+ * An END WITHOUT a mounted mouth (`bbMouths(spec)` has no rect there) gets one FULL plate, the
+ * inner width between the two OUTER side plates' own inner faces. An END WITH a mouth gets two
+ * CORNER plates instead, one per side, pinned to that side's outer-plate inner face and reaching
+ * in just far enough to cover the ACTUAL wheel or swerve pod `buildWheels` puts there
+ * (`endWheelSpanY`) — so the plate never claims more of the opening than the hardware needs.
+ *
+ * ⚠️ A CORNER PLATE RUNS FLOOR TO PLATE HEIGHT, EVEN WHERE THE WHEEL SITS INSIDE THE MOUTH'S
+ * THROAT BAND (the default Sniper: `frontback`, SWERVE, pods well inboard). It stands ON THE FRAME
+ * FACE, which is the BACK WALL of the intake pocket and already solid chassis collider at every
+ * height (`chassis3dShapes[0]`, `bbRobotSolids().chassis`) — the open pocket an element rolls
+ * through is in FRONT of that face, out to the tip line. The first cut kept the plate above
+ * `BB3_MOUTH_SLOT_Z` there, which left a 1-in sliver and the wheels in plain view: the opposite
+ * of what the owner asked for ("two small plates just to hide the wheels").
+ */
+const BB_ENDPLATE_MARGIN = 0.15;
+
+/** the corner wheel/pod's lateral (y) placement nearest a chassis END — the SAME formulas
+ * `buildWheels` places by, so a plate sized off this can never disagree with what is actually
+ * drawn there. `s` is the side sign, `+1` the robot's LEFT and `−1` its RIGHT. */
+export function endWheelSpanY(spec: RobotSpec, s: 1 | -1): { center: number; half: number } {
+  const hw = spec.width / 2;
+  if (spec.drivetrain === 'swerve') return { center: s * (hw - BB_POD_INSET), half: BB_POD_W / 2 };
+  if (spec.drivetrain === 'xdrive') return { center: s * Math.max(0.5, hw - BB_XDRIVE_INSET_Y), half: BB_XDRIVE_REACH };
+  // tank / mecanum / butterfly: a straight wheel dead in the channel between the two side
+  // plates — butterfly's corner set (the mecanum roller) rides the same axle line as its inboard
+  // traction twin, so one formula covers all three.
+  return { center: s * (hw - BB_PLATE_T - BB_PLATE_GAP / 2), half: BB_WHEEL_W / 2 };
+}
+
+const ENDPLATE_GEO_CACHE = new Map<string, THREE.BoxGeometry>();
+function endPlateGeo(sx: number, sy: number, sz: number): THREE.BoxGeometry {
+  const key = `${sx}|${sy}|${sz}`;
+  let g = ENDPLATE_GEO_CACHE.get(key);
+  if (!g) {
+    g = new THREE.BoxGeometry(sx, sy, sz);
+    ENDPLATE_GEO_CACHE.set(key, g);
+    SHARED_GEO.add(g);
+  }
+  return g;
+}
+
+/** ONE end's plate(s) — see the header above. `mouthHalf` is `bbMouths(spec)`'s own half-width
+ * on this edge (`undefined` when the edge carries no mouth at all). */
+function buildEndPlate(spec: RobotSpec, end: 'front' | 'back', mouthHalf: number | undefined): THREE.Mesh[] {
+  const hl = spec.length / 2;
+  const hw = spec.width / 2;
+  const sign = end === 'front' ? 1 : -1;
+  const mat = solidMat(chassisFill(spec.chassisColor), 0.55, 0.15);
+  const cx = sign * (hl - BB_PLATE_T / 2); // outer face flush with ±hl — never past it
+
+  if (mouthHalf === undefined) {
+    const mesh = cast(new THREE.Mesh(endPlateGeo(BB_PLATE_T, (hw - BB_PLATE_T) * 2, BB_PLATE_H), mat));
+    mesh.position.set(cx, 0, BB_PLATE_H / 2);
+    return [mesh];
+  }
+
+  const out: THREE.Mesh[] = [];
+  for (const s of [1, -1] as const) {
+    const { center, half } = endWheelSpanY(spec, s);
+    const outerFace = s * (hw - BB_PLATE_T); // the outer side plate's own inner face, this side
+    const innerMag = Math.max(0, Math.abs(center) - half - BB_ENDPLATE_MARGIN);
+    const width = Math.max(0.1, Math.abs(outerFace) - innerMag);
+    const cy = (s * (Math.abs(outerFace) + innerMag)) / 2;
+    const z0 = 0; // floor to plate height — see the header: the frame face is solid already
+    const h = BB_PLATE_H - z0;
+    const mesh = cast(new THREE.Mesh(endPlateGeo(BB_PLATE_T, width, h), mat));
+    mesh.position.set(cx, cy, z0 + h / 2);
+    out.push(mesh);
+  }
+  return out;
+}
+
+/** ALL of a robot's end plates, named for `id` so `endPlateChecks` (RENDER lane) and the live
+ * per-robot group agree on what to look for: `robot:<id>:endplate:back` for a full plate,
+ * `robot:<id>:endplate:front:l` / `:r` for a corner pair. */
+export function buildEndPlates(spec: RobotSpec, id: number): THREE.Object3D[] {
+  const mouths = bbMouths(spec);
+  const frontHalf = mouths.find((m) => m.edge === 'front')?.y1;
+  const backHalf = mouths.find((m) => m.edge === 'back')?.y1;
+  const out: THREE.Object3D[] = [];
+  for (const [end, half] of [['front', frontHalf], ['back', backHalf]] as const) {
+    const parts = buildEndPlate(spec, end, half);
+    if (parts.length === 1) {
+      parts[0].name = `robot:${id}:endplate:${end}`;
+    } else {
+      parts[0].name = `robot:${id}:endplate:${end}:l`;
+      parts[1].name = `robot:${id}:endplate:${end}:r`;
+    }
+    out.push(...parts);
+  }
+  return out;
 }
 
 /**
@@ -1132,13 +1267,14 @@ interface BbSideRoller {
 }
 
 /** the `siderollers` wheel geometry: a cylinder standing on its own vertical axis (`rotateX`
- *  turns the default y-axis barrel to z), 8 radial segments — cheap, and the facets read as the
- *  compliant wheel's own lobes rather than as a smooth puck. One geometry for every wheel on
- *  every robot; there is nothing spec-dependent about it. */
+ *  turns the default y-axis barrel to z), 12 radial segments (owner ruling 2026-09-20, the wheel
+ *  grew to a 3-in compliant wheel and the facet count grew with it) — cheap, and the facets read
+ *  as the compliant wheel's own lobes rather than as a smooth puck. One geometry for every wheel
+ *  on every robot; there is nothing spec-dependent about it. */
 let sideRollerGeo: THREE.CylinderGeometry | null = null;
 function sideRollerGeometry(): THREE.CylinderGeometry {
   if (!sideRollerGeo) {
-    const g = new THREE.CylinderGeometry(BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_H, 8);
+    const g = new THREE.CylinderGeometry(BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_H, 12);
     g.rotateX(Math.PI / 2);
     SHARED_GEO.add(g);
     sideRollerGeo = g;
@@ -1146,13 +1282,13 @@ function sideRollerGeometry(): THREE.CylinderGeometry {
   return sideRollerGeo;
 }
 
-// ── RAMP DIMENSIONS THAT ARE THE PICTURE'S, NOT THE SIM'S — the rail/crossbar section. The
-// reach itself (`BB_RAMP_L`, `_PIVOT_BACK`, `_PIVOT_Z`, `_ANGLE`) is `config.ts`'s; these three
-// only say how thick the frame that carries it is drawn.
+// ── RAMP DIMENSIONS THAT ARE THE PICTURE'S, NOT THE SIM'S — the rail section (the crossbar is now
+// the WEDGE, drawn from `config.ts`'s own leading-edge/crest/drop points and `BB_RAMP_WEDGE_THICK`
+// — there is nothing left for this file to size on its own for it). The reach itself (`BB_RAMP_L`,
+// `_PIVOT_BACK`, `_PIVOT_Z`, `_ANGLE`) is `config.ts`'s; these two only say how thick the rails
+// that carry it are drawn.
 const BB_RAMP_RAIL_X = 0.5;
 const BB_RAMP_RAIL_Y = 0.25;
-const BB_RAMP_CROSS_T = 0.3;
-const BB_RAMP_CROSS_H = 0.5;
 /** the pivot's DEPLOYED rotation about the mouth's own y-axis (rad): level (π/2 off the
  *  folded-vertical rest, built along local +z) plus the deployed tilt below it. FOLDED is
  *  rotation 0 — see the header on `buildIntake`'s `ramp` branch for the derivation. */
@@ -1359,32 +1495,35 @@ export function buildIntake(
       }
     }
 
-    // ── SIDE ROLLERS: two vertical-axis compliant wheels AT THE INTAKE'S EDGES (owner,
-    // 2026-09-20: "situated on the edges of the robot, not near the center. It is to funnel
-    // things from the edge"), hung off the front brace. Cosmetic-only geometry — the REACH the
-    // sim credits is `BB_SIDE_ROLLER_REACH` in `config.ts`, and the wheels below sit at exactly
-    // `bbSideRollerY(f.half)`, its own centre, so the RENDER lane can check "the drawn part that
-    // reaches is the part the sim credits" against a real group.
+    // ── SIDE ROLLERS: two vertical-axis compliant wheels, each hung from a single diagonal
+    // gusset off the SIDE ARM's own nose — TUCKED IN FRONT OF THE DRIVE WHEELS, not sticking out
+    // on a separate outrigger off the front brace (owner, 2026-09-20: "The side rollers should be
+    // right in front of the wheels. They should not be sticking out like that"). The arm's own
+    // rail ends on its rounded nose at the tip line (`nose`, above) and does not reach out to the
+    // wheel's axis (`BB_SIDE_ROLLER_OUT` is only 0.9 in past the tip now, was 1.9), so one strut
+    // runs nose-to-axle on the diagonal rather than a level outrigger plus a separate drop.
+    // Cosmetic-only geometry — the REACH the sim credits is `BB_SIDE_ROLLER_REACH` in `config.ts`,
+    // and the wheels below sit at exactly `bbSideRollerY(f.half)`, its own centre, so the RENDER
+    // lane can check "the drawn part that reaches is the part the sim credits" against a real
+    // group.
     if (kind === 'siderollers') {
-      const memberT = INTAKE_RAIL_T * 0.6;
-      const wheelTopZ = BB_SIDE_ROLLER_Z + BB_SIDE_ROLLER_H / 2;
-      const braceZ = BB3_MOUTH_SLOT_Z + braceT / 2;
-      const rollerY = bbSideRollerY(f.half); // ±: as wide as the chassis, inboard of the side arm's plane
-      // one strap + one outrigger, built centred on y = 0 like the arms above, so a single
-      // geometry serves both sides and only the mesh's own position mirrors it
-      const bracketGeo = framePart(`sideroller:bracket:${tip.toFixed(2)}`, () => [
-        boxAt(memberT, memberT, braceZ - wheelTopZ, tip, 0, (braceZ + wheelTopZ) / 2),
-        boxAt(BB_SIDE_ROLLER_OUT, memberT, memberT, tip + BB_SIDE_ROLLER_OUT / 2, 0, wheelTopZ),
-      ]);
+      const memberT = INTAKE_RAIL_T * 0.6; // ≤ INTAKE_RAIL_T, same cap as every open-truss member
+      const noseX = tip; // the rail's own nose ends flush on the tip line (`nose`'s translate, above)
+      const armY = f.half - BB_INTAKE_ARM_INSET - armT / 2; // the arm rail's own y-centre
+      const wheelX = tip + BB_SIDE_ROLLER_OUT;
       for (const s of [1, -1] as const) {
-        const bracket = cast(new THREE.Mesh(bracketGeo, solidMat(ALU, 0.45, 0.35)));
+        const rollerY = s * bbSideRollerY(f.half); // ±: as wide as the chassis, inboard of the arm plane
+        // NOT a shared/cached geometry (unlike `bracketGeo` before it): the strut is not a plain
+        // y-mirror of a y=0 shape — it runs nose (arm's own y) to axle (`bbSideRollerY`'s own y),
+        // which differ — so each side gets its own strut, same as the belts above.
+        const gusset = strutBetween(noseX, s * armY, railZ, wheelX, rollerY, BB_SIDE_ROLLER_Z, memberT);
+        const bracket = cast(new THREE.Mesh(gusset, solidMat(ALU, 0.45, 0.35)));
         bracket.name = `robot:sideroller:bracket:${m.edge}`;
-        bracket.position.set(0, s * rollerY, 0);
         g.add(bracket);
 
         const wheel = cast(new THREE.Mesh(sideRollerGeometry(), rollerMat));
         wheel.name = `robot:sideroller:${m.edge}:${s === 1 ? 'l' : 'r'}`;
-        wheel.position.set(tip + BB_SIDE_ROLLER_OUT, s * rollerY, BB_SIDE_ROLLER_Z);
+        wheel.position.set(wheelX, rollerY, BB_SIDE_ROLLER_Z);
         g.add(wheel);
         // FUNNEL INWARD: the wheel's leading face (local +x, where an oncoming POLLEN first
         // touches it) carries the ball toward the centreline, not away — for the s=+1 (positive-y)
@@ -1421,12 +1560,47 @@ export function buildIntake(
         rail.position.set(0, s * railY, 0);
         pivot.add(rail);
       }
-      const barGeo = framePart(`ramp:bar|${railY.toFixed(2)}`, () => [
-        boxAt(BB_RAMP_CROSS_T, railY * 2, BB_RAMP_CROSS_H, 0, 0, BB_RAMP_L - BB_RAMP_CROSS_H / 2),
-      ]);
-      const bar = cast(new THREE.Mesh(barGeo, solidMat(ALU, 0.5, 0.3)));
-      bar.name = `robot:ramp:bar:${m.edge}`;
-      pivot.add(bar);
+      // the WEDGE, replacing the flat bar (2026-09-20 — `config.ts`'s "THE DEPLOYABLE RAMP"): two
+      // boxes, the SAME leading-edge/crest/drop points the physics wedge uses
+      // (`chassis3dReachShapes`'s `rampWedgeSegment`). Built as CHILDREN of `pivot` so they fold
+      // with the rails, but each carries its OWN additional local tilt on top of the pivot's own
+      // swing — `wedgeSegment` solves for the LOCAL rotation that, composed with the pivot's own
+      // `π/2 + BB_RAMP_ANGLE` (the settled swing angle both this file and `bodies.ts` reach at
+      // full deploy), lands the segment at its target world angle (`BB_RAMP_WEDGE_RISE_ANGLE` or
+      // `-BB_RAMP_WEDGE_DROP_ANGLE`) — exact at full deploy, and only cosmetically off during the
+      // brief 0.3-s fold/deploy swing itself, when the pivot's own angle is not yet `θ_full`.
+      const thetaFull = Math.PI / 2 + BB_RAMP_ANGLE;
+      // ONE GROUP, node name `robot:ramp:bar:<edge>` UNCHANGED from the old single-mesh crossbar
+      // — the RENDER lane finds it by that name and measures it with `mouthExtent`'s own
+      // `traverse`, which reads every descendant mesh, so a two-box wedge under this group
+      // measures exactly as a one-box crossbar did.
+      const wedgeGroup = new THREE.Group();
+      wedgeGroup.name = `robot:ramp:bar:${m.edge}`;
+      pivot.add(wedgeGroup);
+      const wedgeSegment = (u0: number, z0: number, u1: number, z1: number, worldAngle: number, tag: string): void => {
+        const length = Math.hypot(u1 - u0, z1 - z0);
+        const uMid = (u0 + u1) / 2;
+        const zMid = (z0 + z1) / 2;
+        // mouth-frame (u, z), relative to the pivot (`u = tip − BB_RAMP_PIVOT_BACK` local-x-wise),
+        // rotated by `−θ_full` into the pivot's own UN-rotated ("folded") local frame — the inverse
+        // of the same rotation this docstring's derivation above applies forward.
+        const dx = uMid + BB_RAMP_PIVOT_BACK;
+        const dz = zMid - BB_RAMP_PIVOT_Z;
+        const cosT = Math.cos(thetaFull);
+        const sinT = Math.sin(thetaFull);
+        const lx = dx * cosT - dz * sinT;
+        const lz = dx * sinT + dz * cosT;
+        const geo = framePart(`ramp:wedge:${tag}|${length.toFixed(2)}|${railY.toFixed(2)}`, () => [
+          boxAt(length, railY * 2, BB_RAMP_WEDGE_THICK * 2, 0, 0, 0),
+        ]);
+        const mesh = cast(new THREE.Mesh(geo, solidMat(ALU, 0.5, 0.3)));
+        mesh.name = `robot:ramp:bar:${m.edge}:${tag}`;
+        mesh.position.set(lx, 0, lz);
+        mesh.rotation.y = worldAngle - thetaFull;
+        wedgeGroup.add(mesh);
+      };
+      wedgeSegment(BB_RAMP_CREST_OUT, BB_RAMP_CREST_Z, BB_RAMP_OUT, BB_RAMP_LEAD_Z, BB_RAMP_WEDGE_RISE_ANGLE, 'rise');
+      wedgeSegment(BB_RAMP_DROP_OUT, BB_RAMP_DROP_Z, BB_RAMP_CREST_OUT, BB_RAMP_CREST_Z, -BB_RAMP_WEDGE_DROP_ANGLE, 'drop');
 
       // the pivot BRACKET is fixed to the chassis (it does not rotate with the ramp) — a short
       // strap hanging from each side arm's own rail down to the pivot axle
@@ -2165,6 +2339,7 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
   const accent = accentFill(cosm.accent, spec.chassisColor);
 
   for (const part of buildFrame(spec)) group.add(part);
+  for (const part of buildEndPlates(spec, id)) group.add(part);
   const wheels = buildWheels(spec, accent);
   for (const w of wheels.nodes) group.add(w);
   // the handles the per-frame sync poses a MOVING drivetrain with. Absent for the three that do

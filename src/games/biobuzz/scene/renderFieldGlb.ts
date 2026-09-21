@@ -62,6 +62,11 @@ export interface FieldGroups {
   /** the same count for the PIVOT ROCKER (the two Goal Pivot Bracket plates, the damper holders
    * and the dampers) — see THE PIVOT ROCKER THE PIPELINE ALSO FILED AS FRAME. */
   rockerTris: number;
+  /** how many triangles `fixGroundBeamWinding` split into their own `DoubleSide` sibling mesh —
+   * the Sheet Metal Foot Bar, the Frame Foot pads and the Under Tile Bar. See THE GROUND BARS ARE
+   * WOUND INCONSISTENTLY above. Non-zero on the shipped asset; zero once `convert.py` exports
+   * these with consistent winding. */
+  groundBeamTris: number;
   /** what the PRINTED FIELD MARKINGS block built — all zero on the LOW LOD, by design. */
   markings: FieldMarkings;
 }
@@ -1291,26 +1296,34 @@ const ROCKER_HALF_SPAN_IN = 1.25;
  * none needed. 12–20 ms over all eight hive-frame meshes of `field.glb`, once at load, beside the
  * 149 ms the normal pass already costs there.
  */
-function weldedComponents(mesh: THREE.Mesh): { ofTriangle: Int32Array; spans: Map<number, { tris: number; xMin: number; xMax: number }> } {
+/** exported for the RENDER lane, which needs to enumerate hive-frame components from the shipped
+ *  GLB the same way `hiveFrameComponents`/`fixGroundBeamWinding` do — a re-implementation could
+ *  agree with a wrong belief about the topology instead of measuring the real one. */
+export function weldedComponents(
+  mesh: THREE.Mesh,
+): { ofTriangle: Int32Array; spans: Map<number, { tris: number; xMin: number; xMax: number; zMin: number; zMax: number }> } {
   const geo = mesh.geometry;
   const pos = geo.getAttribute('position');
   const idx = geo.getIndex();
   const triCount = idx ? idx.count / 3 : pos.count / 3;
   const ofTriangle = new Int32Array(triCount).fill(-1);
-  const spans = new Map<number, { tris: number; xMin: number; xMax: number }>();
+  const spans = new Map<number, { tris: number; xMin: number; xMax: number; zMin: number; zMax: number }>();
   if (!pos || triCount === 0) return { ofTriangle, spans };
   mesh.updateWorldMatrix(true, false);
   const v = new THREE.Vector3();
   const site = new Map<string, number>();
   const rep = new Int32Array(pos.count);
   const worldX: number[] = [];
+  const worldZ: number[] = [];
   for (let i = 0; i < pos.count; i++) {
     const key = `${pos.getX(i)},${pos.getY(i)},${pos.getZ(i)}`;
     let r = site.get(key);
     if (r === undefined) {
       r = site.size;
       site.set(key, r);
-      worldX.push(v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld).x);
+      v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+      worldX.push(v.x);
+      worldZ.push(v.z);
     }
     rep[i] = r;
   }
@@ -1336,14 +1349,18 @@ function weldedComponents(mesh: THREE.Mesh): { ofTriangle: Int32Array; spans: Ma
     ofTriangle[t] = r;
     let s = spans.get(r);
     if (!s) {
-      s = { tris: 0, xMin: Infinity, xMax: -Infinity };
+      s = { tris: 0, xMin: Infinity, xMax: -Infinity, zMin: Infinity, zMax: -Infinity };
       spans.set(r, s);
     }
     s.tris++;
     for (let k = 0; k < 3; k++) {
-      const x = worldX[rep[at(t, k)]];
+      const rr = rep[at(t, k)];
+      const x = worldX[rr];
+      const z = worldZ[rr];
       if (x < s.xMin) s.xMin = x;
       if (x > s.xMax) s.xMax = x;
+      if (z < s.zMin) s.zMin = z;
+      if (z > s.zMax) s.zMax = z;
     }
   }
   return { ofTriangle, spans };
@@ -1385,10 +1402,169 @@ export function hiveFrameComponents(root: THREE.Object3D): HiveFrameComponent[] 
   return out;
 }
 
-const HIVE_FRAME_NODES = ['hive_red/frame', 'hive_blue/frame', 'hive_shared/frame'] as const;
+export const HIVE_FRAME_NODES = ['hive_red/frame', 'hive_blue/frame', 'hive_shared/frame'] as const;
 
 function trayPivotX(): Record<Alliance, number> {
   return { red: fieldColliders3d().trays.red.pivot[0], blue: fieldColliders3d().trays.blue.pivot[0] };
+}
+
+// ── THE GROUND BARS ARE WOUND INCONSISTENTLY, AND `FrontSide` SHOWS ONLY HALF OF THEM ──────────
+//
+// owner report 2026-09-20: "the structural beams on the ground are rendered as transparent on one
+// side and opaque on the other." The parts: `am-5878 Sheet Metal Foot Bar` (one per hive, the
+// full-length bar under both A-frame feet) and `am-5879-A/B Frame Foot` (the two pads at its
+// ends) — plus `am-5880 Under Tile Bar`, which shares the defect but sits below the tiles and is
+// never actually seen.
+//
+// THIS IS NOT THE OPEN-SHEETING DEFECT the clear panels have (`CLEAR_SHEETS_ARE_SINGLE_SIDED`).
+// Measured on the shipped `field.glb` with the connected-component welder above
+// (`scratch/groundbeam-analyze.ts`, kept out of the repo's build): the Sheet Metal Foot Bar and
+// the two Frame Foot components have **0 boundary edges** each — closed shells, not sheets — with
+// a plausible triangle count for their size. What is wrong is the WINDING: the mesh's own
+// enclosed volume (the divergence-theorem sum over its triangles, `Σ a·(b×c)/6`, which telescopes
+// to the true volume only when every triangle's normal points consistently outward) comes out at
+// **2.7–7.8× the component's own bounding-box volume** — physically impossible for a real solid,
+// however many bolt holes it has, since a hole can only REMOVE volume from the bbox, never add to
+// it. A REFERENCE solid of comparable bulk, the A-Frame Leg (`comp` bbox 3.25×3.05×4.73 in),
+// measured the same way lands at **0.5–0.8×**, well inside the box, as a real strut should. So a
+// real minority of each ground bar's own triangles are wound the SAME direction as the rest
+// instead of oppositely — a genuinely closed shape, but not a consistently ORIENTED one as
+// exported — and `THREE.FrontSide` culls exactly the triangles whose normal ended up pointing
+// inward, which is what "opaque from here, see-through from there" looks like on a flat bar.
+//
+// ⚠️ A PER-TRIANGLE Z TEST WOULD SLICE THE A-FRAME LEG'S OWN FOOT INTO THIS BUCKET. The leg's
+// bbox starts at z 0.218 — inside the ground band — because it is ONE connected component running
+// all the way to its z-41.4 apex. `GROUND_BEAM_MAX_Z` is therefore tested against a component's
+// own `zMax` (whole-part), never a triangle centroid, the same reasoning `isTrayBracePoint`'s own
+// header gives for why the rocker selector has to be a whole connected part.
+//
+// THE FIX IS `DoubleSide`, SCOPED TO ONLY THESE COMPONENTS — not the blanket `hive_frame` metal
+// mesh, which would double the fragment cost of every A-Frame Leg, Churro, Top Bar and Axle
+// Holder alongside them for no reason (none of those show this defect: their own volume ratios
+// measured 0.5–0.8×, see above). Measured extraction on `field.glb`: **6,690 of the three
+// `hive_*/frame` nodes' 50,278 combined triangles (13.3%)** — Frame Foot ×2 + Sheet Metal Foot
+// Bar per alliance (3,148 red, 3,134 blue), plus the shared Under Tile Bar pair (408). On
+// `field-low.glb`: 1,511 of 7,386 (20.5%) — a bigger SHARE at the low LOD only because the
+// simplifier cannot shrink these small parts much further, not because more of them are wrong.
+// The real defect is the exporter's (`convert.py`'s tessellation of these sheet-metal parts);
+// this is the load-time compensation, the same relationship `CLEAR_SHEETS_ARE_SINGLE_SIDED` has
+// to the open-sheeting bug — see that constant's header and `public/models/biobuzz/README.md`'s
+// note for whoever next touches `convert.py`.
+const GROUND_BEAM_MAX_Z = 3;
+
+/** whole-COMPONENT test — see the header above for why a per-triangle one is wrong here. */
+function isGroundBeamSpan(zMax: number): boolean {
+  return zMax <= GROUND_BEAM_MAX_Z;
+}
+
+/**
+ * boundary/flip/volume stats for one connected component's triangles, exported so the RENDER lane
+ * can pin the measurement above against the shipped GLB rather than trusting the comment. A
+ * "flipped" edge is an undirected edge shared by exactly two triangles that both traverse it in
+ * the SAME direction — the signature of a winding inconsistency between two adjacent faces; a
+ * properly oriented manifold has every interior edge traversed once each way.
+ */
+export function shellWindingStats(
+  mesh: THREE.Mesh,
+  tris: number[],
+): { boundaryEdges: number; flippedEdges: number; okInteriorEdges: number; nonManifoldEdges: number; signedVolume: number } {
+  const geo = mesh.geometry;
+  const pos = geo.getAttribute('position');
+  const idx = geo.getIndex();
+  mesh.updateWorldMatrix(true, false);
+  const at = (t: number, k: number): number => (idx ? idx.getX(t * 3 + k) : t * 3 + k);
+  const v = (i: number) => new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+  const key = (p: THREE.Vector3) => `${p.x.toFixed(4)},${p.y.toFixed(4)},${p.z.toFixed(4)}`;
+  const edgeDirs = new Map<string, ('fwd' | 'bwd')[]>();
+  let signedVolume = 0;
+  for (const t of tris) {
+    const a = v(at(t, 0));
+    const b = v(at(t, 1));
+    const c = v(at(t, 2));
+    const ka = key(a);
+    const kb = key(b);
+    const kc = key(c);
+    for (const [p, q] of [[ka, kb] as const, [kb, kc] as const, [kc, ka] as const]) {
+      const canon = p < q;
+      const u = canon ? `${p}|${q}` : `${q}|${p}`;
+      const dir: 'fwd' | 'bwd' = canon ? 'fwd' : 'bwd';
+      const arr = edgeDirs.get(u);
+      if (arr) arr.push(dir);
+      else edgeDirs.set(u, [dir]);
+    }
+    signedVolume += a.dot(new THREE.Vector3().crossVectors(b, c)) / 6;
+  }
+  let boundaryEdges = 0;
+  let flippedEdges = 0;
+  let okInteriorEdges = 0;
+  let nonManifoldEdges = 0;
+  for (const dirs of edgeDirs.values()) {
+    if (dirs.length === 1) boundaryEdges++;
+    else if (dirs.length === 2) {
+      if (dirs[0] === dirs[1]) flippedEdges++;
+      else okInteriorEdges++;
+    } else nonManifoldEdges++;
+  }
+  return { boundaryEdges, flippedEdges, okInteriorEdges, nonManifoldEdges, signedVolume };
+}
+
+/** one `THREE.DoubleSide` clone per source material, so every ground-beam component sharing a
+ *  finish (e.g. both alliances' `metal#303030` Frame Foot pads) reuses one material instance
+ *  instead of each getting its own — and so the ORIGINAL cached material (shared with the
+ *  A-Frame Leg, Churro, etc. in `styleScene`'s own cache) is never mutated in place. */
+const groundBeamMaterialCache = new Map<THREE.Material, THREE.Material>();
+function groundBeamMaterial(src: THREE.Material): THREE.Material {
+  let mat = groundBeamMaterialCache.get(src);
+  if (!mat) {
+    mat = src.clone();
+    mat.side = THREE.DoubleSide;
+    mat.name = `${src.name}|groundbeam`;
+    groundBeamMaterialCache.set(src, mat);
+  }
+  return mat;
+}
+
+/**
+ * Pulls the ground-beam triangles (see the header above) out of each hive FRAME node's merged
+ * mesh into their own sibling mesh, rendered `DoubleSide` — everything else in the node is
+ * untouched and stays `FrontSide`. Returns the triangle count moved, which the RENDER lane asserts
+ * is a small minority of the frame's own (never zero, never the majority).
+ */
+function fixGroundBeamWinding(root: THREE.Object3D): number {
+  let movedTris = 0;
+  for (const nodeName of HIVE_FRAME_NODES) {
+    const node = findOptional(root, nodeName);
+    if (!node) continue;
+    const meshes: THREE.Mesh[] = [];
+    node.traverse((o) => {
+      if (o instanceof THREE.Mesh) meshes.push(o);
+    });
+    for (const mesh of meshes) {
+      const { ofTriangle, spans } = weldedComponents(mesh);
+      const groundBeamComponents = new Set<number>();
+      for (const [id, s] of spans) if (isGroundBeamSpan(s.zMax)) groundBeamComponents.add(id);
+      if (groundBeamComponents.size === 0) continue;
+      const parts = partitionTrianglesWorld(mesh, (_cx, _cy, _cz, tri) =>
+        groundBeamComponents.has(ofTriangle[tri]) ? 'groundbeam' : null,
+      );
+      const geo = parts.get('groundbeam');
+      if (!geo) continue;
+      // the mesh's own transform, un-done: `partitionTrianglesWorld` bakes WORLD coordinates into
+      // the extracted geometry, and the new part is parented back under the SAME node (whose own
+      // transform may not be identity) — the same un-transform `reparentTrayBraces` applies
+      // before parenting into the tray, minus the tilt term that only the tray needs.
+      node.updateWorldMatrix(true, false);
+      geo.applyMatrix4(node.matrixWorld.clone().invert());
+      const src = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      const part = new THREE.Mesh(geo, groundBeamMaterial(src));
+      part.name = `${mesh.name || nodeName}/groundbeam`;
+      part.castShadow = true;
+      part.receiveShadow = true;
+      node.add(part);
+      movedTris += geo.getAttribute('position').count / 3;
+    }
+  }
+  return movedTris;
 }
 
 /**
@@ -2072,6 +2248,7 @@ export async function loadFieldGlb(url: string, quality: 'high' | 'low' = 'high'
  */
 export function assembleFieldGroups(root: THREE.Group, quality: 'high' | 'low'): FieldGroups {
   styleScene(root);
+  const groundBeamTris = fixGroundBeamWinding(root);
 
   const floor = mustFind(root, 'tiles');
   const walls = mustFind(root, 'walls');
@@ -2091,7 +2268,7 @@ export function assembleFieldGroups(root: THREE.Group, quality: 'high' | 'low'):
 
   checkTrayFloorAgreement(hives);
 
-  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root, braceTris, rockerTris, markings };
+  return { floor, walls, tape, sharedFrame, stations, hives, flowers, root, braceTris, rockerTris, groundBeamTris, markings };
 }
 
 /** how far the drawn tray floor may sit from the collider floor before the picture and the

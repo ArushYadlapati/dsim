@@ -1,3 +1,211 @@
+# HANDOFF — 2026-09-20d (alpha: hive tip trap, solid side rollers, ramp wedge (interim), ground beams, perched pollen, end plates, TEST SUITE 110 s → 25 s)
+
+**READ FIRST.** Gates on the final tree: `npm test` ALL PASS (2,090 shared + 3,541 biobuzz, **25 s wall**),
+`build`, `server:check`, `uiaudit`, `docaudit`, `contrast`, `bundleaudit` (scene 210.2 KB gz, baseline
+raised 205.83 → 209.99 with the reason in the file), `dbtest`, `test:mm`. `dsim-alpha` redeployed.
+
+- **HIVE NOT TIPPING (player reports) — it was the SWING, never the count** (opus, 420-scenario fuzz,
+  `scratch/hivemiss.ts`): firing through a swing loads the RISING cell (`hiveTakingSide` hands over at
+  release) and can turn the tray back (measured at −24°, −21°, −9°); and `hiveDynamicTick` had no
+  failure path, so a tray that came back kept `released` latched for the match → `contents` read the
+  DOWN cell forever (dead hive, lying HUD). Fix: between the stops a stalled swing is carried on at a
+  FLOOR of `BB3_HIVE_TIP_CREEP_W` 0.12 rad/s (0.25 shortened the ruled 4 s swing to 3.1 — measured and
+  rejected), and a tray at rest on its own stop with `tipping > 0` resets. 386 armed → 386 tipped,
+  0 phantom, spill spread unchanged.
+- **TEST SUITE.** `scripts/bbshard.mjs` shards BIOBUZZ by lane; `test-all.mjs` runs both suites at once
+  (`--serial` to opt out). `smokeshard` hashed blocks with raw line endings, so its cost table matched
+  0 of 281 blocks and it packed blind — hash is CRLF-normalised now, `--costs[=N]` lists the expensive
+  blocks. smoke.ts: 286 → 367 blocks (the 3,400-line CR block, the 2,000-line audio→LAN block, the
+  held/tapped floor split), eight run-a-full-match-to-reach-post blocks use `forceRoomToPost`, three
+  duplicate sims removed. 5 checks removed in total, each strictly implied by a neighbour (notes left
+  in place). Equivalence proven by diffing sorted `PASS name — detail` lines against a captured serial
+  baseline (`scratch/cleanup/`): same verdicts and details except 8 already-nondeterministic ones.
+  ⚠️ `tsc -p tsconfig.json` does NOT cover `scripts/` — smoke files are only parsed when run.
+  Next: split the `sim3d` lane (the BIOBUZZ floor, ~14 s) and `net3d`/`ai` (`scratch/cleanup/review-bb.md`).
+- **Side rollers**: at the arm noses in front of the drive wheels, 3-in (`R` 1.5, `OUT` 0.4), SOLID
+  cylinders in the default group (authority + predictors), gate = CONTACT (`BB_SIDE_ROLLER_GRIP`), the
+  pollen is RELEASED as a ground element and the sweeper takes it. Real-driving sweep: 100% straight
+  on (45/45), 71.9% over ±10° × offsets — OPEN: the skewed approach.
+- **Ramp**: wedge crossbar (lead 0.60 / crest 1.00 / drop 0.42, `BB_RAMP_OUT` 3.42). ⚠️ INTERIM: physics
+  alone does not yet extract reliably; the stall fallback is `BB_RAMP_STALL_S` 0.25 s (the agent's 1.2 s
+  made a retrieval take 1.85 s). The jam at a 0.42 lead is unexplained (suspect: the tilted box's lower
+  corner meets the lower ring plate at 0.354). An opus pass owns "100% by physics" next.
+- **Ground beams**: one-sided rendering = closed shells with INCONSISTENT WINDING (volume 2.7–7.8× their
+  bbox); only those components render `DoubleSide`. The "invisible bump" = my own `squareFootBars` box
+  (2.15 in tall over a channel whose floor is < 0.1 in); now `slimFootBars`: a 0.66-in flange + two feet
+  as TOUCHING, NEVER OVERLAPPING boxes (overlap froze a strafing chassis).
+- **Perched pollen**: the rest snap froze balls on knife-edge hulls; untagged elements on CAD hulls get a
+  deterministic vibration (give up after 30 ticks). 132 → 88 of 1,404 rain drops; hive frame 0.
+- **End plates** (3D): full plate on a mouth-free end, two floor-to-deck corner plates on an end with a
+  mouth; proven inside the chassis collider for every mount × drivetrain.
+- ⚠️ **INCIDENT**: a subagent ran `git stash -u` in the shared worktree and wiped every agent's
+  uncommitted work. Restored from the stash; briefs now ban stash/checkout/reset/clean. Electron
+  captures are HEADLESS (`scratch/shots.cjs`: `show:false`, `offscreen:true`).
+
+---
+
+# HANDOFF — 2026-09-20f (alpha: the ramp's flat crossbar is a WEDGE now, and the retrieval fallback is restructured to survive it)
+
+**READ FIRST.** Owner: "the ramp could have a slight slope up and a larger slope down... just
+pushing on the pollen with whatever is likely enough to get it up due to impulse but also the
+ball's geometry"; "the old ramp works 99% of the time... when it does not work, the pollen don't
+budge." Replaced the flat crossbar (`chassis3dReachShapes`'s ramp branch) with a two-box WEDGE —
+LEADING EDGE (`BB_RAMP_OUT`/`BB_RAMP_LEAD_Z`), CREST (`BB_RAMP_CREST_OUT`/`BB_RAMP_CREST_Z` = 1.00,
+0.104 in under the mid-plate ceiling), DROP back into the U — all in `config.ts`'s "THE DEPLOYABLE
+RAMP", derived with `dsin`/`dcos`/`dtan`/`datan2` only, never `Math.atan2`/`Math.hypot`.
+`scene/renderRobots.ts` draws the same two boxes under the SAME node name (`robot:ramp:bar:<edge>`,
+now a group); the RENDER lane's new checks pin the drawn LEADING EDGE/CREST/DROP points to
+config's own numbers to 1e-3, all mounts, ALL PASS.
+
+**ANALYSIS FIRST, as asked — and it changed the plan twice.** A real drive-in
+(`scratch/ramp_debug.ts`, gitignored, kept for the next pass) at the owner's own target height
+(`BB_RAMP_LEAD_Z` 0.42, "z 0.40-0.45") stopped the chassis dead 2.27 in short of flush, frozen —
+`world3d.contactPairsWith` pinned a live contact on the WEDGE, not the rails or bare chassis, and
+isolating the two wedge boxes from the rails (`BB_DEBUG_NO_WEDGE`/`_NO_RAILS` env toggles, since
+removed) proved it was the wedge alone. A CAD-hull probe (`scratch/wedge_cad_probe2.ts`) could
+NOT reproduce the exact hit against the eight named `flower_support` hulls or the ring plates' own
+bore — it is a mesh feature finer than those checks already resolve elsewhere, an OPEN
+measurement gap. Fix, empirical: raise `BB_RAMP_LEAD_Z` to 0.60 (found by raising until the
+chassis reached within 0.5 in of true flush). That reopened a SECOND bug: `BB_RAMP_REACH.z` is
+`[BB_RAMP_DROP_Z, BB_RAMP_CREST_Z]`, read by the PERMANENT 2D pipeline's own z-bite against the
+model's fixed bottom-POLLEN centre (1.754) — `DROP_Z` tied to the 0.60 `LEAD_Z` dropped that
+overlap to 0.40 in, under `BB_FLOWER_BITE`'s 0.5-in floor, and the 2D ramp gate went dark on every
+pose. `BB_RAMP_DROP_Z` is now its OWN constant (0.42, the owner's original target — restores 0.58
+in of 2D overlap) instead of a `LEAD_Z`-relative formula.
+
+**The wedge alone does not yet clear every pose — a real residue, reported honestly rather than
+claimed away.** With the ceiling-respecting geometry (`CREST_Z` capped at 1.00), a single staged
+POLLEN driven at flush still needed the FALLBACK to complete extraction within the tested window;
+an earlier draft that let `CREST_Z` reach 1.18 (violating the 3.904 ceiling) DID clear on physics
+alone, which is the actual size of the gap between "ships" and "the ideal ask". Restructured the
+fallback rather than ship the miss silently: `flowerRetrieve3d`'s ramp branch tracks how long the
+SAME bottom POLLEN has sat gated (`RobotState.bbRampStallId`/`bbRampStallSince`,
+`BB_RAMP_STALL_S` = 1.2 s) and, past that, shoves the LEANING element above it (a small
+deterministic hash-driven kick, `rngState` read-only, `dsin`/`dcos` only) if one exists, or falls
+back to the old teleport-release — re-anchored behind `BB_RAMP_DROP_OUT` (the wedge's own
+innermost point now; the old `BB_RAMP_OUT`-relative anchor spawned the released ball INSIDE the
+drop segment's own solid box, a THIRD bug this pass found and fixed) — if nothing is above it. The
+stall clock reads the MOUTH gate only (`bbFlowerAtIntakeMouth`, pose-only, never `ball.z`) rather
+than the full z-bite: gating it behind the z-bite too (tried first) meant a ball the wedge pressed
+out of the eligible band without lifting it stalled the clock FOREVER, since the branch that would
+have rescued it never ran again. MEASURED (a real drive-in): pop-to-hopper end to end is 111–112
+ticks (1.85–1.87 s) once this is right, mostly the stall wait, not the drive. **A full 300+-run
+sweep across standoff/lateral/angle/column-height/scatter-seed — what the task actually asked
+for — is the open item.** What shipped is real and verified (SIM3D/FLOWER3D/RENDER/ROBOT lanes,
+plus direct `contactPairsWith` debugging), not that scale of statistical claim.
+
+New checks: `sim3d.ts` (a wedge-vs-CAD solidity probe — a 30 in/s ground POLLEN fired at the
+deployed wedge's own plane, at the crest's height, never crosses it; a two-run determinism hash
+with a REAL ramp flower retrieval, wedge + stall fallback, both hash-equal and JSON-identical —
+had to deploy the ramp IN THE OPEN before moving flush, since pressing it already-flush is exactly
+the swing guard's own refusal case and left `bbRampStallId` permanently `undefined` the first time
+through), `render.ts` (the wedge profile pin above), `robot.ts` (the two existing one-tick ramp-
+pull fixtures rewritten for the two-phase pull — `holdTicks` for 150 ticks, not one `tick()` call —
+and the 2D/3D parity sweep's `ramp` rows moved to their own "the gate at least RECOGNISED the
+pose" check rather than a one-call verdict comparison, which is no longer the right question for
+an archetype whose first call is always `false` by design). Gates: the requested lane subset
+(`render,robot,sim3d,flower3d,tutorial,predict,net3d,hive3d`) 2544/2544 ALL PASS, `npm test`
+3541/3541 ALL PASS, `build`/`server:check`/`docaudit` all green, `costprobe` shows the two new
+`RobotState` fields (`bbRampStallId`/`bbRampStallSince`) did not appear in the per-tick wire cost
+table for the scenarios it drives (narrow, ramp-specific — same category as the existing
+`bbRampOut`/`bbRampAt`/`bbRampBlocked`). One pre-existing hive3d timing failure surfaced once,
+mid-session, in another agent's in-flight `fieldColliders.ts`/hive area — untouched by this
+session, not chased, and gone on the next run. Screenshots:
+`scratch/shots/ramp2-down-open.png`, `scratch/shots/ramp2-down-side.png` (headless Electron,
+`scratch/shots.cjs`, both pre-existing entries — `ramp2-down-*`).
+
+# HANDOFF — 2026-09-20e (alpha: a tip the table called for now reaches the far stop, and a failed swing no longer kills the hive)
+
+**READ FIRST.** Owner: "People are still reporting hive not tipping in some cases." Fuzzed it
+(`scratch/hivemiss.ts`, gitignored — 420 seeded turret/dumper volleys under the real `step3d`,
+judged against an independent geometric count of the taking cell rather than against `contents`).
+Registration was fine — pin lift is mean 1.0 ticks, p95 1, before and after. **TWO causes, both in
+the swing, neither in the count:** (1) `hiveTakingSide` hands over at the release, so a driver
+firing through a swing fills the RISING cell, and that load torques the tray BACK — seed 9039
+reached −24.2°, five degrees short of the far stop, and coasted home. Balls on the floor, no tip.
+(2) `hiveDynamicTick` had NO failure path: `tipping`/`released` cleared only at the far stop, so a
+tray that came back sat with `released` latched forever, `hiveTakingSide` named the DOWN cell, and
+`contents` — the pin's list, the HUD's list, §10.5 C's list — was derived from the wrong cell for
+the rest of the match. **A permanently dead hive with a lying "N MORE TO TIP".** 8 of 420 runs.
+Fixes: `BB3_HIVE_TIP_CREEP_W` (0.12 rad/s, between the stops only, a FLOOR — an anti-stall, not a
+rate; 0.25 was tried first and broke the 4 s `BB_TIP_SWING_S` ruling at 3.12 s) and a reset to
+settled when the tray is at rest on its own stop. **386 armed → 382 tipped / 5 missed / 8 trapped,
+now 386 → 386 / 0 / 0**; 0 phantom tips either side (120 miss-rain runs, 0 tips); 8-POLLEN reference
+swing 4.12 → 4.08 s; spill dispersal unchanged (mean 61.0 → 61.1 in from the pivot, max 106.9).
+Checks: `commitChecks` in `scripts/smoke-biobuzz/hive3d.ts` (4 checks, ~1.6 s). Gates: the requested
+lane subset `hive3d,sim3d,net3d,ai,rules,field` 1227/1227, `npm test` 3538/3538 ALL PASS, `build`
+and `server:check` green. One note: `config.ts` was momentarily broken by another agent's in-flight
+ramp work (`dtan` used, not imported) and I added it to the existing `../../math` import line to
+unblock — that line is the only shared-file edit this session made.
+
+# HANDOFF — 2026-09-20d (alpha: side rollers are solid cylinders, the retrieval gate is CONTACT, and the release is generalised from the ramp's)
+
+**Earlier 2026-09-20d.** Owner rulings: "the side roller should also be larger in diameter" and "it should
+also be colliding with everything. It is a physical thing." Gates on the final tree: `npm test`
+ALL PASS except a `foot bar 3d` check and a `bot-driven 2v2` perf check, BOTH pre-existing/mid-edit
+in `engineImpl.ts`'s concurrent "rest snap"/narrow-hull-vibration work (another agent's, not this
+session's — do not chase, they touch hive foot-bar solidity and step perf, nothing this session
+changed), `build`, `server:check`, `docaudit` all green. The requested lane subset
+(`render,robot,sim3d,flower3d,tutorial,predict,net3d`) is 2424/2424.
+
+- **`BB_SIDE_ROLLER_R` 1.0 → 1.5 (a 3-in wheel), `BB_SIDE_ROLLER_OUT` 0.9 → 0.4** — the wheel spans
+  −1.1 … 1.9 past the tip line, the SAME 1.9-in front poke as before (`OUT+R` unchanged), the extra
+  diameter going backward under the side arm's nose.
+- **The wheel is a real SOLID CYLINDER now** — `Chassis3dShape` grew `shape: 'box' | 'cylinder'`;
+  `reachColliderDesc` builds `ColliderDesc.cylinder(halfHeight, radius)` with a fixed +90°-about-X
+  quaternion (`CYL_AXIS_Z`, `bodies.ts`) standing Rapier's own Y-axis cylinder up on world Z, in the
+  DEFAULT collision group (`elementSolid: true`) — meets an element, a wall, another robot,
+  everything, same as the ramp's bar. `birthClear` (`engineImpl.ts`) grew the archetype reach
+  shapes into its escape solids too — a launch point born inside a wheel or a ramp bar was the
+  same "shoots in a different direction" bug the function already guards against for the bare
+  frame, just never counted the reach hardware before.
+- **The retrieval gate is a CONTACT RADIUS, not the old x-bite box.** A solid wheel can never
+  overlap the POLLEN it grips, so `bbFlowerAtIntakeMouth` (`play.ts`) now tests the xy distance
+  from a wheel's own axis to the POLLEN's centre against `BB_SIDE_ROLLER_GRIP`
+  (`R + BB_POLLEN_R + BB_SIDE_ROLLER_CONTACT_TOL`, ≈3.25in) — same predicate in 2D (no solid wheel
+  there, so the robot CAN overlap; the ≤ test with no lower bound still works) and 3D.
+  `BB_SIDE_ROLLER_CONTACT_TOL` is 0.35, MEASURED against a real drive-in's own yaw/lateral drift.
+- **The pollen comes out physically here too — THREE WRONG RELEASE POINTS before the right one,
+  each measured, not guessed.** Retreating along `u` (toward the chassis) runs straight into the
+  wheel's own new solid body — a continuous drive through that overlap threw the element clear
+  across the field the next tick. Retreating further, behind the wheel's own inner edge (the
+  ramp's own trick), found the pocket is only `bbIntakeReach` deep (3in) and the wheel already
+  eats 1.1in of it — 0.2in of headroom, not enough for a 2.8in POLLEN. Leaving the release exactly
+  at the flower's own true position (banking on the wheel's own small compression) failed the
+  OTHER way: the ball's world position never moved, so `derive.ts`'s tube test re-tagged it right
+  back the next tick, invisibly. The one that works: `u` UNCHANGED (the true position already
+  sits ≈0.5in past the wheel's own outer edge), `v` shifted toward the centreline by
+  `BB_SIDE_ROLLER_RELEASE_CLEAR` (`BB_FLOWER_OPEN_R + 0.3`) — lands inside the retrieval opening's
+  own documented open band, clear of the wheel. `bbIntakeExtraReach` grew a `siderollers` term
+  (`BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R`) so the pull actually reaches out to sweep it in.
+- **Retrieval-rate sweep, real driving, no teleports** (135 combos: lateral offset × `bbSideRollerY`
+  ± {0, 0.8, 1.5}in, approach angle {0, ±10°}, stick {0.4, 0.7, 1.0}, column height {1, 4, 8}):
+  **71.9% retrieved overall, mean time-to-first-pollen 0.80s; a straight-on (angle=0) approach is
+  100% (45/45)**. Every failure is at ±10° where the initial heading error compounds with the
+  lateral offset in the same rotational sense; the opposite pairing mostly still lands. A centred
+  approach (neither wheel on the flower) retrieves NOTHING, as designed. **This is short of the
+  ≥95% target across the FULL envelope** — the compounding offset+angle failure is a real,
+  measured limit of the current contact radius, not a bug, and is the open item for the next
+  tuning pass (a bigger `BB_SIDE_ROLLER_CONTACT_TOL`, or damping the yaw drift on first wall
+  contact, are the two obvious levers — neither tried this session).
+- New smoke coverage: `scripts/smoke-biobuzz/sim3d.ts` — a head-on wheel probe (30in/s POLLEN
+  deflects, never crosses), a capture-rate sweep vs the SWEEPER build across lateral offsets, and
+  a two-run determinism hash with a real side-roller flower retrieval in the script (held at the
+  analytic flush pose, not driven in — a real drive-in's own yaw/lateral drift is what the
+  retrieval-rate sweep above characterizes, and is the wrong thing to depend on for a check whose
+  only claim is "the same script produces the same bytes twice"). `flower3d.ts`'s drive-in fixture
+  lost its analytic reseat (a previous pass teleported the robot back to test the bite instead of
+  fixing the gate) and now tests the bite at the REAL driven pose; tolerance re-measured 1.5→1.6in.
+  `predict.ts`'s side-roller wall-standoff tolerance re-measured 1→1.9in (a round collider makes
+  line contact against a flat wall where a box made face contact — the two independently-stepped
+  Rapier worlds resolve it a little differently).
+- Render: `scene/renderRobots.ts`'s side-roller cylinder went 8→12 radial segments (owner: "larger
+  in diameter"); the 2D canvas (`drawRobot.ts`) and the builder preview (`RobotPreview.tsx`) both
+  already read `BB_SIDE_ROLLER_R` live, so the bigger wheel drew correctly with no code change.
+- Docs: `docs/area/biobuzz.md`'s side-roller bullets carry the same measurements.
+
+---
+
 # HANDOFF — 2026-09-20c (alpha: ramp physics + swing guard, side rollers at the edges, cadence, COSMETICS)
 
 **READ FIRST.** Four owner rounds on top of 2026-09-20b. Gates on the final tree: `npm test` ALL PASS
@@ -19,7 +227,11 @@
   flower is refused, 4 in settles.
 - **Side rollers are at the intake's EDGES** (owner). Axis `bbSideRollerY(mouthHalf)`; at a FLOWER
   one wheel grips (`edgeGrip`): the driver lines an end of the intake up on the opening. Tutorial
-  offsets the loaned build by that.
+  offsets the loaned build by that. **Tucked in 2026-09-20d** (owner: "right in front of the
+  wheels ... not sticking out like that"): `BB_SIDE_ROLLER_R` 0.75→1.0, `BB_SIDE_ROLLER_OUT`
+  1.9→0.9 — wheel spans −0.1…1.9 past the tip (was 1.15…2.65), flush x-bite 0.92 in (0.42-in
+  margin over `BB_FLOWER_BITE`), bracket is a diagonal gusset off the side arm's own nose, not an
+  outrigger off the front brace.
 - **Cadence halved again**: `BB_INTAKE_PERIOD_MIN/MAX` 0.03/0.06, `BB_FLOWER_RETRIEVE_S` 0.15. The
   corner-capture check needed an empty field (the run-up now eats four pollen in 0.43 s).
 - **COSMETICS** per `docs/cosmetics-plan.md` (owner: "colour options are dull ... follow our plan").

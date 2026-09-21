@@ -1,6 +1,6 @@
 import type { Alliance, Artifact, RobotCommand, RobotState, Vec2, World } from '../../types';
 import * as C from '../../config';
-import { clamp, nextRandom, rot, wrapAngle } from '../../math';
+import { clamp, hyp, nextRandom, rot, wrapAngle } from '../../math';
 import { solveArtifacts, type SweepFrom } from '../../sim/physicsEngine';
 import { simModuleFor } from '../sim';
 import { stepGroundBall } from '../../sim/physics';
@@ -975,11 +975,24 @@ export function bbFlowerAtIntakeMouth(r: RobotState, reach: BbFlowerReach): BbFl
     for (const m of mouths) {
       const ax = mouthAxes(m, hl, hw);
       const v = local.x * ax.p.x + local.y * ax.p.y;
-      if (reach.edgeGrip !== undefined) {
-        const wy = bbSideRollerY(ax.half);
-        if (Math.min(Math.abs(v - wy), Math.abs(v + wy)) > reach.edgeGrip) continue;
-      } else if (Math.abs(v) > (reach.half ?? ax.half)) continue;
       const u = local.x * ax.n.x + local.y * ax.n.y - ax.uOut;
+      if (reach.edgeGrip !== undefined) {
+        // SIDE ROLLERS ARE A SOLID WHEEL NOW, SO THE GATE IS CONTACT, NOT A LATERAL BAND PLUS A
+        // SEPARATE X-BITE (owner, 2026-09-20: "it should also be colliding with everything. It
+        // is a physical thing"). `reach.out`'s own midpoint is the wheel's axis past the tip
+        // line; each wheel sits at `±bbSideRollerY(ax.half)` off the centreline; the POLLEN is
+        // gripped when its centre is within `edgeGrip` (a RADIUS — `BB_SIDE_ROLLER_GRIP`) of
+        // EITHER wheel's own axis, in the full (u, v) plane. Same predicate in 2D (which has no
+        // solid wheel, so the robot CAN overlap) and 3D (`flowerRetrieve3d` calls this same
+        // function) — see `config.ts`'s own header on `BB_SIDE_ROLLER_R` for why the box-BITE
+        // test this replaced stopped matching a real drive-in once the wheel became solid.
+        const wy = bbSideRollerY(ax.half);
+        const uw = (reach.out[0] + reach.out[1]) / 2;
+        const near = Math.min(hyp(u - uw, v - wy), hyp(u - uw, v + wy));
+        if (near > reach.edgeGrip) continue;
+        return { i, ax };
+      }
+      if (Math.abs(v) > (reach.half ?? ax.half)) continue;
       if (bbBites(reach.out[0], reach.out[1], u, BB_POLLEN_R)) return { i, ax };
     }
   }

@@ -2107,7 +2107,8 @@ function pinChecks(check: Check): void {
     const off = bill(w, ticks(0.7)); // no command — the pinner stops pressing
     check('G421: easing off for 0.7 s bills nothing', off.major.red === 0, String(off.major.red));
     const paused = biobuzzFieldHud(w).pins;
-    check('G421: the PIN is still on the books through the ease-off', paused.length === 1, String(paused.length));
+    // (one check, not two: the next one asserts `paused.length === 1` AND the paused count, and
+    // its detail already says 'no pin' when the length is wrong.)
     check('G421: and its count PAUSED rather than resetting — ~2.5 s, not 0',
       paused.length === 1 && Math.abs(paused[0].seconds - 2.5) < 0.05,
       paused.length === 1 ? paused[0].seconds.toFixed(3) : 'no pin');

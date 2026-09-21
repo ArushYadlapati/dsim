@@ -17,7 +17,7 @@ import { shoveMass } from '../../../sim/drivetrain';
 import { BALL_REST_SPEED, PHYS_WALL_FRICTION, GRAVITY, PHYS_SOLVER_ITERS, PHYS_ALLOWED_ERROR } from '../../../config';
 import { BB3_CCD_SPEED, BB3_CONTACT_FREQ, BB3_LAUNCH_CLEAR_MAX, BB3_LAUNCH_CLEAR_SLOP, BB3_LAUNCH_CLEAR_STEP, BB3_REST_SPEED, BB3_REST_TICKS, BB3_ROLL_DECEL, BB3_ROLL_FLOOR_Z, BB3_WALL_H, BB_POLLEN_R, bbHeightNow } from '../config';
 import { bbRampSettled } from '../robot';
-import { addChassis3dColliders, clearChassis3dColliders, chassis3dShapes, type Chassis3dShape } from './bodies';
+import { addChassis3dColliders, clearChassis3dColliders, chassis3dShapes, chassis3dReachShapes, type Chassis3dShape } from './bodies';
 import {
   buildHiveTray3d,
   buildStatics3d,
@@ -31,7 +31,7 @@ import {
   GROUP_ELEMENT,
 } from './bodies';
 import { hyp3, QUAT_IDENTITY, round4, yawQuat, yawOfQuat } from './math3';
-import { datan2, rot } from '../../../math';
+import { datan2, dcos, dsin, nextRandom, rot } from '../../../math';
 
 /** the LAST JSON a robot body was synced to -- what `syncRobot` diffs the CURRENT `RobotState`
  * against to decide "did something outside the solve move this" (see plan section 3.2). */
@@ -77,6 +77,11 @@ export interface Engine3d {
   /** element id -> consecutive ticks under `BB3_REST_SPEED` (`derive.ts`'s cell-membership
    * timer). Reset to 0 the instant an element is faster than that, off by any writer. */
   restTicks: Map<number, number>;
+  /** element id -> consecutive ticks spent in `groundRoll3d`'s narrow-hull "vibration" branch
+   * (perched on a hull with no broad support and no cell/tube tag) — the give-up clock for that
+   * branch, NOT `restTicks`. Reset to 0 the instant the element leaves the branch for any reason
+   * (it falls, it reaches a broad support, it gets tagged). See `BB3_VIBE_GIVEUP_TICKS`. */
+  narrowVibeTicks: Map<number, number>;
   lastRobot: Map<number, LastRobot>;
   lastElement: Map<number, LastElement>;
   /**
@@ -198,6 +203,7 @@ function buildEngine(world: World): Engine3d {
     hiveJoints,
     hiveHeld: { red: true, blue: true },
     restTicks: new Map(),
+    narrowVibeTicks: new Map(),
     lastRobot: new Map(),
     lastElement: new Map(),
     robotHeights: new Map(),
@@ -443,6 +449,7 @@ function removeElementBody(engine: Engine3d, id: number): void {
   engine.elements.delete(id);
   engine.lastElement.delete(id);
   engine.restTicks.delete(id);
+  engine.narrowVibeTicks.delete(id);
 }
 
 /**
@@ -609,12 +616,21 @@ function birthClear(engine: Engine3d, world: World, b: Artifact, radius: number)
   const solids: BirthSolid[] = [];
   for (const rob of world.robots) {
     const h = builtHeight(engine, rob);
+    // ⚠️ THE ARCHETYPE REACH HARDWARE TOO, NOT JUST THE BARE FRAME (owner ruling 2026-09-20: a
+    // side roller's wheel and a settled ramp's crossbar/rails are both solid to an ELEMENT now
+    // — `chassis3dReachShapes`/`elementSolid`, `bodies.ts` — so a launch point born inside one is
+    // exactly the "shoots the ball in a completely different direction" bug this function exists
+    // to prevent, just against a solid `chassis3dShapes` alone never counted. `boxGap` treats a
+    // CYLINDER's own `hx`/`hy` as a square box and ignores `rot` on the ramp's tilted rails —
+    // both are a conservative OVER-approximation (never smaller than the real solid), so this
+    // can only make the escape search look a hair further than strictly necessary, never miss a
+    // real overlap.
     solids.push({
       px: rob.pos.x,
       py: rob.pos.y,
       pz: (rob.z ?? 0) + h / 2,
       heading: rob.heading,
-      shapes: chassis3dShapes(rob.spec, h),
+      shapes: [...chassis3dShapes(rob.spec, h), ...chassis3dReachShapes(rob.spec, h, bbRampSettled(rob, world.time))],
     });
   }
   const writeBack = (): void => {
@@ -1026,7 +1042,51 @@ export function containmentPass(world: World, engine: Engine3d): void {
  *     any rest threshold there is, and snapping it would freeze it in mid-air. The
  *     discriminator is CONTACT, asked of the narrow phase, not height or speed.
  */
+/** magnitude range (in/s) of the "vibration" nudge below — the owner's own word for what a real
+ * field's impacts and motor buzz would do to an element perched somewhere a silent rest snap
+ * cannot let go of. Small enough it cannot be mistaken for a shot or a shove. */
+const VIBE_MIN_SPEED = 2;
+const VIBE_MAX_SPEED = 5;
+/**
+ * How long (ticks) `groundRoll3d` keeps shaking an element before it gives up and freezes it
+ * like the old snap did. Without ANY cap, a genuine multi-hull cage (measured: an exact corner
+ * where three hive-frame hulls meet) shakes FOREVER, which held `bbSettled` open past
+ * `MATCH_SETTLE_MAX_S` and broke match-end detection — a real pocket has to lose eventually, the
+ * same way a real field's vibration cannot un-jam something truly wedged either.
+ *
+ * MEASURED trade-off, not a free win: every ledge the rain probe found (`docs/area/biobuzz.md`)
+ * still clears comfortably inside 30 (the panel/foot-bar/top-bar checks in
+ * `scripts/smoke-biobuzz/hive3d.ts` resolve in 119–192 ticks TOTAL including the drop's own
+ * fall), but a wider budget (90) that clears MORE of the rain probe's harder corners (59/1404
+ * stuck against 30's 88/1404) also let the pre-existing "parked elements on the HIVE finalize on
+ * the HOLD" settle check regress from 31 ticks to 398 — an element can chain through several
+ * narrow perches on its way down, and each restarts its own budget. 30 is the largest value that
+ * keeps that settle contract intact; a future pass that reads `bbSettled` for the give-up leaves
+ * more room to raise it.
+ */
+const BB3_VIBE_GIVEUP_TICKS = 30;
+
+/**
+ * A tiny deterministic lateral kick, PURE in `(id, tick, rngState)` — same inputs, same output,
+ * forever, which is what lets a reconnecting peer or a replay agree on it without either one
+ * having tracked how long this exact element has been sitting here. `rngState` is READ, never
+ * advanced: `nextRandom` is called on a SEED synthesized from it, and only `.value` is taken —
+ * the world's own chain is never touched, so this cannot move a later spawn's or the AI's draw.
+ * `Math.random` is banned in `src/games` (the source guard in `scripts/smoke.ts`) and would not
+ * be reproducible besides; `dsin`/`dcos` turn the hashed angle into a unit vector for the same
+ * reason every other angle in `sim3d/` does.
+ */
+function elementVibeSeed(id: number, tick: number, rngState: number): { x: number; y: number } {
+  const seed = (Math.imul(id, 0x9e3779b1) ^ Math.imul(tick, 0x85ebca6b) ^ rngState) | 0;
+  const a = nextRandom(seed);
+  const b = nextRandom(a.state);
+  const angle = a.value * 2 * Math.PI;
+  const mag = VIBE_MIN_SPEED + b.value * (VIBE_MAX_SPEED - VIBE_MIN_SPEED);
+  return { x: dcos(angle) * mag, y: dsin(angle) * mag };
+}
+
 export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
+  const RAPIER = rapier3d();
   for (const b of world.balls) {
     if (!wantsDynamicBody(b.state)) continue;
     const body = engine.elements.get(b.id);
@@ -1071,19 +1131,92 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
     // while, and only to stop the creep — never a rolling law, and never in mid-air.
     const still = speed < BB3_REST_SPEED && Math.abs(b.vz) < BB3_REST_SPEED;
     if (!still || (engine.restTicks.get(b.id) ?? 0) < BB3_REST_TICKS) continue;
-    let touching = false;
-    for (let i = 0; i < body.numColliders() && !touching; i++) {
-      engine.world3d.contactPairsWith(body.collider(i), () => {
-        touching = true;
+    /**
+     * ⚠️ **A CONTACT IS NOT ALWAYS SOMETHING WORTH FREEZING ON** (owner report 2026-09-20:
+     * "balls are able to get stuck on top of the biobuzz panel with seemingly nothing actually
+     * holding it up. They sometimes get stuck on top of other structures as well").
+     *
+     * The rain probe (`scratch/rain-probe.ts`, not committed; measurements in
+     * `docs/area/biobuzz.md`'s BIOBUZZ 3D section) found the mechanism: every hive-frame or
+     * flower-support CAD hull this loop can touch measures narrower than a POLLEN (2.8in) or has
+     * no flat top at all — a single decimated vertex or ridge, from a round tube or angled beam
+     * tessellated down to 8–16 points (`scratch/ledge-table.ts`'s survey). A real ball on a knife
+     * edge like that would roll off from any disturbance, but this snap zeroed its velocity every
+     * qualifying tick BEFORE gravity's tangential component could build enough speed to read as
+     * moving again — an unstable equilibrium the snap made permanent by never letting it start
+     * sliding. Measured: disabling the snap alone let SOME of them go (an asymmetric perch drifts
+     * off on its own), but a numerically SYMMETRIC one (dead centre on a ridge, or wedged with
+     * equal pressure between two hulls) has no residual to grow, so it sits forever, snap or not
+     * — which is what the vibration below is for.
+     *
+     * ⚠️ **THE GATE IS THE ELEMENT'S OWN TAG, NOT THE COLLIDER IT IS TOUCHING.** A first pass
+     * tried to tell "legitimate" apart from the contact alone (a `ConvexPolyhedron` on a FIXED
+     * body is always one of the two CAD hull classes above) and it broke on the hive TRAY:
+     * `cadTrayHulls` builds the tray's own facet slabs as `ConvexPolyhedron` too, on the DYNAMIC
+     * tray body, and a ball wedged against the tray's OWN edge without being inside a cell reads
+     * exactly like the panel bug (measured: a repro near the panel/leg cluster settled dead
+     * against two tray facets and never moved). `derive.ts` has already answered "is this element
+     * actually IN something" by the time this runs — it is tagged `state.kind === 'element'` the
+     * tick it enters a cell or a tube, off GEOMETRY, never off contact — so a TAGGED element skips
+     * this whole question and gets the plain zero, unconditionally, exactly as before; only an
+     * untagged `ground` element (by construction, NOT inside any cell or tube, whatever it is
+     * leaning on) asks what it is touching, and for one of those a `ConvexPolyhedron` — fixed
+     * frame hull or dynamic tray facet alike — is never broad. The floor/walls (`Cuboid`), a
+     * FLOWER's ring plate (`trimesh`), another element (`Ball`, the documented "garden-line" pile
+     * this snap was originally written for) and a robot deck stay broad.
+     */
+    const freeze = (): void => {
+      b.vel.x = 0;
+      b.vel.y = 0;
+      b.vz = 0;
+      // `wakeUp: false` — a zeroing write has no reason to reset the sleep timer of a body that
+      // is at rest; see `syncElement`'s REST SNAP note for what waking it every tick cost.
+      body.setLinvel({ x: 0, y: 0, z: 0 }, false);
+      body.setAngvel({ x: 0, y: 0, z: 0 }, false);
+    };
+    if (b.state.kind === 'element') {
+      engine.narrowVibeTicks.delete(b.id);
+      freeze();
+      continue;
+    }
+    let touchingBroad = false;
+    let touchingNarrow = false;
+    for (let i = 0; i < body.numColliders(); i++) {
+      engine.world3d.contactPairsWith(body.collider(i), (other) => {
+        if (other.shapeType() === RAPIER.ShapeType.ConvexPolyhedron) {
+          touchingNarrow = true;
+        } else {
+          touchingBroad = true;
+        }
       });
     }
-    if (!touching) continue;
-    b.vel.x = 0;
-    b.vel.y = 0;
-    b.vz = 0;
-    // `wakeUp: false` — a zeroing write has no reason to reset the sleep timer of a body that is
-    // at rest; see `syncElement`'s REST SNAP note for what waking it every tick cost.
-    body.setLinvel({ x: 0, y: 0, z: 0 }, false);
-    body.setAngvel({ x: 0, y: 0, z: 0 }, false);
+    if (!touchingBroad && !touchingNarrow) {
+      engine.narrowVibeTicks.delete(b.id);
+      continue;
+    }
+    if (touchingBroad) {
+      engine.narrowVibeTicks.delete(b.id);
+      freeze();
+      continue;
+    }
+    // TOUCHING ONLY A NARROW HULL: no hold, and after it has sat there this long, a tiny
+    // deterministic "vibration" — the owner's own word for what a real field would do that a
+    // silent physics snap cannot — UNLESS it has been shaking with no result for
+    // `BB3_VIBE_GIVEUP_TICKS`, in which case it freezes like anything else (see that constant's
+    // header: a real cage has to lose eventually, or `bbSettled` never closes).
+    const vibeTicks = (engine.narrowVibeTicks.get(b.id) ?? 0) + 1;
+    engine.narrowVibeTicks.set(b.id, vibeTicks);
+    if (vibeTicks > BB3_VIBE_GIVEUP_TICKS) {
+      freeze();
+      continue;
+    }
+    // The direction/magnitude come from a HASH of (id, tick, world.rngState) — READ ONLY, never
+    // advanced, and never `Math.random`: this is authority state that has to be reproducible,
+    // but it must not consume a draw the AI or a spawn is waiting on. `wakeUp: true` — unlike the
+    // broad case, THIS write wants the body to actually respond to the kick, not sleep through it.
+    const nudge = elementVibeSeed(b.id, world.tick, world.rngState);
+    b.vel.x = nudge.x;
+    b.vel.y = nudge.y;
+    body.setLinvel({ x: b.vel.x, y: b.vel.y, z: b.vz }, true);
   }
 }

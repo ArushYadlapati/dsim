@@ -40,7 +40,7 @@
 
 import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2, World } from '../../types';
 import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
-import { datan2, dcos, dsin, hyp, wrapAngle } from '../../math';
+import { datan2, dcos, dsin, dtan, hyp, wrapAngle } from '../../math';
 import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
@@ -945,9 +945,13 @@ export interface BbFlowerReach {
   /** how far off the mouth's centreline the POLLEN's centre may sit and still be gripped (in).
    * `null` ⇒ anywhere across the mouth (a full-width part), unless `edgeGrip` is set. */
   half: number | null;
-  /** EDGE-MOUNTED hardware (the side rollers): the part sits at `±bbSideRollerY(mouthHalf)` off
-   * the centreline, and grips a POLLEN whose centre is within this distance of EITHER one (in).
-   * The lateral test is then per wheel, not a band about the centreline. */
+  /** EDGE-MOUNTED, SOLID hardware (the side rollers): the part sits at `±bbSideRollerY(mouthHalf)`
+   * off the centreline (`out`'s own midpoint gives its distance past the tip line), and this is
+   * the CONTACT RADIUS — the POLLEN is gripped when its centre sits within this distance of
+   * EITHER wheel's own axis, in the mouth's full (u, v) plane, not a separate lateral band plus
+   * an independent x-bite (`out` is unused for the longitudinal test when this is set; it only
+   * locates the wheel's own axis). A solid wheel can never overlap a POLLEN, so this is a radius
+   * around a point, not a box. */
   edgeGrip?: number;
   /** the hardware's z band off the tiles (in). */
   z: readonly [number, number];
@@ -960,29 +964,53 @@ export const BB_FLOWER_BITE = 0.5;
 
 /**
  * the SIDE ROLLERS (`siderollers`): two vertical-axis compliant wheels AT THE INTAKE'S EDGES,
- * one at each end of the mouth, hung from the front brace (owner, 2026-09-20: "situated on the
- * edges of the robot, not near the center. It is to funnel things from the edge"). A wheel's axis
- * is `bbSideRollerY(mouthHalf)` off the centreline — its outer face 0.1 in inside the side arm's
- * plane — so the pair is as wide as the chassis and a ground POLLEN met at the mouth's end is
- * walked inward toward the roller.
+ * one at each end of the mouth, hung from a gusset off the SIDE ARM'S OWN NOSE — TUCKED IN
+ * front of the drive wheels, not out on a separate outrigger (owner, 2026-09-20: "The side
+ * rollers should be right in front of the wheels. They should not be sticking out like that" —
+ * the previous build hung each wheel `BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R` = 2.65 in past the
+ * tip line on its own brace off the front brace). A wheel's axis is `bbSideRollerY(mouthHalf)`
+ * off the centreline — its outer face 0.1 in inside the side arm's plane — so the pair is as
+ * wide as the chassis and a ground POLLEN met at the mouth's end is walked inward toward the
+ * roller.
  *
  * AT A FLOWER that means ONE wheel does the work: the pair is 12–17 in apart and cannot straddle
  * a 2.8-in ball, so the driver lines an END of the intake up on the opening — the chassis
  * `bbSideRollerY` off the flower's centreline — and that wheel enters the opening beside the
- * POLLEN. APPROX, sized for that: at `BB_SIDE_ROLLER_OUT` past the tip the wheel sits 0.48 in
- * short of the POLLEN's centre, and with the ball within `BB_SIDE_ROLLER_GRIP` of its axis the
- * wheel's face is ≥ 0.15 in INTO the ball's skin (the compression that grips, against the bore
- * behind it); the wheel spans ±0.75 about its axis (inside the plate's ±2.97 when the ball is
- * within grip), tops out at 2.5 in (under the 3.904 ceiling) and reaches 2.65 in past the plate
- * edge (short of the supports at 3.57).
+ * POLLEN.
+ *
+ * ⚠️ **LARGER DIAMETER, 2026-09-20** (owner: "the side roller should also be larger in
+ * diameter" — a 3-in compliant wheel, up from the 2-in stack the tuck pass shipped).
+ * `BB_SIDE_ROLLER_R` 1.0 → 1.5, and `BB_SIDE_ROLLER_OUT` 0.9 → 0.4 so the wheel still pokes the
+ * SAME 1.9 in past the tip line the tuck pass measured (`OUT + R` unchanged: 0.9 + 1.0 = 0.4 +
+ * 1.5) — the wheel now spans −1.1 … 1.9 in about the tip line, and the extra diameter goes
+ * BACKWARD, further under the side arm's own nose, right in front of the drive wheel, rather
+ * than poking out any further. `bbSideRollerY(mouthHalf)` = mouthHalf − (R + 0.1) is unchanged
+ * in form, so the outer face still sits 0.1 in inside the arm's plane; a bigger `R` only pulls
+ * the axis further inboard (1.6 in now, was 1.1). Height/Z unchanged: 0.5–2.5 in, under the
+ * 3.904-in ceiling.
+ *
+ * ⚠️ **THE RETRIEVAL GATE IS CONTACT NOW, NOT A BOX-BITE** (owner, 2026-09-20: "side rollers
+ * should also be colliding with everything. It is a physical thing"). The wheel is a real solid
+ * cylinder in 3D (`chassis3dReachShapes`/`reachColliderDesc`, `sim3d/bodies.ts`) now, in the
+ * DEFAULT collision group rather than `GROUP_POCKET` — it meets a POLLEN, a wall, another
+ * robot, everything — so it can never overlap one, and the old box-BITE test (a fixed x-window
+ * against `reach.out`) stopped matching what a real drive-in lands inside (a previous pass
+ * papered over the mismatch by teleporting the robot in the smoke check rather than fixing the
+ * gate). `bbFlowerAtIntakeMouth` (`play.ts`) tests CONTACT instead for `edgeGrip` hardware: the
+ * xy distance from a wheel's own axis to the POLLEN's centre, in the mouth's (u, v) plane,
+ * against `BB_SIDE_ROLLER_GRIP` below — which is now a RADIUS (`R + BB_POLLEN_R +
+ * BB_SIDE_ROLLER_CONTACT_TOL`), not a lateral half-band. 2D has no solid wheel (`docs/area/
+ * biobuzz.md`: "2D stays DRAWING-ONLY"), so there the robot CAN overlap; the same ≤ test, with
+ * no lower bound, still works there — it just never binds as tightly as it does in 3D, where the
+ * solid wheel keeps the true distance pinned near the contact radius.
  */
-export const BB_SIDE_ROLLER_R = 0.75;
+export const BB_SIDE_ROLLER_R = 1.5;
 /** the wheel's height (in): a 2-in compliant wheel stack. */
 export const BB_SIDE_ROLLER_H = 2.0;
 /** the wheel's mid-height off the tiles (in) — a hair above a POLLEN's own centre. */
 export const BB_SIDE_ROLLER_Z = 1.5;
 /** the wheel's axis, past the tip line (in). */
-export const BB_SIDE_ROLLER_OUT = 1.9;
+export const BB_SIDE_ROLLER_OUT = 0.4;
 /** how far INBOARD of the mouth's lateral edge a wheel's axis sits (in): its own radius plus a
  * 0.1-in clearance to the side arm's plane. */
 export const BB_SIDE_ROLLER_EDGE_INSET = BB_SIDE_ROLLER_R + 0.1;
@@ -991,61 +1019,249 @@ export const BB_SIDE_ROLLER_EDGE_INSET = BB_SIDE_ROLLER_R + 0.1;
 export function bbSideRollerY(mouthHalf: number): number {
   return mouthHalf - BB_SIDE_ROLLER_EDGE_INSET;
 }
-/** how far off a wheel's axis a POLLEN's centre may be, laterally, for that wheel's face to have
- * hold of it (in): the two radii less 0.15 in of compression. */
-export const BB_SIDE_ROLLER_GRIP = BB_SIDE_ROLLER_R + BB_POLLEN_R - 0.15;
+/** the solver's own contact skin plus compliance (in) — how much a POLLEN and a wheel may sit
+ * apart, centre to centre, past the sum of their radii and still count as touching. APPROX: a
+ * compliant wheel's own give plus Rapier's narrow-phase margin, not a measured spec.
+ * MEASURED against a REAL drive-in (`scripts/smoke-biobuzz/flower3d.ts`'s "drive-in" fixture,
+ * `chassis3dReachShapes`'s wheels now solid): a full-stick approach picks up 18° of yaw drift and
+ * 2.5in of lateral drift off the asymmetric wheel contact (the same contact-torque effect
+ * `docs/area/physics.md` documents for robot-robot pushing) and settles at 3.162in from the
+ * gripping wheel's own axis — 0.25 left the gate refusing a real drive-in by 0.012in; 0.35 covers
+ * it with an 0.09in margin. */
+export const BB_SIDE_ROLLER_CONTACT_TOL = 0.35;
+/** how far a POLLEN's centre may sit from a wheel's own axis, in the mouth's (u, v) plane, and
+ * still count as gripped (in) — the CONTACT radius: the two bodies' radii plus the solver's own
+ * skin (`BB_SIDE_ROLLER_CONTACT_TOL`). Read as `BbFlowerReach.edgeGrip`, which `bbFlowerAtIntakeMouth`
+ * (`play.ts`) now tests as a RADIUS rather than a lateral half-band — see this section's own
+ * header for why a solid wheel needed the change. */
+export const BB_SIDE_ROLLER_GRIP = BB_SIDE_ROLLER_R + BB_POLLEN_R + BB_SIDE_ROLLER_CONTACT_TOL;
 export const BB_SIDE_ROLLER_REACH: BbFlowerReach = {
   out: [BB_SIDE_ROLLER_OUT - BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R],
   half: null,
   edgeGrip: BB_SIDE_ROLLER_GRIP,
   z: [BB_SIDE_ROLLER_Z - BB_SIDE_ROLLER_H / 2, BB_SIDE_ROLLER_Z + BB_SIDE_ROLLER_H / 2],
 };
+/**
+ * ⚠️ **THE SIDE-ROLLER RELEASE'S OWN OFFSET — THREE DRAFTS, THREE MEASURED FAILURES BEFORE THIS
+ * ONE.** `flowerRetrieve3d`'s `siderollers` branch (`sim3d/flower3d.ts`) is a PHYSICAL release
+ * like the ramp's — a `ground` element the extended pull (`bbIntakeExtraReach`) sweeps in, not a
+ * teleport into the hopper — and getting the release POINT right took three wrong ones:
+ *
+ *  · Draft 1 retreated `BB_FLOWER_OPEN_R + 0.3` INWARD along `u` from the flower's own axis,
+ *    leaving `v` at the true lateral position (`≈ bbSideRollerY`, 6.9 in on the default chassis).
+ *    `v` that large was never the risk — MEASURED, it clears the 2.086-in tube radius on its own,
+ *    for any `u`. The real hazard was `u`: retreating inward at all runs straight into the wheel's
+ *    own solid span (`u ∈ [BB_SIDE_ROLLER_OUT ∓ R]` past the tip line, now a real cylinder) —
+ *    MEASURED, the release landed dead centre inside it, and a continuous drive through that
+ *    overlap threw the element clear across the field the very next tick (Rapier's own
+ *    deep-penetration recovery, not a gameplay bounce).
+ *  · Draft 2 retreated further still, to just BEHIND the wheel's own inner edge, mirroring the
+ *    ramp's "just behind the crossbar". MEASURED: the pocket a side-roller archetype retreats
+ *    into is only `bbIntakeReach` deep (3 in on the default chassis) and the wheel's own span
+ *    already reaches 1.1 in into it, leaving under 2 in for a 2.8-in POLLEN to occupy without
+ *    ALSO touching the frame face on the far side — 0.2 in of headroom, not enough for a body its
+ *    own size. Same failure as draft 1, for the opposite reason.
+ *  · Draft 3 left `u` AND `v` both exactly where the POLLEN already was (the flower's own true
+ *    axis, `(f.x, f.y)`) on the theory that a gripping wheel already presses into the ball a
+ *    little by construction (the old box-bite model's own "0.15 in of compression") and Rapier
+ *    resolves a small, PRE-EXISTING overlap as an ordinary contact force. MEASURED WRONG THE
+ *    OTHER WAY: the ball's WORLD position had not moved AT ALL, so it was still exactly on the
+ *    flower's own axis — inside `BB_FLOWER_OPEN_R` by construction — and `derive.ts`'s tube test
+ *    re-tagged it `element`/`flower:i` again on the very next tick. Invisible from outside (the
+ *    stack never shrank), and `lastIntakeAt` kept climbing as the same release-then-retag cycle
+ *    repeated every qualifying tick.
+ *
+ * `u` UNCHANGED, `v` SHIFTED, is what actually works, and both halves were measured, not assumed:
+ * `u = u0` sits just PAST the wheel's own outer edge already (that is the contact condition —
+ * measured 0.48 in clear on the default chassis), so it was never the hazard once draft 1 stopped
+ * retreating INTO it; the ONE real distance that needed a deliberate move was `v`, toward the
+ * mouth's centreline by more than the tube's own radius, which lands inside the retrieval
+ * opening's documented OPEN band (`config.ts`'s own header on the opening: "the full plate width"
+ * — no support stands in it at this height) and clears the wheel's lateral span in the same move.
+ */
+export const BB_SIDE_ROLLER_RELEASE_CLEAR = BB_FLOWER_OPEN_R + 0.3;
 
 /**
- * THE DEPLOYABLE RAMP (`ramp`): a U-frame — two rails and a leading crossbar — pivoting on a
+ * THE DEPLOYABLE RAMP (`ramp`): a U-frame — two rails and a leading WEDGE — pivoting on a
  * bracket under the intake's side arms. FOLDED it stands vertical with the sweeper's roller
- * inside the U (the rails either side of the barrel, the crossbar above the flap sweep);
- * DEPLOYED it drops forward and down to `BB_RAMP_ANGLE` below level, the crossbar out past the
- * tip line at `BB_RAMP_TIP_Z`, so the frame TILTS TOWARD THE ROBOT and the crossbar wedges under
- * a POLLEN as the chassis pushes into the opening. All APPROX — the sim's own hardware model.
+ * inside the U (the rails either side of the barrel); DEPLOYED it drops forward and down, the
+ * wedge's own leading edge out past the tip line at `BB_RAMP_LEAD_Z`, so the frame TILTS TOWARD
+ * THE ROBOT and the wedge rides under a POLLEN as the chassis pushes into the opening. All
+ * APPROX — the sim's own hardware model.
  *
  *   pivot   `BB_RAMP_PIVOT_BACK` behind the tip line (the sweeper's own axle line, so the folded
- *           rails stand round the roller), `BB_RAMP_PIVOT_Z` up
- *   rails   `BB_RAMP_L` long: folded, the crossbar is at 7.5 in, above the 6.5-in flap sweep
- *   tip     `BB_RAMP_TIP_Z` off the tiles: clears the lower plate's 0.354 rim on the way in, and
- *           is under a POLLEN's centre by 0.9 in, which is the wedge
+ *           rails stand round the roller), `BB_RAMP_PIVOT_Z` up — UNCHANGED below
+ *   rails   `BB_RAMP_L` long, `BB_RAMP_ANGLE` below level — solved so the rail's own tip lands
+ *           exactly on the wedge's leading edge
  *
- * ⚠️ **LENGTHENED 2026-09-20 (owner: "the ramp might need to reach further out")**: at the old
- * `BB_RAMP_L` = 4.5 / `BB_RAMP_ANGLE` = 0.3875 (22.2°), the deployed crossbar's face landed 0.21
- * in SHORT of a flush FLOWER POLLEN's own centre (`BB_PLACE_REACH` 2.384) — close enough to nudge
- * the ball's front face but not to get under it. The pivot is UNCHANGED (`BB_RAMP_TIP_Z` still
- * solves to 0.50), so only the rail length and angle move: `BB_RAMP_L` = 5.3, `BB_RAMP_ANGLE` =
- * 0.3266 (18.7°). Deployed, the crossbar is `BB_RAMP_OUT` ≈ 3.02 in past the tip line — 0.64 in
- * PAST the POLLEN's centre now, 0.55 in short of the peanut supports (3.57) and 1.99 in off the
- * wall when flush — and the surface past the tip line runs 0.50 → 1.52 in high. The rails span
- * the mouth's width, so they pass either side of the 5.95-in foot on open tiles.
+ * ⚠️ **THE FLAT CROSSBAR BECAME A WEDGE, 2026-09-20** (owner: "It is incredibly hard to get the
+ * ramp under the pollen right now. The ramp could have a slight slope up and a larger slope down
+ * for it to first get under the pollen. In real life, just pushing on the pollen with whatever is
+ * likely enough to get it up due to impulse but also the ball's geometry"; "the old ramp works
+ * 99% of the time... when it does not work, the pollen don't budge... I think it depends on how
+ * the pollen are stacked"). A flat crossbar's own vertical leading face met a bottom POLLEN BELOW
+ * its centre and shoved it square into the tube's back (the bore rim / peanut supports); when a
+ * scattered column above leaned on the bottom ball toward the field side, it arched against the
+ * supports and nothing moved — the measured failure sweep is in `docs/area/biobuzz.md`'s
+ * "INTAKING FROM A FLOWER IS ARCHETYPE-AWARE" bullet.
+ *
+ * Three named points, in the MOUTH frame (`u` outward past the tip line, `z` up off the tiles):
+ *
+ *   LEADING EDGE  u `BB_RAMP_OUT` (3.42)     z `BB_RAMP_LEAD_Z` (0.42) — thin and low: a flush
+ *                 bottom POLLEN's own ground clearance at this offset from its centre
+ *                 (`BB_RAMP_OUT − BB_PLACE_REACH` = 1.036 in off-axis) is
+ *                 `BB_POLLEN_R − sqrt(BB_POLLEN_R² − 1.036²)` ≈ 0.458 — the leading edge sits
+ *                 just under that curve and above the lower plate's own 0.354 rim.
+ *   CREST         u `BB_RAMP_CREST_OUT` (≈2.176)  z `BB_RAMP_CREST_Z` (1.00) — the peak: a
+ *                 POLLEN resting on it keeps its own top (`+ 2·BB_POLLEN_R` = 3.80) under the mid
+ *                 plate's 3.904 ceiling, 0.104 in of clearance.
+ *   DROP          u `BB_RAMP_DROP_OUT` (≈1.850)  z `BB_RAMP_DROP_Z` (0.30) — a steep drop into
+ *                 the U, toward the roller.
+ *
+ * `BB_RAMP_OUT` sits at the peanut supports' own limit (`BB_FLOWER_PEANUT_U`, 3.57 past the tip
+ * line) minus `BB_RAMP_PEANUT_CLEAR` (0.15) — as far under a flush ball's own centre
+ * (`BB_PLACE_REACH`, 2.384) as the supports allow. The rise (leading edge → crest) is
+ * `BB_RAMP_WEDGE_RISE_ANGLE` (25°, inside the owner's 20–30° band, "a slight slope up"); the drop
+ * (crest → the U) is `BB_RAMP_WEDGE_DROP_ANGLE` (65°, "a larger slope down"). Both are forward
+ * `dsin`/`dcos`/`dtan` of a chosen angle and a chosen rise/fall height — never an inverse trig
+ * call inside a formula this file evaluates at load, same rule `BB_RAMP_ANGLE` has always
+ * followed (an engine's `atan` is not required to be correctly rounded, so a value every peer
+ * must agree on bit-for-bit is either forward-`dsin`/`dcos`'d from a typed literal, or, where a
+ * target point makes an inverse unavoidable, taken through `datan2` — the deterministic
+ * replacement — never `Math.atan2`).
+ *
+ * `chassis3dReachShapes` builds the wedge as TWO tilted boxes (leading-edge→crest,
+ * crest→drop), the same `pitchQuatY` composition the rails already use, rather than a
+ * `ColliderDesc.convexHull`: a hull needs no new Rapier surface for the rails, but the swing
+ * guard (`rampSwingHitsStatic`) queries with a bare `RAPIER.Cuboid`, and two boxes reuse that
+ * unchanged; a hull would need a second shape type there for one collider. `scene/renderRobots.ts`
+ * draws the same three points as an extruded wedge profile in place of the old flat bar.
  */
-export const BB_RAMP_L = 5.3;
 export const BB_RAMP_PIVOT_BACK = 2.0;
 export const BB_RAMP_PIVOT_Z = 2.2;
-/** how far below level the deployed rails lie (rad) — 18.7°, TYPED, so the tip height and the
- * reach below are `dsin`/`dcos` of it rather than an inverse function this file may not call
- * (the determinism guard: an engine's `asin` is not required to be correctly rounded). */
-export const BB_RAMP_ANGLE = 0.3266;
-/** the deployed crossbar's height off the tiles (in): `pivotZ − L·sin(angle)` = 0.50, above the
- * lower plate's 0.354 rim. */
+
+/** how far past the peanut supports' own inner edge the ramp's leading edge must stay clear
+ * (in). APPROX — a real edge would still want contact-skin room; this is that margin. */
+export const BB_RAMP_PEANUT_CLEAR = 0.15;
+/** the peanut supports' own inner edge, past the tip line (in) — CAD probe, this file's own
+ * "ROBOT — intake ARCHETYPES" section header (`u −2.45 … −1.19` in the ring-centred frame; the
+ * near edge converts to `BB_PLACE_REACH − (−1.19)` = 3.574, rounded to the manual's own printed
+ * depth, 3.57). */
+export const BB_FLOWER_PEANUT_U = 3.57;
+
+/**
+ * ⚠️ **RAISED FROM 0.42 TO 0.60, MEASURED, NOT THE OWNER'S OWN "0.40–0.45" TARGET** — a real
+ * physics run (`scratch/ramp_debug.ts`, kept for the next pass) drove a `ramp` build in from 20 in
+ * off F1's foot and found the robot stops 2.27 in short of true flush at 0.42, contact-frozen with
+ * ZERO net drift for 190+ ticks — a `world3d.contactPairsWith` dump on the frozen chassis showed
+ * the wedge's own RISE segment holding a contact against a FIXED collider the whole time, not just
+ * the ball. `chassis3dReachShapes`'s two-box wedge is thicker than the flat crossbar it replaced
+ * along its own slope (a tilted box's vertical footprint at a shallow rise angle is wider than its
+ * own half-thickness), so a leading edge that clears the 0.354 rim ANALYTICALLY (the flat number)
+ * still swept low enough, mid-slope, to catch whatever real CAD feature sits there — the CAD-hull
+ * probe (`scratch/wedge_cad_probe2.ts`) could not reproduce the exact hit against the eight named
+ * `flower_support` hulls or the ring plates' own bore, which means it is a mesh feature finer than
+ * the bounding-box model those checks already use elsewhere in this file, not one of the eight
+ * named parts. 0.60 was found EMPIRICALLY (the same script, raised until the robot reached within
+ * 0.5 in of true flush) rather than derived, and is flagged here as the open item: the wedge no
+ * longer jams, but it also no longer slides quite as far under a ball's own natural ground
+ * clearance (≈0.458 at the leading edge's own offset — see `BB_RAMP_OUT`'s header) as the owner's
+ * target height would have, which is most of why the PURE-PHYSICS extraction below does not yet
+ * clear every pose without the fallback (`BB_RAMP_STALL_S`) — see the flower3d lane's own report.
+ */
+export const BB_RAMP_LEAD_Z = 0.6;
+/** the wedge's leading-edge reach past the tip line (in): as far under a flush POLLEN's own
+ * centre (`BB_PLACE_REACH`, 2.384) as the peanut supports (`BB_FLOWER_PEANUT_U`) allow. */
+export const BB_RAMP_OUT = BB_FLOWER_PEANUT_U - BB_RAMP_PEANUT_CLEAR; // 3.42
+
+/** how far below level the RAIL lies (rad) — solved so `BB_RAMP_L` at this angle lands the
+ * rail's own tip exactly on the wedge's leading edge (`BB_RAMP_OUT`, `BB_RAMP_LEAD_Z`), pivot
+ * unchanged: `L·sinθ = BB_RAMP_PIVOT_Z − BB_RAMP_LEAD_Z` = 1.78, `L·cosθ = BB_RAMP_OUT +
+ * BB_RAMP_PIVOT_BACK` = 5.42, `θ = datan2(1.78, 5.42)` — the deterministic `atan2`, not
+ * `Math.atan2`, because this value is exported and every peer must load the same bits. */
+export const BB_RAMP_ANGLE = datan2(BB_RAMP_PIVOT_Z - BB_RAMP_LEAD_Z, BB_RAMP_OUT + BB_RAMP_PIVOT_BACK);
+/** the rail's own length (in), solved alongside `BB_RAMP_ANGLE` above: `(OUT + pivotBack) /
+ * cos(angle)` ≈ 5.705. `Math.sqrt`/division are IEEE-754 correctly-rounded (unlike `Math.hypot`
+ * or `Math.atan2`), so this is as safe for lockstep as `hyp` in `src/math.ts`. */
+export const BB_RAMP_L = (BB_RAMP_OUT + BB_RAMP_PIVOT_BACK) / dcos(BB_RAMP_ANGLE);
+/** the rail's tip height off the tiles (in): `pivotZ − L·sin(angle)` — reproduces
+ * `BB_RAMP_LEAD_Z` to within `dsin`'s own ~1e-11 error, which is the whole point of solving `L`/
+ * `BB_RAMP_ANGLE` above rather than typing `BB_RAMP_LEAD_Z` a second time. Kept as its own export
+ * — `scene/renderRobots.ts`'s pivot-frame placement reads it, same as before. */
 export const BB_RAMP_TIP_Z = BB_RAMP_PIVOT_Z - BB_RAMP_L * dsin(BB_RAMP_ANGLE);
-/** the deployed crossbar's reach past the tip line (in): `L·cos(angle) − pivotBack` ≈ 3.02. */
-export const BB_RAMP_OUT = BB_RAMP_L * dcos(BB_RAMP_ANGLE) - BB_RAMP_PIVOT_BACK;
+
+/** the wedge's rise angle, leading edge → crest (rad): 25°, inside the owner's 20–30° band
+ * ("a slight slope up"). */
+export const BB_RAMP_WEDGE_RISE_ANGLE = (25 * Math.PI) / 180;
+/** the wedge's drop angle, crest → the U (rad): 65°, steeper than the rise on purpose ("a larger
+ * slope down"). Both angle literals are plain radian constants (no trig involved in writing
+ * them), so there is no determinism concern in typing degrees directly. */
+export const BB_RAMP_WEDGE_DROP_ANGLE = (65 * Math.PI) / 180;
+/** how much the wedge rises from the leading edge to the crest (in) — chosen so the crest lands
+ * at exactly 1.00 REGARDLESS of `BB_RAMP_LEAD_Z` (see `BB_RAMP_CREST_Z`'s own header for the
+ * mid-plate clearance this buys), so the LEAD_Z jam fix above could not silently push the crest
+ * into the ceiling. */
+const BB_RAMP_WEDGE_RISE = 1.0 - BB_RAMP_LEAD_Z;
+/** how far the crest sits back from the leading edge (in): `rise / tan(riseAngle)`, via `dtan` —
+ * forward trig from a chosen rise and a chosen angle, no inverse function. */
+export const BB_RAMP_CREST_OUT = BB_RAMP_OUT - BB_RAMP_WEDGE_RISE / dtan(BB_RAMP_WEDGE_RISE_ANGLE);
+/** the crest's own height off the tiles (in): `BB_RAMP_LEAD_Z + BB_RAMP_WEDGE_RISE` = 1.00. A
+ * POLLEN resting here keeps its own top, `+ 2·BB_POLLEN_R` = 3.80, under the mid plate's 3.904
+ * ceiling — 0.104 in of clearance. */
+export const BB_RAMP_CREST_Z = BB_RAMP_LEAD_Z + BB_RAMP_WEDGE_RISE;
+/**
+ * ⚠️ **THE DROP POINT'S OWN HEIGHT IS PINNED INDEPENDENTLY OF `BB_RAMP_LEAD_Z`, AND THAT
+ * INDEPENDENCE IS LOAD-BEARING.** First draft chose "the pocket floor" (z ≈ 0.30, below the lower
+ * plate's own 0.354 rim, solid outside the bore) and froze the chassis dead 2.27 in short of flush
+ * — `scratch/ramp_debug.ts` + `world3d.contactPairsWith` pinned it on the wedge. The obvious fix,
+ * tying `BB_RAMP_DROP_Z` to `BB_RAMP_LEAD_Z` (raised to 0.60 for the SAME jam — see that constant's
+ * own header), broke a DIFFERENT thing: `BB_RAMP_REACH.z` is `[BB_RAMP_DROP_Z, BB_RAMP_CREST_Z]`,
+ * read by the 2D pipeline's own z-bite (`retrieveFromFlower`) against the model's fixed bottom-
+ * POLLEN centre (`BB_FLOWER_FLOOR_Z + BB_POLLEN_R` = 1.754) — `[0.60, 1.00]` overlaps that ball's
+ * `[0.354, 3.154]` span by only 0.40 in, under `BB_FLOWER_BITE`'s 0.5-in floor, and the 2D ramp
+ * gate (PERMANENT, byte-identical by rule) went dark. `BB_RAMP_DROP_Z` is pinned back to 0.42 —
+ * the owner's own original "z 0.40–0.45" target, comfortably clear of the 0.354 rim on its own
+ * measurement, restoring 0.58 in of 2D overlap — while `BB_RAMP_LEAD_Z` stays at the jam fix's
+ * 0.60. The two no longer move together, which is why this is its own constant instead of a
+ * `BB_RAMP_LEAD_Z`-relative formula now.
+ */
+export const BB_RAMP_DROP_Z = 0.42;
+/** how much the wedge falls from the crest to the drop point (in): `crest − drop`. */
+const BB_RAMP_WEDGE_FALL = BB_RAMP_CREST_Z - BB_RAMP_DROP_Z;
+/** how far the drop point sits back from the crest (in): `fall / tan(dropAngle)`, via `dtan`. */
+export const BB_RAMP_DROP_OUT = BB_RAMP_CREST_OUT - BB_RAMP_WEDGE_FALL / dtan(BB_RAMP_WEDGE_DROP_ANGLE);
+
 /** how long the ramp takes to swing between its two poses (s). APPROX — a servo-driven drop;
  * the sim credits the ramp only once it has arrived (`bbRampSettled`), and the renderer eases
  * the same interval off `RobotState.bbRampAt`, so the drawn ramp and the credited one agree. */
 export const BB_RAMP_DEPLOY_S = 0.3;
+/** how thick the wedge's two boxes are, perpendicular to their own slope (in, half-extent). A
+ * thin blade, not the old crossbar's chunky 0.5-in box — the SHAPE is now what does the work, not
+ * the mass of material. Lives here (not `sim3d/bodies.ts`, where it started) because
+ * `scene/renderRobots.ts` draws the same two boxes and may not import the lazy physics chunk to
+ * reach it — this file is the one both sides can see. */
+export const BB_RAMP_WEDGE_THICK = 0.125;
 export const BB_RAMP_REACH: BbFlowerReach = {
   out: [0, BB_RAMP_OUT],
   half: null, // the full mouth width
-  z: [BB_RAMP_TIP_Z, BB_RAMP_TIP_Z + (BB_RAMP_OUT * dsin(BB_RAMP_ANGLE)) / dcos(BB_RAMP_ANGLE)],
+  // the wedge's own min/max height (drop .. crest), not one flat crossbar's — see this
+  // section's own header for the three named points.
+  z: [BB_RAMP_DROP_Z, BB_RAMP_CREST_Z],
 };
+
+/**
+ * ⚠️ **A FALLBACK ONLY** — the wedge above is the PRIMARY extraction mechanism now: once
+ * deployed and settled, it is a real collider (`chassis3dReachShapes`) and an ordinary contact
+ * push, over several ticks of the driver holding forward stick, rides a bottom POLLEN up the rise
+ * and over the crest, at which point it is outside `BB_FLOWER_OPEN_R` and `derive.ts`'s own tube
+ * test un-tags it — no teleport needed. This constant is how long the SAME candidate POLLEN may
+ * sit gated (in the retrieval opening, archetype-eligible) with the wedge doing nothing
+ * observable before `flowerRetrieve3d` falls back to a small deterministic shove — for the
+ * leaning-column failure the owner named ("I think it depends on how the pollen are stacked"),
+ * where the element ABOVE the bottom one has arched against the peanut supports and pins it in
+ * place no amount of forward push alone clears. APPROX pending the next measurement pass.
+ */
+export const BB_RAMP_STALL_S = 0.25; // INTERIM 2026-09-20: was 1.2 — a retrieval took 1.85 s; the wedge pass that makes the physics carry it is in progress
 
 /**
  * ⚠️ **HOW FAR OFF THE MOUTH'S CENTRELINE A FLOWER'S BOTTOM POLLEN IS RELEASED, WHEN A RAMP
@@ -1093,14 +1309,19 @@ export function bbFlowerReachOf(kind: BbIntakeKind, rampReady: boolean): BbFlowe
  * ⚠️ **HOW FAR AN ARCHETYPE'S OWN REACH HARDWARE STICKS OUT PAST `bbFootprint`'S OWN EDGE, FOLDED**
  * (in) — the one number `spawn.ts` needs to keep a wall-flush 3D start from POPPING (owner,
  * 2026-09-20: "It should be a collider."). MEASURED: a `siderollers` build's wheels sit
- * `BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R` = 2.65 in past the footprint's tip line, and — near the
- * floor, where the wheel box (`BB_SIDE_ROLLER_H` = 2 in tall) sits — Rapier's own SAT pick
- * between "push the box out sideways" (2.65 in) and "push it out through the floor" (its OWN
- * height, 2.5 in — the shorter escape) goes to the floor: it meets the real floor collider
- * immediately, the two corrections cancel, and a wall-flush spawn never settles at all (measured:
- * a `back`-mount `siderollers` build on the REAR-WALL anchor, 300 ticks / 5 s, ZERO drift on
- * every axis — not slow, exactly frozen, because the two opposing pushes are equal and opposite
- * every tick). `ramp` is FOLDED at spawn — `RobotState.bbRampOut` is absent, reading false, with
+ * `BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R` = 1.9 in past the footprint's tip line (was 2.65 in
+ * before the wheels were tucked in front of the drive wheels, 2026-09-20) — still enough to pop a
+ * wall-flush spawn if it were left to Rapier's own contact solve instead of placed with zero
+ * protrusion up front: near the floor, where the wheel box (`BB_SIDE_ROLLER_H` = 2 in tall) sits,
+ * an embedded box escapes whichever of "push it out sideways" (1.9 in) or "push it out through
+ * the floor" (its OWN height, 2.5 in) is shorter, and either pick is a POP the driver did not
+ * cause. At the OLD 2.65-in reach the floor pick won and cancelled dead against the real floor
+ * collider (measured: a `back`-mount `siderollers` build on the REAR-WALL anchor, 300 ticks / 5 s,
+ * ZERO drift on every axis — not slow, exactly frozen, because the two opposing pushes were equal
+ * and opposite every tick); at 1.9 in the sideways escape is now the shorter of the two, but the
+ * fix does not depend on which axis wins — placing the anchor with zero protrusion in the first
+ * place (below) avoids the SAT pick entirely, in either direction. `ramp` is FOLDED at spawn —
+ * `RobotState.bbRampOut` is absent, reading false, with
  * no deploy in flight, so `bbRampSettled` is false and `chassis3dReachShapes` gives it no
  * collider at all — so this is zero for every archetype but `siderollers` today, and it stays
  * here (not a `siderollers`-only signature) for the day a fourth archetype ships its own
@@ -2819,6 +3040,37 @@ export const BB3_HIVE_TRAY_MASS = 13;
  * manual scores a TIP when the damper contacts the frame (§10.5.1 B), which is this. */
 export const BB3_HIVE_STOP_DEG = 29;
 export const BB3_HIVE_REST_W = 0.15;
+
+/**
+ * ⚠️ **A TIP THE TABLE CALLED FOR IS COMMITTED TO THE FAR STOP** (owner, 2026-09-20: "people are
+ * still reporting hive not tipping in some cases") — the rad/s `hiveDetentHold` creeps a STALLED
+ * swing forward at. It is an ANTI-STALL, not a swing rate: it binds only while the tray is
+ * between its stops and turning toward the far stop SLOWER than this, which a healthy swing
+ * never is (measured 0.20–0.50 rad/s throughout).
+ *
+ * The thing that stalls a freed see-saw is the game's own documented mechanic. `hiveTakingSide`
+ * hands over at the release, so a driver who keeps firing through a swing is filling the RISING
+ * cell — and a load in the rising cell is torque on the WRONG side of the pivot. MEASURED (fuzz
+ * seed 9039, `scratch/hivemiss.ts`, 420 randomized volleys): a 4P3N tip broke away at tick 204,
+ * spilled at level on 299, reached **−24.2°** — five degrees short of the far stop — and was
+ * turned around there by 1 POLLEN + 3 NECTAR that had landed in the rising cell, coasting back to
+ * its OWN stop, where the pin re-engaged. No tip, the load on the floor, and the state machine
+ * left `released` latched (see `hiveDynamicTick`'s failed-swing reset, which is the other half of
+ * this bug). 5 of 420 runs ended that way; 8 entered the latched state.
+ *
+ * Past CENTRE is not enough, which is why this runs to the far stop rather than to level: every
+ * measured reversal happened well past level, at −24.2°, −20.6° and −9.0°.
+ *
+ * ⚠️ **AND IT IS 0.12, NOT A RATE THAT SETS THE PACE.** The first pass made it 0.25 — the mean
+ * rate of a nominal 4 s swing — and applied it from the breakaway. A free swing accelerates from
+ * zero and decelerates into its stop, so a floor AT the mean is well above the curve at both ends:
+ * MEASURED, the lane's 8-POLLEN reference swing fell from 4.12 s to 3.12 and broke the owner's own
+ * `BB_TIP_SWING_S` ruling. At 0.12, binding only between the stops, the same reference measures
+ * **4.08 s** — 0.04 s of the tail — and every stall still clears. At the cell's own 19.8-in arm
+ * 0.12 rad/s is 2.4 in/s of carry, a hundredth of the slowest shot the tray sees, and the measured
+ * spill dispersal is unchanged (mean 61.0 in from the pivot either side, max 106.9).
+ */
+export const BB3_HIVE_TIP_CREEP_W = 0.12;
 
 // ── BEGIN GENERATED: hive-calibrate ─────────────────────────────────────────────────────────
 // Written by `npm run hive-calibrate`. DO NOT HAND-EDIT the four values below — edit the

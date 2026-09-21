@@ -74,6 +74,13 @@ const intakeParam = urlParams.get('intake');
 const parkAtFlower = urlParams.get('park') === 'flower';
 const parkOpen = urlParams.get('park') === 'open'; // robot 0 alone on open tiles, facing −x
 const deployRamp = urlParams.get('ramp') === '1';
+// `&chassis=orange&accent=black&decal=racing&plate=bold` — cosmetics on every robot (pictures)
+const cosmeticParams = {
+  chassisColor: urlParams.get('chassis') ?? undefined,
+  accent: urlParams.get('accent') ?? undefined,
+  decal: urlParams.get('decal') ?? undefined,
+  plate: urlParams.get('plate') ?? undefined,
+};
 
 /**
  * Places one already-staged ball INSIDE alliance's UP cell, resting a few inches above its own
@@ -121,8 +128,8 @@ function setup(id: number, alliance: Alliance, startIndex: number): RobotSetup {
     alliance,
     spec:
       intakeParam === 'siderollers' || intakeParam === 'ramp'
-        ? { ...BB_DEFAULT_SPEC, bbMech: { ...BB_DEFAULT_SPEC.bbMech!, intake: { kind: intakeParam } } }
-        : { ...BB_DEFAULT_SPEC },
+        ? { ...BB_DEFAULT_SPEC, ...cosmeticParams, bbMech: { ...BB_DEFAULT_SPEC.bbMech!, intake: { kind: intakeParam } } }
+        : { ...BB_DEFAULT_SPEC, ...cosmeticParams },
     assists: { ...DEFAULT_ASSISTS },
     startIndex,
   };

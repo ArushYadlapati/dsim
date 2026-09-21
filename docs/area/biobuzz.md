@@ -156,6 +156,41 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   those tips began under-seated. The HIVE3D lane's "DOWN cell" block is the repro. `hiveTakingSide`
   rather than `up` because it is already the game's one answer to which cell is taking, so a driver
   filling the rising tray through the second half of a swing is counted as he fires.
+- ⚠️ **AND A TIP THE TABLE CALLED FOR IS COMMITTED TO THE FAR STOP — THE SWING WAS BEING TURNED
+  AROUND BY THE GAME'S OWN MECHANIC** (owner report 2026-09-20: "people are still reporting hive not
+  tipping in some cases"). `scratch/hivemiss.ts` is the fuzzer: 420 seeded scenarios of turret and
+  dumper volleys into the up cell of either alliance, every `BB_TIP_POLLEN` row, full cells, shots
+  arriving mid-swing, a robot parked under the tray — judged against an INDEPENDENT geometric count
+  (centre inside the taking cell's interior, no seat-depth rule) rather than against `contents`.
+  It found the misses in **two** places and neither was registration:
+  - **The swing reverses.** `hiveTakingSide` hands over at the release, so a driver firing through a
+    swing fills the RISING cell — and that load is torque on the WRONG side of the pivot. Seed 9039:
+    a 4P3N cell broke away at tick 204, spilled at level on 299, reached **−24.2°** (five degrees
+    short of the far stop) and was turned around there by 1 POLLEN + 3 NECTAR that had landed in the
+    rising cell, coasting back to its own stop. The balls dump on the floor and NO TIP is scored.
+    `hiveDetentHold` now creeps a stalled swing forward at `BB3_HIVE_TIP_CREEP_W` (0.12 rad/s),
+    between the stops only. It is an ANTI-STALL, not a rate: a healthy swing runs 0.20–0.50 rad/s
+    and never meets it, so the lane's 8-POLLEN reference swing is **4.12 s free → 4.08 s**. The
+    first value tried, 0.25 (the mean rate of a nominal 4 s swing), applied from the breakaway, put
+    that reference at **3.12 s** and broke the owner's own `BB_TIP_SWING_S` ruling — a free swing
+    accelerates from zero and decelerates into its stop, so a floor AT the mean is well above the
+    curve at both ends.
+  - **And the state machine had no failure path, which is what made it permanent.** `tipping` and
+    `released` could only be cleared at the FAR stop, so a tray that came back sat with `released`
+    latched for the rest of the match — `hiveTakingSide` names `otherSide(up)` forever, `derive.ts`
+    fills `contents` from the DOWN cell, and the pin, the HUD's "N MORE TO TIP" and §10.5 C all read
+    it. The up cell can then be filled to the brim and nothing happens: a dead hive with a lying
+    readout. 8 of 420 runs reached it. `hiveDynamicTick` resets to `tipping: 0, released: false`
+    when the tray is at rest on its OWN stop, unconditionally on the load — if the table still calls
+    for a tip the pin lifts again the next tick.
+  **MEASURED, same 420 seeds either side:** 386 armed → 382 tipped with **5 missed** and 8 trapped,
+  against 386 → 386 with 0 missed and 0 trapped. Pin lift from the threshold element entering is
+  mean **1.0** ticks, p95 **1**, both (the 2026-09-19 geometry membership owns that half); swing
+  stop-to-stop mean 176.8 → 174.7 ticks, p95 264 → 251. No phantom: 0 breakaways without a
+  table-satisfying up cell either side, and 120 MISS-RAIN runs score 0 tips and move the tray not at
+  all either side. The creep flings nothing — spill dispersal is 3895 → 3935 elements tagged at mean
+  61.0 → 61.1 in from the pivot, max 106.9 → 106.9. The fast subset, worst seeds included, is
+  `commitChecks` in `scripts/smoke-biobuzz/hive3d.ts`.
 - ⚠️ **`BB3_HIVE_DYNAMIC = false` IS NOT THE ONE-WORD REVERT IT IS DOCUMENTED AS.** `bb.spill` —
   G409's entire tag — is written only inside `hiveDynamicTick`; the kinematic path never writes
   it, and all four G409 checks sit inside `if (BB3_HIVE_DYNAMIC)` blocks, so flipping the word
@@ -181,6 +216,60 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   a 0.75-in collision skin or a 260 in/s shot tunnels; `src/sim/spawn.ts` `coerceSpec` must carry
   `heightIn` across the way it carries `bbMech`; the rest-speed snap must run EVERY tick under
   the threshold (a one-shot edge let contact bias walk a settled line 2 in).
+- ⚠️ **THE OFF-FLOOR REST SNAP FROZE A BALL IN AN UNSTABLE PERCH RATHER THAN LETTING IT FALL**
+  (owner report 2026-09-20: "balls are able to get stuck on top of the biobuzz panel with
+  seemingly nothing actually holding it up"). `scratch/ledge-table.ts`'s CAD survey found the
+  mechanism: every physical hive-frame/flower-support hull (`PHYSICAL_STATIC_CLASSES`) measures
+  narrower than a POLLEN (2.8in) or has NO flat top at all — a single decimated vertex or ridge, a
+  round tube or angled beam tessellated to 8–16 points. A real ball on that would roll off from
+  any disturbance, but the rest snap zeroed its velocity every qualifying tick before gravity's
+  own tangential pull could build enough speed to read as moving again. A rain probe
+  (`scratch/rain-probe.ts`, both ball sizes, zero and lateral drop velocity, 600 ticks) found
+  132/1404 drops over every physical static ending elevated and untagged, worst on the base-level
+  foot bar (20/90). `groundRoll3d` now skips the hold for an UNTAGGED (`state.kind !== 'element'`
+  — a cell/tube member is untouched) element touching ONLY a `ConvexPolyhedron` — the shape both
+  CAD hull classes build with, fixed OR on the DYNAMIC hive tray alike, and nothing else in this
+  build — and gives it a tiny deterministic "vibration" instead: a hash of `(id, tick,
+  world.rngState)`, rngState READ-only and never advanced, `dsin`/`dcos` only. MEASURED after:
+  88/1404 (every representative structure at or near 0/90 except a couple of exact-coordinate
+  hull-intersection corners a vibration cannot punch through — a true multi-hull cage, confirmed
+  by retesting at 2–3× the shipped kick with no change — and the flower's own hardware, wedged
+  partly against its ring plate's genuinely broad TRIMESH, which this fix deliberately still
+  counts as legitimate support). The vibration gives up after `BB3_VIBE_GIVEUP_TICKS` (30) and
+  freezes like the old snap: a wider budget (90) cleared more of the probe (59/1404) but let the
+  "parked elements on the HIVE finalize on the HOLD" settle check regress from 31 ticks to 398,
+  because an element can chain through several perches on the way down and each restarts its own
+  budget. `step3d` perf unaffected (measured 0.305 ms/tick with five perched elements, budget
+  1.5); two-run determinism holds. Checks in `scripts/smoke-biobuzz/hive3d.ts`.
+- ⚠️ **THE HIVE FOOT BAR IS A CHANNEL, NOT A SOLID BLOCK** (owner, 2026-09-20, second report the
+  SAME day as the strafe-catch fix above: "balls are able to get stuck on top of the biobuzz
+  panel with seemingly nothing actually holding it up" / "an invisible wall/bump wherever the
+  drawn bar is lower than 2.15 in"). The strafe fix folded each `am-5878 Sheet Metal Foot Bar` and
+  its two `am-5879 Frame Foot` pads into ONE box at the union's full AABB — 1.98 in wide × 38.94 in
+  long × 2.15 in tall, EVERYWHERE. MEASURED off the shipped GLB (`scratch/footbar-ramp-fine.ts`,
+  `scratch/footbar-comp2.ts` — whole-connected-component `zMax`, the rule `GROUND_BEAM_MAX_Z`'s own
+  header warns a per-triangle test gets wrong by slicing the A-frame leg's own flared foot into the
+  bucket, which very nearly overlaps this bar's x-range): the true cross-section is a shallow
+  pressed channel, a back flange ramping ~0 → 2.14 in over 0.62 in of width then dropping sharply to
+  a floor at **0.02–0.10 in** for the remaining **1.32 of its 1.98-in width**, the whole 38.94-in
+  length between the two feet. `slimFootBars` (`fieldColliders.ts`) narrows the bar's own box to a
+  `FOOT_BAR_FLANGE_W` (0.66 in) flange at the true outer face, drops the floor collider entirely
+  (rounds to zero, same treatment as the flower under-field brackets a line below), and boxes the
+  two feet at the bar's FULL original width so they still cover the true wider floor near their own
+  ~2.3-in ends. ⚠️ **THE FLANGE AND THE FEET MUST TOUCH, NEVER OVERLAP** — a first pass boxed the
+  feet sharing the flange's exact outer face (geometrically the "obvious" fix), and two coincident
+  static Rapier colliders froze a strafing chassis dead at y≈8.8, nowhere near either foot;
+  narrowing the overlap to a hair's width still cost a dip to 1.9 in/s. Building the feet at
+  `[flangeInner, fullInner]` (touching the flange's own inner face, never covering its span) removed
+  it outright. MEASURED after: the strafe check is clean at every sampled y (not merely above the
+  3 in/s floor), a chassis driven in from the field's own driving lanes crosses the 1.32-in floor
+  without slowing and stops flush at the real flange, a ground POLLEN rolls across the same floor
+  without deflecting, and `containmentFixes` stays 0 for a chassis spawned where the old box used to
+  be solid. KNOWN RESIDUAL: the flange's own 0.62-in ramp is still one box at the plateau height
+  (a box cannot follow a ~3.2-in/in slope without ~20 steps to hold 0.1 in everywhere), and the
+  feet's own faceted top (bolt holes, bevels) is smoothed by their box the same way — both narrower
+  than the 1.98-in bug this fixes and both pre-existing at that scale. Checks appended in
+  `scripts/smoke-biobuzz/sim3d.ts` right after the strafe check.
 - **Drive feel is the shared wrench.** Parity checks measure in OPEN FIELD: two solvers' wall
   contact legitimately differs; the drive model itself matches 2D to four decimals.
 - **Field geometry is CAD-derived** (owner decision 2026-09-17, licence risk accepted).
@@ -512,6 +601,56 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     radius, plus margin. MEASURED transit (release tick to swallow): 8–13 ticks (0.13–0.22 s),
     never instant, never a second tunnel through the bar. Every other archetype (`siderollers`,
     and the direct proximity path in general) is unchanged: still a straight `capturePollen`.
+  - ⚠️ **THE FLAT CROSSBAR BECAME A WEDGE, 2026-09-20** (owner: "It is incredibly hard to get the
+    ramp under the pollen right now... a slight slope up and a larger slope down for it to first
+    get under the pollen... just pushing on the pollen with whatever is likely enough to get it up
+    due to impulse but also the ball's geometry"; "the old ramp works 99% of the time... when it
+    does not work, the pollen don't budge... I think it depends on how the pollen are stacked").
+    The flat crossbar's own vertical leading face met a bottom POLLEN BELOW its centre and shoved
+    it square into the tube's back; a scattered column leaning on the bottom ball toward the field
+    side arched against the peanut supports and nothing moved. `chassis3dReachShapes` now builds
+    the crossbar as TWO tilted boxes (`config.ts`'s "THE DEPLOYABLE RAMP": a thin LEADING EDGE at
+    `BB_RAMP_OUT`/`BB_RAMP_LEAD_Z`, a CREST at `BB_RAMP_CREST_OUT`/`BB_RAMP_CREST_Z` = 1.00 — 0.104
+    in under the mid plate's 3.904 ceiling — and a steep DROP back into the U), the same
+    `pitchQuatY` composition the rails already use, at the wedge's own rise/drop angles rather than
+    a `ColliderDesc.convexHull` (a hull needs no new Rapier surface for the rails, but the swing
+    guard queries with a bare `RAPIER.Cuboid`, and two boxes reuse that unchanged).
+    `scene/renderRobots.ts` draws the same two boxes in place of the old flat bar, under the SAME
+    node name (`robot:ramp:bar:<edge>`, now a group) the RENDER lane already found by.
+    ⚠️ **`BB_RAMP_LEAD_Z` IS 0.60, NOT THE OWNER'S OWN "0.40–0.45" TARGET** — a real drive-in
+    (`scratch/ramp_debug.ts`) at 0.42 stopped the chassis dead 2.27 in short of flush, frozen
+    (`world3d.contactPairsWith` pinned a contact on the wedge itself, not the rails); the CAD-hull
+    probe (`scratch/wedge_cad_probe2.ts`) could not reproduce the exact hit against the eight named
+    `flower_support` hulls or the ring plates' own bore, so it is a mesh feature finer than those
+    checks already resolve elsewhere in this file — an OPEN measurement gap, not a solved one.
+    0.60 was found empirically (raised until the chassis reached within 0.5 in of true flush) and
+    costs some of the "slip under the ball" clearance the lower target would have bought, which is
+    most of why the wedge alone does not yet clear every pose (below). `BB_RAMP_DROP_Z` is pinned
+    at 0.42 SEPARATELY from `BB_RAMP_LEAD_Z` (it used to move with it): `BB_RAMP_REACH.z` is
+    `[BB_RAMP_DROP_Z, BB_RAMP_CREST_Z]`, read by the PERMANENT 2D pipeline's own z-bite against the
+    model's fixed bottom-POLLEN centre (1.754) — tying `DROP_Z` to the 0.60 `LEAD_Z` fix dropped the
+    2D overlap to 0.40 in, under `BB_FLOWER_BITE`'s 0.5-in floor, and went dark for every 2D ramp
+    pose. The two heights are independent constants now for exactly that reason.
+    ⚠️ **THE WEDGE DOES NOT YET REACH 100% ON PHYSICS ALONE, SO THE OLD RELEASE SURVIVES AS A
+    FALLBACK, RESTRUCTURED.** `flowerRetrieve3d`'s ramp branch no longer releases on the proximity
+    gate at all — it tracks how long the SAME bottom POLLEN has sat gated (`RobotState.
+    bbRampStallId`/`bbRampStallSince`, `BB_RAMP_STALL_S` = 1.2 s) and only then intervenes: with a
+    column above the stuck ball it shoves that ABOVE element (a small deterministic hash-driven
+    kick, the same discipline `engineImpl.ts`'s perched-element vibration follows — `rngState`
+    read-only, `dsin`/`dcos` only) rather than the ball itself; with nothing to unlean it falls back
+    to the old teleport-release, now anchored behind `BB_RAMP_DROP_OUT` (the wedge's own innermost
+    point now that it is two boxes wide, not the single point the flat crossbar was — releasing
+    at the old `BB_RAMP_OUT`-relative point spawned the ball INSIDE the drop segment's own solid
+    box). The stall clock reads the MOUTH gate only (`bbFlowerAtIntakeMouth`, a function of the
+    robot's pose and the flower's fixed axis, never `ball.z`) — gating it behind the real z-bite
+    too, tried first, meant a ball the wedge pressed out of the eligible band without lifting it
+    stalled the clock forever, since nothing ever revisited a gate that kept failing. MEASURED (a
+    real drive-in, `scratch/ramp_debug.ts`): the fix reaches flush without jamming, and pop-to-
+    hopper end to end is 111–112 ticks (1.85–1.87 s) — mostly the stall wait, not the drive.
+    A FULL measured sweep (300+ runs across standoff/lateral/angle/column-height/scatter-seed, the
+    task this bullet answers to) is the open item for the next pass; what shipped here is real,
+    verified in the SIM3D/FLOWER3D/RENDER/ROBOT lanes and by direct physics debugging, but not yet
+    that scale of statistical claim.
   - ⚠️ **THE RAMP SWING GUARD: A DEPLOY OR FOLD THAT WOULD CARRY THE RAMP INTO A STATIC REVERSES**
     (owner, 2026-09-20: deploying into a FLOWER should be refused, "same with un-deploying").
     `bbRampSwingProgress(r, time)` (`robot.ts`) is the ONE eased curve (smoothstep,
@@ -552,6 +691,76 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     stage position's `y`), but a few CAD-derived numbers that assumed the wheel sat near the
     chassis centreline (drive-in standoff, the FULL-predictor wall-standoff comparison) now read a
     wider but still-passing tolerance; their own comments carry the measurement.
+  - ⚠️ **SIDE ROLLERS TUCKED IN FRONT OF THE DRIVE WHEELS, 2026-09-20** (owner: "right in front of
+    the wheels... not sticking out like that" — the old build hung each wheel on its own outrigger
+    off the front brace). `BB_SIDE_ROLLER_R` 0.75 → 1.0, `BB_SIDE_ROLLER_OUT` 1.9 → 0.9: the wheel
+    spans −0.1 … 1.9 in about the tip line (was 1.15 … 2.65), its back half now under the side
+    arm's own nose and its front poking only 1.9 in past the tip. At flush the x-bite against a
+    FLOWER's bottom POLLEN is 0.92 in, a ≈0.42-in standoff-tolerance margin over the 0.5-in
+    `BB_FLOWER_BITE` floor — as tucked as the geometry allows without losing the bite;
+    `config.ts`'s own header on `BB_SIDE_ROLLER_R` carries the full derivation. The bracket in
+    `scene/renderRobots.ts` is a single diagonal gusset from the arm's own nose to the wheel's
+    axis now, not a level outrigger off the brace.
+  - ⚠️ **SIDE ROLLERS ARE SOLID CYLINDERS NOW, AND THE GATE IS CONTACT, NOT A BOX — 2026-09-20**
+    (owner: "the side roller should also be larger in diameter" and "it should also be colliding
+    with everything. It is a physical thing"). `BB_SIDE_ROLLER_R` 1.0 → 1.5 (a 3-in compliant
+    wheel) and `BB_SIDE_ROLLER_OUT` 0.9 → 0.4, so the wheel spans −1.1 … 1.9 in about the tip
+    line — the SAME 1.9-in front poke as before (`OUT + R` unchanged: 0.9+1.0 = 0.4+1.5), the
+    extra diameter going backward, further under the side arm's nose. `Chassis3dShape` grew a
+    `shape: 'box' | 'cylinder'` field: a side roller's wheel is `ColliderDesc.cylinder(halfHeight,
+    radius)` with its axis composed onto world Z (`reachColliderDesc`'s `CYL_AXIS_Z`, a fixed
+    +90°-about-X quaternion — Rapier's own cylinder stands on local Y), in the DEFAULT collision
+    group (`elementSolid: true`, same as the ramp's bar) rather than `GROUP_POCKET` — it meets an
+    element, a wall, another robot, everything, and can never overlap a POLLEN. MEASURED: a
+    30-in/s ground POLLEN fired head-on at a wheel deflects, never crosses it; between the wheels
+    it still enters the mouth exactly as before.
+  - ⚠️ **A SOLID WHEEL CANNOT OVERLAP THE POLLEN IT GRIPS, SO THE RETRIEVAL GATE IS A CONTACT
+    RADIUS NOW, NOT THE OLD X-BITE BOX** — the box test assumed the wheel and the ball could sit
+    dug into each other by a fixed depth, which stopped being true the instant the wheel became a
+    real collider (a previous pass on this date found a real drive-in no longer landed inside the
+    old ≈0.42-in window and papered over the mismatch by teleporting the robot in the smoke check).
+    `bbFlowerAtIntakeMouth` (`play.ts`) tests the xy distance from a wheel's own axis to the
+    POLLEN's centre against `BB_SIDE_ROLLER_GRIP` (`R + BB_POLLEN_R + BB_SIDE_ROLLER_CONTACT_TOL`,
+    ≈3.25 in) AND the existing Z-BITE, same predicate in 2D (which has no solid wheel, so the
+    robot CAN overlap — the same ≤ test, with no lower bound, still works) and 3D. The drive-in
+    smoke fixture was restored to a REAL drive (no analytic reseat), tolerance re-measured at
+    1.6 in (was 1.5 at the smaller wheel).
+  - ⚠️ **THE POLLEN COMES OUT PHYSICALLY HERE TOO, GENERALISING THE RAMP'S OWN RELEASE — AND
+    GETTING THE RELEASE POINT RIGHT TOOK THREE WRONG ONES, EACH MEASURED.** `flowerRetrieve3d`'s
+    `siderollers` branch releases the bottom POLLEN as a `ground` element (never `capturePollen`s
+    outright) exactly like the ramp's, and `bbIntakeExtraReach` grew a `siderollers` term
+    (`BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R`) so the intake's own pull reaches out to sweep it in.
+    Where to put it took three measured failures: retreating along `u` (toward the chassis, past
+    the flower's own axis) ran the release straight into the wheel's own new solid body — MEASURED,
+    a continuous drive through that overlap threw the element clear across the field the next tick
+    (Rapier's own deep-penetration recovery, not a bounce); retreating further, to just behind the
+    wheel's own inner edge (mirroring the ramp's own offset), found the pocket a side-roller
+    archetype retreats into is only `bbIntakeReach` deep (3 in) and the wheel's span already
+    reaches 1.1 in into it — MEASURED 0.2 in of headroom, not enough for a 2.8-in POLLEN to occupy
+    without also touching the frame face; and leaving the release exactly at the flower's own true
+    position (on the theory that a gripping wheel already presses in a little, which Rapier
+    resolves as an ordinary contact force) MEASURED WRONG THE OTHER WAY — the ball's world position
+    had not moved, so `derive.ts`'s tube test re-tagged it `element`/`flower:i` again the very next
+    tick, invisibly (the stack never shrank). The release that works leaves `u` UNCHANGED (the
+    true position already sits ≈0.5 in past the wheel's own outer edge — that is the contact
+    condition) and shifts `v` toward the mouth's centreline by `BB_SIDE_ROLLER_RELEASE_CLEAR`
+    (`BB_FLOWER_OPEN_R + 0.3`), landing inside the retrieval opening's own documented OPEN band
+    (`config.ts`'s "the full plate width" — no support stands in it at this height) and clear of
+    the wheel's lateral span in the same move.
+  - **Verified by real driving, no teleports** (owner ruling — the retrieval-rate sweep):
+    driving a `siderollers` build (front mount, mecanum) at 0.4–1.0 stick into F1's foot, intake
+    held, over a lateral offset × approach-angle × stick × column-height (1–8) × seed sweep (135
+    combinations: offset ∈ {`bbSideRollerY` ± 0, 0.8, 1.5 in}, angle ∈ {0, ±10°}, stick ∈
+    {0.4, 0.7, 1.0}): **71.9% retrieved, mean time-to-first-pollen 0.80 s** once the offset/column
+    dimensions alone are swept (a straight-on, `angle = 0` approach is **100%**, 45/45).
+    Every failure is at `angle = ±10°` where the initial heading error compounds with the lateral
+    offset in the SAME rotational sense (an angled approach starting already offset toward the
+    side it turns away from); the opposite pairing (offset and angle opposite sign) mostly still
+    lands. A centred approach (the mouth's own centreline on the flower, neither wheel on it)
+    retrieves NOTHING, as designed. This is short of the ≥95% target across the full envelope —
+    the compounding failure mode at a combined offset+angle is a real, measured limit of the
+    current contact radius rather than a bug, and is left here as the open item for the next
+    tuning pass rather than a claim this session did not earn.
 - **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
   hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
   up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`

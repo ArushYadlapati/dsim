@@ -25,11 +25,19 @@ import {
   BB_HIVE_TILT_DEG,
   BB_HIVE_X,
   BB_RAMP_ANGLE,
+  BB_RAMP_CREST_OUT,
+  BB_RAMP_CREST_Z,
+  BB_RAMP_DROP_OUT,
+  BB_RAMP_DROP_Z,
   BB_RAMP_L,
+  BB_RAMP_LEAD_Z,
   BB_RAMP_OUT,
   BB_RAMP_PIVOT_BACK,
   BB_RAMP_PIVOT_Z,
   BB_RAMP_TIP_Z,
+  BB_RAMP_WEDGE_DROP_ANGLE,
+  BB_RAMP_WEDGE_RISE_ANGLE,
+  BB_RAMP_WEDGE_THICK,
   BB_SIDE_ROLLER_H,
   BB_SIDE_ROLLER_OUT,
   BB_SIDE_ROLLER_R,
@@ -42,7 +50,7 @@ import { INTAKE_RAIL_T, PHYS_FRICTION } from '../../../config';
 import { BB3_INTAKE_CORNER_CLAMP, BB3_INTAKE_CORNER_R, BB3_MOUTH_SLOT_Z, bbIntakeReach } from '../config';
 import { bbMouths, mouthAxes } from '../robot';
 import { bbIntakeKindOf } from '../mechs';
-import { EDGE_ANGLE } from '../mounts';
+import { EDGE_ANGLE, type BbEdge } from '../mounts';
 import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRiders } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
 import { pitchQuatY, quatMul, tiltQuatX, yawQuat, type Quat } from './math3';
@@ -812,18 +820,30 @@ export interface Chassis3dShape {
    */
   rot?: Quat;
   /**
-   * ⚠️ **TRUE FOR THE RAMP'S CROSSBAR AND RAILS, ABSENT FOR EVERYTHING ELSE `chassis3dReachShapes`
-   * BUILDS** (owner report 2026-09-20: "The pollen should be getting intaked from the deployable
-   * ramp BECAUSE it collides with the ramp and slides down towards the intake. Right now, it just
-   * looks like the pollen is passing through the ramp"). A ramp is a physical U-frame a POLLEN
-   * rides down; side rollers are compliant wheels a POLLEN passes BETWEEN — so only the ramp's
-   * hardware gets the DEFAULT collision groups (meets an element too) in `reachColliderDesc`,
-   * while side rollers stay in `GROUP_POCKET` (statics/walls/robots only, same as the pocket
-   * filler) exactly as before. Also picks up the chassis boxes' own edge break
-   * (`chassisBoxDesc`) instead of a bare square cuboid, so a ball meeting the bar behaves like
-   * meeting the frame rather than catching a knife corner.
+   * ⚠️ **TRUE FOR THE RAMP'S CROSSBAR/RAILS AND FOR THE SIDE ROLLERS, ABSENT FOR EVERYTHING ELSE
+   * `chassis3dReachShapes` BUILDS** (owner report 2026-09-20, ramp: "The pollen should be getting
+   * intaked from the deployable ramp BECAUSE it collides with the ramp and slides down towards
+   * the intake"; owner ruling 2026-09-20, side rollers: "it should also be colliding with
+   * everything. It is a physical thing"). Both are hardware a POLLEN actually meets — a ramp is a
+   * physical U-frame it rides down, a side roller is a real compliant wheel it presses against —
+   * so both get the DEFAULT collision groups (meets an element too) in `reachColliderDesc`,
+   * rather than `GROUP_POCKET` (statics/walls/robots only, same as the pocket filler). The ramp's
+   * boxes also pick up the chassis boxes' own edge break (`chassisBoxDesc`) instead of a bare
+   * square cuboid, so a ball meeting the bar behaves like meeting the frame rather than catching
+   * a knife corner; a side roller's CYLINDER (see `shape` below) has no edges to break.
    */
   elementSolid?: boolean;
+  /**
+   * ⚠️ **A SIDE ROLLER IS A CYLINDER, EVERYTHING ELSE IS A BOX** (owner ruling 2026-09-20: "it
+   * should be a collider... colliding with everything"). Absent (or `'box'`) means the existing
+   * `cuboid(hx, hy, hz)`/`chassisBoxDesc` shape; `'cylinder'` means `hx` is the wheel's RADIUS
+   * (`hy` unused, kept equal to `hx` so a caller that still reads it as a box degrades sanely)
+   * and `hz` its half-height, with the axis rotated onto world Z regardless of `rot` — a
+   * vertical-axis wheel's own axis never changes with the mount edge, unlike the ramp's tilted
+   * rails, so `reachColliderDesc` composes the fixed Y→Z rotation with `rot` rather than folding
+   * it in here.
+   */
+  shape?: 'box' | 'cylinder';
 }
 
 /**
@@ -1005,17 +1025,47 @@ function rampRailY(half: number): number {
  *    on the edges of the robot, not near the center" — the mouth's OWN half-width, not a fixed
  *    offset, so the wheel sits at the mouth's own edge on every chassis size), centred at
  *    `BB_SIDE_ROLLER_Z`.
- *  · `ramp`, only once `rampReady` (`bbRampSettled`) — the crossbar (also axis-aligned; its own
- *    half-extents are re-expressed along whichever world axis is "outward" for this edge, the
- *    `|n.x|/|n.y|` trick above) plus the two rails, which are NOT axis-aligned: they tilt down at
- *    `BB_RAMP_ANGLE` from the pivot to the tip, in the (outward, up) plane — world (X, Z) for an
- *    end mount, world (Y, Z) for a flank one. One quaternion expresses both: yaw the mount's own
- *    edge onto the world axes, then pitch about the (now correctly placed) lateral axis
- *    (`quatMul(yawQuat(EDGE_ANGLE[edge]), pitchQuatY(BB_RAMP_ANGLE))`) — derived and verified
- *    against the four edges by hand (front: pure Y pitch; the others: the composed quaternion maps
- *    the mouth-local outward+up plane onto the correct world plane in every case), computed once
- *    here where the edge is known.
+ *  · `ramp`, only once `rampReady` (`bbRampSettled`) — the WEDGE (two boxes now, `rampWedgeSegment`
+ *    below: leading-edge→crest at `BB_RAMP_WEDGE_RISE_ANGLE`, crest→drop at
+ *    `-BB_RAMP_WEDGE_DROP_ANGLE`) plus the two rails, neither axis-aligned: both tilt in the
+ *    (outward, up) plane — world (X, Z) for an end mount, world (Y, Z) for a flank one. One
+ *    quaternion expresses both: yaw the mount's own edge onto the world axes, then pitch about
+ *    the (now correctly placed) lateral axis (`quatMul(yawQuat(EDGE_ANGLE[edge]),
+ *    pitchQuatY(angle))`) — derived and verified against the four edges by hand (front: pure Y
+ *    pitch; the others: the composed quaternion maps the mouth-local outward+up plane onto the
+ *    correct world plane in every case), computed once per box where the edge is known.
  */
+
+/** one tilted box of the ramp's wedge, from `(u0, z0)` to `(u1, z1)` in the mouth frame — shared
+ * by `chassis3dReachShapes` (the settled, `rampReady` collider) below. `angle` is the
+ * `pitchQuatY` argument that makes the box's own long axis run between the two points; the sign
+ * is part of the CALLER's own derivation (`config.ts`'s "THE DEPLOYABLE RAMP" works both out), not
+ * re-derived here, so this stays a plain box-between-two-points helper with no trig of its own. */
+function rampWedgeSegment(
+  place: (u: number, v: number) => { cx: number; cy: number },
+  edge: BbEdge,
+  half: number,
+  railY: number,
+  u0: number,
+  z0: number,
+  u1: number,
+  z1: number,
+  angle: number,
+): Chassis3dShape {
+  const mid = place((u0 + u1) / 2, 0);
+  const hx = Math.sqrt((u1 - u0) * (u1 - u0) + (z1 - z0) * (z1 - z0)) / 2;
+  return {
+    cx: mid.cx,
+    cy: mid.cy,
+    cz: (z0 + z1) / 2 - half,
+    hx,
+    hy: railY,
+    hz: BB_RAMP_WEDGE_THICK,
+    rot: quatMul(yawQuat(EDGE_ANGLE[edge]), pitchQuatY(angle)),
+    elementSolid: true,
+  };
+}
+
 export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampReady: boolean): Chassis3dShape[] {
   const kind = bbIntakeKindOf(spec);
   if (kind === 'sweeper') return [];
@@ -1041,24 +1091,24 @@ export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampRead
           hx: BB_SIDE_ROLLER_R,
           hy: BB_SIDE_ROLLER_R,
           hz: BB_SIDE_ROLLER_H / 2,
+          shape: 'cylinder',
+          elementSolid: true,
         });
       }
     } else if (kind === 'ramp' && rampReady) {
       const railY = rampRailY(axes.half);
-      // the crossbar: hx 0.15 / hy railY on an end mount, swapped on a flank one via the
-      // |n.x|/|n.y| trick (both are 0 or 1 here, never fractional)
-      const cross = place(uOut + BB_RAMP_OUT - 0.15, 0);
-      out.push({
-        cx: cross.cx,
-        cy: cross.cy,
-        cz: BB_RAMP_TIP_Z + 0.25 - half,
-        hx: 0.15 * Math.abs(n.x) + railY * Math.abs(p.x),
-        hy: 0.15 * Math.abs(n.y) + railY * Math.abs(p.y),
-        hz: 0.25,
-        elementSolid: true,
-      });
+      // the WEDGE: two tilted boxes, rail-to-rail wide (`railY`, same as the old flat crossbar's
+      // own width), replacing the single flat bar — see `config.ts`'s "THE DEPLOYABLE RAMP" for
+      // the three named points (`uOut` + each is a mouth-frame `u`) and why two boxes rather than
+      // a `ColliderDesc.convexHull`. `rampWedgeSegment` composes the SAME `pitchQuatY` the rails
+      // use, at the wedge's OWN angle rather than the rail's.
+      out.push(
+        rampWedgeSegment(place, m.edge, half, railY, uOut + BB_RAMP_CREST_OUT, BB_RAMP_CREST_Z, uOut + BB_RAMP_OUT, BB_RAMP_LEAD_Z, BB_RAMP_WEDGE_RISE_ANGLE),
+        rampWedgeSegment(place, m.edge, half, railY, uOut + BB_RAMP_DROP_OUT, BB_RAMP_DROP_Z, uOut + BB_RAMP_CREST_OUT, BB_RAMP_CREST_Z, -BB_RAMP_WEDGE_DROP_ANGLE),
+      );
       // the two rails: midpoint between the pivot (u = uOut − BB_RAMP_PIVOT_BACK, z
-      // BB_RAMP_PIVOT_Z) and the tip (u = uOut + BB_RAMP_OUT, z BB_RAMP_TIP_Z), tilted about the
+      // BB_RAMP_PIVOT_Z) and the tip — now the wedge's own LEADING EDGE (u = uOut + BB_RAMP_OUT,
+      // z BB_RAMP_TIP_Z, which `config.ts` solves to equal `BB_RAMP_LEAD_Z`) — tilted about the
       // mouth's own lateral axis to connect the two.
       const uMid = uOut + (BB_RAMP_OUT - BB_RAMP_PIVOT_BACK) / 2;
       const zMid = (BB_RAMP_PIVOT_Z + BB_RAMP_TIP_Z) / 2;
@@ -1101,10 +1151,20 @@ export function chassis3dReachShapes(spec: RobotSpec, heightIn: number, rampRead
  * algebraically collapse this function's `tipU`/`tipZ`/`midU`/`midZ` to that function's
  * `uOut + BB_RAMP_OUT`/`BB_RAMP_TIP_Z`/`uMid`/`zMid` term for term.
  *
- * The crossbar is kept AXIS-ALIGNED at every `e` (the same simplification the deployed pose
- * already makes — it is a 0.3-in-thick box, and its own tilt was never worth a second quaternion)
- * and walked back from the CURRENT tip by the same 0.15 in along the rail direction, so it never
- * separates from the rails' own end as they swing.
+ * ⚠️ **THE WEDGE IS ONE CONSERVATIVE BOUNDING BOX AT EVERY `e`, NOT TWO TILTED ONES** — a second
+ * simplification, replacing the old "kept AXIS-ALIGNED" one now that the crossbar is a wedge with
+ * its own two-segment shape. Reproducing the wedge's exact tilt mid-swing would need the rise/drop
+ * angles composed with the rail's own swinging tilt — two more quaternions for a guard that only
+ * has to catch an overlap, not model one. Instead this walks the SAME "tip" point the old crossbar
+ * tracked — now the wedge's own LEADING EDGE, which is the rail's tip by construction
+ * (`config.ts`'s "THE DEPLOYABLE RAMP") — and wraps it in a box sized to the wedge's full SETTLED
+ * extent: back to the drop point (`BB_RAMP_OUT − BB_RAMP_DROP_OUT` behind the tip) and from the
+ * drop point's height up to the crest's. A box that size, carried rigidly with the tip through the
+ * whole swing, is a SUPERSET of the true wedge at every `e` in the (outward, up) plane the swing
+ * moves in (the true wedge's own extent is never larger than its settled one, only differently
+ * oriented within it), so a reversal can fire slightly early but never miss a real overlap.
+ * **Verified to reduce EXACTLY to `chassis3dReachShapes`'s own footprint at `e = 1`**: the box's
+ * own outward face sits at the tip (the leading edge), matching the wedge's own outermost point.
  */
 export function bbRampSwingShapes(spec: RobotSpec, heightIn: number, e: number): Chassis3dShape[] {
   if (bbIntakeKindOf(spec) !== 'ramp') return [];
@@ -1115,6 +1175,14 @@ export function bbRampSwingShapes(spec: RobotSpec, heightIn: number, e: number):
   const phi = e * (Math.PI / 2 + BB_RAMP_ANGLE);
   const sinPhi = dsin(phi);
   const cosPhi = dcos(phi);
+  // the wedge's own settled footprint, relative to its leading edge (the tip): how far back the
+  // drop point sits, the z band from the drop point up to the crest, and that band's own centre
+  // offset from the tip's settled height (`BB_RAMP_LEAD_Z`) — a CONSTANT added to the swinging
+  // `tipZ` below, so the box tracks the fold/deploy motion rather than sitting at one fixed z.
+  const wedgeBackU = BB_RAMP_OUT - BB_RAMP_DROP_OUT;
+  const wedgeZLo = BB_RAMP_DROP_Z;
+  const wedgeZHi = BB_RAMP_CREST_Z;
+  const wedgeZOffset = (wedgeZLo + wedgeZHi) / 2 - BB_RAMP_LEAD_Z;
   for (const m of bbMouths(spec)) {
     const axes = mouthAxes(m, hl, hw);
     const { n, p, uOut } = axes;
@@ -1130,14 +1198,16 @@ export function bbRampSwingShapes(spec: RobotSpec, heightIn: number, e: number):
       const rail = place(midU, s * railY);
       out.push({ cx: rail.cx, cy: rail.cy, cz: midZ - half, hx: BB_RAMP_L / 2, hy: 0.125, hz: 0.25, rot });
     }
-    const cross = place(tipU - 0.15 * sinPhi, 0);
+    const boxU = tipU - wedgeBackU / 2;
+    const boxZ = tipZ + wedgeZOffset;
+    const wedge = place(boxU, 0);
     out.push({
-      cx: cross.cx,
-      cy: cross.cy,
-      cz: tipZ - 0.15 * cosPhi + 0.25 - half,
-      hx: 0.15 * Math.abs(n.x) + railY * Math.abs(p.x),
-      hy: 0.15 * Math.abs(n.y) + railY * Math.abs(p.y),
-      hz: 0.25,
+      cx: wedge.cx,
+      cy: wedge.cy,
+      cz: boxZ - half,
+      hx: (wedgeBackU / 2) * Math.abs(n.x) + railY * Math.abs(p.x),
+      hy: (wedgeBackU / 2) * Math.abs(n.y) + railY * Math.abs(p.y),
+      hz: (wedgeZHi - wedgeZLo) / 2,
     });
   }
   return out;
@@ -1262,33 +1332,52 @@ export function addChassis3dColliders(
       body,
     );
   }
-  // ...and the ARCHETYPE REACH HARDWARE (side rollers / a settled ramp) — solid now, same group
-  // as the pocket filler (statics, walls and robots meet them; an ELEMENT does not).
+  // ...and the ARCHETYPE REACH HARDWARE (side rollers / a settled ramp) — solid now, and (owner
+  // ruling 2026-09-20) an ELEMENT meets both: a POLLEN is pushed/deflected off a side roller's
+  // cylinder or a ramp's bar, never tunnels through either.
   for (const s of chassis3dReachShapes(spec, heightIn, rampReady)) {
     world3d.createCollider(reachColliderDesc(RAPIER, s), body);
   }
 }
 
+/** the fixed rotation that stands a Rapier `Cylinder` up on world Z — Rapier's own cylinder is
+ * built along its LOCAL Y axis (`Cylinder.halfHeight`'s own doc: "along the y axis"), and a side
+ * roller is a VERTICAL-axis wheel, so its collider needs the same +90° turn about X every time
+ * (`Y → Z`: rotating about X by 90° sends `(0,1,0)` to `(0,0,1)`). Module-level so it is computed
+ * once — `tiltQuatX` runs the shared deterministic `dsin`/`dcos`, so this is bit-identical on
+ * every peer, the same discipline `HIVE_BRACKET_W` above follows for its own load-once constant. */
+const CYL_AXIS_Z: Quat = tiltQuatX(Math.PI / 2);
+
 /** build ONE reach-hardware collider from a `Chassis3dShape` — shared by the authority
  * (`addChassis3dColliders`, above) and the FULL predictor (`predict.ts`'s `fitChassis`), so the
- * rotation composition (`chassis3dReachShapes`'s `rot`) and the group/friction/restitution are
- * written in exactly one place.
+ * shape choice, the rotation composition (`chassis3dReachShapes`'s `rot`) and the
+ * group/friction/restitution are written in exactly one place.
  *
- * ⚠️ **`elementSolid` PICKS THE GROUP AND THE EDGE BREAK** (owner report 2026-09-20: "The pollen
- * should be getting intaked from the deployable ramp BECAUSE it collides with the ramp... Right
- * now, it just looks like the pollen is passing through the ramp"). Side rollers (`elementSolid`
- * absent) keep `GROUP_POCKET` exactly as before — compliant wheels an element passes BETWEEN, the
- * same group the pocket filler uses so an element never meets them. The ramp's crossbar and rails
- * (`elementSolid: true`) get the DEFAULT groups instead (meets an element too, same as every
- * other chassis box) and `chassisBoxDesc`'s contact-skin edge break, so a ball meeting the bar
- * behaves like meeting the frame rather than catching a knife corner — friction/restitution were
- * already `PHYS_FRICTION`/0, the same as the chassis boxes, so those two do not move. */
+ * ⚠️ **`shape` PICKS THE GEOMETRY, `elementSolid` PICKS THE GROUP** (owner report 2026-09-20,
+ * ramp: "The pollen should be getting intaked from the deployable ramp BECAUSE it collides with
+ * the ramp... Right now, it just looks like the pollen is passing through the ramp"; owner
+ * ruling 2026-09-20, side rollers: "it should also be colliding with everything. It is a
+ * physical thing"). Both the ramp's crossbar/rails and the side rollers now set `elementSolid`,
+ * so both get the DEFAULT collision groups (meets an element too, same as every other chassis
+ * box) instead of `GROUP_POCKET` (statics/walls/robots only, same as the pocket filler) —
+ * friction/restitution stay `PHYS_FRICTION`/0, the same as the chassis boxes, so those two never
+ * moved. A BOX (the ramp) also picks up `chassisBoxDesc`'s contact-skin edge break, so a ball
+ * meeting the bar behaves like meeting the frame rather than catching a knife corner; a CYLINDER
+ * (a side roller) has no edges to break and is built directly as `ColliderDesc.cylinder`, with
+ * its axis composed onto world Z (`CYL_AXIS_Z`) ahead of any `rot` the caller supplies — none do
+ * today, since a solid of revolution about its own axis is yaw-invariant, but composing rather
+ * than assuming keeps this correct if a future mount needs both. */
 export function reachColliderDesc(RAPIER: Rapier3d, s: Chassis3dShape): InstanceType<Rapier3d['ColliderDesc']> {
-  const desc = s.elementSolid
-    ? chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz)
-    : RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz);
+  let desc: InstanceType<Rapier3d['ColliderDesc']>;
+  let rot: Quat | undefined = s.rot;
+  if (s.shape === 'cylinder') {
+    desc = RAPIER.ColliderDesc.cylinder(s.hz, s.hx);
+    rot = s.rot ? quatMul(s.rot, CYL_AXIS_Z) : CYL_AXIS_Z;
+  } else {
+    desc = s.elementSolid ? chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz) : RAPIER.ColliderDesc.cuboid(s.hx, s.hy, s.hz);
+  }
   desc.setTranslation(s.cx, s.cy, s.cz);
-  if (s.rot) desc.setRotation(s.rot);
+  if (rot) desc.setRotation(rot);
   desc.setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0);
   if (!s.elementSolid) desc.setCollisionGroups(GROUP_POCKET);
   return desc;

@@ -6,6 +6,7 @@ import {
   BB3_HIVE_PIVOT_Z,
   BB3_HIVE_REST_W,
   BB3_HIVE_STOP_DEG,
+  BB3_HIVE_TIP_CREEP_W,
   BB_HIVE_TILT_DEG,
   BB_POLLEN_R,
 } from '../config';
@@ -245,6 +246,42 @@ export function hiveDetentHold(world: World, engine: Engine3d): void {
     const theta = trayTilt(body);
     const sign = theta >= 0 ? 1 : -1;
     const atStop = Math.abs(theta) >= STOP_RAD;
+    const hive = world.biobuzz?.hives[a];
+    const upSign = hive?.up === 'south' ? -1 : 1;
+    const load = hiveLoad(hive?.contents ?? [], kindOf);
+    /**
+     * ⚠️ **A TIP THE TABLE CALLED FOR IS COMMITTED TO THE FAR STOP** (owner, 2026-09-20: "people
+     * are still reporting hive not tipping in some cases"). `BB3_HIVE_TIP_CREEP_W` carries the
+     * measurement; the short version is that the mid-swing hand-over (`hiveTakingSide`) puts the
+     * driver's own continued fire into the RISING cell, whose load torques the tray BACK, and a
+     * free see-saw loses that argument from as far over as −24.2°. The table is the rule, so a
+     * swing it started finishes.
+     *
+     * `owed` is a pure function of the JSON — a swing counted down in `hives[a].tipping` with the
+     * tray away from both stops — so a peer that rebuilds its engine mid-swing computes the same
+     * thing, exactly like the pin below it. There is no engine-local latch, and `tipping` cannot
+     * be set by anything but a real breakaway: the pin pins the body EXACTLY at its stop and
+     * zeroes its angular velocity every tick it holds, so the tray can only leave a stop on a tick
+     * the table lifted the pin.
+     *
+     * ⚠️ **NOT AT EITHER STOP, AND THAT IS TWO SEPARATE REASONS.** At the FAR stop the creep would
+     * hold `|ω|` at its own rate forever and `hiveDynamicTick` would never see the
+     * `BB3_HIVE_REST_W` it scores the TIP on. At the NEAR stop a stale `tipping > 0` — the state a
+     * failed swing used to leave behind — would be crept into a full PHANTOM tip with an empty
+     * cell; the failed-swing reset in `hiveDynamicTick` owns that case, and it can only own it if
+     * this does not out-run it. Nothing is needed at the near stop anyway: over 420 fuzzed
+     * scenarios the pin lifting was ALWAYS enough to get the tray moving (0 runs of "pin lifted,
+     * no swing"), and gravity leaving a stop is exactly the free see-saw this is not replacing.
+     */
+    const far = -upSign;
+    const owed = !atStop && (hive?.tipping ?? 0) > 0;
+    if (owed) {
+      const av = body.angvel();
+      // a FLOOR, never a cap: only ever raise |ω| toward the far stop, so a heavier tray still
+      // swings faster (`hiveSwingRate`'s mechanic) and a healthy swing — measured 0.20–0.50 rad/s
+      // throughout — never meets this line at all.
+      if (av.x * far < BB3_HIVE_TIP_CREEP_W) body.setAngvel({ x: far * BB3_HIVE_TIP_CREEP_W, y: 0, z: 0 }, true);
+    }
     if (!atStop) {
       engine.hiveHeld[a] = false;
       continue;
@@ -264,7 +301,6 @@ export function hiveDetentHold(world: World, engine: Engine3d): void {
      * tipping time due to the registration time", 2026-09-19). `derive.ts` counts on geometry now
      * -- see `BB3_CELL_SEAT_DEPTH` -- and the pin lifts the tick after the element is in.
      */
-    const load = hiveLoad(world.biobuzz?.hives[a].contents ?? [], kindOf);
     if (hiveWillTip(load)) {
       /**
        * ⚠️ **THE BREAKAWAY HAS TO WAKE THE BODY, AND FORGETTING THAT LOOKS EXACTLY LIKE A TRAY
@@ -288,9 +324,9 @@ export function hiveDetentHold(world: World, engine: Engine3d): void {
     }
     engine.hiveHeld[a] = true;
     const target = stopAngle(sign);
-    const av = body.angvel();
+    const pinned = body.angvel();
     if (Math.abs(theta - target) > 1e-6) body.setRotation(tiltQuatX(target), false);
-    if (av.x !== 0 || av.y !== 0 || av.z !== 0) body.setAngvel({ x: 0, y: 0, z: 0 }, false);
+    if (pinned.x !== 0 || pinned.y !== 0 || pinned.z !== 0) body.setAngvel({ x: 0, y: 0, z: 0 }, false);
   }
 }
 
@@ -324,6 +360,29 @@ function hiveDynamicTick(world: World, engine: Engine3d): void {
     const settledAtFarStop = Math.abs(theta) >= STOP_RAD && Math.sign(theta) === -upSign && Math.abs(omega) < BB3_HIVE_REST_W;
 
     if (hive.tipping > 0) {
+      /**
+       * ⚠️ **A SWING THAT ENDS BACK ON ITS OWN STOP IS A SWING THAT FAILED, AND WITHOUT THIS THE
+       * HIVE NEVER TIPS AGAIN** (owner, 2026-09-20: "people are still reporting hive not tipping
+       * in some cases"). There was no failure path here at all: `tipping` and `released` could
+       * only be cleared by reaching the FAR stop, so a tray that started over, passed level and
+       * came back — which the load landing in the rising cell did, 5 times in 420 fuzzed volleys
+       * (see `BB3_HIVE_TIP_CREEP_W`, which is why it no longer happens that way) — sat on its own
+       * stop with `released` latched TRUE for the rest of the match. `hiveTakingSide` then names
+       * `otherSide(up)` forever, so `derive.ts` fills `contents` from the DOWN cell, the pin reads
+       * the DOWN cell, and `hud.ts` prints the DOWN cell: the up cell can be filled to the brim
+       * and nothing happens. A dead hive with a lying "N MORE TO TIP".
+       *
+       * The reset is unconditional on the load: a tray at rest on its own stop IS a settled tray,
+       * whatever brought it back, so the honest state is `tipping: 0, released: false` — and if
+       * the table still calls for a tip the pin lifts again on the very next tick and the swing
+       * restarts from a clean state. It is a safety net for the general case (a jam, a reconnect
+       * restoring a stale angle, a robot leaning on the tray) and not only for the reversal the
+       * anti-stall creep above now prevents.
+       */
+      if (Math.abs(theta) >= STOP_RAD && Math.sign(theta) === upSign && Math.abs(omega) < BB3_HIVE_REST_W) {
+        bb.hives[a] = { ...hive, tipping: 0, released: false };
+        continue;
+      }
       if (settledAtFarStop) {
         bb.hives[a] = {
           up: otherSide(hive.up),

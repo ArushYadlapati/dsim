@@ -50,6 +50,9 @@ import {
   CLEAR_SHEETS_ARE_SINGLE_SIDED,
   assembleFieldGroups,
   hiveFrameComponents,
+  HIVE_FRAME_NODES,
+  weldedComponents,
+  shellWindingStats,
 } from '../../src/games/biobuzz/scene/renderFieldGlb';
 import { cadCaptureTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { COLORS as SHARED_COLORS } from '../../src/config';
@@ -64,7 +67,8 @@ import {
 // ── LANE B (ROBOT RENDER) imports — the 3D robot model's own checks, kept in their own block so
 // they are easy to see and easy to move. ───────────────────────────────────────────────────────
 import type { RobotSpec, RobotState } from '../../src/types';
-import { bbFlowerInReach, bbFootprint, bbMouths, bbPlacePointLocal } from '../../src/games/biobuzz/robot';
+import { bbFlowerInReach, bbFootprint, bbMouths, bbPlacePointLocal, bbRobotSolids } from '../../src/games/biobuzz/robot';
+import { chassis3dShapes } from '../../src/games/biobuzz/sim3d/bodies';
 import { bbBoxTubeGlyph } from '../../src/games/biobuzz/parts';
 import { BB_INTAKE_KINDS, bbIntakeKindOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
 import { drawBiobuzzIntakeReach } from '../../src/games/biobuzz/drawRobot';
@@ -92,10 +96,16 @@ import {
   BB_HOOD_ARM_T,
   BB_HOOD_T,
   BB_HOOD_WRAP,
+  BB_INTAKE_THROAT_FRAC,
   BB_LAUNCH_Z0,
   BB_RAMP_ANGLE,
+  BB_RAMP_CREST_OUT,
+  BB_RAMP_CREST_Z,
   BB_RAMP_DEPLOY_S,
+  BB_RAMP_DROP_OUT,
+  BB_RAMP_DROP_Z,
   BB_RAMP_L,
+  BB_RAMP_LEAD_Z,
   BB_RAMP_OUT,
   BB_RAMP_PIVOT_BACK,
   BB_RAMP_TIP_Z,
@@ -136,11 +146,14 @@ import {
   BB_SIGN_W,
   bbRobotSignOrientation,
   bbRobotSignText,
+  buildEndPlates,
   buildFrame,
   buildIntake,
   buildSwervePod,
   buildTurret,
+  buildWheels,
   disposeRobotGroup,
+  endWheelSpanY,
 } from '../../src/games/biobuzz/scene/renderRobots';
 import { lengthLimits } from '../../src/sim/drivetrain';
 import { bbMouthFrame } from '../../src/games/biobuzz/mounts';
@@ -1148,6 +1161,7 @@ export function renderChecks(check: Check): void {
   graphicsChecks(check, allFiles);
   hudBandChecks(check);
   cosmeticsChecks(check);
+  endPlateChecks(check);
 }
 
 /**
@@ -1274,6 +1288,167 @@ function cosmeticsChecks(check: Check): void {
       strokeCount > 0 && strokeStyle === OUTLINE_HALO,
       `${strokeCount} strokes, colour ${strokeStyle}`,
     );
+  }
+}
+
+/**
+ * END PLATES (owner, 2026-09-20: "cover up the back of the chassis with a full back plate, and
+ * cover up the front with two small plates just to hide the wheels"). `buildEndPlates`'s own
+ * header in `renderRobots.ts` carries the geometry; this proves the RESULT — the right nodes
+ * exist and only those, every plate's bbox stays inside the chassis footprint BOTH solves already
+ * treat as solid (the 3D compound's frame box and the 2D artifact solve's chassis rect — NEITHER
+ * grows for these, per the owner's "they should be part of the collider... prove it instead"
+ * ruling), a corner plate actually covers the wheel or pod it exists to hide, and nothing crosses
+ * the mouth's own throat below the slot an element rolls in under.
+ */
+function endPlateChecks(check: Check): void {
+  const MOUNTS = ['front', 'back', 'side', 'frontback'] as const;
+  const DRIVETRAINS = ['mecanum', 'swerve', 'tank'] as const;
+  const ID = 7;
+
+  for (const mount of MOUNTS) {
+    for (const dt of DRIVETRAINS) {
+      const spec: RobotSpec = { ...BB_DEFAULT_SPEC, intakeMount: mount, drivetrain: dt };
+      const tag = `${mount}/${dt}`;
+      const nodes = buildEndPlates(spec, ID);
+      for (const n of nodes) n.updateMatrixWorld(true);
+
+      // ---- exactly the expected nodes, and only those --------------------------------------
+      const names = nodes.map((n) => n.name).sort();
+      const expected = (
+        mount === 'side'
+          ? [`robot:${ID}:endplate:back`, `robot:${ID}:endplate:front`]
+          : mount === 'frontback'
+            ? [`robot:${ID}:endplate:back:l`, `robot:${ID}:endplate:back:r`, `robot:${ID}:endplate:front:l`, `robot:${ID}:endplate:front:r`]
+            : mount === 'front'
+              ? [`robot:${ID}:endplate:back`, `robot:${ID}:endplate:front:l`, `robot:${ID}:endplate:front:r`]
+              : [`robot:${ID}:endplate:back:l`, `robot:${ID}:endplate:back:r`, `robot:${ID}:endplate:front`]
+      ).sort();
+      check(`endplate/${tag}: exactly the expected plate nodes exist, and only those`, JSON.stringify(names) === JSON.stringify(expected), names.join(','));
+
+      // ---- containment: NOT a collider (owner ruling) — every plate must sit inside the boxes
+      // the chassis compound and the 2D solve already treat as solid, never grow them ------------
+      const hl = spec.length / 2;
+      const frame3d = chassis3dShapes(spec, BB3_HEIGHT_DEFAULT)[0]; // {cx:0,cy:0,hx:hl,hy:hw,...}
+      const chassis2d = bbRobotSolids({ spec } as unknown as RobotState, []).chassis;
+      for (const n of nodes) {
+        const box = new THREE.Box3().setFromObject(n);
+        const in3d =
+          box.min.x >= -frame3d.hx - 1e-6 && box.max.x <= frame3d.hx + 1e-6 &&
+          box.min.y >= -frame3d.hy - 1e-6 && box.max.y <= frame3d.hy + 1e-6 &&
+          box.min.z >= -1e-6 && box.max.z <= BB3_HEIGHT_DEFAULT + 1e-6;
+        check(
+          `endplate/${tag}: ${n.name} sits inside the 3D chassis compound's own frame box (no collider of its own needed)`,
+          in3d,
+          `x[${box.min.x.toFixed(3)},${box.max.x.toFixed(3)}] y[${box.min.y.toFixed(3)},${box.max.y.toFixed(3)}] z[${box.min.z.toFixed(3)},${box.max.z.toFixed(3)}] vs hx=${frame3d.hx} hy=${frame3d.hy}`,
+        );
+        const in2d =
+          box.min.x >= chassis2d.cx - chassis2d.hx - 1e-6 && box.max.x <= chassis2d.cx + chassis2d.hx + 1e-6 &&
+          box.min.y >= chassis2d.cy - chassis2d.hy - 1e-6 && box.max.y <= chassis2d.cy + chassis2d.hy + 1e-6;
+        check(`endplate/${tag}: ${n.name} sits inside bbRobotSolids' 2D chassis rect in x/y`, in2d);
+
+        const outward = n.name.includes(':front') ? box.max.x : box.min.x;
+        const target = n.name.includes(':front') ? hl : -hl;
+        check(`endplate/${tag}: ${n.name}'s outer face is flush with the chassis end, never past it`, Math.abs(outward - target) < 1e-6, `${outward.toFixed(6)} vs ${target}`);
+      }
+    }
+  }
+
+  // ---- a corner plate actually covers the wheel/pod `buildWheels` puts at that corner --------
+  //
+  // TANK is built for real — `buildWheels` needs no DOM for it, unlike mecanum/xdrive (the roller
+  // stripe texture calls `document.createElement`, which is why `cosmeticsChecks` above never
+  // calls `buildWheels` at all in this DOM-free lane either). MECANUM is not built separately: its
+  // wheel takes the exact same `wheel.position.set(x, sy * wheelY, BB_WHEEL_R)` line as tank with
+  // no drivetrain branch in between (only `xdrive` overrides it), so tank's real geometry IS
+  // mecanum's placement — the SOURCE check below pins that line so a future branch cannot silently
+  // split the two without this check noticing. SWERVE is built for real too (`buildSwervePod` has
+  // no texture), positioned with `endWheelSpanY` — the same expression `buildWheels` positions a
+  // pod with, tied to it by the second SOURCE check.
+  {
+    const robotsCode = readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderRobots.ts'), 'utf8');
+    check(
+      'endplate-cover/source: mecanum and tank share ONE wheel-placement line (no per-drivetrain branch)',
+      (robotsCode.match(/wheel\.position\.set\(x, sy \* wheelY, BB_WHEEL_R\);/g) ?? []).length === 1,
+    );
+    check(
+      'endplate-cover/source: endWheelSpanY’s swerve centre is the SAME expression buildWheels positions a pod with',
+      robotsCode.includes('pod.position.set((Math.sign(x) || 1) * (hl - BB_POD_INSET), sy * (hw - BB_POD_INSET), 0);') &&
+        robotsCode.includes('return { center: s * (hw - BB_POD_INSET), half: BB_POD_W / 2 };'),
+    );
+  }
+
+  for (const mount of ['front', 'frontback'] as const) {
+    // TANK, real wheels
+    {
+      const spec: RobotSpec = { ...BB_DEFAULT_SPEC, intakeMount: mount, drivetrain: 'tank' };
+      const hl = spec.length / 2;
+      const wheels = buildWheels(spec);
+      for (const w of wheels.nodes) w.updateMatrixWorld(true);
+      const plates = buildEndPlates(spec, ID).filter((p) => p.name.startsWith(`robot:${ID}:endplate:front`));
+      for (const p of plates) p.updateMatrixWorld(true);
+
+      const frontWheels = wheels.nodes.filter((n) => n.position.x > hl * 0.3);
+      check(`endplate-cover/${mount}/tank: the front axle actually has wheels to hide (else this check is vacuous)`, frontWheels.length > 0, String(frontWheels.length));
+
+      for (const w of frontWheels) {
+        const wBox = new THREE.Box3().setFromObject(w);
+        const side = w.position.y >= 0 ? 'l' : 'r';
+        const plate = plates.find((p) => p.name.endsWith(`:${side}`));
+        check(`endplate-cover/${mount}/tank: a "${side}" corner plate exists for this wheel`, !!plate);
+        if (!plate) continue;
+        const pBox = new THREE.Box3().setFromObject(plate);
+        const lo = Math.min(wBox.min.y, wBox.max.y);
+        const hi = Math.max(wBox.min.y, wBox.max.y);
+        check(
+          `endplate-cover/${mount}/tank: the "${side}" plate's y-span covers the wheel's own lateral extent`,
+          pBox.min.y <= lo + 1e-6 && pBox.max.y >= hi - 1e-6,
+          `plate y[${pBox.min.y.toFixed(3)},${pBox.max.y.toFixed(3)}] wheel y[${lo.toFixed(3)},${hi.toFixed(3)}]`,
+        );
+      }
+    }
+
+    // SWERVE, a real pod positioned at the same spot `buildWheels` puts one
+    {
+      const spec: RobotSpec = { ...BB_DEFAULT_SPEC, intakeMount: mount, drivetrain: 'swerve' };
+      const plates = buildEndPlates(spec, ID).filter((p) => p.name.startsWith(`robot:${ID}:endplate:front`));
+      for (const p of plates) p.updateMatrixWorld(true);
+
+      for (const s of [1, -1] as const) {
+        const side = s === 1 ? 'l' : 'r';
+        const { center } = endWheelSpanY(spec, s);
+        const pod = buildSwervePod();
+        pod.position.set(0, center, 0);
+        pod.updateMatrixWorld(true);
+        const podBox = new THREE.Box3().setFromObject(pod);
+
+        const plate = plates.find((p) => p.name.endsWith(`:${side}`));
+        check(`endplate-cover/${mount}/swerve: a "${side}" corner plate exists for this pod`, !!plate);
+        if (!plate) continue;
+        const pBox = new THREE.Box3().setFromObject(plate);
+        check(
+          `endplate-cover/${mount}/swerve: the "${side}" plate's y-span covers the ACTUAL built pod's bbox`,
+          pBox.min.y <= podBox.min.y + 1e-6 && pBox.max.y >= podBox.max.y - 1e-6,
+          `plate y[${pBox.min.y.toFixed(3)},${pBox.max.y.toFixed(3)}] pod y[${podBox.min.y.toFixed(3)},${podBox.max.y.toFixed(3)}]`,
+        );
+      }
+    }
+  }
+
+  // ---- A CORNER PLATE HIDES THE WHOLE WHEEL: floor to plate height, on every build. The first
+  // cut raised it above `BB3_MOUTH_SLOT_Z` where the pod sits inside the mouth's throat band (the
+  // default Sniper: frontback/swerve) and left a 1-in sliver with the wheels in view. The plate
+  // stands on the FRAME face — the pocket's back wall, solid collider at every height already —
+  // so it closes nothing an element can use.
+  {
+    const spec: RobotSpec = { ...BB_DEFAULT_SPEC, intakeMount: 'frontback', drivetrain: 'swerve' };
+    const plates = buildEndPlates(spec, ID);
+    for (const p of plates) p.updateMatrixWorld(true);
+    check('endplate-height: the default Sniper build has its four corner plates (else the check below is vacuous)', plates.length === 4, String(plates.length));
+    for (const p of plates) {
+      const box = new THREE.Box3().setFromObject(p);
+      check(`endplate-height: ${p.name} runs from the floor up (hides the wheel, not just the top of it)`, box.min.z <= 1e-6, `plate z bottom ${box.min.z.toFixed(3)}`);
+    }
   }
 }
 
@@ -3815,6 +3990,49 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                   Math.abs(railAngle + BB_RAMP_ANGLE) < 1e-6,
                   `${railAngle.toFixed(6)} rad vs ${(-BB_RAMP_ANGLE).toFixed(6)}`,
                 );
+
+                // ── THE WEDGE PROFILE — the drawn LEADING EDGE/CREST/DROP points must land on
+                // `config.ts`'s own numbers to 1e-3, the same discipline the rail tip check above
+                // follows: a SPECIFIC REFERENCE POINT (each box's own local ±half-length along its
+                // own long axis, which is a corner ONLY the box's own centreline reaches, not a
+                // Box3 extreme padded by its thickness) rather than a bounding box.
+                const wedgeRise = group.getObjectByName(`robot:ramp:bar:${m.edge}:rise`);
+                const wedgeDrop = group.getObjectByName(`robot:ramp:bar:${m.edge}:drop`);
+                if (!wedgeRise || !wedgeDrop) {
+                  check(`${label}/${m.edge}: both wedge segments exist`, false, `rise=${!!wedgeRise} drop=${!!wedgeDrop}`);
+                } else {
+                  const uz = (o: THREE.Object3D, localX: number): { u: number; z: number } => {
+                    const p = new THREE.Vector3(localX, 0, 0).applyMatrix4(o.matrixWorld);
+                    const dx = p.x - f.ox;
+                    const dy = p.y - f.oy;
+                    return { u: dx * Math.cos(f.rot) + dy * Math.sin(f.rot), z: p.z };
+                  };
+                  const riseLen = Math.hypot(BB_RAMP_OUT - BB_RAMP_CREST_OUT, BB_RAMP_LEAD_Z - BB_RAMP_CREST_Z);
+                  const dropLen = Math.hypot(BB_RAMP_CREST_OUT - BB_RAMP_DROP_OUT, BB_RAMP_CREST_Z - BB_RAMP_DROP_Z);
+                  const riseLead = uz(wedgeRise, riseLen / 2);
+                  const riseCrest = uz(wedgeRise, -riseLen / 2);
+                  const dropCrest = uz(wedgeDrop, dropLen / 2);
+                  const dropDrop = uz(wedgeDrop, -dropLen / 2);
+                  const wantLead = { u: f.depth + BB_RAMP_OUT, z: BB_RAMP_LEAD_Z };
+                  const wantCrest = { u: f.depth + BB_RAMP_CREST_OUT, z: BB_RAMP_CREST_Z };
+                  const wantDrop = { u: f.depth + BB_RAMP_DROP_OUT, z: BB_RAMP_DROP_Z };
+                  const near = (a: { u: number; z: number }, b: { u: number; z: number }): boolean => Math.abs(a.u - b.u) < 1e-3 && Math.abs(a.z - b.z) < 1e-3;
+                  check(
+                    `${label}/${m.edge}: the drawn wedge's LEADING EDGE lands on config's own (BB_RAMP_OUT, BB_RAMP_LEAD_Z)`,
+                    near(riseLead, wantLead),
+                    `(${riseLead.u.toFixed(4)}, ${riseLead.z.toFixed(4)}) vs (${wantLead.u.toFixed(4)}, ${wantLead.z.toFixed(4)})`,
+                  );
+                  check(
+                    `${label}/${m.edge}: the drawn wedge's CREST agrees between both segments and lands on config's own point`,
+                    near(riseCrest, wantCrest) && near(dropCrest, wantCrest),
+                    `rise-side (${riseCrest.u.toFixed(4)}, ${riseCrest.z.toFixed(4)}), drop-side (${dropCrest.u.toFixed(4)}, ${dropCrest.z.toFixed(4)}) vs (${wantCrest.u.toFixed(4)}, ${wantCrest.z.toFixed(4)})`,
+                  );
+                  check(
+                    `${label}/${m.edge}: the drawn wedge's DROP point lands on config's own (BB_RAMP_DROP_OUT, BB_RAMP_DROP_Z)`,
+                    near(dropDrop, wantDrop),
+                    `(${dropDrop.u.toFixed(4)}, ${dropDrop.z.toFixed(4)}) vs (${wantDrop.u.toFixed(4)}, ${wantDrop.z.toFixed(4)})`,
+                  );
+                }
                 pivot.rotation.y = 0; // leave it as `buildIntake` built it
               }
             }
@@ -5277,6 +5495,108 @@ function hudBandChecks(check: Check): void {
         check(`${a}: ...and it really does move (a frozen part would pass the line above trivially)`, spread > 6, `${spread.toFixed(2)} in over the full swing`);
         tray.rotation.set(rest, 0, 0);
       }
+    }
+  }
+
+  // ── GROUND BEAM WINDING — owner report 2026-09-20: "the structural beams on the ground are
+  // rendered as transparent on one side and opaque on the other." See `renderFieldGlb.ts`'s own
+  // "THE GROUND BARS ARE WOUND INCONSISTENTLY" header for the full measurement this pins.
+  //
+  // ⚠️ ONLY `field.glb` (FIELD_GLB_SCENE) IS TOUCHED HERE. `assembleFieldGroups` mutates its
+  // argument in place — reassigns resolved PBR materials over the glTF's `<finish>#<hex>` names,
+  // replaces merged geometries with the post-extraction remainder — and a SECOND call on the same
+  // object reads its own already-resolved material names back through `parseMaterialName`, which
+  // rejects them and repaints everything grey (measured: every hive-frame mesh becomes
+  // `__unrecognised__@hive_frame` and a `/groundbeam` mesh gets extracted a second, nested time).
+  // `FIELD_LOW_GLB_SCENE` is already spent by the rocker block just above, so this block reads
+  // `FIELD_GLB_SCENE` alone, RAW, before its own single `assembleFieldGroups` call.
+  {
+    const scene = FIELD_GLB_SCENE;
+    check('field.glb parses, so the ground-beam checks below are not vacuous', scene !== null);
+    if (scene) {
+      // whole-COMPONENT z-band — see `GROUND_BEAM_MAX_Z` in renderFieldGlb.ts for why a
+      // per-triangle test would slice the A-Frame Leg's own foot into this bucket.
+      const GROUND_BEAM_MAX_Z_PIN = 3;
+      const groundBeamByMesh = new Map<THREE.Mesh, number[]>();
+      let anyGroundBeamComponent = false;
+      for (const nodeName of HIVE_FRAME_NODES) {
+        let node: THREE.Object3D | null = null;
+        scene.traverse((o) => {
+          if (node) return;
+          if ((o.userData as { name?: string } | undefined)?.name === nodeName || o.name === nodeName) node = o;
+        });
+        if (!node) continue;
+        (node as THREE.Object3D).traverse((o) => {
+          if (!(o instanceof THREE.Mesh)) return;
+          const { ofTriangle, spans } = weldedComponents(o);
+          const tris: number[] = [];
+          for (const [id, s] of spans) {
+            if (s.zMax > GROUND_BEAM_MAX_Z_PIN) continue;
+            anyGroundBeamComponent = true;
+            for (let t = 0; t < ofTriangle.length; t++) if (ofTriangle[t] === id) tris.push(t);
+          }
+          if (tris.length > 0) groundBeamByMesh.set(o, tris);
+        });
+      }
+      check('field.glb: at least one ground-beam-band component exists in the raw asset', anyGroundBeamComponent);
+      // PIN THE DEFECT: every ground-beam component is a CLOSED shell (0 boundary edges) but its
+      // enclosed volume badly exceeds its own bounding box — proof of inconsistent winding, not
+      // open sheeting. If a future exporter pass fixes this, `volRatio` drops under ~1 and this
+      // assertion fails loudly, which is the signal to drop `fixGroundBeamWinding` rather than
+      // leave a stale DoubleSide clone armed over correctly-wound geometry.
+      let worstDefective = 0;
+      for (const [mesh, tris] of groundBeamByMesh) {
+        const stats = shellWindingStats(mesh, tris);
+        check(
+          `field.glb: a ground-beam component on "${mesh.name}" is a closed shell (0 boundary edges)`,
+          stats.boundaryEdges === 0,
+          `${stats.boundaryEdges} boundary edges of ${stats.boundaryEdges + stats.flippedEdges + stats.okInteriorEdges + stats.nonManifoldEdges}`,
+        );
+        check(
+          `field.glb: ...and it is NOT consistently wound (this is exactly what makes it defective)`,
+          stats.flippedEdges > 0,
+          `${stats.flippedEdges} flipped interior edges`,
+        );
+        if (stats.flippedEdges > 0) worstDefective++;
+      }
+      check('field.glb: the pinned defect actually applies to at least one mesh', worstDefective > 0);
+
+      // NOW THE FIX: one single `assembleFieldGroups` call, checked for scope.
+      const fg = assembleFieldGroups(scene, 'low');
+      check('field.glb: the loader found ground-beam triangles to fix', fg.groundBeamTris > 0, String(fg.groundBeamTris));
+      let doubleSidedTris = 0;
+      let frontSidedTris = 0;
+      let sawGroundBeamMesh = false;
+      for (const frame of [fg.hives.red.frame, fg.hives.blue.frame, fg.sharedFrame].filter((o): o is THREE.Object3D => !!o)) {
+        frame.traverse((o) => {
+          if (!(o instanceof THREE.Mesh)) return;
+          const mat = Array.isArray(o.material) ? o.material[0] : o.material;
+          const idx = o.geometry.getIndex();
+          const tris = (idx ? idx.count : o.geometry.getAttribute('position').count) / 3;
+          if (o.name.endsWith('/groundbeam')) {
+            sawGroundBeamMesh = true;
+            check(`field.glb: "${o.name}" renders DoubleSide`, mat.side === THREE.DoubleSide, `side=${mat.side}`);
+            check(
+              `field.glb: "${o.name}" stayed OPAQUE — a structural bar must never be routed through the clear-panel material`,
+              (mat as THREE.MeshStandardMaterial).transparent !== true,
+            );
+            doubleSidedTris += tris;
+          } else {
+            check(
+              `field.glb: "${o.name || frame.name}" was not blanket-doubled by the ground-beam fix`,
+              mat.side !== THREE.DoubleSide,
+              `side=${mat.side}`,
+            );
+            frontSidedTris += tris;
+          }
+        });
+      }
+      check('field.glb: at least one ground-beam mesh was actually extracted', sawGroundBeamMesh);
+      check(
+        'field.glb: the DoubleSide fix stays a minority of the hive-frame triangles (scoped, not blanket)',
+        doubleSidedTris > 0 && doubleSidedTris < frontSidedTris,
+        `${doubleSidedTris} doubleSided vs ${frontSidedTris} frontSided`,
+      );
     }
   }
 }

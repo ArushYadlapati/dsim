@@ -11,37 +11,54 @@
  * one's result should be hidden by the first one's.
  *
  * So: run both, unconditionally, print a line per suite, and exit non-zero if EITHER failed.
- * `npm test` still means "both games are green" and a red run still means "physics broke" —
- * the only thing that changes is that you now learn it about both suites in one run.
+ * `npm test` still means "both games are green" and a red run still means "physics broke".
+ *
+ * ── AND AT THE SAME TIME (2026-09-20) ───────────────────────────────────────────────────────
+ * They used to run one after the other — 39 s of shared shards, then 69 s of BIOBUZZ in a single
+ * process, 110 s of wall for work that shares nothing. BIOBUZZ is sharded by lane now
+ * (`bbshard.mjs`) and both runners start together; each buffers its own output, and the two are
+ * printed whole, shared first, so a log reads exactly as it did. `--serial` runs them back to
+ * back for a box that cannot spare the cores (the perf checks in both suites are measured on a
+ * loaded machine either way — `smokeshard.mjs` has always run twelve processes at once).
  *
  * Zero dependencies, and every child is spawned through `process.execPath` with an absolute
  * script path — no `shell: true`, which on Windows would put the repo path (spaces and all)
- * through `cmd.exe` quoting for nothing. `tsx` is invoked the way `smokeshard.mjs` invokes it:
- * its own `dist/cli.mjs` under this node, so there is no `.cmd` shim in the picture either.
+ * through `cmd.exe` quoting for nothing.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const TSX = resolve(ROOT, 'node_modules/tsx/dist/cli.mjs');
+const SERIAL = process.argv.includes('--serial');
 
-/** run one suite to completion, inheriting stdio so its own output is the run's output */
-function run(label, args) {
-  const r = spawnSync(process.execPath, args, { cwd: ROOT, stdio: 'inherit' });
-  // a child killed by a signal has a null status; that is a failure, and `1` is how it reports
-  const code = r.status === null ? 1 : r.status;
-  if (r.error) console.error(`[test] ${label} could not start:`, r.error.message);
-  return { label, code };
+/** run one suite to completion, buffering its output so two suites do not interleave */
+function run(label, script) {
+  return new Promise((done) => {
+    const child = spawn(process.execPath, [script], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+    const chunks = [];
+    child.stdout.on('data', (d) => chunks.push(d));
+    child.stderr.on('data', (d) => chunks.push(d));
+    // a child killed by a signal has a null status; that is a failure, and `1` is how it reports
+    child.on('close', (code) => done({ label, code: code === null ? 1 : code, out: Buffer.concat(chunks) }));
+    child.on('error', (e) => done({ label, code: 1, out: Buffer.from(`[test] ${label} could not start: ${e.message}\n`) }));
+  });
 }
 
-const results = [
-  run('shared', [resolve(ROOT, 'scripts/smokeshard.mjs')]),
-  run('biobuzz', [TSX, resolve(ROOT, 'scripts/smoke-biobuzz/index.ts')]),
+const t0 = Date.now();
+const suites = [
+  ['shared', resolve(ROOT, 'scripts/smokeshard.mjs')],
+  ['biobuzz', resolve(ROOT, 'scripts/bbshard.mjs')],
 ];
+const results = [];
+if (SERIAL) for (const [label, script] of suites) results.push(await run(label, script));
+else results.push(...(await Promise.all(suites.map(([label, script]) => run(label, script)))));
+
+for (const r of results) process.stdout.write(r.out);
 
 console.log('');
 for (const { label, code } of results) {
   console.log(`${label}: ${code === 0 ? 'PASS' : 'FAIL'} (exit ${code})`);
 }
+console.log(`[test] wall ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 process.exit(results.some((r) => r.code !== 0) ? 1 : 0);

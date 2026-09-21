@@ -195,7 +195,7 @@ export function cadFlowerRings(i: number): readonly FieldFlowerRing[] {
  * (determinism). Empty when the collider set is absent or carries nothing physical. */
 export function cadStatics(): readonly FieldStatic[] {
   if (!cachedStatics) {
-    cachedStatics = squareFootBars(
+    cachedStatics = slimFootBars(
       fieldColliders3d().statics.filter((s) => PHYSICAL_STATIC_CLASSES.has(s.class) && !ridesTray(s)),
     );
   }
@@ -204,62 +204,109 @@ export function cadStatics(): readonly FieldStatic[] {
 
 let cachedStatics: readonly FieldStatic[] | null = null;
 
-/** how far a part may poke out of a foot bar's box and still be folded into it (in). The feet
- * overhang their bar by 0.02 at most; the A-frame legs leave it by 39. */
-const FOOT_FOLD_EPS = 0.05;
-
 /**
- * ⚠️ THE HIVE'S FOOT ASSEMBLY IS ONE BOX, NOT A BAR AND TWO FEET (owner, 2026-09-20: "when I
- * strafe across while my front is flat with the support beam, I get stuck on a corner that does
- * not exist").
+ * ⚠️ THE FOOT BAR IS A CHANNEL, NOT A SOLID BLOCK — the fix here used to be ONE BOX per bar at the
+ * full 1.98×38.94×2.15 AABB (owner, 2026-09-20, first report: "when I strafe... I get stuck on a
+ * corner that does not exist"; that catch is still fixed, see below). Owner's SECOND report, same
+ * day, on that very box: "balls are able to get stuck on top of the biobuzz panel with seemingly
+ * nothing actually holding it up" / the ground-beam write-up calls it "an invisible wall/bump
+ * wherever the drawn bar is lower than 2.15 in" — and it is, almost everywhere.
  *
- * The exporter emits the sheet-metal foot bar and the two frame feet bolted inside its ends as
- * three hulls, the feet's outer faces 0.11 in BEHIND the bar's. A chassis pressed against the bar
- * sits 0.09 in into it (contact skin plus the solver's allowed error), which is enough for its
- * leading corner to meet the buried foot's SIDE face — a contact whose normal is along the bar, so
- * the slide stops dead at y = 17.2 with nothing drawn there. Measured: mecanum, 0.8 push, 0.5
- * strafe, stuck at y 9.14 (leading edge 17.64) on the blue bar's +y foot. The 8-point decimation
- * also left the bar itself a wedge — its outer face 24.73 at one end and 24.62 at the other.
+ * MEASURED off the shipped `field.glb` (`scratch/footbar-ramp-fine.ts`, `scratch/footbar-comp2.ts`
+ * — whole-connected-component zMax, the same rule `GROUND_BEAM_MAX_Z`'s own header warns a
+ * per-triangle test would get wrong by slicing the A-frame leg's flared foot into this bucket; that
+ * foot's own x-range (`hive_*_frame_a_frame_leg[_2]`, down to x ±24.28) very nearly overlaps the
+ * bar's, which is what a naive per-triangle probe finds first): the bar's cross-section, constant
+ * along essentially its whole 38.94-in length, is a shallow pressed channel — a back flange that
+ * ramps LINEARLY from ~0 in at the true outer face up to 2.14 in over 0.62 in of width, then drops
+ * sharply (0.02 in) to a floor that sits at **0.02–0.10 in** (never above 0.11) for the remaining
+ * **1.32 in of its 1.98-in width**, all the way from one foot to the other. So the old box was
+ * right about the outer 0.66 in and wrong — by up to 2.13 in — about the inner two-thirds, which is
+ * exactly the side a robot driving in from the field's own driving lanes meets first.
  *
- * So each bar becomes its own bounding box, grown to take in every frame part that lies inside it
- * (the feet), and those parts are dropped: one convex solid has no internal edge to catch on. The
- * box is what the drawn bar's silhouette is, to within the bevel on its top edge.
+ * THE FIX: the bar's own hull becomes a narrow FLANGE box (x within `FOOT_BAR_FLANGE_W` of the
+ * true outer face) spanning the bar's FULL length, and the floor beside it gets NO collider at all
+ * (its drawn height, 0.10 in worst case, rounds to zero the same as the flower under-field
+ * brackets below). The two frame feet become their own boxes too — at the bar's FULL original
+ * width, so they still fill in the true (wider) floor near their own ~2.3-in end — but **their box
+ * starts exactly where the flange's ends, `flangeInner`, and does not also cover the flange's own
+ * span**: flange occupies `[outer, flangeInner]`, a foot occupies `[flangeInner, fullInner]`. They
+ * TOUCH, to the bit, and never overlap.
+ *
+ * That "never overlap" is not a tidiness preference, it is load-bearing, and it took two wrong
+ * attempts to find. Attempt 1 left the feet as their own raw 8/16-point hulls (reasoning that the
+ * flange's now-continuous outer face would shield them from ever being touched): MEASURED, it does
+ * not — the feet's true outer face is only 0.09–0.11 in behind the flange's, well inside the ~0.09
+ * in a pressed contact already sits into a solid, so a chassis strafing along the flange still
+ * grazed the foot's own faceted hull as its corner's Y position entered the foot's range (slowest
+ * slide 1.9 in/s at y≈9.5, the SAME symptom as the original bug this file fixes). Attempt 2 boxed
+ * the feet at the bar's full width sharing the flange's outer face bit-for-bit, which is the
+ * geometrically "obvious" fix and is WRONG in a different way: it makes the foot box FULLY OVERLAP
+ * the flange box across the foot's own Y-range (both occupy the same volume there), and two
+ * coincident static Rapier colliders — MEASURED, reproducibly, at the SAME strafe check — froze the
+ * chassis dead at y≈8.8, nowhere near either foot, for the rest of the run; a bar with feet dropped
+ * entirely never showed it, and shrinking the overlap to a hair's width still showed a milder
+ * version of it (dip to 1.9, never a full stop). Rapier is not asked to reconcile two static
+ * colliders that occupy the same space, and something in that reconciliation is unstable in a way
+ * this file cannot fix from here. Non-overlapping (this version) removes the coincidence outright
+ * and the strafe check is clean at every y sampled, not merely above the 3 in/s floor.
+ *
+ * KNOWN RESIDUAL, not attempted: the flange's own 0.62-in RAMP (0 in at the true outer edge up to
+ * 2.14 in) is still represented as one box at the plateau height, same as the old box was in that
+ * narrow strip — a box can't follow a slope, and a slope this steep (≈3.2 in of rise per in of
+ * run) would need on the order of twenty 0.03-in-wide steps to hold every slice within 0.1 in. Not
+ * done: this is the SAME behaviour the field has always shipped with in that 0.66-in strip, it is
+ * far narrower than the 1.98-in bug this fixes, and the owner's two reports were both about the
+ * WIDE floor, not this edge. The feet's own faceted top (holes, bevels — the raw hulls this box
+ * replaces) is a second, smaller residual of the same kind, confined to their ~2.3-in Y-range.
  */
-function squareFootBars(statics: readonly FieldStatic[]): readonly FieldStatic[] {
+const FOOT_BAR_FLANGE_W = 0.66;
+
+/** per bar: the bar's own true outer face, its true (full-width) inner face, and the flange's own
+ * (narrower) inner face — all in one place so the flange box and its two foot boxes are built from
+ * exactly the same numbers, never independently re-derived. */
+interface BarX {
+  readonly outer: number;
+  readonly fullInner: number;
+  readonly flangeInner: number;
+}
+
+function slimFootBars(statics: readonly FieldStatic[]): readonly FieldStatic[] {
   const bars = statics.filter((s) => s.name.endsWith('_sheet_metal_foot_bar'));
   if (bars.length === 0) return statics;
-  const folded = new Set<FieldStatic>();
-  const boxes = new Map<FieldStatic, Aabb>();
+  const barX = new Map<FieldStatic, BarX>();
   for (const bar of bars) {
     const box = aabbOfFlat(bar.points);
-    const min: [number, number, number] = [box.min[0], box.min[1], box.min[2]];
-    const max: [number, number, number] = [box.max[0], box.max[1], box.max[2]];
-    for (const s of statics) {
-      if (s === bar || s.class !== bar.class || bars.includes(s)) continue;
-      const b = aabbOfFlat(s.points);
-      let inside = true;
-      for (let k = 0; k < 3; k++) {
-        if (b.min[k] < box.min[k] - FOOT_FOLD_EPS || b.max[k] > box.max[k] + FOOT_FOLD_EPS) inside = false;
-      }
-      if (!inside) continue;
-      folded.add(s);
-      for (let k = 0; k < 3; k++) {
-        if (b.min[k] < min[k]) min[k] = b.min[k];
-        if (b.max[k] > max[k]) max[k] = b.max[k];
-      }
-    }
-    boxes.set(bar, { min, max });
+    // whichever face sits farther from the field centreline is the bar's TRUE outer (back) face —
+    // red bars are all-negative x, blue all-positive, so this is just "which bound is bigger in
+    // magnitude", no per-alliance branch needed.
+    const outerIsMin = Math.abs(box.min[0]) > Math.abs(box.max[0]);
+    const outer = outerIsMin ? box.min[0] : box.max[0];
+    const fullInner = outerIsMin ? box.max[0] : box.min[0];
+    const flangeInner = outerIsMin ? outer + FOOT_BAR_FLANGE_W : outer - FOOT_BAR_FLANGE_W;
+    barX.set(bar, { outer, fullInner, flangeInner });
   }
+  // a foot's name is `<bar's own prefix>_frame_foot_[ab]`, e.g. `hive_red_frame_frame_foot_a` for
+  // bar `hive_red_frame_sheet_metal_foot_bar` -- match on that shared prefix, not proximity, so a
+  // malformed export fails loudly (via `owner` staying undefined below) instead of guessing.
+  const ownerOf = (foot: FieldStatic): FieldStatic | undefined =>
+    bars.find((bar) => foot.name.startsWith(bar.name.replace(/sheet_metal_foot_bar$/, '')));
+
   const out: FieldStatic[] = [];
   for (const s of statics) {
-    if (folded.has(s)) continue;
-    const box = boxes.get(s);
-    if (!box) {
-      out.push(s);
+    const asBar = bars.includes(s);
+    const asFoot = !asBar && /_frame_foot_[ab]$/.test(s.name) ? ownerOf(s) : undefined;
+    if (!asBar && !asFoot) {
+      out.push(s); // everything else -- the leg, the churros, the flower brackets -- untouched
       continue;
     }
+    const { outer, fullInner, flangeInner } = barX.get(asBar ? s : asFoot!)!;
+    const box = aabbOfFlat(s.points);
+    // the flange occupies [outer, flangeInner]; a foot occupies [flangeInner, fullInner] -- they
+    // touch at `flangeInner` and never overlap (see the header above for why that matters).
+    const [x0, x1] = asBar ? [outer, flangeInner] : [flangeInner, fullInner];
     const pts: number[] = [];
-    for (const x of [box.min[0], box.max[0]]) {
+    for (const x of [x0, x1]) {
       for (const y of [box.min[1], box.max[1]]) {
         for (const z of [box.min[2], box.max[2]]) pts.push(x, y, z);
       }
