@@ -1351,7 +1351,7 @@ export function bbRampSwingShapes(spec: RobotSpec, heightIn: number, e: number):
  * not, and none of them should be able to block a swing — a ramp folding past another robot is
  * a foul question (`bbRobotSolids`/robot-robot contact), not this guard's.
  */
-export function rampSwingHitsStatic(
+export function rampSwingBlocked(
   RAPIER: Rapier3d,
   world3d: InstanceType<Rapier3d['World']>,
   spec: RobotSpec,
@@ -1360,13 +1360,32 @@ export function rampSwingHitsStatic(
   chassisBottomZ: number,
   heading: number,
   e: number,
+  blockHandles: ReadonlySet<number> = new Set(),
 ): boolean {
   const shapes = bbRampSwingShapes(spec, heightIn, e);
   if (shapes.length === 0) return false;
   const bodyRot = yawQuat(heading);
   const cosH = dcos(heading);
   const sinH = dsin(heading);
-  const isStatic = (c: { parent(): { isFixed(): boolean } | null }): boolean => c.parent()?.isFixed() === true;
+  /**
+   * ⚠️ WHAT STOPS A SWING: A FIXED BODY, **OR ANOTHER ROBOT**.
+   *
+   * It used to be `isFixed()` alone — the guard was written to the owner's first wording ("any
+   * non-moving solid thing"), and a chassis is not fixed, so the query looked straight through
+   * one. Owner, 2026-09-21: "I am able to deploy the ramp into another robot and phase." The
+   * deploy was allowed with the blade already inside the other machine, and the solver then had
+   * two overlapping solids to separate from the inside, which reads as phasing.
+   *
+   * `blockHandles` is the OTHER robots' body handles, passed by the caller — never this robot's
+   * own, whose chassis the blade shares a body with and would hit on every single tick, and
+   * never an ELEMENT's, because sweeping POLLEN is the entire job of the ramp. That makes the
+   * rule exactly "solid world, plus other people's robots" and nothing wider.
+   */
+  const isStatic = (c: { parent(): { isFixed(): boolean; handle: number } | null }): boolean => {
+    const p = c.parent();
+    if (!p) return false;
+    return p.isFixed() || blockHandles.has(p.handle);
+  };
   for (const s of shapes) {
     const shapePos = {
       x: pos.x + s.cx * cosH - s.cy * sinH,

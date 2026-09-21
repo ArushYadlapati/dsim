@@ -3908,7 +3908,46 @@ export function sim3dChecks(check: Check): void {
         hashesB.push(worldHash(wb));
       }
     }
-    check(
+    /**
+     * ⚠️ A RAMP DOES NOT DEPLOY THROUGH ANOTHER ROBOT (owner, 2026-09-21: “I am able to
+     * deploy the ramp into another robot and phase”).
+     *
+     * The swing guard was written to the first wording of the rule — “any non-moving solid
+     * thing” — so its query filtered on `isFixed()`, and a chassis is not fixed. The blade
+     * went straight through one, and the solver was then handed two overlapping solids to
+     * separate from the inside, which is what reads as phasing.
+     *
+     * Nose to nose along +x. MEASURED at the fix: blocked at 16..24 in of centre separation,
+     * deploys normally at 26 and beyond. Both ends are asserted, so the check cannot pass by
+     * simply refusing every swing — which is the failure mode a guard that is too eager has.
+     * With the other robots left out of the block set (the old behaviour) the near case
+     * deploys at every gap down to 16, so this is not vacuous.
+     */
+    {
+      const swing = (gap: number): { out: boolean; blocked: boolean } => {
+        const w = mkWorld3dPair('free', 11, { bbMech: { intake: { kind: 'ramp' } } } as never, {});
+        const a = w.robots[0];
+        const b = w.robots[1];
+        a.heading = 0;
+        b.heading = Math.PI;
+        a.pos.x = 0;
+        a.pos.y = 0;
+        b.pos.x = gap;
+        b.pos.y = 0;
+        for (let t = 0; t < 30; t++) step3d(w, 1 / 60, new Map());
+        for (let t = 0; t < 6; t++) step3d(w, 1 / 60, new Map([[a.id, cmd({ bbRamp: true })]]));
+        for (let t = 0; t < 180; t++) step3d(w, 1 / 60, new Map([[a.id, cmd({})]]));
+        return { out: a.bbRampOut === true, blocked: a.bbRampBlocked === true };
+      };
+      const near = swing(18);
+      const far = swing(40);
+      check(
+        '⚠️ ramp 3d: a swing into ANOTHER ROBOT is refused and folds back, and a clear swing still deploys',
+        !near.out && near.blocked && far.out && !far.blocked,
+        `18in apart -> deployed ${near.out} blocked ${near.blocked}; 40in apart -> deployed ${far.out} blocked ${far.blocked}`,
+      );
+    }
+    check(
       'archetype 3d: determinism holds with a RAMP press in the script — hash equal every 40 ticks',
       // `rampScript` presses twice (phase 1 deploys, phase 3 folds), so `bbRampAt` being stamped
       // at all is the proof a press actually landed — the script's own design folds it again

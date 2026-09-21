@@ -25,7 +25,7 @@ import { type BiobuzzState } from '../state';
 import { flowerPlace3d, flowerRetrieve3d } from './flower3d';
 import { engineFor, type Engine3d } from './engineImpl';
 import { rapier3d } from './engine';
-import { rampSwingHitsStatic } from './bodies';
+import { rampSwingBlocked } from './bodies';
 import { bbKindIndex } from '../score';
 
 /**
@@ -125,7 +125,7 @@ const ZERO_CMD3D: RobotCommand = Object.freeze({
  * un-deploying"). Runs right after `bbRampStep` every tick of a swing that is still in flight —
  * `bbRampSwingProgress` returns `null` (and this is a no-op) once the swing has settled, and the
  * oscillation guard (`r.bbRampBlocked`) skips the query outright once one reversal has already
- * proven this swing needs it. `rampSwingHitsStatic` is the actual Rapier query
+ * proven this swing needs it. `rampSwingBlocked` is the actual Rapier query
  * (`bodies.ts`); a hit reverses the swing (`bbRampReverse`) in place, so the very next tick's
  * `bbRampSwingProgress` picks up the SAME eased curve running the other way.
  */
@@ -135,7 +135,7 @@ function bbRampSwingStep3d(world: World, r: RobotState): void {
   if (e === null) return;
   const engine = engineFor(world);
   const heightIn = bbHeightNow(world, r.spec);
-  const hit = rampSwingHitsStatic(rapier3d(), engine.world3d, r.spec, heightIn, r.pos, r.z ?? 0, r.heading, e);
+  // every OTHER robot's body, so a swing cannot be deployed through one. Not this robot's own:  // the blade hangs off that body and would report a hit on every tick of every swing.  const others = new Set<number>();  for (const [id, body] of engine.robots) if (id !== r.id) others.add(body.handle);  const hit = rampSwingBlocked(rapier3d(), engine.world3d, r.spec, heightIn, r.pos, r.z ?? 0, r.heading, e, others);
   if (hit) {
     const elapsed = world.time - (r.bbRampAt ?? world.time);
     bbRampReverse(r, world.time, elapsed);

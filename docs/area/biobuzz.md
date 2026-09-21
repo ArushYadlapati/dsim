@@ -1097,9 +1097,16 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     `bbRampSwingShapes(spec, heightIn, e)` (`sim3d/bodies.ts`) builds the crossbar + rails at ANY
     progress `e` about the FIXED PIVOT (`φ(e) = e·(π/2 + BB_RAMP_ANGLE)` from straight up),
     verified to reduce EXACTLY to `chassis3dReachShapes`'s own deployed numbers at `e = 1`;
-    `rampSwingHitsStatic` is a free-floating Rapier shape-intersection query (never a collider on
-    any body) filtered to `collider.parent()?.isFixed()` — walls, flower plates/supports and the
-    hive FRAME, never the hive tray, a robot or an element. **2D** (`bbRampSwingStep2d`, `play.ts`)
+    `rampSwingBlocked` is a free-floating Rapier shape-intersection query (never a collider on
+    any body) filtered to `collider.parent()?.isFixed()` **OR the handle of another ROBOT's body**
+    — walls, flower plates/supports, the hive FRAME and every other machine; never the hive tray,
+    never this robot's own body (the blade hangs off it and would hit on every tick), never an
+    element (sweeping POLLEN is the ramp's whole job). ⚠️ **IT WAS `isFixed()` ALONE UNTIL
+    2026-09-21 AND A CHASSIS IS NOT FIXED**, so the query looked straight through one (owner: “I am
+    able to deploy the ramp into another robot and phase”) — the deploy was allowed with the blade
+    already inside the other machine, leaving the solver two overlapping solids to separate from
+    the inside. MEASURED nose-to-nose: refused at 16..24 in of centre separation, deploys normally
+    at 26 and beyond; with robots left out of the block set it deploys at every gap down to 16. **2D** (`bbRampSwingStep2d`, `play.ts`)
     has no z or partial-swing geometry, so it tests the FULL DEPLOYED FOOTPRINT rect (SAT) against
     the 2D field's own static rects (`biobuzzColliders.statics`, all `rot: 0`) every tick a swing
     is in flight — which covers "at the press" for free. A hit calls `bbRampReverse`: flips
