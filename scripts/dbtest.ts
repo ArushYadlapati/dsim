@@ -3402,6 +3402,73 @@ async function main(): Promise<void> {
     );
   }
 
+
+  // ---- SEASON AWARDS + TITLES (0045/0046) ------------------------------------------
+  /**
+   * The checks `docs/rewards-round2-plan.md` §7 asks for by name. The one that matters
+   * most is IDEMPOTENCY: a season roll is a thing an admin can press twice, and the whole
+   * defence is 0045's unique slot index plus `on conflict do nothing`.
+   */
+  {
+    await repo.ensureProfile('aw-1', 'Champ');
+    await repo.ensureProfile('aw-2', 'Runner');
+
+    const GAME = 'decode' as const;
+    // A season with no boards behind it still rolls, and awards nothing. That is the
+    // ordinary case on a fresh install and it must not throw.
+    const before = await repo.startNewSeason(1, 'awards-a', false, GAME);
+    check('awards: a season with empty boards still rolls', typeof before.season === 'number');
+    check('awards: ...and mints nothing', (await repo.userAwards('aw-1')).length === 0);
+
+    // Mint a slot by hand — the board plumbing is exercised by `computeSeasonAwards`'s own
+    // callers; what is under test HERE is the table's contract, not the boards'.
+    const mint = async (rank: number, user: string) =>
+      db.query(
+        `insert into season_awards (game, balance_version, act, kind, mode, drivetrain, rank, user_id, score)
+         values ($1, $2, $3, 'ranked', '1v1', null, $4, $5, 1500) on conflict do nothing`,
+        [GAME, before.season, 0, rank, user],
+      );
+    await mint(1, 'aw-1');
+    await mint(2, 'aw-2');
+    check('awards: two ranks, two holders', (await repo.userAwards('aw-1')).length === 1 && (await repo.userAwards('aw-2')).length === 1);
+
+    // ⚠️ THE SAME SLOT TWICE IS ONE ROW. This is what makes a retried close safe.
+    await mint(1, 'aw-1');
+    check('⚠️ awards: re-minting the same slot is a no-op (the unique slot index)', (await repo.userAwards('aw-1')).length === 1);
+
+    // ...but a DUO slot legitimately holds two people, which is why `user_id` is in it.
+    await db.query(
+      `insert into season_awards (game, balance_version, act, kind, mode, drivetrain, rank, user_id, score)
+       values ($1, $2, 0, 'record_overall', 'duo', null, 1, $3, 900),
+              ($1, $2, 0, 'record_overall', 'duo', null, 1, $4, 900) on conflict do nothing`,
+      [GAME, before.season, 'aw-1', 'aw-2'],
+    );
+    const duo = await db.query<{ n: number }>(
+      `select count(*)::int as n from season_awards where kind = 'record_overall' and mode = 'duo' and rank = 1`,
+    );
+    check('⚠️ awards: a DUO rank decorates BOTH members, not whichever one inserted first', Number(duo.rows[0].n) === 2);
+
+    // titles: derived, and validated on write
+    const titles = await repo.earnedTitles('aw-1');
+    const rankedTitle = repo.awardTitleId({ game: GAME, balanceVersion: before.season, kind: 'ranked', mode: '1v1', drivetrain: null, rank: 1 });
+    check('titles: an award yields a title id', titles.includes(rankedTitle), titles.join(', '));
+    check('titles: setTitle accepts an earned one', (await repo.setTitle('aw-1', rankedTitle)) === true);
+    check('⚠️ titles: setTitle REFUSES an unearned one (0046 has no check constraint — this is the validation)',
+      (await repo.setTitle('aw-1', 'award:decode:999:ranked:1v1:1')) === false);
+    const held = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'aw-1'`);
+    check('titles: ...and the refusal did not overwrite the equipped one', held.rows[0].title === rankedTitle);
+    check('titles: null clears it', (await repo.setTitle('aw-1', null)) === true);
+    await repo.setTitle('aw-1', rankedTitle);
+    await repo.clearTitleIfEquipped('aw-1', rankedTitle);
+    const cleared = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'aw-1'`);
+    check('titles: clearTitleIfEquipped removes it when it matches', cleared.rows[0].title === null);
+
+    // the FK cascades — an award decorates a name, so with no name there is nothing left
+    await repo.deleteAccount('aw-2');
+    const left = await db.query<{ n: number }>(`select count(*)::int as n from season_awards where user_id = 'aw-2'`);
+    check('awards: a deleted account takes its awards with it (the FK cascades, no deleteAccount line needed)', Number(left.rows[0].n) === 0);
+  }
+
   await db.close();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

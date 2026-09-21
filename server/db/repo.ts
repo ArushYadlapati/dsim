@@ -182,24 +182,65 @@ export async function startNewSeason(
   bumpAct = false,
   game?: Game,
 ): Promise<{ season: number; act: number; seasonNo: number }> {
-  const next = (await currentSeasonNumber(fallback, game)) + 1;
+  const closing = await currentSeasonNumber(fallback, game);
+  const next = closing + 1;
   const cur = await q<{ act: number | null }>(
     `select act from seasons where game = $1 order by balance_version desc limit 1`,
     [g(game)],
   );
-  const act = Number(cur[0]?.act ?? 0) + (bumpAct ? 1 : 0);
+  const closingAct = Number(cur[0]?.act ?? 0);
+  const act = closingAct + (bumpAct ? 1 : 0);
   const custom = name && name.trim() ? name.trim() : null;
-  await q(
-    `insert into seasons (game, balance_version, name, act, active) values ($1, $2, $3, $4, true)
-     on conflict (game, balance_version) do update set name = excluded.name, act = excluded.act, active = true`,
-    [g(game), next, custom, act],
+
+  /**
+   * THE CLOSING SEASON'S AWARDS, computed BEFORE the roll and written INSIDE it.
+   *
+   * Read outside the transaction on purpose: these are four board queries, the boards of a
+   * season that is about to stop moving, and holding a connection across them for the
+   * length of a roll buys nothing. What must be atomic is the WRITE — see below.
+   *
+   * ⚠️ IT IS THE *CLOSING* SEASON THAT IS AWARDED, at the act it belonged to. `act` above
+   * may have been bumped for the season being OPENED; an award stamped with that would
+   * name the wrong act in its own title for every roll that starts a new act.
+   */
+  const closingNo = await q<{ n: number }>(
+    `select count(*)::int as n from seasons where game = $1 and act = $2 and balance_version <= $3`,
+    [g(game), closingAct, closing],
   );
-  await q(`update seasons set active = false where game = $1 and balance_version <> $2`, [g(game), next]);
-  const cnt = await q<{ n: number }>(
-    `select count(*)::int as n from seasons where game = $1 and act = $2`,
-    [g(game), act],
-  );
-  return { season: next, act, seasonNo: Number(cnt[0]?.n ?? 1) };
+  const awards = await computeSeasonAwards(game, closing, closingAct, Math.max(1, Number(closingNo[0]?.n ?? 1)));
+
+  /**
+   * ⚠️ ONE TRANSACTION, WHICH THIS FUNCTION DID NOT USED TO HAVE. It was four sequential
+   * `q()` calls, and `q()` takes a connection PER CALL (`pool.ts`), so a failure between
+   * them left a half-rolled season — and now that awards are part of a roll the exposure is
+   * worse than untidy: inserting the new season and then failing to write the awards leaves
+   * the closed season permanently un-awarded, because the next attempt reads `closing` from
+   * a `seasons` table that has already moved on. Either the roll happens or none of it does.
+   */
+  const seasonNo = await tx(async (query) => {
+    await query(
+      `insert into seasons (game, balance_version, name, act, active) values ($1, $2, $3, $4, true)
+       on conflict (game, balance_version) do update set name = excluded.name, act = excluded.act, active = true`,
+      [g(game), next, custom, act],
+    );
+    await query(`update seasons set active = false where game = $1 and balance_version <> $2`, [g(game), next]);
+    for (const a of awards) {
+      // `do nothing` against 0045's unique slot index is what makes a REPEATED close
+      // idempotent — a retried roll recomputes the same set and inserts none of it again.
+      await query(
+        `insert into season_awards (game, balance_version, act, season_no, kind, mode, drivetrain, rank, user_id, score)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         on conflict do nothing`,
+        [a.game, a.balanceVersion, a.act, a.seasonNo, a.kind, a.mode, a.drivetrain, a.rank, a.userId, a.score],
+      );
+    }
+    const cnt = await query<{ n: number }>(
+      `select count(*)::int as n from seasons where game = $1 and act = $2`,
+      [g(game), act],
+    );
+    return Number(cnt[0]?.n ?? 1);
+  });
+  return { season: next, act, seasonNo };
 }
 
 /** Delete all replays stamped with a given (archived) game×season. The record/match
@@ -826,6 +867,175 @@ export async function revokeCosmetic(
   if (rows.length === 0) return false;
   await writeAudit({ adminId: source, action: 'cosmetics.revoke', targetUser: userId, detail: { id }, note: note ?? undefined });
   return true;
+}
+
+
+// ----------------------------------------------------- season awards -------
+/**
+ * SEASON AWARDS — what a board's top finishers keep once the season has closed
+ * (migration 0045, `docs/rewards-round2-plan.md` §2.2).
+ *
+ * Owner's counts, 2026-09-21: ranked TOP 3 per mode; the record board OVERALL TOP 3 and
+ * PER-DRIVETRAIN TOP 1; and the DUO record board gets that same pair. A duo row is a
+ * PAIR's run, so both members are decorated — which is why `user_id` is part of 0045's
+ * unique slot index.
+ */
+export interface SeasonAward {
+  game: string;
+  balanceVersion: number;
+  act: number;
+  /** the season's number within its act — “Act 2 Season 3” */
+  seasonNo: number;
+  kind: 'ranked' | 'record_overall' | 'record_drivetrain';
+  mode: '1v1' | '2v2' | 'solo' | 'duo';
+  drivetrain: string | null;
+  rank: number;
+  userId: string;
+  score: number | null;
+}
+
+/** how deep each board's award slice goes — the owner's counts, in exactly one place. */
+export const AWARD_DEPTH = { ranked: 3, record_overall: 3, record_drivetrain: 1 } as const;
+
+/** the drivetrains a per-drivetrain award is minted for. `DrivetrainType`, spelled out
+ *  here because this module must not import from `src/types.ts` for a runtime value. */
+export const AWARD_DRIVETRAINS = ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const;
+
+/**
+ * THE TITLE ID FOR AN AWARD — derived from the slot, never stored as a string.
+ *
+ * `award:<game>:<version>:<kind>:<mode>[:<drivetrain>]:<rank>`. Derived so a title can
+ * never disagree with the row that justifies it, and so `setTitle`'s validation is a
+ * set-membership test against freshly read rows rather than a second copy of the truth.
+ * The rendered SENTENCE is the client's job (`awardTitleText`, `src/awards.ts`); this is
+ * the key, and it is what `profiles.title` holds.
+ */
+export function awardTitleId(
+  a: Pick<SeasonAward, 'game' | 'balanceVersion' | 'kind' | 'mode' | 'drivetrain' | 'rank'>,
+): string {
+  const dt = a.drivetrain ? `:${a.drivetrain}` : '';
+  return `award:${a.game}:${a.balanceVersion}:${a.kind}:${a.mode}${dt}:${a.rank}`;
+}
+
+/**
+ * COMPUTE one closed season's awards. READ-ONLY — `startNewSeason` writes them.
+ *
+ * ⚠️ EVERY BOARD READ HERE IS THE BOARD'S OWN FUNCTION, called the way the site calls it.
+ * An award that disagreed with the board it claims to come from is worse than no award,
+ * and the two ways to cause that are both live hazards:
+ *   · `recordLeaderboard` takes an optional `physics`; omitting it takes `boardPhysics`'s
+ *     DEFAULT, which is what the public board uses. Passing one here would mint an award
+ *     for a holder the board itself hides.
+ *   · ranked uses `eloHistoryLeaderboard` (keyed by BALANCE_VERSION), never
+ *     `eloLeaderboard` (keyed by ACT). A season's ranked winner is a per-season fact; the
+ *     act board spans several and would name the wrong person on every season but the last
+ *     of an act.
+ * Both boards already apply their own `PLACEMENT_GAMES` floor, and an award inherits it
+ * for the same reason — it must agree with its board.
+ *
+ * TIES resolve to the BOARD'S OWN ORDER. Neither board promises a tiebreak beyond its
+ * `order by`, and inventing one here would be a second opinion about who came second.
+ */
+export async function computeSeasonAwards(
+  game: Game | undefined,
+  balanceVersion: number,
+  act: number,
+  seasonNo: number,
+): Promise<SeasonAward[]> {
+  const out: SeasonAward[] = [];
+  const base = { game: g(game), balanceVersion, act, seasonNo };
+
+  for (const mode of ['1v1', '2v2'] as const) {
+    const rows = await eloHistoryLeaderboard({ mode, balanceVersion, limit: AWARD_DEPTH.ranked, game });
+    rows.forEach((r, i) => {
+      out.push({ ...base, kind: 'ranked', mode, drivetrain: null, rank: i + 1, userId: r.userId, score: Math.round(r.rating) });
+    });
+  }
+
+  for (const mode of ['solo', 'duo'] as const) {
+    const overall = await recordLeaderboard({ mode, balanceVersion, limit: AWARD_DEPTH.record_overall, game });
+    overall.forEach((r, i) => {
+      // BOTH HALVES OF A DUO RUN ARE DECORATED — see `SeasonAward`'s header.
+      for (const uid of [r.userId, ...(mode === 'duo' && r.partnerId ? [r.partnerId] : [])]) {
+        out.push({ ...base, kind: 'record_overall', mode, drivetrain: null, rank: i + 1, userId: uid, score: Math.round(r.score) });
+      }
+    });
+    for (const dt of AWARD_DRIVETRAINS) {
+      const rows = await recordLeaderboard({ mode, drivetrain: dt, balanceVersion, limit: AWARD_DEPTH.record_drivetrain, game });
+      rows.forEach((r, i) => {
+        for (const uid of [r.userId, ...(mode === 'duo' && r.partnerId ? [r.partnerId] : [])]) {
+          out.push({ ...base, kind: 'record_drivetrain', mode, drivetrain: dt, rank: i + 1, userId: uid, score: Math.round(r.score) });
+        }
+      });
+    }
+  }
+  return out;
+}
+
+/** every award this account holds, newest season first — the profile read. */
+export async function userAwards(userId: string): Promise<SeasonAward[]> {
+  const rows = await q<{
+    game: string; balance_version: number; act: number; season_no: number; kind: SeasonAward['kind'];
+    mode: SeasonAward['mode']; drivetrain: string | null; rank: number; score: number | null;
+  }>(
+    `select game, balance_version, act, season_no, kind, mode, drivetrain, rank, score
+       from season_awards where user_id = $1
+      order by balance_version desc, kind, mode, rank`,
+    [userId],
+  );
+  return rows.map((r) => ({
+    game: r.game, balanceVersion: r.balance_version, act: r.act, seasonNo: r.season_no, kind: r.kind,
+    mode: r.mode, drivetrain: r.drivetrain, rank: r.rank, userId, score: r.score,
+  }));
+}
+
+/**
+ * EVERY TITLE THIS ACCOUNT MAY WEAR. The one resolver, and the only thing that decides.
+ *
+ * Two sources, unioned (0046's header):
+ *   · AWARD titles, derived from `season_awards` rows;
+ *   · GRANTED titles — the GitHub reward, loyalty milestones — which live as `title:`
+ *     entries in `profiles.cosmetics`.
+ * ⚠️ The granted half is READ here already even though nothing grants one yet. Reading a
+ * prefix out of that jsonb array needs no registry change; GRANTING one does, because
+ * `CosmeticId` (`src/cosmetics.ts`) is a template type over the four ROBOT SPEC axes and a
+ * title is not a spec field. That decision belongs to stage B, and this function is
+ * deliberately already correct for it rather than needing a second edit then.
+ */
+export async function earnedTitles(userId: string): Promise<string[]> {
+  const awards = await userAwards(userId);
+  const fromAwards = awards.map((a) => awardTitleId(a));
+  const rows = await q<{ cosmetics: unknown }>(`select cosmetics from profiles where user_id = $1`, [userId]);
+  const ledger = Array.isArray(rows[0]?.cosmetics) ? (rows[0].cosmetics as unknown[]) : [];
+  const granted = ledger.filter((v): v is string => typeof v === 'string' && v.startsWith('title:'));
+  return [...new Set([...fromAwards, ...granted])];
+}
+
+/**
+ * EQUIP a title, or clear it with `null`. Validated against `earnedTitles` on WRITE —
+ * 0046's column is bare `text`, so this is the only thing standing between it and an
+ * unearned value. Returns false when the account has not earned `id`.
+ */
+export async function setTitle(userId: string, id: string | null): Promise<boolean> {
+  if (id !== null) {
+    const earned = await earnedTitles(userId);
+    if (!earned.includes(id)) return false;
+  }
+  const rows = await q<{ user_id: string }>(
+    `update profiles set title = $2, updated_at = now() where user_id = $1 returning user_id`,
+    [userId, id],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * CLEAR an equipped title that the account no longer holds. Called by every path that
+ * takes a title away — an award reversal, `revokeCosmetic` on a `title:` id — for the
+ * reason `clearUsername` exists (`docs/area/accounts.md`): the moderator takes the thing
+ * away, they do not leave a dangling reference for a render path to discover.
+ */
+export async function clearTitleIfEquipped(userId: string, id: string): Promise<void> {
+  await q(`update profiles set title = null, updated_at = now() where user_id = $1 and title = $2`, [userId, id]);
 }
 
 // ------------------------------------------------------- Ko-fi payments -----
