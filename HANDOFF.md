@@ -25,7 +25,8 @@ every one resumed cleanly via SendMessage. Each area guide carries the long form
 - **G407 OVER-CONTROL.** Unreachable in 3D (a plowed ball SKIPS, `derive.ts` tags it `flight` 14.3 % of contact
   ticks, the sweep deleted its hold clock: peak hold 0.000 s vs 0.45 s) and inert in free drive. `ControlGeometry.loose`
   + `bbLooseElement` (`flight` under `BB_CONTROL_SKITTER_Z` 2 in, 3D only; measured 0.92 vs 7.60). ⚠️ FREE DRIVE NOW
-  BILLS in BIOBUZZ (DECODE precedent; G410 unlocked there) — flagged to the owner, one-line revert (`isFree`).
+  BILLS in BIOBUZZ (DECODE precedent; G410 unlocked there) — owner CONFIRMED ("free drive should show fouls"); the bar
+  shows no score outside a match, so a foul there is a line in the event log and nothing else.
   Egress +135 B/snap deflated in 3D. DECODE G408 healthy; Chain has no such rule by design.
 - **SIDE ROLLERS pass 2.** Protrusion 1.90 → **1.65** (not the 1.40 I asked for: park-then-intake is 58 % at 1.65,
   44 % at 1.60, 0 % at ≤ 1.45 — reach covers the 18–22° yaw a one-sided plate contact gives). Frictionless wheels
@@ -34,11 +35,12 @@ every one resumed cleanly via SendMessage. Each area guide carries the long form
   `ROBOT_TRIM`. `chassisEdges`/`lineMat` deleted.
 - **ELEMENTS ARE THE REAL CAD SOLID on High/Ultra/export** (`npm run element-cad`, `elements.glb` 16 KB br; new
   seventeenth setting `elementDetail`), they ROLL (visual only), and two instancing bugs fixed (stale frustum sphere;
-  56 instances drawn). ⚠️ OPEN OWNER DECISION: CAD NECTAR r 1.810 vs `BB_NECTAR_R` 1.800 — not changed.
+  56 instances drawn). DECIDED by the owner ("Keep the sim ... as long as it is consistent"): `BB_NECTAR_R` stays 1.800
+  and `bake` FITS the CAD mesh (1.810) onto the config radius, so drawn = solved at every tier.
 - **DRIVE WHEELS ARE CATALOGUE PARTS** (`BB_WHEEL_PARTS`): 104 mm GripForce mecanum (11 rollers, handed, X pattern
   measured), 96 mm omni, 96/72 mm Hogback. Stripe texture gone. Renderer reads `C.WHEEL_DIAMETER_MM`. 2D: BIOBUZZ's
-  X-drive omnis were drawn radially — fixed. ⚠️ A wheel is nearly invisible behind the side plate; a cutout is the
-  owner's call.
+  X-drive omnis were drawn radially — fixed. A wheel is nearly invisible behind the side plate; owner: leave the
+  plate, keep the wheel accurate at the higher tiers (it is).
 - **11 BACKGROUNDS** (8 painted, procedural, per-environment light rig; Low/Medium get a picker for the first time;
   ⚠️ env maps were on their side — z-up vs three's y-up, `+π/2`; rigs held to ≥ 25° sun). **FLOWER READ-OUT** on the
   3D overhead camera via the NEW slot `GameModule.drawSceneOverlay` + `GameScene.camera` (⚠️ a third arg on

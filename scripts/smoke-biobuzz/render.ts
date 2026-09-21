@@ -7723,6 +7723,13 @@ function hudBandChecks(check: Check): void {
     check('the scene applies the row live, beside the other element setting', /setElementDetail\(this\.elements, s\.elementDetail\);/.test(sceneSrc));
     check('...and the scene factory pre-warms the asset with the field so an export never draws a sphere', /loadElementGeometries\(\)\.catch\(\(\) => null\) : null,/.test(sceneSrc));
     check('the loader refuses a mesh whose radius is not the config constant', /outer radius \$\{rmax\.toFixed\(4\)\} in is not/.test(glbSrc2));
+    // ONE RADIUS (owner, 2026-09-21: "Keep the sim ... As long as it is consistent"): the CAD
+    // NECTAR is 1.810 in and the sim solves 1.800, so the loader fits the accepted mesh onto the
+    // config constant — the perforated ball, the sphere fallback and the solved body are one size.
+    check(
+      'the loader draws every element at exactly the radius the sim solves (fits the mesh onto the config constant)',
+      /const fit = expectedR \/ rmax;/.test(glbSrc2) && /out\[i\] \*= fit;/.test(glbSrc2),
+    );
     check('the loader never applyMatrix4s the quantized attribute', !/geo\.applyMatrix4\(/.test(glbSrc2) && /pos\.getX\(i\), pos\.getY\(i\), pos\.getZ\(i\)/.test(glbSrc2));
     check('nothing is drawn DoubleSide — the CAD winding is what makes the holes read', !/THREE\.DoubleSide/.test(elSrc) && !/THREE\.DoubleSide/.test(glbSrc2));
     check('only what exists is drawn (the instance count is the live one, not the cap)', /els\.pollen\.count = pollenN;/.test(elSrc) && /els\.nectar\.count = nectarN;/.test(elSrc));

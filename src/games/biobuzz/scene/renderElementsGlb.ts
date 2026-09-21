@@ -50,11 +50,13 @@ export interface BbElementGeometries {
  * the STEP says 1.810 in, `BB_NECTAR_R` says 1.800. The CAD is authoritative for DIMENSIONS
  * (owner ruling 2026-09-18) but that radius is also a SIM number — it is the sphere Rapier
  * solves, the reach every flower/hive/intake tolerance was measured against — so moving it is a
- * physics change somebody has to decide, not something a renderer may do on its own. The drawn
- * ball is 0.010 in (0.55 %) wider than the solved one until then, which is a third of the
- * quantization grid of the tile texture and invisible; the delta is REPORTED in
- * `public/models/biobuzz/elements-measurements.json` and in the RENDER lane rather than hidden.
- * POLLEN agrees exactly (1.400 in).
+ * physics change somebody has to decide, not something a renderer may do on its own.
+ *
+ * DECIDED (owner, 2026-09-21): "Keep the sim ... As long as it is consistent." So the SIM's
+ * radius is the one radius. `bake` scales the accepted mesh uniformly onto the config constant
+ * (NECTAR × 0.9945; POLLEN × 1.0000), which makes the perforated ball, the sphere fallback, the
+ * 2D sprite and the body Rapier solves all the same size at every graphics tier. The CAD's own
+ * figure stays REPORTED in `public/models/biobuzz/elements-measurements.json`.
  */
 export const ELEMENT_RADIUS_TOL_IN = 0.02;
 
@@ -126,6 +128,9 @@ function bake(mesh: THREE.Mesh, expectedR: number, kind: string): THREE.BufferGe
   if (Math.abs(rmax - expectedR) > ELEMENT_RADIUS_TOL_IN) {
     throw new Error(`renderElementsGlb: "${kind}" outer radius ${rmax.toFixed(4)} in is not ${expectedR} ± ${ELEMENT_RADIUS_TOL_IN}`);
   }
+  // ONE RADIUS: draw the ball at exactly the size the sim solves (see `ELEMENT_RADIUS_TOL_IN`).
+  const fit = expectedR / rmax;
+  for (let i = 0; i < out.length; i++) out[i] *= fit;
 
   const idx = new Uint32Array(index.count);
   for (let i = 0; i < index.count; i++) idx[i] = index.getX(i);
