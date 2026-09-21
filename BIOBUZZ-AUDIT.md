@@ -109,7 +109,7 @@ screenshots, no visual verification, no 3D scene inspection.
 | BB-08 | **G417** | G417 is disabled outright, so the HIVE-protection rule bills nothing | minor | penalty | OPEN by ruling |
 | BB-09 | **§10.6.1** | No card path exists in BIOBUZZ | minor | missing-rule | OPEN |
 | BB-10 | **repo doctrine** | No fouls are assessed in Free Drive | minor | penalty | OPEN |
-| BB-11 | **Table 10-2** | WIN and TIE ranking points are never computed or printed | minor | missing-scoring | OPEN |
+| BB-11 | **Table 10-2** | No ranking point is surfaced anywhere in the product | minor | missing-scoring | OPEN |
 | BB-12 | **§10.5.1** | Three owner rulings narrow manual-legal scoring paths | minor | missing-scoring | OPEN |
 | BB-13 | **repo convention** | The APPROX worklist grep misses nine constants | minor | other | OPEN |
 | BB-14 | **§9.6** | Four `BB_TIP_POLLEN` rows are single bench readings and carry no marker | minor | wrong-value | OPEN |
@@ -149,7 +149,7 @@ screenshots, no visual verification, no 3D scene inspection.
 | BB-48 | **G426** | Test gap: the G426.A entitlement is never exercised in AUTO | nit | test-gap | OPEN |
 | BB-49 | **§9.8** | Test gap: nothing pins the 40 / 8 / 8 element split | nit | test-gap | FIXED |
 | BB-50 | **Table 10-3** | Test gap: all four RP checks sit off the threshold boundary | nit | test-gap | OPEN |
-| BB-51 | **Table 10-2** | Test gap: `biobuzzResultsRows` is never invoked by any suite | nit | test-gap | OPEN |
+| BB-51 | **Table 10-2** | Test gap: `biobuzzResultsRows` is never invoked by any suite | nit | test-gap | FIXED |
 | BB-52 | **seam contract** | Test gap: two of the four game registrations are unpinned | nit | test-gap | FIXED |
 | BB-53 | **§9 (all)** | The shipped field is the CAD's, not the manual's, and nothing says so where a rules reader looks | minor | other | NEW |
 | BB-54 | **G409** | G409 is enforced in 3D and still listed as "NOT HERE" | nit | other | NEW |
@@ -1688,7 +1688,18 @@ Three checks at the boundary: exactly 16 earns SWARM and 15 does not, exactly 4 
 
 *Rule: Table 10-2. Severity: nit. Category: test-gap.*
 
-**Status 2026-09-19 — OPEN.** Unchanged. `rg resultsRows scripts/smoke-biobuzz` is still empty, and the HUD-slice block still asserts everything but `hud.rp`.
+**Status 2026-09-21 — FIXED.** `core.ts`'s "results breakdown sections" block now calls
+`moduleFor('biobuzz').resultsRows` and pins the section ORDER outright, so a dropped or
+reordered section fails. It also pins that DECODE and Chain Reaction still fill neither.
+
+⚠️ The remediation this entry originally proposed — "assert the RANKING POINTS section's
+values against `s.rp`" — is no longer possible: that section was REMOVED on 2026-09-21 at the
+owner's request (see BB-11). `BbRankPoints` is still computed in `score.ts` and still rides
+`BiobuzzFieldHud.rp`, and `rules.ts` still covers the thresholds; what is gone is the only
+place a player could read one.
+
+**Status 2026-09-19 — OPEN.** `rg resultsRows scripts/smoke-biobuzz` is still empty, and the
+HUD-slice block still asserts everything but `hud.rp`.
 
 **The rule.** No G-rule governs this. Table 10-2 is the governing text: The point-value table the results screen prints.
 
@@ -1901,7 +1912,7 @@ Manual facts checked and found correctly implemented. Grouped by domain, dedupli
 - “At or above threshold” is `>=` for all three.
 - POLLINATOR 1 and 2 read the same `tips` counter and differ only by threshold, matching the two rows' identical glossary text.
 - No LOSS RP row is invented anywhere.
-- The three implemented RP lines are surfaced in a RANKING POINTS section of the results breakdown, printed by both versus results and `RecordResults`. Each label carries its own threshold read from `BB_RP` rather than a literal.
+- ⚠️ NO LONGER TRUE as of 2026-09-21. The RANKING POINTS section was removed from the results breakdown at the owner's request, so no RP reaches a player at all. The three lines are still computed (`score.ts`) and still ride the HUD slice (`BiobuzzFieldHud.rp`); restoring the section is one tuple in `biobuzzResultsRows`. See BB-11.
 - The WIN/TIE verdict is correctly determined and reported off `ScoreBreakdown.total`, which includes foul points and reads 0 for a voided alliance, so foul-decided and red-carded matches both resolve correctly. The same verdict is burned into exported replay video.
 - RP is recomputed from the world every tick rather than latched, and its inputs are already frozen by `post`.
 - DSIM's Glicko-2 ranking and per-game leaderboards do not read RP, which is correct: RP is an event-ranking concept and folding it into Glicko-2 would be the invention.

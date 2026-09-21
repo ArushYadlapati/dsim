@@ -176,7 +176,9 @@ solves the arc for the target's z (the existing `Vec3` + `BB_LAUNCH_Z0`).
   through AUTO and 0 from the buzzer. §10.5.4's article is read as the wall it began on. PARK: at end of AUTO / end of MATCH, footprint intersects **own**
   LOADING ZONE (assumed own — the zone "belongs to" the alliance; ask in Q&A) ⇒ 5 each.
 - RP: SWARM = leave + park points ≥ 16 (both robots LEAVE + both PARK in AUTO is exactly 16);
-  POLLINATOR 1/2 at 4 / 7 tips. Ranked/record boards read `total`; RP go to `resultsRows`.
+  POLLINATOR 1/2 at 4 / 7 tips. Ranked/record boards read `total`; the RP are computed and
+  ride the HUD slice, but nothing prints one — the RANKING POINTS section was removed from
+  `resultsRows` on 2026-09-21 (BIOBUZZ-AUDIT BB-11).
 
 ### 2.4 Human player (nectar entry)
 

@@ -30,6 +30,7 @@ import { HOME_DESC } from '../../src/seo';
 import { CHAIN_CATALYST_LABELS } from '../../src/games/chain/labels';
 import { INTAKE_SHORT } from '../../src/ui/labelData';
 import type { RobotSpec } from '../../src/types';
+import type { HudSnapshot } from '../../src/game';
 import { SPONSOR, sponsorActive } from '../../src/sponsor';
 import { BB_HOOD_DEFAULT_DEG, BB_NECTAR_R, BB_POLLEN_R, BB_START_POSES } from '../../src/games/biobuzz/config';
 import { elementLine } from '../../src/games/biobuzz/Gallery';
@@ -299,6 +300,28 @@ export function coreChecks(check: Check): void {
   // mechanism tiles with `mod.statTiles ? <slot> : isDecode ? <intake> : <scoring + catalyst>`.
   // That tail is an `else`, not a default, so a game filling neither branch is shown CHAIN
   // REACTION's tiles — which is how BIOBUZZ once advertised a CATALYST.
+  // ---- the results-screen breakdown (the `resultsRows` slot) -------------
+  // NOTHING asserted this slot before (BIOBUZZ-AUDIT BB-51), and its own "why it matters"
+  // line predicted the consequence exactly: a section silently dropped or reordered ships
+  // green. The ORDER is the behaviour — END OF MATCH reads immediately above the PENALTIES
+  // that adjust the total, because both are settled at the buzzer.
+  section('results breakdown sections (the resultsRows slot)');
+  {
+    const rows = moduleFor('biobuzz').resultsRows;
+    check('biobuzz FILLS the resultsRows slot', typeof rows === 'function');
+    check('decode does NOT fill it (its inline branch stays the live path)', !moduleFor('decode').resultsRows);
+    check('chain does NOT fill it (its inline branch stays the live path)', !moduleFor('chain').resultsRows);
+    // ONLY the titles need a hud here: every value goes through `n()`, which reads 0 from an
+    // absent slice rather than throwing, so the order is pinnable without stepping a world.
+    // The values themselves are covered by the scoring checks in `rules.ts`.
+    const titles = (rows?.({ alliance: 'red' } as unknown as HudSnapshot) ?? []).map(([t]) => t);
+    check(
+      'END OF MATCH reads immediately above PENALTIES, and RANKING POINTS is gone',
+      titles.join(' | ') === 'AUTONOMOUS | HIVE | FLOWER | GARDEN | END OF MATCH | PENALTIES',
+      titles.join(' | '),
+    );
+  }
+
   section('builder stat tiles (the per-game hero summary)');
   const bbTiles = moduleFor('biobuzz').statTiles;
   check('biobuzz FILLS the statTiles slot', typeof bbTiles === 'function');

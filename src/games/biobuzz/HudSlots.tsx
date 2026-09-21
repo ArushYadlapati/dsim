@@ -4,10 +4,10 @@ import type { HudSnapshot } from '../../game';
 import type { ArtifactColor } from '../../types';
 import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
 import { BiobuzzBuilder } from './Builder';
-import { BB_PTS, BB_RP } from './config';
+import { BB_PTS } from './config';
 import type { BbCellHud, BbPinHud, BiobuzzFieldHud } from './hud';
 import type { BiobuzzHud } from './hudRobot';
-import type { BbAllianceScore, BbRankPoints } from './score';
+import type { BbAllianceScore } from './score';
 
 /**
  * The BIOBUZZ UI SLOTS that need JSX — the builder adapter, the two live-HUD slots and the
@@ -441,15 +441,20 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
  * parenthetical names the unit, and it is the same word on every row that shares one.
  *
  * ── THERE IS NO TOTAL ROW HERE, DELIBERATELY ────────────────────────────────
- * Both consumers append their own (`GameView`'s `total-row`, off the shared
+ * Both consumers append their own (`Results.tsx`'s `.resx-total`, off the shared
  * `ScoreBreakdown.total`), so a second one would print the number twice — and would DISAGREE
  * with it on a VOIDED match, where the shared row reads 0 over a full breakdown on purpose.
- * RANKING POINTS is therefore the last section and the screen's own TOTAL closes the table.
+ * PENALTIES is therefore the last section and the screen's own TOTAL closes the table.
  *
- * RPs print as 1 / 0, because a section row is `[label, number, number]`. The threshold goes
- * in the label rather than in a legend: a bare 0 in a numeric column says nothing about what
- * would have earned it. The numbers come from `BB_RP`, so a label cannot drift from the test
- * that sets the flag.
+ * ── THE ORDER IS THE MATCH'S OWN ────────────────────────────────────────────
+ * AUTONOMOUS, then the three things scored all match long, then END OF MATCH, then the
+ * PENALTIES that adjust the total. The endgame section reads immediately above the penalties
+ * because both are settled at the buzzer and a driver reads down towards the total.
+ *
+ * ⚠️ RANKING POINTS used to close this table: SWARM / POLLINATOR 1 / POLLINATOR 2, printed as
+ * 1 / 0 off `BB_RP`. It was REMOVED on 2026-09-21 at the owner's request. `BbRankPoints` is
+ * still computed in `score.ts` and still rides `BiobuzzFieldHud.rp`, so restoring the section
+ * is one tuple — but until then NOTHING in the product surfaces a ranking point.
  */
 export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] {
   const f: BiobuzzFieldHud | undefined = sliceOf(hud)?.field;
@@ -459,8 +464,6 @@ export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] 
   const n = (s: BbAllianceScore | undefined, k: keyof BbAllianceScore): number => s?.[k] ?? 0;
   const row = (label: string, k: keyof BbAllianceScore) =>
     [label, n(f?.score[me], k), n(f?.score[opp], k)] as const;
-  const rp = (label: string, k: keyof BbRankPoints) =>
-    [label, f?.rp[me][k] ? 1 : 0, f?.rp[opp][k] ? 1 : 0] as const;
   return [
     [
       'AUTONOMOUS',
@@ -474,10 +477,6 @@ export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] 
         row('PARK (robots)', 'parkAutoCount'),
         row('PARK (points at the end of AUTO)', 'parkAuto'),
       ],
-    ],
-    [
-      'END OF MATCH',
-      [row('PARK (robots)', 'parkTeleCount'), row('PARK (points at the end of the MATCH)', 'parkTele')],
     ],
     [
       'HIVE',
@@ -504,16 +503,12 @@ export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] 
     // SCORING ELEMENTS have come to rest" — so the GARDEN line waits exactly as the CELL line
     // does, and says so in the same words.
     ['GARDEN', [row('GARDEN (elements)', 'gardenCount'), row('GARDEN (points at the buzzer)', 'gardenPts')]],
+    [
+      'END OF MATCH',
+      [row('PARK (robots)', 'parkTeleCount'), row('PARK (points at the end of the MATCH)', 'parkTele')],
+    ],
     // points AWARDED to each alliance, i.e. earned from the OPPONENT's violations — the same
     // direction the shared breakdown prints, so the two reconcile against their totals.
     ['PENALTIES', [row('Fouls awarded (points)', 'foul')]],
-    [
-      'RANKING POINTS',
-      [
-        rp(`SWARM (${BB_RP.swarm} LEAVE + PARK points)`, 'swarm'),
-        rp(`POLLINATOR 1 (${BB_RP.pollinator1} TIPS)`, 'pollinator1'),
-        rp(`POLLINATOR 2 (${BB_RP.pollinator2} TIPS)`, 'pollinator2'),
-      ],
-    ],
   ];
 }
