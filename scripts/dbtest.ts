@@ -22,7 +22,7 @@ import { monthsFor, whyNoMonths, DEFAULT_POLICY, policyFromEnv } from '../server
 // a LEAF module (no imports, no env read at module scope — see its own header), so unlike
 // `server/db/repo` this is safe to import up front rather than after the pool swap.
 import { stripUnentitledCosmetics } from '../src/cosmetics';
-
+
 /**
  * MODERATION, STUBBED AT THE TRANSPORT — so `saveReplay`'s name scrub can be exercised
  * without a network call or an API key.
@@ -3533,6 +3533,65 @@ async function main(): Promise<void> {
     await repo.deleteAccount('gh-2');
     const left = await db.query<{ n: number }>(`select count(*)::int as n from provider_links where user_id = 'gh-2'`);
     check('links: a deleted account takes its links with it (the FK cascades)', Number(left.rows[0].n) === 0);
+  }
+
+
+  // ---- THE STARGAZER FETCH: `complete` is the safety property ----------------------
+  /**
+   * `fetchStargazers` takes an injected `fetch`, so every failure path is reachable without
+   * a network or a token. The property under test is not "does it parse JSON" — it is that
+   * EVERY failure produces `complete: false`, because `sweepStargazers` revokes on a
+   * complete list and an incomplete one misread as empty strips every holder at once.
+   */
+  {
+    /* ⚠️ IMPORTED LAZILY, LIKE `server/db/repo` ITSELF. `server/stargazers` pulls repo in,
+       repo pulls `server/moderation`, and moderation reads its key AT MODULE SCOPE — so a
+       top-of-file import here resolves moderation as DISABLED before the stub at the top of
+       this file sets the env, and the replay name-scrub check goes red. That stub's own
+       header warns about exactly this; this is that hazard, met. */
+    const stargazers = await import('../server/stargazers');
+    const page = (n: number, ids: number[]) => ({ ok: true, status: 200, json: async () => ids.map((id) => ({ id })) }) as unknown as Response;
+    const stub = (pages: Response[]): typeof fetch => {
+      let i = 0;
+      return (async () => pages[Math.min(i++, pages.length - 1)]) as unknown as typeof fetch;
+    };
+
+    // a single short page is a complete answer
+    let got = await stargazers.fetchStargazers('o/r', undefined, stub([page(1, [1, 2, 3])]));
+    check('stargazers: a short page ends the walk and is COMPLETE', got.complete && got.ids.join() === '1,2,3', JSON.stringify(got));
+
+    // ⚠️ zero stars is a real, COMPLETE answer — and it is the one a naive implementation
+    // conflates with failure. `sweepStargazers` would revoke everybody on it, correctly.
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([page(1, [])]));
+    check('⚠️ stargazers: an EMPTY repo is complete, not a failure', got.complete && got.ids.length === 0);
+
+    // a full page followed by a short one pages through
+    const full = Array.from({ length: 100 }, (_, k) => k + 1);
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([page(1, full), page(2, [101])]));
+    check('stargazers: it pages until a short page', got.complete && got.ids.length === 101);
+
+    // every failure path is INCOMPLETE
+    const bad = { ok: false, status: 502, json: async () => [] } as unknown as Response;
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([bad]));
+    check('⚠️ stargazers: a non-2xx is INCOMPLETE', !got.complete);
+
+    const throws = (async () => {
+      throw new Error('socket hang up');
+    }) as unknown as typeof fetch;
+    got = await stargazers.fetchStargazers('o/r', undefined, throws);
+    check('⚠️ stargazers: a thrown fetch is INCOMPLETE', !got.complete);
+
+    const notJson = { ok: true, status: 200, json: async () => { throw new Error('bad json'); } } as unknown as Response;
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([notJson]));
+    check('⚠️ stargazers: an unparseable body is INCOMPLETE', !got.complete);
+
+    const notArray = { ok: true, status: 200, json: async () => ({ message: 'rate limited' }) } as unknown as Response;
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([notArray]));
+    check('⚠️ stargazers: a body that is not an array is INCOMPLETE (this is the rate-limit shape)', !got.complete);
+
+    // a list that never shortens must stop, and stopping early is INCOMPLETE
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([page(1, full)]));
+    check('⚠️ stargazers: a list that never ends hits MAX_PAGES and is INCOMPLETE', !got.complete, `${got.ids.length} ids`);
   }
 
   await db.close();

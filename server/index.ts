@@ -30,6 +30,7 @@ import { BALANCE_VERSION } from '../src/config';
 import { periodLabel } from '../src/seasons';
 import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
+import { runStarSweep, STAR_SWEEP_MS } from './stargazers';
 import { dbEnabled } from './db/pool';
 import {
   currentSeasonNumber,
@@ -3741,6 +3742,27 @@ if (dbEnabled) {
   const hb = setInterval(beat, 5_000);
   hb.unref();
 }
+
+/**
+ * THE GITHUB STAR REWARD's hourly sweep (`server/stargazers.ts`).
+ *
+ * `unref()` like every other interval here, so it never holds the process open. It is a
+ * no-op with no database and a no-op until somebody has actually linked a GitHub account
+ * — which is the state this sits in until the provider is enabled in the Neon Auth
+ * project, so switching the feature on takes no code change here.
+ *
+ * ⚠️ IT NEVER THROWS INTO THE TIMER. An unhandled rejection from a scheduled task is an
+ * `uncaughtException` the process-level hook only logs, and a sweep that dies quietly is
+ * indistinguishable from one that ran and found nothing.
+ */
+const STAR_REPO = process.env.GITHUB_STAR_REPO ?? 'genius0412/dsim';
+const starSweeper = setInterval(() => {
+  if (!dbEnabled) return;
+  void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN).catch((e) =>
+    console.error('[rewards] star sweep failed:', e),
+  );
+}, STAR_SWEEP_MS);
+starSweeper.unref();
 
 // WS heartbeat — reap ghost sockets (see socketAlive above). Every interval:
 // terminate any socket that didn't pong since the last ping (fires 'close' → the
