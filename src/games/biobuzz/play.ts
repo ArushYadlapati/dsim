@@ -48,6 +48,7 @@ import {
   bbRampSwingProgress,
   bbSlewTurret,
   bbTurretRelease,
+  bbTurretOnTarget,
   bbTurretSolution,
   mouthAxes,
 } from './robot';
@@ -715,10 +716,20 @@ export function updateBiobuzz(
     // where the cells are, not which way the HIVE will be tilted when the shot arrives, and not
     // how many elements are already on their way. The real capture (stage 2) still reads the real
     // HIVE, so a shot at a down or swinging cell misses.
-    const target = bbAimTarget(world, rob);
-    const pretend = bbPretendHive(bb.hives[rob.alliance], bbCellSideOf(target));
-    // `lands` is read only while the driver is holding fire, so only then is it predicted.
-    const asking = enabled && (cmds.get(rob.id)?.fire ?? false) && rob.hopper.length > 0;
+    /**
+     * A PASS RETARGETS THE SAME SOLVER (`bbPassTargetOf`) and is judged differently: it is a
+     * delivery to a point on the tiles, so “will it land” is `sol.reachable` and nothing more.
+     * The hive's pretend-tilt, the cell side and `bbTurretShotEnters` are all about arriving
+     * through a HOLE and mean nothing here — `pretend` is therefore still built from the HIVE
+     * target, never from the pass one, or `bbCellSideOf` would be asked which side of a floor
+     * point is open. TURRETED BUILDS ONLY: a dumper heaves its whole hopper a short way into a
+     * cell and is not a passing mechanism, so it ignores the button.
+     */
+    const passing = enabled && bbIsTurreted(launcher) && (cmds.get(rob.id)?.bbPass ?? false);
+    const target = passing ? bbPassTargetOf(rob) : bbAimTarget(world, rob);
+    const pretend = bbPretendHive(bb.hives[rob.alliance], bbCellSideOf(bbAimTarget(world, rob)));
+    // `lands` is read only while the driver is holding fire (or pass), so only then is it predicted.
+    const asking = enabled && ((cmds.get(rob.id)?.fire ?? false) || passing) && rob.hopper.length > 0;
     if (bbIsTurreted(launcher)) {
       // EVERY TURRET: one for a single turret, both for a double (POLLEN turret 0, NECTAR 1).
       const speed: (number | undefined)[] = [];
@@ -729,7 +740,9 @@ export function updateBiobuzz(
         bbSlewTurret(rob, sol?.yaw ?? null, sol?.pitch ?? null, dt, which);
         speed[which] = sol?.speed;
         // WILL IT LAND — `bbTurretShotEnters`, the ONE predicate `shotPath.ts` draws off.
-        lands[which] = asking && !!sol && sol.reachable && bbTurretShotEnters(pretend, rob, which, sol.speed, dt);
+        lands[which] = passing
+          ? asking && !!sol && sol.reachable && bbTurretOnTarget(rob, sol, which)
+          : asking && !!sol && sol.reachable && bbTurretShotEnters(pretend, rob, which, sol.speed, dt);
       }
       shots.set(rob.id, { target, speed, lands });
     } else {
@@ -1164,7 +1177,35 @@ function bbRampSwingStep2d(world: World, rob: RobotState): void {
  * is on its CLOSED side. The assist still points there, and no shot from there lands
  * (`hiveAccepts` needs an inboard arrival), so fire simply does nothing.
  */
-export function bbAimTarget(world: World, r: RobotState): ScoreTarget {
+/**
+ * WHERE A PASS THROWS — the player's own point, or the preset.
+ *
+ * ⚠️ **IT NEVER READS THE PARTNER'S POSE.** Owner, 2026-09-21: “in real life, you can't know
+ * where your opponent is accurately. So, people should be able to choose a point to shoot
+ * towards, but there should also be a simple preset.” A pass that tracked the partner would
+ * be an aimbot for the one thing a real driver has to eyeball, so the target is a FIXED point:
+ * `spec.bbPassTarget` when the player has set one, and otherwise the alliance's own LOADING
+ * ZONE — a named, point-symmetric spot both drivers already know, and the reason a player who
+ * never opens the setting still has a working pass.
+ */
+export function bbPassPoint(r: RobotState): Vec2 {
+  const t = r.spec.bbPassTarget;
+  if (t && Number.isFinite(t.x) && Number.isFinite(t.y)) return { x: t.x, y: t.y };
+  return bbLoadingZoneSpot(r.alliance);
+}
+
+/**
+ * The pass point as a `ScoreTarget`, so the ONE turret solver answers it too. `alliance` is
+ * null (it scores nothing — it is a delivery), `z` is an element resting on the tiles, and `r`
+ * is the POLLEN radius: a pass is judged by whether the arc REACHES, not by entering a hole,
+ * so there is no `face` and nothing here pretends the hive is tilted.
+ */
+export function bbPassTargetOf(r: RobotState): ScoreTarget {
+  return { id: 'pass', alliance: null, pos: bbPassPoint(r), z: BB_POLLEN_R, r: BB_POLLEN_R };
+}
+
+export function bbAimTarget(world: World, r: RobotState, passing = false): ScoreTarget {
+  if (passing) return bbPassTargetOf(r);
   void world; // the pick is geometry alone — which cell is up is exactly what it must not read
   const north = hiveCellTarget(r.alliance, 'north');
   const south = hiveCellTarget(r.alliance, 'south');

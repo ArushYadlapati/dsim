@@ -5963,12 +5963,36 @@ function queueTenth(w: World): void {
   // A default that is MISSING or SHARED is the same silent failure from the other side: an
   // action with no key cannot be pressed at all, and one sharing a key fires two things on
   // one press.
+  /**
+   * ⚠️ ONE PAD ACTION SHIPS UNBOUND, AND THE LIST IS AN ALLOWLIST SO A SECOND ONE CANNOT
+   * JOIN IT QUIETLY. The standard mapping has sixteen buttons and this game now has more
+   * actions than that: fire 7/0, intake 6/1, catalyst 4, fling 10, place 13/12, nectar 14,
+   * ramp 11, driveMode 5, flip 3, park 2, start 9, restart 8, and 15 is the in-match MENU
+   * button (`PAD_MENU_BUTTON`). 16 is the guide button, which a browser often does not
+   * report. `bbPass` therefore has a default KEY and no default BUTTON.
+   *
+   * It stays in `PAD_ACTIONS` because that is what makes it BINDABLE in Controls — the gap
+   * is a missing default, not a missing capability — and a default COMBO was rejected on
+   * its own merits: `padChords.ts`'s fast path is “no combo bound ⇒ the old any-button
+   * test, no state”, so the first default combo would move every player onto the stateful
+   * resolver to give one season one button.
+   *
+   * THE KEY HALF IS STILL ABSOLUTE. An action with no default key at all cannot be pressed
+   * by a new player on any device, which is the failure this check was written for.
+   */
+  const PAD_DEFAULT_EXEMPT: readonly string[] = ['bbPass'];
   const noKey = KEY_ACTIONS.filter((a) => DEFAULT_BINDINGS.keys[a].length === 0);
-  const noPad = PAD_ACTIONS.filter((a) => DEFAULT_BINDINGS.pad.buttons[a].length === 0);
+  const noPad = PAD_ACTIONS.filter((a) => DEFAULT_BINDINGS.pad.buttons[a].length === 0 && !PAD_DEFAULT_EXEMPT.includes(a));
+  const exemptBound = PAD_DEFAULT_EXEMPT.filter((a) => (DEFAULT_BINDINGS.pad.buttons[a as PadAction] ?? []).length > 0);
   check(
-    'bindings: every action has a default key and a default pad button',
+    'bindings: every action has a default key, and a default pad button unless it is on the exempt list',
     noKey.length === 0 && noPad.length === 0,
     `keys: ${noKey.join(',') || 'none'} pad: ${noPad.join(',') || 'none'}`,
+  );
+  check(
+    'bindings: ...and the exempt list is EXACT — an action that gained a default comes off it',
+    exemptBound.length === 0,
+    `still exempt but now bound: ${exemptBound.join(',') || 'none'}`,
   );
   const keyOwner = new Map<string, string>();
   const dupKeys: string[] = [];

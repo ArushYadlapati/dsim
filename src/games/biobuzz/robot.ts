@@ -62,6 +62,7 @@ import {
 import { releasePollen } from './elements';
 import type { LocalRect, ScoreTarget, Vec3 } from './state';
 import {
+  BB_AIM_TOL,
   BB_HOOD_DEFAULT_DEG,
   BB_TURRET_ACCEL,
   BB_TURRET_PITCH_ACCEL,
@@ -583,6 +584,22 @@ export function bbTurretOrigin(r: RobotState, which: 0 | 1 = 0): Vec2 {
   return { x: r.pos.x + off.x, y: r.pos.y + off.y };
 }
 
+/**
+ * IS TURRET `which` ACTUALLY POINTED AT `sol` RIGHT NOW?
+ *
+ * A solved arc says a shot EXISTS, not that the hardware has slewed onto it. The hive path
+ * never needed this asked out loud — `bbTurretShotEnters` forward-simulates the shot from the
+ * turret's CURRENT pose, so a turret still slewing simply misses the cell and does not arm.
+ * A PASS has no cell to miss: its gate is “does the arc reach”, which is true the instant the
+ * solve succeeds, so without this a pass releases on the first tick of the press and throws
+ * wherever the turret happened to be facing. MEASURED before this existed: three passes at a
+ * 102-in preset landed 34.8, 64.2 and 78.3 in short of it.
+ */
+export function bbTurretOnTarget(r: RobotState, sol: { yaw: number; pitch: number }, which: 0 | 1 = 0): boolean {
+  const h = which === 1 ? (r.bbTurret2Heading ?? r.turretHeading) : r.turretHeading;
+  return Math.abs(wrapAngle(sol.yaw - h)) < BB_AIM_TOL && Math.abs(sol.pitch - turretPitchOf(r, which)) < BB_AIM_TOL;
+}
+
 /** the ELEVATION of turret `which` right now (rad) — 0 for a turret this build does not have. */
 function turretPitchOf(r: RobotState, which: 0 | 1): number {
   return which === 1 ? (r.bbTurret2Pitch ?? 0) : (r.bbTurretPitch ?? 0);
@@ -796,7 +813,11 @@ export function bbLaunch(world: World, r: RobotState, cmd: RobotCommand, enabled
   // that one; a launcher with two turrets is not blocked by the one that is empty or still
   // slewing.
   const armed = dumper ? lands(0) : exits.some((w) => feed(w) !== undefined && lands(w));
-  const want = enabled && cmd.fire && armed;
+  /* A PASS RELEASES THROUGH THIS SAME PATH. `play.ts` has already pointed the turret at the
+     pass point and set `shot.lands` from the arc's REACH, so from here a pass is a shot like
+     any other — same cadence, same feed, same LIFO top. Turret-only: `bbPass` is gated on
+     `bbIsTurreted` where the shot is predicted, so a dumper never arms on it. */
+  const want = enabled && (cmd.fire || (cmd.bbPass && !dumper)) && armed;
   if (!want || r.hopper.length === 0) {
     // IDLE GUARD: hold the cadence clock at "now" while there is nothing to fire, so a robot
     // that sat empty for ten seconds does not empty its hopper in one tick on refill.

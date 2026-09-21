@@ -17,6 +17,8 @@ import {
   bbSizeLimits,
   bbSnapSize,
   bbStorageMax,
+  BB_HALF_X,
+  BB_HALF_Y,
 } from './config';
 import {
   BB_LIFT_KINDS,
@@ -119,6 +121,22 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   // 0) THE MECHANISM LOADOUT, and its flat MIRRORS, unconditionally. The container is
   // authoritative; `scoreMode`/`shooterMount`/`shooterRear` are what an older peer or server
   // reads (it drops `bbMech` entirely), so they always say what the container says.
+  /**
+   * THE PASS TARGET, clamped INTO the field or dropped.
+   *
+   * A spec crosses the wire from an untrusted client and seeds a world on the server, so this
+   * is the only place that can stop a NaN or an off-field point reaching `bbTurretSolution` —
+   * and a NaN there poisons the arc to NaN, which is how a robot ends up rendered at the field
+   * centre and frozen (the same failure `backfillRobot` exists for in `protocol.ts`). ABSENT
+   * stays absent rather than becoming a default, because absent is what selects the preset.
+   */
+  const pt = raw.bbPassTarget;
+  if (pt && Number.isFinite(pt.x) && Number.isFinite(pt.y)) {
+    out.bbPassTarget = { x: clamp(pt.x, -BB_HALF_X, BB_HALF_X), y: clamp(pt.y, -BB_HALF_Y, BB_HALF_Y) };
+  } else {
+    delete out.bbPassTarget;
+  }
+
   const mech = coerceBbMech(raw);
   out.bbMech = mech;
   out.scoreMode = mech.launcher.kind;
