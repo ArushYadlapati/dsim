@@ -1,6 +1,56 @@
+# HANDOFF — 2026-09-21k (alpha: rewards A, B and C are BUILT — only owner setup is left)
+
+**READ FIRST.** Gates on alpha at `951ac33`: `npm test` ALL PASS (2,202 shared + 4,702
+biobuzz), `build`, `server:check`, `dbtest` ALL PASS, `uiaudit` at baseline, `contrast` 239,
+`docaudit`, `bundleaudit`. `dsim-alpha` deployed; 0045–0047 applied. Live-verified:
+`/api/user/links` and `/api/link/github/start` 401 without a token, and a FORGED `state` on
+the callback 302s to `?link=error`.
+
+**THERE IS NO REWARDS CODE LEFT TO WRITE.** What remains is owner setup only: two OAuth
+apps, a bot, and four Fly secrets. The guide is §“Owner setup” in
+`docs/rewards-round2-plan.md`.
+
+- ⚠️ **THE SERVER DOES THE CODE EXCHANGE, AND THE PLAN WAS WRONG ABOUT THIS.** It had
+  GitHub linking through the auth SDK with the client POSTing its own provider id. That is
+  forgeable — anybody could post a stargazer's id and take the reward for a star somebody
+  else gave, the same impersonation primitive `LobbyPlayer.role` is server-authored against.
+  One authorization-code flow (`server/oauthLink.ts`), the id arrives from the PROVIDER, and
+  **neither provider now depends on the Neon Auth dashboard** — which removed a blocker
+  rather than adding one.
+- ⚠️ **NO TOKEN IS STORED, ANYWHERE.** One identity fetch, then dropped. The signed `state`
+  uses a PER-BOOT key: no new secret to manage, and a link in flight across a deploy is
+  refused rather than forged.
+- ⚠️ **`ensureSupporterFloor` MUST NEVER BECOME `EXTEND_SQL`.** That adds MONTHS; an hourly
+  sweep through it mints a decade on the one column behind the badge, ads-off, the
+  saved-start cap and the palette. The test was written first: 1,001 sweeps leave it 7.00
+  days out, where EXTEND_SQL gives ~30,030.
+- ⚠️ **TWO BUGS THE TESTS CAUGHT, BOTH MINE.** `RETURNING` sees the row AFTER the update, so
+  “did the floor move?” was always false and the first sweep logged nothing — a CTE snapshots
+  the old value (`RETURNING OLD.col` is PG 18; this is 17). And an empty first member page
+  fell through to the MAX_PAGES branch, logging a pagination error for what is really the
+  intent-is-off signature.
+- ⚠️ **AN EMPTY DISCORD MEMBER LIST IS A FAILURE, NOT A FACT.** With the intent off Discord
+  returns `[]` with a 200. The floor expires by arriving, so that revokes nothing outright —
+  it stops extending and every booster lapses a week later with nothing in the log.
+- **UNLINKING GITHUB TAKES THE TITLE WITH IT** (and clears it if equipped), or the decal
+  outlives the proof and unlink-keep-relink is a farm. The 0047 row survives regardless.
+- ⚠️ **THE `GUILD_MEMBERS` INTENT IS A TOGGLE, NOT AN APPROVAL** — threshold moved
+  2026-06-10 to 10,000 unique users. Earlier entries in this log say otherwise and are wrong.
+
+## Next
+
+- Owner setup (see the plan). Nothing ships to players until then — every sweep is a no-op
+  with no links and the panel hides a provider with no credentials.
+- ⚠️ **ALPHA'S ENTRY CHUNK IS ~20.7 KB OVER ITS OWN BASELINE AND IT IS STILL UNEXPLAINED.**
+  The results redesign grew it without re-measuring; baseline raised to 946.79 with the split
+  attributed in `bundleaudit.mjs`.
+- The two HDRIs now buy only IBL and reflections since the venue hides them. Product call.
+
+---
+
 # HANDOFF — 2026-09-21j (alpha: rewards stage A COMPLETE, stage B's server half, and the venue)
 
-**READ FIRST.** Gates on alpha at `3272b6f`: `npm test` ALL PASS (**2,202** shared + 4,702
+Gates on alpha at `3272b6f`: `npm test` ALL PASS (**2,202** shared + 4,702
 biobuzz), `build`, `server:check`, `dbtest` ALL PASS, `uiaudit` (all at baseline), `contrast`
 (**239**), `docaudit`, `bundleaudit`. `dsim-alpha` redeployed; 0045/0046/0047 applied at boot.
 
