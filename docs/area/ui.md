@@ -145,6 +145,43 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   edge-detection on world state in `GameController.handleActionAudio` — **the sim core stays
   event-free for these**.
 
+## Configure — the five sections, and the three rules that hold them together
+
+`src/ui/Configure.tsx` routes five sections at `/configure/<key>`. **The ARRAY is the order on
+screen; the KEYS are shipped URLs** (`audio` is Audio and Visual), so reordering must never
+rename one. Order is task order — Robot, Controls, Match, Audio and Visual, Graphics: build it,
+learn to drive it, set up the session, then the two output sections.
+
+- **ONE SPELLING OF A PICK: `OptRow` / `ToggleRow` (`src/ui/OptRow.tsx`).** There used to be
+  three — a single tile whose LABEL carried the state (`Auto intake ON`), a two-tile `Off`/`On`
+  row, and a segmented strip — and the first is the bad one: the tile is already filled accent
+  when it is on, so the word says a second time what the fill says, and an unlit `Sorter OFF`
+  beside a lit `Sorter ON` reads as two different controls. Every boolean and small enum in
+  Configure goes through this component, which is also where the `aria-pressed` fourteen
+  hand-rolled toggles were missing comes from. **Toggle buttons, never an ARIA radiogroup** —
+  a radiogroup owes roving tabindex and arrow keys, and half that pattern is worse than none.
+- **RARE CONTROLS FOLD; THEY ARE NOT ROUTED ELSEWHERE.** `<details class="ds-fold">` — Graphics
+  ▸ Advanced (the sixteen overrides the Quality preset already sets), Controls ▸ More (touch
+  controls, network prediction), Audio ▸ Individual sounds (the five per-emitter trims). Closed
+  it is one row; open it is exactly where it was, so nothing is hidden from somebody who knows
+  it exists. `.ds-fold.inset` is the variant for inside a panel body, where a second card would
+  be nesting. The marker rotates and `[open]` changes a border COLOUR, never a width.
+- **THE ROBOT PREVIEW STAYS ON SCREEN.** `.ds-robot-rail` pins the hero in a 260px column past
+  1320px; below that it is back at the top of the page, which is why it is FIRST in the DOM.
+  ⚠️ **Do not make it a sticky strip across the top again** — that shipped, and it held 26% of a
+  720px viewport even compact, because the two rows of stat tiles set the height rather than the
+  sprite. The rail costs nothing vertically. It needs the widened page
+  (`.ds-main:has(.ds-subnav-layout)`, 1280) to exist at all: at 1080 the section body is 824 and
+  a rail leaves 500, which is not a build column. The rail ITEM stretches and the CARD inside it
+  sticks — a rail sized to its own content pins to nothing.
+
+**Configure copy.** No decorative glyph (the `🎯` on preset cards and the `＋` on the add cards
+are gone), no sentence whose content is where another screen is, and no sub-line naming a KEY —
+every control in this app is rebindable, so `L-stick/W-S: Fwd/Back` is a claim that goes stale
+the moment somebody opens Controls. A blurb survives only where it names a trade-off the player
+is choosing between (`docs/ui-standard.md` §8): the archetype and drivetrain descriptions, the
+four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow note.
+
 ## HUD / UX product rules
 
 - HUD mimics the FTC live scoring display: red|timer|blue bar at the BOTTOM.

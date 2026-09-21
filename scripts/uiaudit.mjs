@@ -61,7 +61,12 @@ const BASELINE = {
   // 155 → 152, 2026-09-19: the three HUD read-outs became one. `.ping-graph`'s `8px 10px`
   // and `18px 0`, its `5px` margin and its `6px` gap went with the graph that opened on a
   // click that never landed; `.perf-hud` is on the token scale.
-  'off-grid-gap': 152,
+  // 152 → 149, 2026-09-21: the Configure redesign. `.ds-robot` and `.ds-subnav-body` both
+  // spelled the gap between a section's cards as `22px`, and a comment in one of them pointed
+  // at the other to keep them agreeing; both are `--ds-s-5` now, so they agree by construction.
+  // `.ds-binds`'s own `14px` went the same way when the gamepad split gave it a sibling that
+  // would otherwise have had to copy the number.
+  'off-grid-gap': 149,
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
   // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
   // not the 31 first measured. The other two start where they stand: paying them down needs a

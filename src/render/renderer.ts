@@ -4,7 +4,7 @@ import { Camera } from './camera';
 import { drawRobot } from './drawRobot';
 import { gameOf } from '../games';
 import { robotsEnabled } from '../sim/match';
-import type { GameScene } from '../games/module';
+import type { GameModule, GameScene } from '../games/module';
 
 /**
  * The letterbox around the field follows the app theme (the FIELD itself never does).
@@ -174,7 +174,7 @@ export class Renderer {
     // before the hook, or a controller that has not handed the scene over) nothing changes.
     const scene = this.scene;
     if (overlayOnly && scene?.project) {
-      this.drawProjectedOverlay(ctx, world, localRobotId, scene, driverName);
+      this.drawProjectedOverlay(ctx, world, localRobotId, scene, mod, driverName);
       return;
     }
 
@@ -224,11 +224,40 @@ export class Renderer {
     world: World,
     localRobotId: number,
     scene: GameScene,
+    mod: GameModule,
     driverName?: (robotId: number) => string | undefined,
   ): void {
     const project = scene.project!;
     const out = this.projOut;
     ctx.setTransform(this.camera.dpr, 0, 0, this.camera.dpr, 0, 0);
+
+    /**
+     * THE GAME'S OWN 3D OVERLAY, FIRST — under the auto paths and the labels, because those two
+     * are about a ROBOT and belong on top of anything that is about the field.
+     *
+     * `drawSceneOverlay`, NOT `drawOverlays`: the 2D slot is written in field inches and this
+     * pass is in screen pixels — see that slot's own note for the bug the distinction exists to
+     * prevent. BIOBUZZ uses it for the FLOWER contents read-out, which a top-down 3D shot cannot
+     * show any other way (the flower's own top plate is between the camera and the column);
+     * DECODE and Chain Reaction fill it with nothing and nothing is drawn.
+     *
+     * `scene.camera` and not `frame.camera`: on an interactive scene the player's own camera
+     * preference wins over the host's pick, so the frame is not what is on screen.
+     */
+    if (mod.drawSceneOverlay) {
+      ctx.save();
+      mod.drawSceneOverlay(ctx, world, {
+        // a scene that does not report one is assumed to be showing a DRIVER shot — the answer
+        // that draws the least, because an overlay placed for the wrong camera is worse than one
+        // that is missing
+        camera: scene.camera ?? 'driver',
+        viewAngle: this.camera.viewAngle,
+        dpr: this.camera.dpr,
+        project: (x, y, z, o) => project.call(scene, x, y, z, o),
+      });
+      ctx.restore();
+      ctx.setTransform(this.camera.dpr, 0, 0, this.camera.dpr, 0, 0);
+    }
 
     // AUTO PATHS first, so a label is never drawn under one.
     for (const r of world.robots) {

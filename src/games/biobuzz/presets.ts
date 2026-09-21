@@ -238,6 +238,9 @@ export function bbPresetLines(preset: RobotSpec): { meta: string; zone?: string 
       : `${BB_MODE_LABELS[launcher.kind]} · ${bbLauncherMountLabel(launcher)}`,
   ];
   if (lift) zoneParts.push(`${bbLiftKindLabel(lift.kind)} · ${BB_MOUNT_POS_LABELS[lift.mount]}`);
-  // 🎯 marks the shooting mechanism, which every build now has.
-  return { meta, zone: `🎯 ${zoneParts.join(' · ')}` };
+  // NO GLYPH. The `.oz` chip is already a separate chip in a different colour from the `.om`
+  // line above it, so a target emoji marked something the layout had already marked — and
+  // DECODE's and Chain Reaction's preset cards carried the same one, in the same slot, for the
+  // same non-reason. All three are gone (`docs/area/ui.md`, Configure copy).
+  return { meta, zone: zoneParts.join(' · ') };
 }

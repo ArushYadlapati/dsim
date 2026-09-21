@@ -53,6 +53,7 @@ import {
   HIVE_FRAME_NODES,
   weldedComponents,
   shellWindingStats,
+  analyseMeshShells,
 } from '../../src/games/biobuzz/scene/renderFieldGlb';
 import { cadCaptureTheta, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
 import { COLORS as SHARED_COLORS } from '../../src/config';
@@ -115,10 +116,14 @@ import {
   BB_SIDE_PLATE_FRONT_X,
   BB_SIDE_PLATE_TOP_Z,
   BB_FLOWER_RETRIEVE_Z,
+  BB_SIDE_ROLLER_BOSS_R,
+  BB_SIDE_ROLLER_HUB_R,
+  BB_SIDE_ROLLER_OUT,
   BB_SIDE_ROLLER_PROTRUDE,
   BB_SIDE_ROLLER_R,
   BB_SIDE_ROLLER_REACH,
   bbSideRollerY,
+  bbSideRollerYokeY,
   BB_MIN_LENGTH,
   BB_MAX_LENGTH,
   BB_MIN_WIDTH,
@@ -147,16 +152,23 @@ import {
   BB_SIGN_MIN_H,
   BB_SIGN_MIN_W,
   BB_SIGN_W,
+  BB_WHEEL_PARTS,
+  BB_XDRIVE_INSET_X,
+  BB_XDRIVE_INSET_Y,
   bbRobotSignOrientation,
   bbRobotSignText,
+  bbWheelDetail,
+  buildDriveWheel,
   buildEndPlates,
   buildFrame,
   buildIntake,
+  buildRobotGroup,
   buildSwervePod,
   buildTurret,
   buildWheels,
   disposeRobotGroup,
   endWheelSpanY,
+  wheelKindOf,
 } from '../../src/games/biobuzz/scene/renderRobots';
 import { lengthLimits } from '../../src/sim/drivetrain';
 import { bbMouthFrame, turretLocal, type BbMountPos } from '../../src/games/biobuzz/mounts';
@@ -199,6 +211,10 @@ import {
   type DriverRole,
 } from '../../src/games/biobuzz/graphics/driverEye';
 import { ALLIANCE_AREA } from '../../src/games/biobuzz/fieldDims.gen';
+// the wheel block below needs the preset COLUMNS (to assert the tier mapping) and the sim's own
+// wheel diameter (to assert the drawn mecanum IS the wheel the drive model is derived from)
+import { GFX_PRESETS } from '../../src/games/biobuzz/graphics/settings';
+import * as C from '../../src/config';
 import { bbRoleLabel } from '../../src/games/biobuzz/config';
 import { createCameras, setDriverHeightIn } from '../../src/games/biobuzz/scene/renderCameras';
 import type { SceneFrame } from '../../src/games/module';
@@ -241,7 +257,11 @@ import {
   stepTier,
   type GpuProbe,
 } from '../../src/games/biobuzz/graphics/auto';
-import { BB_ENVIRONMENTS, environmentDef, hdriEnvironments } from '../../src/games/biobuzz/graphics/environments';
+import { BASE_RIG, BB_ENVIRONMENTS, BB_ENVIRONMENT_IDS, environmentDef, hdriEnvironments } from '../../src/games/biobuzz/graphics/environments';
+import { ENVIRONMENT_IDS, type EnvironmentId } from '../../src/games/biobuzz/graphics/settings';
+import { drawBiobuzzFlowerReadout } from '../../src/games/biobuzz/drawFlowerReadout';
+import { BIOBUZZ_MODULE } from '../../src/games/biobuzz';
+import type { SceneOverlayView } from '../../src/games/module';
 import { THIRD_PARTY } from '../../src/contributors';
 import { Renderer } from '../../src/render/renderer';
 import type { RobotSpec, World } from '../../src/types';
@@ -254,6 +274,10 @@ import { createChainWorld } from '../../src/games/chain/spawn';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { drawBiobuzzRobot } from '../../src/games/biobuzz/drawRobot';
 import { createWorld as createDecodeWorld } from '../../src/sim/spawn';
+// -- THE PERFORATED CAD SCORING ELEMENTS (2026-09-21), in their own import block --------
+import { BB_POLLEN_R } from '../../src/games/biobuzz/config';
+import { buildBiobuzzElements, setElementDetail, updateBiobuzzElements } from '../../src/games/biobuzz/scene/renderElements';
+import { ELEMENT_RADIUS_TOL_IN } from '../../src/games/biobuzz/scene/renderElementsGlb';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const BIOBUZZ_DIR = join(root, 'src', 'games', 'biobuzz');
@@ -285,6 +309,20 @@ const FIELD_GLB_SCENE: THREE.Object3D | null = await parseShippedGlb('field.glb'
 /** the LOW LOD too — the hive's mis-filed parts have to be found on BOTH, and it is the one the
  *  `assembleFieldGroups` check can run end to end, because only the HIGH path wants a canvas. */
 const FIELD_LOW_GLB_SCENE: THREE.Group | null = await parseShippedGlb('field-low.glb');
+
+/** ⚠️ ONE FRESH PARSE PER BLOCK THAT CALLS `assembleFieldGroups`. It mutates its argument in
+ *  place — resolved PBR materials over the glTF's `<finish>#<hex>` names, repaired index buffers,
+ *  replaced geometries — so a second call on the same object reads its own output back through
+ *  `parseMaterialName`, which rejects it and repaints the field grey. These four feed the
+ *  WHOLE-FIELD WINDING REPAIR blocks at the end of `renderChecks`. */
+const WIND_RAW_HIGH: THREE.Group | null = await parseShippedGlb('field.glb');
+const WIND_FIX_HIGH: THREE.Group | null = await parseShippedGlb('field.glb');
+const WIND_PRISTINE_HIGH: THREE.Group | null = await parseShippedGlb('field.glb');
+const WIND_CLEAR_HIGH: THREE.Group | null = await parseShippedGlb('field.glb');
+const WIND_FIX_LOW: THREE.Group | null = await parseShippedGlb('field-low.glb');
+/** and the SCORING ELEMENTS. `elements.glb` is a separate asset from a separate pipeline
+ * (`scripts/field-cad/elements.mjs`) but the same pinned STEP, so it decodes the same way. */
+const ELEMENTS_GLB_SCENE: THREE.Group | null = await parseShippedGlb('elements.glb');
 
 function walkTs(dir: string): string[] {
   const out: string[] = [];
@@ -1202,6 +1240,7 @@ export function renderChecks(check: Check): void {
 
   graphicsChecks(check, allFiles);
   hudBandChecks(check);
+  environmentAndReadoutChecks(check);
   cosmeticsChecks(check);
   endPlateChecks(check);
   hoodPlateChecks(check);
@@ -1294,11 +1333,14 @@ function cosmeticsChecks(check: Check): void {
 
   // ---- buildSwervePod: the tyre tints with the accent; default is the same no-op -------------
   {
+    // ⚠️ `bb-pod-wheel` IS A GROUP NOW (2026-09-21): the pod carries a real goBILDA 72 mm Hogback
+    // — a crowned rubber band on a plastic core, two meshes — so the RUBBER one inside it is what
+    // the accent tints, and the core is steel and must not be.
     const tyreHex = (accent?: string): string | undefined => {
       const pod = accent === undefined ? buildSwervePod() : buildSwervePod(accent);
       let mesh: THREE.Mesh | undefined;
       pod.traverse((o) => {
-        if (o.name === 'bb-pod-wheel') mesh = o as THREE.Mesh;
+        if (o.name === 'bb-wheel-tread') mesh = o as THREE.Mesh;
       });
       return (mesh?.material as THREE.MeshStandardMaterial | undefined)?.color.getHexString();
     };
@@ -1473,25 +1515,23 @@ function endPlateChecks(check: Check): void {
 
   // ---- a corner plate actually covers the wheel/pod `buildWheels` puts at that corner --------
   //
-  // TANK is built for real — `buildWheels` needs no DOM for it, unlike mecanum/xdrive (the roller
-  // stripe texture calls `document.createElement`, which is why `cosmeticsChecks` above never
-  // calls `buildWheels` at all in this DOM-free lane either). MECANUM is not built separately: its
-  // wheel takes the exact same `wheel.position.set(x, sy * wheelY, BB_WHEEL_R)` line as tank with
-  // no drivetrain branch in between (only `xdrive` overrides it), so tank's real geometry IS
-  // mecanum's placement — the SOURCE check below pins that line so a future branch cannot silently
-  // split the two without this check noticing. SWERVE is built for real too (`buildSwervePod` has
-  // no texture), positioned with `endWheelSpanY` — the same expression `buildWheels` positions a
-  // pod with, tied to it by the second SOURCE check.
+  // ⚠️ **EVERY DRIVETRAIN IS BUILT FOR REAL IN THIS LANE NOW**, and the paragraph that used to be
+  // here — "tank is built for real, mecanum is not, because the roller stripe texture calls
+  // `document.createElement`" — is obsolete in the best way. The stripe texture is gone (owner,
+  // 2026-09-21); a wheel is merged `LatheGeometry`/`ExtrudeGeometry`/`BoxGeometry` and needs no
+  // DOM at all, so `buildWheels` can be CALLED for mecanum, X-drive and butterfly here instead of
+  // having its placement line grepped as a stand-in. The two source checks below shrink to the one
+  // claim a measurement cannot make: that both halves still come off ONE expression.
   {
     const robotsCode = readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderRobots.ts'), 'utf8');
     check(
-      'endplate-cover/source: mecanum and tank share ONE wheel-placement line (no per-drivetrain branch)',
-      (robotsCode.match(/wheel\.position\.set\(x, sy \* wheelY, BB_WHEEL_R\);/g) ?? []).length === 1,
+      'endplate-cover/source: every non-xdrive wheel shares ONE placement line (no per-drivetrain branch)',
+      (robotsCode.match(/wheel\.position\.set\(x, sy \* wheelY, part\.r\);/g) ?? []).length === 1,
     );
     check(
-      'endplate-cover/source: endWheelSpanY’s swerve centre is the SAME expression buildWheels positions a pod with',
+      'endplate-cover/source: endWheelSpanY’s swerve centre AND half are the pod’s own inset',
       robotsCode.includes('pod.position.set((Math.sign(x) || 1) * (hl - BB_POD_INSET), sy * (hw - BB_POD_INSET), 0);') &&
-        robotsCode.includes('return { center: s * (hw - BB_POD_INSET), half: BB_POD_W / 2 };'),
+        robotsCode.includes('return { center: s * (hw - BB_POD_INSET), half: BB_POD_INSET };'),
     );
   }
 
@@ -2629,7 +2669,10 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       'the light rig is CONSTANTS in renderCore.ts, not literals in either scene',
       /export const SCENE_EXPOSURE/.test(coreSrc) &&
         sceneSrc.includes('createSceneLights()') &&
-        sceneSrc.includes('SCENE_HEMI_INTENSITY') &&
+        // the match scene's per-environment rig (2026-09-21) replaced its two `SCENE_HEMI_*`
+        // reads; the constants are still the DEFAULT rig, which `BASE_RIG` copies — asserted
+        // value-for-value by the environments block below.
+        sceneSrc.includes('applyEnvironmentRig(') &&
         !/new THREE\.HemisphereLight\(/.test(sceneSrc),
     );
 
@@ -2731,7 +2774,9 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       check(
         'the preview builds its robot with buildRobotGroup — the match\u2019s own generator',
         /import \{[^}]*buildRobotGroup[^}]*\} from '\.\/renderRobots'/.test(previewSrc) &&
-          previewSrc.includes('buildRobotGroup(spec, 1, alliance)'),
+          // the 4th argument is the TIER's wheel tessellation (`bbWheelDetail`, 2026-09-21) — the
+          // one thing a preview may pass that the match does not, and it passes the same function
+          previewSrc.includes('buildRobotGroup(spec, 1, alliance, builtWheelDetail)'),
       );
       // and it draws NOTHING of its own: a `new THREE.Mesh` in here would be the second drawing
       // of a robot that this whole design exists to not have. The floor disc is the one mesh the
@@ -2780,11 +2825,12 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           robotsSrc.includes('solidMat(chassisFill(spec.chassisColor)'),
       );
       check(
-        // the red/blue silhouette line is GONE (owner, 2026-09-21): the one edge trace left is the
-        // dark trim, and no `LineSegments` may be built in an alliance colour again.
-        '...and the ALLIANCE is the ROBOT SIGNS only: no alliance-coloured edge line, never the fill',
-        !/LineSegments\(chassisEdges\([^)]*\), lineMat\((color|RED|BLUE)\)\)/.test(robotsSrc) &&
-          /LineSegments\(chassisEdges\([^)]*\), lineMat\(OUTLINE_HALO\)\)/.test(robotsSrc) &&
+        // the red/blue silhouette line is GONE, and so is the dark halo that sat under it (owner,
+        // 2026-09-21, twice: "...the robot now just has a black outline. fix this"). A 3D robot
+        // carries NO drawn edge line at all.
+        '...and the ALLIANCE is the ROBOT SIGNS only: no edge line round the chassis, never the fill',
+        !/new THREE\.LineSegments\(/.test(robotsSrc) &&
+          !/outlineHalo|:outline`/.test(robotsSrc) &&
           robotsSrc.includes('getSignTexture(bbRobotSignText(spec), alliance)') &&
           !/chassisGeometry\([^)]*\), solidMat\(color/.test(robotsSrc),
       );
@@ -4234,13 +4280,17 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           pod.traverse((o) => {
             if ((o as THREE.Mesh).isMesh) podMeshes.push(o as THREE.Mesh);
           });
-          const box = (m: THREE.Mesh): THREE.Box3 => new THREE.Box3().setFromObject(m);
-          const wheelBox = box(podMeshes.find((m) => m.name === 'bb-pod-wheel') as THREE.Mesh);
+          const box = (o: THREE.Object3D): THREE.Box3 => new THREE.Box3().setFromObject(o);
+          // ⚠️ `bb-pod-wheel` IS A GROUP (the real 72 mm Hogback: tread band + core), so it is
+          // looked up over every object rather than over the meshes — `setFromObject` takes
+          // either. The MEASUREMENT is unchanged: this is still the tyre's own world-space box.
+          const wheelBox = box(pod.getObjectByName('bb-pod-wheel') as THREE.Object3D);
           const hubBox = box(podMeshes.find((m) => m.name === 'bb-pod-hub') as THREE.Mesh);
           // `podParts()` pushes struct, then ring, then drive, in that order, and only the struct
           // reaches anywhere near the wheel (the ring sits up at the top plate and the drive's
           // pulleys sit outboard of the fork) — none of the three carries a `.name`, so the first
-          // of them in traversal order is the struct.
+          // of them in traversal order is the struct. ⚠️ EVERY MESH THE WHEEL ITSELF ADDS IS
+          // NAMED (`bb-wheel-tread` / `bb-wheel-core`) precisely so this stays true.
           const structMesh = podMeshes.filter((m) => !m.name)[0];
           const wheelR = (wheelBox.max.z - wheelBox.min.z) / 2;
           const crownZ = wheelBox.max.z;
@@ -4312,11 +4362,20 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             hubBox.max.x - hubBox.min.x > 1.2 && hubBox.max.x - hubBox.min.x < wheelR * 2 - 0.6 && hubBox.max.y > wheelBox.max.y,
             `hub ${(hubBox.max.x - hubBox.min.x).toFixed(2)} across, ${(hubBox.max.y - wheelBox.max.y).toFixed(3)} proud of each tyre face`,
           );
+          // ⚠️ MEASURED, NOT GREPPED (2026-09-21). This used to pin the one source line that built
+          // the pod's tyre, which was the only way to say "not the mecanum material" while the
+          // difference between the two wheels was a TEXTURE. The wheels are geometry now, so the
+          // claim can be made against the object: a traction wheel has NO roller mesh, and the
+          // part the pod carries is the one `wheelKindOf` says a swerve carries.
           check(
-            '...and the pod’s wheel is plain TRACTION, not one of the mecanum rollers the loop hands every other drivetrain',
-            // `tint3d(TREAD, accent, 0.4)` is a cosmetic tint (a no-op for the default accent) —
-            // still a solid TREAD-family fill, never the mecanum roller texture.
-            robotsCode.includes("new THREE.Mesh(wheelGeometry(BB_POD_WHEEL_R, BB_WHEEL_W), solidMat(tint3d(TREAD, accent, 0.4), 0.95, 0))"),
+            '...and the pod’s wheel is plain TRACTION — it has a tread band and no rollers at all',
+            !!pod.getObjectByName('bb-wheel-tread') && !pod.getObjectByName('bb-wheel-rollers'),
+          );
+          check(
+            '...at the size `wheelKindOf` names for a swerve, which is goBILDA’s 72 mm Hogback',
+            wheelKindOf('swerve') === 'podTraction' &&
+              Math.abs(BB_WHEEL_PARTS.podTraction.r * 2 * 25.4 - 72) < 1e-9,
+            `${(BB_WHEEL_PARTS.podTraction.r * 2 * 25.4).toFixed(2)} mm`,
           );
           disposeRobotGroup(pod);
         }
@@ -4357,7 +4416,11 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           Number.isFinite(podTop) && podTop <= deck - 0.26 + 1e-9,
           `${podTop.toFixed(2)} in vs the deck's underside ${(deck - 0.26).toFixed(2)}`,
         );
-        const podWheelR = num('BB_POD_WHEEL_R');
+        // ⚠️ READ OFF THE PART TABLE, NOT OFF THE SOURCE TEXT. Since 2026-09-21 the pod's wheel IS
+        // a catalogue part (`BB_WHEEL_PARTS.podTraction`, goBILDA's 72 mm Hogback) and
+        // `BB_POD_WHEEL_R` is derived from it, so the `const NAME = <literal>;` scrape this block
+        // uses everywhere else returns `NaN` for it. The table is exported for exactly this.
+        const podWheelR = BB_WHEEL_PARTS.podTraction.r;
         check(
           '...which is only possible on a 3-in pod wheel — a 4-in one does not fit under 4.6 in',
           podWheelR * 2 + 0.3 + ringH <= deck - 0.26 + 1e-9,
@@ -4369,11 +4432,13 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         // flange, is the inset. Measured before this rule: +0.46 in outside the frame at rest
         // (the ring) and +0.88 at 45° of steer (the fork box), on every chassis size, because
         // the old inset was the constant wheel-channel offset.
-        const wheelW = num('BB_WHEEL_W');
+        // the fork straddles the POD's OWN wheel now, not the mecanum channel's 48 mm — see
+        // `BB_POD_WHEEL_W`, which is the line this re-derivation follows
+        const podWheelW = BB_WHEEL_PARTS.podTraction.w;
         const forkT = num('BB_POD_FORK_T');
         const podDriveT = num('BB_POD_DRIVE_T');
         const podL = num('BB_POD_L');
-        const podW = (wheelW / 2 + 0.2 + forkT / 2 + podDriveT) * 2;
+        const podW = (podWheelW / 2 + 0.2 + forkT / 2 + podDriveT) * 2;
         const ringR = num('BB_POD_RING_R');
         const flange = num('BB_POD_RING_FLANGE');
         const inset = Math.max(Math.hypot(podL, podW) / 2, ringR + flange);
@@ -4420,17 +4485,26 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         // (centre-line `plate + gap/2` = 1.17 in inside the frame) that stood 0.78 in proud of the
         // side plate on every chassis. The inset is the canted reach plus what it has to clear:
         // the side plate laterally, the cross member fore-and-aft.
-        const wheelR = num('BB_WHEEL_R');
-        const reach = (2 * wheelR + wheelW) / (2 * Math.SQRT2);
+        // ⚠️ THE OMNI'S OWN R AND W (2026-09-21). This used to re-derive the reach from
+        // `BB_WHEEL_R`/`BB_WHEEL_W` — the mecanum — for a drivetrain that has never carried a
+        // mecanum. It is goBILDA's 96 mm omni, which is both smaller in the radius and a third of
+        // the width, so the reach falls 1.945 → 1.650 and every clearance below gets better.
+        const omni = BB_WHEEL_PARTS.omni;
+        const reach = (2 * omni.r + omni.w) / (2 * Math.SQRT2);
         const insetX = reach + num('BB_RAIL_T') + 0.15;
         const insetY = reach + num('BB_PLATE_T') + 0.15;
         check(
-          'the X-drive insets are the canted wheel’s own reach, re-derived here',
-          robotsCode.includes('const BB_XDRIVE_REACH = (2 * BB_WHEEL_R + BB_WHEEL_W) / (2 * Math.SQRT2);') &&
+          'the X-drive insets are the canted OMNI’s own reach, re-derived here',
+          robotsCode.includes('const BB_XDRIVE_REACH = (2 * BB_OMNI.r + BB_OMNI.w) / (2 * Math.SQRT2);') &&
             robotsCode.includes('export const BB_XDRIVE_INSET_X = BB_XDRIVE_REACH + BB_RAIL_T + BB_XDRIVE_CLEAR;') &&
             robotsCode.includes('export const BB_XDRIVE_INSET_Y = BB_XDRIVE_REACH + BB_PLATE_T + BB_XDRIVE_CLEAR;') &&
             /const BB_XDRIVE_CLEAR = 0\.15;/.test(robotsCode),
           `reach ${reach.toFixed(3)}, inset x ${insetX.toFixed(3)} / y ${insetY.toFixed(3)}`,
+        );
+        check(
+          '...and they are the numbers the module actually exports',
+          Math.abs(BB_XDRIVE_INSET_X - insetX) < 1e-9 && Math.abs(BB_XDRIVE_INSET_Y - insetY) < 1e-9,
+          `${BB_XDRIVE_INSET_X.toFixed(3)} / ${BB_XDRIVE_INSET_Y.toFixed(3)}`,
         );
         check(
           '...and buildWheels places an X-drive wheel by them, not in the mecanum channel',
@@ -4475,9 +4549,22 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           /x \* sy >= 0 \? -Math\.PI \/ 4 : Math\.PI \/ 4/.test(robotsCode),
         );
         check(
-          'a mecanum roller and an omni roller are drawn as different wheels (45° vs 90°)',
-          robotsCode.includes("getRollerMat(dt === 'xdrive' ? 'omni' : 'mecanum', accent)") &&
-            robotsCode.includes("kind === 'mecanum' ? i - size : i"),
+          'a mecanum roller and an omni roller are different PARTS, not two paintings of one',
+          wheelKindOf('mecanum') === 'mecanum' &&
+            wheelKindOf('xdrive') === 'omni' &&
+            wheelKindOf('butterfly') === 'mecanum' &&
+            Math.abs(BB_WHEEL_PARTS.mecanum.rollerAngle - Math.PI / 4) < 1e-12 &&
+            Math.abs(BB_WHEEL_PARTS.omni.rollerAngle - Math.PI / 2) < 1e-12,
+        );
+        check(
+          '...and the 2D sprite’s own X-drive got the diamond fix the other two games already had',
+          // BIOBUZZ's copy of `drawWheels` drew its omnis RADIALLY (`+45°` on the main diagonal,
+          // stretched to `reach * 1.15`) long after DECODE's and CR's were corrected — a wheel
+          // whose force line passes through the centre of mass has no moment arm about it, so the
+          // sprite was of a machine that could translate and never yaw. Found 2026-09-21.
+          /px \* py >= 0 \? -Math\.PI \/ 4 : Math\.PI \/ 4, 'omni', 4\.4, 2\.2, accent/.test(
+            readFileSync(join(root, 'src', 'games', 'biobuzz', 'parts.ts'), 'utf8'),
+          ),
         );
         const typesSrc = readFileSync(join(root, 'src', 'types.ts'), 'utf8');
         check(
@@ -4489,6 +4576,484 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         // and none of the five is left sharing another's drawing
         for (const dt of ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const) {
           check(`buildWheels branches on ${dt}`, new RegExp(`'${dt}'`).test(robotsCode), dt);
+        }
+      }
+
+      // ═══════════════════════════════════════════════════════════════════════════════════════
+      // THE WHEELS ARE THE REAL PARTS (owner, 2026-09-21: "Make the wheels be rendered
+      // accurately. Gobilda 104mm gripforce mecanum wheel, gobilda omni wheel"; then "it makes no
+      // sense for the wheel to have slant patterns" / "which is how it is right now")
+      // ═══════════════════════════════════════════════════════════════════════════════════════
+      //
+      // Almost everything here is MEASURED off built geometry rather than grepped, because every
+      // claim in the request is about a SHAPE: eleven rollers, at 45°, handed so the four form an
+      // X, and nothing slanted anywhere else. A grep can see the constant `11`; it cannot see a
+      // wheel whose rollers all lean the same way.
+      {
+        const DRIVETRAINS = ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const;
+        const specFor = (dt: (typeof DRIVETRAINS)[number], extra: Record<string, unknown> = {}): RobotSpec =>
+          bbCoerceSpec({ ...BB_DEFAULT_SPEC, drivetrain: dt, ...extra } as never);
+        /** every world-space triangle of a subtree, as flat triples. */
+        const worldVerts = (o: THREE.Object3D): THREE.Vector3[] => {
+          o.updateMatrixWorld(true);
+          const out: THREE.Vector3[] = [];
+          o.traverse((n) => {
+            const m = n as THREE.Mesh;
+            if (!m.isMesh || !m.geometry) return;
+            const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+            if (!pos) return;
+            for (let i = 0; i < pos.count; i++) {
+              out.push(new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld));
+            }
+          });
+          return out;
+        };
+        const triCount = (o: THREE.Object3D): number => {
+          let n = 0;
+          o.traverse((c) => {
+            const m = c as THREE.Mesh;
+            if (!m.isMesh || !m.geometry) return;
+            const idx = m.geometry.getIndex();
+            n += (idx ? idx.count : (m.geometry.getAttribute('position')?.count ?? 0)) / 3;
+          });
+          return Math.round(n);
+        };
+
+        // ── (1) THE CATALOGUE. Each number here is PUBLISHED by the manufacturer and cited at
+        // the constant that carries it; this is the check that the model still IS that part.
+        {
+          check(
+            'mecanum: the drawn wheel is Ø104 mm — goBILDA’s GripForce mecanum, and C.WHEEL_DIAMETER_MM',
+            Math.abs(BB_WHEEL_PARTS.mecanum.r * 2 * 25.4 - 104) < 1e-9 &&
+              Math.abs(BB_WHEEL_PARTS.mecanum.r * 2 - C.WHEEL_DIAMETER_MM / 25.4) < 1e-9,
+            `${(BB_WHEEL_PARTS.mecanum.r * 2 * 25.4).toFixed(3)} mm vs C.WHEEL_DIAMETER_MM ${C.WHEEL_DIAMETER_MM}`,
+          );
+          check(
+            '...with ELEVEN rollers, which is the one roller count goBILDA publishes',
+            BB_WHEEL_PARTS.mecanum.rollers === 11 && BB_WHEEL_PARTS.mecanum.rows === 1,
+            `${BB_WHEEL_PARTS.mecanum.rollers} × ${BB_WHEEL_PARTS.mecanum.rows} row`,
+          );
+          check(
+            'omni: Ø96 mm — the LARGEST omni goBILDA sells, so an X-drive is honestly smaller than a mecanum',
+            Math.abs(BB_WHEEL_PARTS.omni.r * 2 * 25.4 - 96) < 1e-9 && BB_WHEEL_PARTS.omni.r < BB_WHEEL_PARTS.mecanum.r,
+            `${(BB_WHEEL_PARTS.omni.r * 2 * 25.4).toFixed(3)} mm`,
+          );
+          check(
+            '...in TWO rows, which is what the published offset core (8 mm one side, 12 mm the other) means',
+            BB_WHEEL_PARTS.omni.rows === 2 && BB_WHEEL_PARTS.omni.rollers > 0,
+            `${BB_WHEEL_PARTS.omni.rows} rows × ${BB_WHEEL_PARTS.omni.rollers}`,
+          );
+          check(
+            'traction: Ø96 mm and Ø72 mm Hogbacks, the two sizes the drivetrain and the pod need',
+            Math.abs(BB_WHEEL_PARTS.traction.r * 2 * 25.4 - 96) < 1e-9 &&
+              Math.abs(BB_WHEEL_PARTS.podTraction.r * 2 * 25.4 - 72) < 1e-9,
+            `${(BB_WHEEL_PARTS.traction.r * 2 * 25.4).toFixed(1)} / ${(BB_WHEEL_PARTS.podTraction.r * 2 * 25.4).toFixed(1)} mm`,
+          );
+          // ⚠️ THE DERIVED WIDTH, RE-DERIVED. goBILDA publishes no mecanum width, and 48 mm is the
+          // figure at which the eleven rollers' circumferential projections overlap by ~1.7×.
+          // Under 1.0 the wheel has a gap between rollers and drops into it once a revolution —
+          // which is the thing this constant exists to avoid, so the bound is checked, not the
+          // number.
+          {
+            const p = BB_WHEEL_PARTS.mecanum;
+            const rho = p.r - p.rollerR;
+            const overlap = (p.rollerL * Math.sin(p.rollerAngle)) / ((2 * Math.PI * rho) / p.rollers);
+            check(
+              'mecanum: the rollers OVERLAP in azimuth (so the wheel never rolls into a gap)',
+              overlap > 1.2 && overlap < 2.4,
+              `${overlap.toFixed(2)}× the pitch`,
+            );
+            // ...and they still do not interpenetrate: two parallel 45° rollers a chord apart sit
+            // `chord·cos45` apart measured PERPENDICULAR to their own axes.
+            const perp = 2 * rho * Math.sin(Math.PI / p.rollers) * Math.cos(p.rollerAngle);
+            check(
+              'mecanum: ...and neighbouring rollers still clear each other',
+              2 * p.rollerR < perp - 1e-9,
+              `2R ${(2 * p.rollerR).toFixed(3)} vs ${perp.toFixed(3)} apart (gap ${(perp - 2 * p.rollerR).toFixed(3)})`,
+            );
+          }
+        }
+
+        // ── (2) NO PAINTED SLANT ANYWHERE, AT ANY TIER. This is the owner's second message, and
+        // it is two claims: the stripe TEXTURE is gone, and nothing that is not a mecanum roller
+        // is drawn at an angle to its own axle.
+        {
+          check(
+            'the roller-stripe CanvasTexture is GONE from the scene, not merely unused',
+            !/getRollerTexture|getRollerMat|ROLLER_TEX_CACHE|ROLLER_MAT_CACHE/.test(robotsCode),
+          );
+          // ⚠️ `buildWheels`, NOT `buildRobotGroup`: this lane is DOM-free and the robot SIGN's
+          // texture is a real canvas. That the wheels can be built here at all is itself the
+          // headline — under the stripe texture, `buildWheels` called `document.createElement` for
+          // three of the five drivetrains and could not be exercised in this lane.
+          check(
+            '...and no wheel material carries a map at all (a texture cannot come back in by another door)',
+            (() => {
+              for (const dt of DRIVETRAINS) {
+                for (const detail of ['low', 'high'] as const) {
+                  const w = buildWheels(specFor(dt), undefined, detail);
+                  let bad = false;
+                  for (const n of w.nodes) {
+                    n.traverse((c) => {
+                      const m = (c as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+                      if (m && m.map) bad = true;
+                    });
+                    disposeRobotGroup(n as THREE.Group);
+                  }
+                  if (bad) return false;
+                }
+              }
+              return true;
+            })(),
+          );
+          // THE ANGLE ITSELF. A roller is a lathe about its own axis, so its axis is the direction
+          // its vertex cloud is LONGEST in — measured by the principal axis of the covariance of
+          // one roller's vertices, which needs no knowledge of how it was built.
+          for (const kind of ['omni', 'traction', 'podTraction'] as const) {
+            const w = buildDriveWheel(kind, 'high');
+            const rollers = w.getObjectByName('bb-wheel-rollers');
+            const vs = worldVerts(w);
+            // the wheel's axle is local +y; nothing on a non-mecanum may lean off it by 45°
+            const leaning = rollers
+              ? (() => {
+                  // for an omni every roller is tangential, i.e. its axis has NO y component at
+                  // all: so no vertex pair within one roller may be separated mostly along y
+                  const p = BB_WHEEL_PARTS[kind];
+                  const ys = worldVerts(rollers).map((v) => v.y);
+                  const rowSpread = Math.max(...ys) - Math.min(...ys);
+                  // two rows of barrels, each at most `2·rollerR` tall in y — a 45° lean would
+                  // make a single roller `rollerL·cos45` = far more than that
+                  return rowSpread > p.w + 1e-6;
+                })()
+              : false;
+            check(`${kind}: nothing on this wheel leans off the axle (no 45° anywhere)`, !leaning);
+            check(
+              `${kind}: ...and it stays inside its own published diameter`,
+              Math.max(...vs.map((v) => Math.hypot(v.x, v.z))) <= BB_WHEEL_PARTS[kind].r + 1e-6,
+              `${Math.max(...vs.map((v) => Math.hypot(v.x, v.z))).toFixed(4)} vs ${BB_WHEEL_PARTS[kind].r.toFixed(4)}`,
+            );
+            disposeRobotGroup(w);
+          }
+          check(
+            'a traction wheel has a TREAD and no rollers; a roller wheel has rollers and no tread band',
+            !!buildDriveWheel('traction', 'high').getObjectByName('bb-wheel-tread') &&
+              !buildDriveWheel('traction', 'high').getObjectByName('bb-wheel-rollers') &&
+              !!buildDriveWheel('mecanum', 'high').getObjectByName('bb-wheel-rollers') &&
+              !buildDriveWheel('mecanum', 'high').getObjectByName('bb-wheel-tread'),
+          );
+        }
+
+        // ── (3) HANDEDNESS: THE X PATTERN, MEASURED, ON EVERY BUILD THE BUILDER ALLOWS ────────
+        //
+        // AndyMark, on the equivalent part: "right wheels at the FRONT RIGHT and the REAR LEFT
+        // position, while the 'left' wheel would be in the FRONT LEFT and REAR RIGHT." REV: the
+        // diagonals the rollers make "should form an 'X' … viewed from above". So: take the
+        // TOPMOST roller of each corner wheel (the only one a top-down camera sees), read its axis
+        // direction in the chassis plane, and assert the four of them make that X.
+        //
+        // ⚠️ THE FAILURE THIS CATCHES IS THE CLASSIC ONE — four wheels built the same way, which
+        // is a picture of a robot that physically cannot strafe. It passes with all four parallel
+        // if you only ever check one wheel, which is why every assertion below is about a PAIR.
+        {
+          /**
+           * THE TOPMOST ROLLER'S AXIS of one built wheel, in the chassis plane, normalized.
+           *
+           * ⚠️ **ISOLATING ONE ROLLER CANNOT BE DONE BY AZIMUTH OR BY A SLAB OF z, AND BOTH WERE
+           * TRIED.** A mecanum roller is 2.36 in long at 45°, so it spans ±27.5° of azimuth while
+           * the pitch is only 32.7° — the rollers OVERLAP in azimuth, by design (that overlap is
+           * what keeps the wheel in contact). And a slab near the crown clips the barrel down to a
+           * nearly circular cap whose principal axis is ill-conditioned, while still catching the
+           * tops of both neighbours: measured, that read the front-left wheel's roller at
+           * (0.439, 0.898) instead of (0.707, 0.707) and put the two hands 52° apart.
+           *
+           * What DOES isolate them is the buffer: `rollerGeometries` merges N identical lathes in
+           * order, so roller `i` is a contiguous, equal-length run of the merged position
+           * attribute. Asserted rather than assumed — an uneven split means the wheel stopped
+           * being N copies of one barrel and this measurement no longer means what it says.
+           */
+          const topRollerDir = (wheel: THREE.Object3D): { x: number; y: number } | null => {
+            const rollers = wheel.getObjectByName('bb-wheel-rollers') as THREE.Mesh | null;
+            if (!rollers) return null;
+            const vs = worldVerts(rollers);
+            const part = BB_WHEEL_PARTS.mecanum;
+            const n = part.rollers * part.rows;
+            if (vs.length === 0 || vs.length % n !== 0) return null;
+            const per = vs.length / n;
+            let best: THREE.Vector3[] | null = null;
+            let bestZ = -Infinity;
+            for (let i = 0; i < n; i++) {
+              const chunk = vs.slice(i * per, (i + 1) * per);
+              const mz = chunk.reduce((a, v) => a + v.z, 0) / per;
+              if (mz > bestZ) {
+                bestZ = mz;
+                best = chunk;
+              }
+            }
+            if (!best) return null;
+            const cx = best.reduce((a, v) => a + v.x, 0) / per;
+            const cy = best.reduce((a, v) => a + v.y, 0) / per;
+            // principal axis of the 2×2 covariance, in closed form
+            let sxx = 0;
+            let syy = 0;
+            let sxy = 0;
+            for (const v of best) {
+              sxx += (v.x - cx) ** 2;
+              syy += (v.y - cy) ** 2;
+              sxy += (v.x - cx) * (v.y - cy);
+            }
+            const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+            return { x: Math.cos(theta), y: Math.sin(theta) };
+          };
+          const parallel = (a: { x: number; y: number }, b: { x: number; y: number }): number =>
+            Math.abs(a.x * b.x + a.y * b.y);
+
+          for (const dt of ['mecanum', 'butterfly'] as const) {
+            // EVERY intake mount the builder allows, because the mount changes the footprint and
+            // the end plates and was the thing most likely to reorder the corner loop
+            for (const mount of ['front', 'back', 'frontback', 'left', 'right'] as const) {
+              const spec = specFor(dt, { bbMech: { ...BB_DEFAULT_SPEC.bbMech, intakeMount: mount } });
+              const wheels = buildWheels(spec, undefined, 'high');
+              const hl = spec.length / 2;
+              // the four CORNER wheels: for butterfly the `spin` list also holds the inboard
+              // traction twins, which have no rollers and are skipped by `topRollerDir`
+              const corners = wheels.spin
+                .map((w) => w.node)
+                .filter((n) => topRollerDir(n) !== null);
+              const tag = `${dt}/${mount}`;
+              check(`X-pattern/${tag}: four handed wheels were built`, corners.length === 4, String(corners.length));
+              if (corners.length !== 4) continue;
+              // index them by quadrant rather than by loop order, so this cannot be fooled by the
+              // order `axleXs` happens to yield
+              const at = (sx: number, sy: number): THREE.Object3D | undefined =>
+                corners.find((n) => Math.sign(n.position.x || 1) === sx && Math.sign(n.position.y) === sy);
+              const fl = at(1, 1);
+              const fr = at(1, -1);
+              const bl = at(-1, 1);
+              const br = at(-1, -1);
+              check(`X-pattern/${tag}: one wheel per quadrant`, !!fl && !!fr && !!bl && !!br);
+              if (!fl || !fr || !bl || !br) continue;
+              const dFL = topRollerDir(fl)!;
+              const dFR = topRollerDir(fr)!;
+              const dBL = topRollerDir(bl)!;
+              const dBR = topRollerDir(br)!;
+              check(
+                `X-pattern/${tag}: FRONT-LEFT and REAR-RIGHT carry the same hand`,
+                parallel(dFL, dBR) > 0.999,
+                `${parallel(dFL, dBR).toFixed(4)}`,
+              );
+              check(
+                `X-pattern/${tag}: FRONT-RIGHT and REAR-LEFT carry the same hand`,
+                parallel(dFR, dBL) > 0.999,
+                `${parallel(dFR, dBL).toFixed(4)}`,
+              );
+              check(
+                `X-pattern/${tag}: ...and the two hands are PERPENDICULAR — the X, not four of one`,
+                parallel(dFL, dFR) < 0.001,
+                `${parallel(dFL, dFR).toFixed(4)}`,
+              );
+              check(
+                `X-pattern/${tag}: the front-left wheel's top roller lies on the y = x diagonal`,
+                Math.abs(Math.abs(dFL.x) - Math.SQRT1_2) < 0.02 && Math.abs(dFL.x * dFL.y) > 0.49,
+                `(${dFL.x.toFixed(3)}, ${dFL.y.toFixed(3)})`,
+              );
+              // and it is the same predicate the 2D sprite hatches by, so the two views agree
+              check(
+                `X-pattern/${tag}: the 3D hand is the 2D sprite's own expression`,
+                robotsCode.includes('const hand: 1 | -1 = x * sy >= 0 ? 1 : -1;') &&
+                  readFileSync(join(root, 'src', 'games', 'biobuzz', 'parts.ts'), 'utf8').includes(
+                    'const s = px * py >= 0 ? 1 : -1;',
+                  ),
+              );
+              for (const n of wheels.nodes) disposeRobotGroup(n as THREE.Group);
+              void hl;
+            }
+          }
+        }
+
+        // ── (4) NOTHING POKES OUT OF THE CHASSIS. The owner had the top plate made full-footprint
+        // and the corner plates added to hide the wheels on 2026-09-20/21; a wheel that grew
+        // 0.094 in in the radius and 0.39 in in the width must still be under both.
+        {
+          const deckUnder = BB_DECK_Z - 0.26;
+          for (const dt of DRIVETRAINS) {
+            const spec = specFor(dt);
+            const wheels = buildWheels(spec, undefined, 'high');
+            const hl = spec.length / 2;
+            const hw = spec.width / 2;
+            let maxZ = -Infinity;
+            let minZ = Infinity;
+            let outX = 0;
+            let outY = 0;
+            for (const n of wheels.nodes) {
+              for (const v of worldVerts(n)) {
+                maxZ = Math.max(maxZ, v.z);
+                minZ = Math.min(minZ, v.z);
+                outX = Math.max(outX, Math.abs(v.x) - hl);
+                outY = Math.max(outY, Math.abs(v.y) - hw);
+              }
+            }
+            check(`fit/${dt}: the drivetrain has geometry to measure`, Number.isFinite(maxZ), `${maxZ.toFixed(3)}`);
+            check(
+              `fit/${dt}: nothing on a wheel crosses the frame line in x or y`,
+              outX <= 1e-6 && outY <= 1e-6,
+              `x +${outX.toFixed(4)}, y +${outY.toFixed(4)}`,
+            );
+            check(
+              `fit/${dt}: no wheel reaches the DECK's underside (it would poke through the top plate)`,
+              maxZ <= deckUnder + 1e-6,
+              `${maxZ.toFixed(3)} vs ${deckUnder.toFixed(3)}`,
+            );
+            check(`fit/${dt}: and nothing is below the floor`, minZ >= -1e-6, `${minZ.toFixed(4)}`);
+            // the LIFTED butterfly set is the case that nearly broke this: a 0.6-in lift under a
+            // 104 mm wheel puts its crown through the lid
+            if (dt === 'butterfly') {
+              // the lift is derived against this very ceiling (`BB_BUTTERFLY_LIFT`), so re-derive
+              // it here rather than reading it: a typed 0.6 under a 104 mm wheel is 4.694 through
+              // a lid at 4.34, and that is exactly the regression this guards
+              const lift = Math.min(0.6, deckUnder - 2 * BB_WHEEL_PARTS.mecanum.r);
+              check(
+                'fit/butterfly: a LIFTED mecanum set still clears the deck',
+                lift > 0 && 2 * BB_WHEEL_PARTS.mecanum.r + lift <= deckUnder + 1e-9,
+                `lift ${lift.toFixed(3)} → crown ${(2 * BB_WHEEL_PARTS.mecanum.r + lift).toFixed(3)} vs ${deckUnder.toFixed(3)}`,
+              );
+              check(
+                'fit/butterfly: ...and the lift is DERIVED from the deck, not typed',
+                robotsCode.includes('const BB_BUTTERFLY_LIFT = Math.min(0.6, BB_DECK_Z - 0.26 - 2 * BB_MECANUM.r);'),
+              );
+            }
+            for (const n of wheels.nodes) disposeRobotGroup(n as THREE.Group);
+          }
+        }
+
+        // ── (5) THE TIERS. The rule is that a tier changes the TESSELLATION and nothing else, so
+        // both halves are asserted: the triangle count really does drop, and the machine really
+        // does not change.
+        {
+          const budget: Record<string, [number, number]> = {
+            // kind: [low ceiling, high ceiling] triangles per wheel
+            mecanum: [700, 3600],
+            omni: [1000, 4200],
+            traction: [500, 2600],
+            podTraction: [500, 2600],
+          };
+          for (const kind of ['mecanum', 'omni', 'traction', 'podTraction'] as const) {
+            const lo = buildDriveWheel(kind, 'low');
+            const hi = buildDriveWheel(kind, 'high');
+            const nLo = triCount(lo);
+            const nHi = triCount(hi);
+            check(`tier/${kind}: LOW is inside its triangle budget`, nLo <= budget[kind][0], `${nLo} tris`);
+            check(`tier/${kind}: HIGH is inside its triangle budget`, nHi <= budget[kind][1], `${nHi} tris`);
+            check(`tier/${kind}: LOW is genuinely cheaper than HIGH`, nLo < nHi * 0.6, `${nLo} vs ${nHi}`);
+            // ⚠️ AND THE SHAPE IS THE SAME MACHINE. The outer diameter, the roller count and the
+            // roller angle are the part, not the budget — a tier may not quietly drop rollers.
+            const rad = (o: THREE.Object3D): number =>
+              Math.max(...worldVerts(o).map((v) => Math.hypot(v.x, v.z)));
+            check(
+              `tier/${kind}: LOW and HIGH are the same wheel — same outer radius, to a tessellation chord`,
+              Math.abs(rad(lo) - rad(hi)) < 0.12,
+              `${rad(lo).toFixed(3)} vs ${rad(hi).toFixed(3)}`,
+            );
+            disposeRobotGroup(lo);
+            disposeRobotGroup(hi);
+          }
+          // a LOW mecanum still has eleven real rollers, which is the whole claim of "simplified,
+          // not different": measure them as separated vertex clusters in azimuth
+          {
+            const lo = buildDriveWheel('mecanum', 'low');
+            const rollers = lo.getObjectByName('bb-wheel-rollers');
+            const azim = new Set(
+              worldVerts(rollers!).map((v) => Math.round((Math.atan2(v.z, v.x) * 11) / (Math.PI * 2))),
+            );
+            check(
+              'tier/mecanum: a LOW wheel still carries eleven separate rollers',
+              azim.size >= 11,
+              `${azim.size} azimuth buckets`,
+            );
+            disposeRobotGroup(lo);
+          }
+          // ...and the tier mapping itself: Low+Medium cheap, High+Ultra full, and `meshDetail`
+          // honoured wherever it is set by hand
+          check(
+            'tier/map: Low and Medium take the cheap wheel, High and Ultra the full one',
+            bbWheelDetail(GFX_PRESETS.low, 'low') === 'low' &&
+              bbWheelDetail(GFX_PRESETS.medium, 'medium') === 'low' &&
+              bbWheelDetail(GFX_PRESETS.high, 'high') === 'high' &&
+              bbWheelDetail(GFX_PRESETS.ultra, 'ultra') === 'high',
+          );
+          check(
+            'tier/map: a hand-set meshDetail of `low` is honoured on any column',
+            bbWheelDetail({ meshDetail: 'low' }, 'ultra') === 'low',
+          );
+          check(
+            'tier/map: ...and NO seventeenth graphics setting was added for this',
+            !/wheelDetail\s*:/.test(readFileSync(join(root, 'src', 'games', 'biobuzz', 'graphics', 'settings.ts'), 'utf8')),
+          );
+          check(
+            'tier/map: the scene pushes it at the robots on every settings change',
+            readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderScene.ts'), 'utf8').includes(
+              'this.robots.wheelDetail = bbWheelDetail(s, this.tier);',
+            ),
+          );
+        }
+
+        // ── (6) THE POSE HANDLES SURVIVED. Swerve steer, butterfly drop and the new wheel roll
+        // are all `userData` contracts the per-frame sync reads; a rebuild that dropped one would
+        // freeze a drivetrain silently.
+        {
+          // ⚠️ AGAIN `buildWheels` AND A SOURCE LINE, NOT `buildRobotGroup` — the robot SIGN is a
+          // canvas texture and this lane has no DOM. `buildWheels` produces the three lists; the
+          // grep is the one step this cannot build, that `buildRobotGroup` publishes them under
+          // the names the sync reads.
+          for (const ud of ['swervePods', 'butterflySets', 'spinWheels'] as const) {
+            check(
+              `handles: buildRobotGroup still publishes userData.${ud}`,
+              robotsCode.includes(`group.userData.${ud} = `),
+            );
+          }
+          for (const dt of DRIVETRAINS) {
+            const w = buildWheels(specFor(dt), undefined, 'high');
+            check(
+              `handles/${dt}: every wheel is published with its OWN rolling radius`,
+              w.spin.length > 0 && w.spin.every((s) => s.r > 0.5 && s.r <= BB_WHEEL_PARTS.mecanum.r + 1e-9),
+              `${w.spin.length} wheels`,
+            );
+            if (dt === 'swerve') {
+              check('handles/swerve: four pods, in corner order', w.pods.length === 4);
+              check('handles/swerve: ...and each pod’s wheel is in the spin list', w.spin.length === 4);
+            }
+            if (dt === 'butterfly') {
+              check('handles/butterfly: both sets are published, four each', w.traction.length === 4 && w.roller.length === 4);
+              check(
+                'handles/butterfly: ...each with its OWN grounded height (two different parts)',
+                Math.abs(w.traction[0].z - BB_WHEEL_PARTS.traction.r) < 1e-9 &&
+                  Math.abs(w.roller[0].z - BB_WHEEL_PARTS.mecanum.r) < 1e-9,
+                `${w.traction[0].z.toFixed(3)} / ${w.roller[0].z.toFixed(3)}`,
+              );
+            }
+            if (dt === 'tank') {
+              check('handles/tank: six wheels turn, not four', w.spin.length === 6, `${w.spin.length}`);
+            }
+            for (const n of w.nodes) disposeRobotGroup(n as THREE.Group);
+          }
+          // ⚠️ THE ROLL HAS TO HAPPEN INSIDE THE X-DRIVE'S CANT, or a canted wheel spins about the
+          // wrong axis and reads as a skid. A `THREE.Euler` defaults to `XYZ`, which applies `z`
+          // first; `ZYX` is what puts the roll under it.
+          check(
+            'spin: a drive wheel rotates ZYX, so an X-drive’s roll stays inside its 45° cant',
+            buildDriveWheel('omni', 'high').rotation.order === 'ZYX' &&
+              robotsCode.includes("g.rotation.order = 'ZYX';"),
+          );
+          check(
+            'spin: the roll is driven off the sim’s own velocity, at each wheel’s own radius',
+            robotsCode.includes('w.node.rotation.y -= (v / w.r) * dt;'),
+          );
+          check(
+            'spin: and `effects: minimal` stops it (the §4.4 row that had nothing behind it)',
+            robotsCode.includes('if (wheelSpin)') &&
+              readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderScene.ts'), 'utf8').includes(
+                "this.robots.wheelSpin = s.effects !== 'minimal';",
+              ),
+          );
         }
       }
 
@@ -4748,6 +5313,29 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           });
           return { uMin, uMax, vMin, vMax, zMin, zMax };
         };
+        /** every vertex of `o`, in the mouth's own (u, v, z) frame — `mouthExtent`'s own loop
+         *  without the min/max, for checks that need the SHAPE and not just its box (the
+         *  side-roller yoke's open working arc). */
+        const mouthPoints = (o: THREE.Object3D, f: { ox: number; oy: number; rot: number }) => {
+          const out: { u: number; v: number; z: number }[] = [];
+          const v3 = new THREE.Vector3();
+          o.traverse((n) => {
+            const g3 = (n as THREE.Mesh).geometry as THREE.BufferGeometry | undefined;
+            const pos = g3?.getAttribute?.('position');
+            if (!pos) return;
+            for (let i = 0; i < pos.count; i++) {
+              v3.fromBufferAttribute(pos as THREE.BufferAttribute, i).applyMatrix4(n.matrixWorld);
+              const dx = v3.x - f.ox;
+              const dy = v3.y - f.oy;
+              out.push({
+                u: dx * Math.cos(f.rot) + dy * Math.sin(f.rot),
+                v: -dx * Math.sin(f.rot) + dy * Math.cos(f.rot),
+                z: v3.z,
+              });
+            }
+          });
+          return out;
+        };
 
         for (const mount of ['front', 'back', 'side', 'frontback'] as const) {
           for (const kind of BB_INTAKE_KINDS) {
@@ -4841,57 +5429,116 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
               }
 
               /**
-               * ⚠️ **THE HOUSING (owner, 2026-09-21: "it looks ugly and not the most realistic in
-               * terms of packaging"). The wheel used to hang off a single diagonal strut with
-               * nothing around it; it is a bracketed module now — a retainer plate above it, a
-               * plate under it, a dead axle between them and a web back to the arm rail. The
-               * PROTRUSION did not move (`config.ts`'s own header carries the 540-run measurement
-               * that says 1.90 is the knee and 1.004 the floor), so what these checks pin is that
-               * the drawing gained a package and NOT a thousandth of extra reach: nothing in the
-               * module may stand further out than the wheel's own SOLID front,
-               * `tip + BB_SIDE_ROLLER_PROTRUDE`, which is exactly what `chassis3dReachShapes`
-               * makes solid.
+               * ⚠️ **THE WHEEL MAY NOT BE COVERED** (owner, 2026-09-21, rejecting the housed
+               * module that these checks used to pin: "The side rollers are rendered as being
+               * covered and still sticking out a ton. It cant be covered fully because it needs
+               * to actually touch the balls"). The bracket is a REAR YOKE now — two straps from
+               * the side arm's rail to the AXLE, ending in a bearing boss — and what is asserted
+               * is the opposite of what was asserted before:
+               *
+               *  · nothing in the bracket stands forward of the AXLE LINE except the boss, and
+               *    nothing reaches past the wheel's own solid front either;
+               *  · the working arc is open — swept round the tread from above, the first angle at
+               *    which any bracket vertex occludes it is at least `MIN_OPEN_ARC / 2` off the
+               *    outward direction, at EVERY height of the wheel;
+               *  · the straps still sandwich the wheel without cutting into it, and the bottom one
+               *    still clears a FLOWER's lower ring rim (what sets `BB_SIDE_ROLLER_PLATE_T`).
                */
+              const MIN_OPEN_ARC = 200; // degrees of tread that must stay visible (owner: "~200")
               for (const m of mouths) {
                 const f = bbMouthFrame(m, hl, hw);
                 const front = f.depth + BB_SIDE_ROLLER_PROTRUDE;
+                const axleU = f.depth + BB_SIDE_ROLLER_OUT;
                 const names = [
-                  `robot:sideroller:house:top:${m.edge}`,
-                  `robot:sideroller:house:bot:${m.edge}`,
+                  `robot:sideroller:yoke:top:${m.edge}`,
+                  `robot:sideroller:yoke:bot:${m.edge}`,
                   `robot:sideroller:axle:${m.edge}`,
                   `robot:sideroller:web:${m.edge}`,
                 ];
                 for (const nm of names) {
                   const node = group.getObjectByName(nm);
-                  check(`${label}/${m.edge}: ${nm.split(':').slice(2, -1).join(':')} exists`, node !== undefined);
+                  const tag = nm.split(':').slice(2, -1).join(':');
+                  check(`${label}/${m.edge}: ${tag} exists`, node !== undefined);
                   if (!node) continue;
                   const ext = mouthExtent(node, f);
                   check(
-                    `${label}/${m.edge}: ${nm.split(':').slice(2, -1).join(':')} reaches no further out than the wheel's own solid`,
+                    `${label}/${m.edge}: ${tag} reaches no further out than the wheel's own solid`,
                     ext.uMax <= front + 1e-6,
                     `uMax ${ext.uMax.toFixed(6)} vs ${front.toFixed(6)}`,
                   );
+                  check(
+                    `${label}/${m.edge}: ${tag} stands no further forward than the axle line plus the boss`,
+                    ext.uMax <= axleU + BB_SIDE_ROLLER_BOSS_R + 1e-6,
+                    `uMax ${ext.uMax.toFixed(6)} vs axle ${axleU.toFixed(6)} + boss ${BB_SIDE_ROLLER_BOSS_R}`,
+                  );
                 }
-                const top = group.getObjectByName(`robot:sideroller:house:top:${m.edge}`);
-                const bot = group.getObjectByName(`robot:sideroller:house:bot:${m.edge}`);
+                const top = group.getObjectByName(`robot:sideroller:yoke:top:${m.edge}`);
+                const bot = group.getObjectByName(`robot:sideroller:yoke:bot:${m.edge}`);
                 if (top && bot) {
                   const te = mouthExtent(top, f);
                   const be = mouthExtent(bot, f);
                   check(
-                    `${label}/${m.edge}: the two plates sandwich the wheel and never cut into it`,
+                    `${label}/${m.edge}: the two straps sandwich the wheel and never cut into it`,
                     Math.abs(te.zMin - BB_SIDE_ROLLER_REACH.z[1]) < 1e-6 && Math.abs(be.zMax - BB_SIDE_ROLLER_REACH.z[0]) < 1e-6,
                     `top zMin ${te.zMin.toFixed(4)} vs ${BB_SIDE_ROLLER_REACH.z[1]}, bot zMax ${be.zMax.toFixed(4)} vs ${BB_SIDE_ROLLER_REACH.z[0]}`,
                   );
-                  // ⚠️ the bottom plate is the one part of the module that drives OVER a FLOWER's
+                  // ⚠️ the bottom strap is the one part of the module that drives OVER a FLOWER's
                   // lower ring plate (`BB_FLOWER_RETRIEVE_Z[0]`, the rim the retrieval window
                   // starts above) — it is what sets `BB_SIDE_ROLLER_PLATE_T`, so a thicker sheet
                   // must fail here rather than silently clip the rim in the picture.
                   check(
-                    `${label}/${m.edge}: the bottom plate still clears a FLOWER's lower ring rim`,
+                    `${label}/${m.edge}: the bottom strap still clears a FLOWER's lower ring rim`,
                     be.zMin > BB_FLOWER_RETRIEVE_Z[0] + 1e-9,
                     `${be.zMin.toFixed(4)} vs rim ${BB_FLOWER_RETRIEVE_Z[0]}`,
                   );
                 }
+                // ── THE OPEN WORKING ARC, measured off the built meshes' OWN VERTICES rather
+                // than from the constants: every bracket triangle is projected into the wheel's
+                // own polar frame and the tread is swept in 1° steps; an angle is OCCLUDED when
+                // some bracket vertex lies within the tread's radius there, at the wheel's own
+                // height band. The boss is inside `BB_SIDE_ROLLER_HUB_R` and is not tread, so the
+                // sweep only asks about radii the tread actually occupies.
+                for (const side of ['l', 'r'] as const) {
+                  const sgn = side === 'l' ? 1 : -1;
+                  const cU = f.depth + BB_SIDE_ROLLER_OUT;
+                  const cV = sgn * bbSideRollerY(f.half);
+                  let worst = 180;
+                  for (const nm of names) {
+                    const node = group.getObjectByName(nm);
+                    if (!node) continue;
+                    const pts = mouthPoints(node, f);
+                    for (const p of pts) {
+                      if (p.z < BB_SIDE_ROLLER_REACH.z[0] - 1e-6 || p.z > BB_SIDE_ROLLER_REACH.z[1] + 1e-6) continue;
+                      const du = p.u - cU;
+                      const dv = p.v - cV;
+                      const rad = Math.hypot(du, dv);
+                      // only tread radii matter — a vertex inside the hub cannot hide the tread
+                      if (rad < BB_SIDE_ROLLER_HUB_R || rad > BB_SIDE_ROLLER_R + 1e-6) continue;
+                      // the angle off the mouth's OUTWARD direction, mirrored so both wheels read
+                      // the same way
+                      const ang = (Math.atan2(sgn * dv, du) * 180) / Math.PI;
+                      worst = Math.min(worst, Math.abs(ang));
+                    }
+                  }
+                  check(
+                    `${label}/${m.edge}/${side}: the wheel's forward working arc is open (>= ${MIN_OPEN_ARC} deg of tread, full height)`,
+                    2 * worst >= MIN_OPEN_ARC,
+                    `open ${(2 * worst).toFixed(1)} deg (first occlusion at ${worst.toFixed(1)} deg off outward)`,
+                  );
+                }
+              }
+
+              // the yoke's own y is `config.ts`'s `bbSideRollerYokeY`, so the 2D sprite can place
+              // it without importing the scene chunk — it must be the ARM RAIL's own centreline,
+              // which only this file knows. Same dup-guard pattern as `BB_INTAKE_ARM_INSET_DUP`.
+              {
+                const f = bbMouthFrame(mouths[0], hl, hw);
+                const armY = f.half - BB_INTAKE_ARM_INSET - INTAKE_RAIL_T / 2;
+                check(
+                  `${label}: bbSideRollerYokeY is the side arm rail's own centreline`,
+                  Math.abs(bbSideRollerYokeY(f.half) - armY) < 1e-9,
+                  `${bbSideRollerYokeY(f.half).toFixed(6)} vs ${armY.toFixed(6)}`,
+                );
               }
             }
 
@@ -5132,25 +5779,20 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           reachOps('sweeper').length === 0,
         );
         check('2D: the siderollers kind draws its wheels', reachOps('siderollers').length > 0);
-        // ⚠️ the sprite draws the HOUSING too (owner, 2026-09-21) — the plan outline of the same
-        // bracket `scene/renderRobots.ts` builds, not a bare segment to the axle. One CLOSED,
-        // FILLED path per wheel before its rubber circle: `moveTo → lineTo → arc → lineTo →
-        // closePath → fill`, which is what distinguishes a package from the single stroked line
-        // this replaced.
+        // ⚠️ the sprite draws the REAR YOKE too (owner, 2026-09-21, rejecting the housed draft:
+        // "It cant be covered fully because it needs to actually touch the balls") — the plan
+        // view of the same diagonal strap + bearing boss `scene/renderRobots.ts` builds, with the
+        // WHEEL drawn last so nothing is ever over its tread. One CLOSED, FILLED quad per wheel.
         {
           const ops = reachOps('siderollers').map((o) => o.op);
           const spec2d = mk({ bbMech: { intake: { kind: 'siderollers' } } } as Partial<RobotSpec>);
           const wheels = bbMouths(spec2d).length * 2;
           check(
-            '2D: and it draws each wheel a HOUSING, closed and filled, not a bracket line',
-            ops.filter((o) => o === 'closePath').length === wheels && ops.filter((o) => o === 'fill').length === 2 * wheels,
-            `${wheels} wheels: ${ops.join(',')}`,
+            '2D: and it draws each wheel a rear YOKE, closed and filled, not a bracket line',
+            ops.filter((o) => o === 'closePath').length === wheels,
+            `${wheels} wheels: ${ops.filter((o) => o === 'closePath').length} closed paths`,
           );
-          // ...and the OUTLINE's own numbers, not just its shape of calls: every point and every
-          // arc the sprite emits has to stay inside the same envelope the 3D module does, and the
-          // cap has to sweep through the OUTWARD point rather than round the back of the wheel
-          // (the −y wheel needs the anticlockwise arc; mirroring the +y sweep draws the housing
-          // INSIDE OUT, and nothing about the op sequence would say so).
+          // ...and the OUTLINE's own numbers, not just its shape of calls.
           {
             const pts: { x: number; y: number }[] = [];
             const arcs: { x: number; y: number; r: number; a0: number; a1: number; ccw: boolean }[] = [];
@@ -5165,28 +5807,43 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             const m0 = bbMouths(spec2d)[0];
             const f0 = bbMouthFrame(m0, spec2d.length / 2, spec2d.width / 2);
             const front = f0.depth + BB_SIDE_ROLLER_PROTRUDE;
+            const axleX = f0.depth + BB_SIDE_ROLLER_OUT;
             check(
-              "2D: no point of the drawn housing reaches past the wheel's own solid front",
+              "2D: no point of the drawn module reaches past the wheel's own solid front",
               pts.every((p) => p.x <= front + 1e-9) && arcs.every((a) => a.x + a.r <= front + 1e-9),
               `front=${front.toFixed(4)} maxPt=${Math.max(...pts.map((p) => p.x)).toFixed(4)} maxArc=${Math.max(...arcs.map((a) => a.x + a.r)).toFixed(4)}`,
             );
-            // the CAP arcs are the housings' (two per wheel is the wheel's own rubber circle,
-            // drawn as a full 0..TAU arc); a cap is the half-sweep, and its mid-angle must point
-            // outward (+x in the mouth frame).
-            const caps = arcs.filter((a) => Math.abs(Math.abs(a.a1 - a.a0) - Math.PI) < 1e-9);
+            // ⚠️ THE BRACKET MAY NOT BE DRAWN OVER THE TREAD. Every straight segment the sprite
+            // emits belongs to the yoke strap or to a tread LUG; the strap's own points may not
+            // pass the axle line at all, and the only circles are the BOSS, the TREAD and the HUB
+            // — there is no cap on the wheel's own radius any more, which is precisely what the
+            // owner rejected. A lug's inner end sits on the hub, so a lug point is recognised by
+            // being inside the tread's own radius of a wheel axis.
+            const wheelYs = [bbSideRollerY(f0.half), -bbSideRollerY(f0.half)];
+            const onWheel = (p: { x: number; y: number }): boolean =>
+              wheelYs.some((wy) => Math.hypot(p.x - axleX, p.y - wy) <= BB_SIDE_ROLLER_R + 1e-9);
+            const strapPts = pts.filter((p) => !onWheel(p));
             check(
-              '2D: one half-sweep cap per wheel, each sweeping through the OUTWARD point',
-              caps.length === wheels &&
-                caps.every((a) => {
-                  // the swept midpoint, for a canvas arc: clockwise runs a0 UP to a1 and
-                  // anticlockwise runs it DOWN, each wrapping by 2π until the end is on the
-                  // right side of the start.
-                  let end = a.a1;
-                  if (a.ccw) while (end > a.a0) end -= 2 * Math.PI;
-                  else while (end < a.a0) end += 2 * Math.PI;
-                  return Math.cos((a.a0 + end) / 2) > 0.999;
-                }),
-              `${caps.length} caps of ${arcs.length} arcs`,
+              '2D: the yoke strap stops at the axle line and is never drawn over the tread',
+              strapPts.length > 0 && strapPts.every((p) => p.x <= axleX + 1e-9),
+              `${strapPts.length} strap points, max x ${Math.max(...strapPts.map((p) => p.x)).toFixed(4)} vs axle ${axleX.toFixed(4)}`,
+            );
+            const radii = [...new Set(arcs.map((a) => Number(a.r.toFixed(6))))].sort((a, b) => a - b);
+            check(
+              '2D: the only circles are the BOSS, the HUB and the TREAD — nothing caps the wheel',
+              radii.length === 3 &&
+                Math.abs(radii[0] - BB_SIDE_ROLLER_BOSS_R) < 1e-6 &&
+                Math.abs(radii[1] - BB_SIDE_ROLLER_HUB_R) < 1e-6 &&
+                Math.abs(radii[2] - BB_SIDE_ROLLER_R) < 1e-6,
+              `radii ${radii.join(', ')}`,
+            );
+            // and the TREAD is drawn AFTER the bracket, so a viewer never sees the bracket on top
+            const firstTread = arcs.findIndex((a) => Math.abs(a.r - BB_SIDE_ROLLER_R) < 1e-6);
+            const firstBoss = arcs.findIndex((a) => Math.abs(a.r - BB_SIDE_ROLLER_BOSS_R) < 1e-6);
+            check(
+              '2D: the tread is drawn after its own yoke boss, never under it',
+              firstTread > firstBoss && firstBoss >= 0,
+              `tread at ${firstTread}, boss at ${firstBoss}`,
             );
           }
         }
@@ -6467,11 +7124,14 @@ function hudBandChecks(check: Check): void {
     );
     check(
       'the HIVE branch lifts by the radius under 3D and draws raw under 2D',
-      /poseAt\(mesh, idx, b\.pos\.x \+ t \* span, b\.pos\.y, bottom \? b\.z \+ r : b\.z\)/.test(els),
+      // `poseAtQuat` since the CAD elements landed: there is one pose now, because a perforated
+      // ball parked in a cell still has to be drawn the way up it arrived. The HEIGHT rule this
+      // check is about is unchanged.
+      /poseAtQuat\(mesh, idx, b\.pos\.x \+ t \* span, b\.pos\.y, bottom \? b\.z \+ r : b\.z, spin\)/.test(els),
     );
     check(
       'the FLOWER branch takes the SAME branch, not the opposite one',
-      /poseAt\(mesh, idx, b\.pos\.x, b\.pos\.y, bottom \? b\.z \+ r : b\.z\)/.test(els),
+      /poseAtQuat\(mesh, idx, b\.pos\.x, b\.pos\.y, bottom \? b\.z \+ r : b\.z, spin\)/.test(els),
     );
     check(
       '...and 3D really does write a BOTTOM — `syncElement` places the body at `b.z + r`',
@@ -6627,11 +7287,12 @@ function hudBandChecks(check: Check): void {
         });
       }
       check('field.glb: at least one ground-beam-band component exists in the raw asset', anyGroundBeamComponent);
-      // PIN THE DEFECT: every ground-beam component is a CLOSED shell (0 boundary edges) but its
-      // enclosed volume badly exceeds its own bounding box — proof of inconsistent winding, not
-      // open sheeting. If a future exporter pass fixes this, `volRatio` drops under ~1 and this
-      // assertion fails loudly, which is the signal to drop `fixGroundBeamWinding` rather than
-      // leave a stale DoubleSide clone armed over correctly-wound geometry.
+      // PIN THE DEFECT, AS THE 2026-09-20 REPORT FOUND IT: every ground-beam component is a CLOSED
+      // shell (0 boundary edges) that is not consistently wound. Still true, and still the right
+      // thing to pin — what CHANGED on 2026-09-21 is that it is true of the whole field and not of
+      // these three bars, so the `DoubleSide` extraction those two assertions used to guard is gone
+      // and the block below asserts the general repair instead. See `renderFieldGlb.ts`'s "IT IS
+      // NOT THE GROUND BARS" header.
       let worstDefective = 0;
       for (const [mesh, tris] of groundBeamByMesh) {
         const stats = shellWindingStats(mesh, tris);
@@ -6649,42 +7310,1055 @@ function hudBandChecks(check: Check): void {
       }
       check('field.glb: the pinned defect actually applies to at least one mesh', worstDefective > 0);
 
-      // NOW THE FIX: one single `assembleFieldGroups` call, checked for scope.
+      // NOW THE FIX: one single `assembleFieldGroups` call. The ground bars are no longer
+      // `DoubleSide` — they are WOUND CORRECTLY, which is cheaper and right from both sides — so
+      // what is asserted here is that nothing in a hive frame needs doubling at all any more.
       const fg = assembleFieldGroups(scene, 'low');
-      check('field.glb: the loader found ground-beam triangles to fix', fg.groundBeamTris > 0, String(fg.groundBeamTris));
+      check(
+        'field.glb: the loader repaired ground-beam-era winding as part of the general pass',
+        fg.winding.reversedTris > 0,
+        `${fg.winding.reversedTris} of ${fg.winding.totalTris} triangles reversed`,
+      );
       let doubleSidedTris = 0;
       let frontSidedTris = 0;
-      let sawGroundBeamMesh = false;
       for (const frame of [fg.hives.red.frame, fg.hives.blue.frame, fg.sharedFrame].filter((o): o is THREE.Object3D => !!o)) {
         frame.traverse((o) => {
           if (!(o instanceof THREE.Mesh)) return;
           const mat = Array.isArray(o.material) ? o.material[0] : o.material;
           const idx = o.geometry.getIndex();
           const tris = (idx ? idx.count : o.geometry.getAttribute('position').count) / 3;
-          if (o.name.endsWith('/groundbeam')) {
-            sawGroundBeamMesh = true;
-            check(`field.glb: "${o.name}" renders DoubleSide`, mat.side === THREE.DoubleSide, `side=${mat.side}`);
-            check(
-              `field.glb: "${o.name}" stayed OPAQUE — a structural bar must never be routed through the clear-panel material`,
-              (mat as THREE.MeshStandardMaterial).transparent !== true,
-            );
-            doubleSidedTris += tris;
-          } else {
-            check(
-              `field.glb: "${o.name || frame.name}" was not blanket-doubled by the ground-beam fix`,
-              mat.side !== THREE.DoubleSide,
-              `side=${mat.side}`,
-            );
-            frontSidedTris += tris;
-          }
+          if (mat.side === THREE.DoubleSide) doubleSidedTris += tris;
+          else frontSidedTris += tris;
         });
       }
-      check('field.glb: at least one ground-beam mesh was actually extracted', sawGroundBeamMesh);
       check(
-        'field.glb: the DoubleSide fix stays a minority of the hive-frame triangles (scoped, not blanket)',
-        doubleSidedTris > 0 && doubleSidedTris < frontSidedTris,
+        'field.glb: no hive-frame triangle is DoubleSide any more — the bars are wound right instead',
+        doubleSidedTris === 0,
         `${doubleSidedTris} doubleSided vs ${frontSidedTris} frontSided`,
       );
+      // 34,976 as measured — the frames' own total less the braces and the rocker, which
+      // `reparentTrayBraces` has already moved onto the two trays by this point.
+      check('field.glb: ...and the frames still have their triangles', frontSidedTris > 30000, String(frontSidedTris));
+    }
+  }
+
+// ── THE WHOLE-FIELD WINDING REPAIR — owner report 2026-09-21: "a lot of mounting brackets,
+// especially black and gray ones with complex geometry, have holes in them from different angles
+// and they are glitchy and broken."
+//
+// `renderFieldGlb.ts`'s "IT IS NOT THE GROUND BARS" header carries the measurement: 193 of 193
+// components of `field.glb` are closed shells with MIXED winding, ~49 % of every part's triangles
+// wound inward, confirmed independently by ray parity. These blocks pin the DEFECT in the raw
+// asset and the REPAIR in the assembled scene, for both LODs.
+//
+// ⚠️ EACH BLOCK PARSES ITS OWN SCENE. `assembleFieldGroups` mutates its argument in place, and
+// `FIELD_GLB_SCENE` / `FIELD_LOW_GLB_SCENE` are both already spent by the blocks above — a second
+// call on one reads its own resolved material names back through `parseMaterialName`, which
+// rejects them and repaints the field grey.
+{
+  const raw = WIND_RAW_HIGH;
+  check('bracket winding: field.glb re-parses for its own block', raw !== null);
+  if (raw) {
+    let comps = 0;
+    let mixed = 0;
+    let mixedTris = 0;
+    let boundaryComps = 0;
+    let totalTris = 0;
+    raw.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      for (const c of analyseMeshShells(o)) {
+        comps++;
+        totalTris += c.tris;
+        if (c.boundaryEdges > 0) boundaryComps++;
+        if (c.flippedEdges > 0) {
+          mixed++;
+          mixedTris += c.tris;
+        }
+      }
+    });
+    // THE DEFECT, stated as the owner's report measures: it is not three bars, it is everything.
+    check(
+      'bracket winding: the RAW field.glb is inconsistently wound across essentially every component',
+      comps > 100 && mixed / comps > 0.9,
+      `${mixed} of ${comps} components mixed, ${mixedTris} of ${totalTris} tris`,
+    );
+    // ...and it is NOT the open-sheeting defect `CLEAR_SHEETS_ARE_SINGLE_SIDED` named. Zero
+    // boundary edges anywhere on the high LOD is what makes case (c) — reorient, stay FrontSide —
+    // the right answer rather than a blanket DoubleSide.
+    check(
+      'bracket winding: ...and not one high-LOD component is genuinely OPEN (no boundary edges at all)',
+      boundaryComps === 0,
+      `${boundaryComps} components with a boundary edge`,
+    );
+  }
+}
+
+{
+  // THE REPAIR, on the HIGH LOD. The load-bearing claim: after `assembleFieldGroups`, no mesh that
+  // renders single-sided still has a component with a flipped interior edge or an inward-facing
+  // shell — which is the whole of "holes from different angles", stated as a measurement.
+  const scene = WIND_FIX_HIGH;
+  check('bracket winding: field.glb parses for the repair block', scene !== null);
+  if (scene) {
+    const fg = assembleFieldGroups(scene, 'low');
+    check('bracket winding: the pass ran over the whole field, not one node', fg.winding.meshes > 20, String(fg.winding.meshes));
+    check(
+      'bracket winding: about half of every part was wound inward and got reversed',
+      fg.winding.reversedTris / fg.winding.totalTris > 0.3 && fg.winding.reversedTris / fg.winding.totalTris < 0.7,
+      `${fg.winding.reversedTris} of ${fg.winding.totalTris}`,
+    );
+    check(
+      'bracket winding: every shell was orientable — nothing here is a genuine modelling error',
+      fg.winding.nonOrientableIslands === 0,
+      String(fg.winding.nonOrientableIslands),
+    );
+    // HIGH LOD: no component is open, so not one triangle moves off FrontSide. The draw cost of
+    // the fix is zero here, and the 6,690 triangles the ground-beam patch used to double are back
+    // on the cheap path.
+    check('bracket winding: field.glb needs NO DoubleSide at all', fg.winding.openTris === 0, String(fg.winding.openTris));
+
+    let frontTris = 0;
+    let doubleTris = 0;
+    let clearTris = 0;
+    let stillBroken = 0;
+    let worst = '';
+    const meshes: THREE.Mesh[] = [];
+    fg.root.traverse((o) => {
+      if (o instanceof THREE.Mesh) meshes.push(o);
+    });
+    for (const o of meshes) {
+      const mat = (Array.isArray(o.material) ? o.material[0] : o.material) as THREE.Material;
+      const idx = o.geometry.getIndex();
+      const tris = Math.floor((idx ? idx.count : o.geometry.getAttribute('position').count) / 3);
+      if (mat.transparent) {
+        clearTris += tris;
+        continue;
+      }
+      if (mat.side === THREE.DoubleSide) {
+        doubleTris += tris;
+        check(
+          `bracket winding: the DoubleSide mesh "${o.name}" is an OPEN-shell split, never a clear panel`,
+          o.userData.bbDoubleSided === true && mat.transparent !== true,
+        );
+        continue;
+      }
+      frontTris += tris;
+      for (const c of analyseMeshShells(o)) {
+        if (c.flippedEdges === 0 && (c.signedVolume >= 0 || c.open)) continue;
+        stillBroken++;
+        if (!worst) worst = `${o.name} tris=${c.tris} flipped=${c.flippedEdges} vol=${c.signedVolume.toFixed(2)}`;
+      }
+    }
+    check(
+      'bracket winding: NO single-sided component is left with inverted or mixed winding',
+      stillBroken === 0,
+      stillBroken === 0 ? `${frontTris} FrontSide triangles all consistent` : `${stillBroken} still broken, e.g. ${worst}`,
+    );
+    check('bracket winding: ...and the correct shells stayed FrontSide rather than being blanket-doubled', doubleTris === 0 && frontTris > 200000, `${frontTris} front / ${doubleTris} double`);
+    check('bracket winding: the clear panels are still their own transparent surface', clearTris > 10000, String(clearTris));
+  }
+}
+
+{
+  // THE CLEAR PANELS ARE UNTOUCHED, byte for byte. Their look is four measured tuning passes deep
+  // (the dielectric header) and every number in it was fitted against the asset AS IT SHIPS, so a
+  // winding repair under them would quietly halve the layer count the veil was sized for. This
+  // compares each clear-panel mesh's index buffer in the assembled scene against a FRESH parse.
+  const scene = WIND_CLEAR_HIGH;
+  const pristine = WIND_PRISTINE_HIGH;
+  check('clear panels: both parses succeeded', scene !== null && pristine !== null);
+  if (scene && pristine) {
+    // ⚠️ DIGEST THE CORNER POSITIONS IN ORDER, NOT THE INDEX. `styleScene`'s
+    // `computeCreasedNormals` splits a vertex into one copy per distinct normal and rewrites the
+    // index accordingly (`walls glass#e6e6e6` goes 1,642 verts -> 4,455), so an index digest moves
+    // on every mesh whether its winding was touched or not. The corner POSITIONS in triangle order
+    // are invariant under that split and flip the moment a triangle is reversed, which is exactly
+    // the property being asserted.
+    const windingOf = (root: THREE.Object3D, transparentOnly: boolean): Map<string, string> => {
+      const out = new Map<string, string>();
+      root.traverse((o) => {
+        if (!(o instanceof THREE.Mesh)) return;
+        const mat = (Array.isArray(o.material) ? o.material[0] : o.material) as THREE.Material;
+        const glb = (mat.name ?? '').split('@')[0];
+        const isClear = glb.startsWith('glass#') || glb === 'plastic#e6e6e6';
+        if (transparentOnly ? !mat.transparent : !isClear) return;
+        const idx = o.geometry.getIndex();
+        const pos = o.geometry.getAttribute('position');
+        if (!idx || !pos) return;
+        let h = 0;
+        for (let i = 0; i < idx.count; i++) {
+          const v = idx.getX(i);
+          for (const c of [pos.getX(v), pos.getY(v), pos.getZ(v)]) h = (h * 31 + Math.round(c * 4096)) % 2147483647;
+        }
+        const path = `${((o.parent?.userData as { name?: string } | undefined)?.name ?? o.parent?.name ?? '?')}/${glb}`;
+        out.set(path, `${idx.count}:${h}`);
+      });
+      return out;
+    };
+    const before = windingOf(pristine, false);
+    const fg = assembleFieldGroups(scene, 'low');
+    const after = windingOf(fg.root, true);
+    // three, and exactly three: the perimeter `glass#e6e6e6` and one `plastic#e6e6e6` cell-skin
+    // mesh per tray. The `hive_shared/frame` mesh carries the SAME glTF material name and is the
+    // opaque ACM board — see `isClearPanel`, which is why that rule is keyed on the node too.
+    check('clear panels: the assembled scene still has its three transparent panel meshes', after.size === 3, String(after.size));
+    let compared = 0;
+    let changed = 0;
+    for (const [path, digest] of after) {
+      const was = before.get(path);
+      if (was === undefined) continue;
+      compared++;
+      if (was !== digest) changed++;
+    }
+    check('clear panels: their winding is BYTE-IDENTICAL to the raw asset (the repair skipped them)', compared === 3 && changed === 0, `${compared} compared, ${changed} changed`);
+    // ...and the control that says the digest can actually see a change: the ACM panel shares the
+    // `plastic#e6e6e6` name, is NOT clear, and therefore IS repaired.
+    const acmPath = 'hive_shared/frame/plastic#e6e6e6';
+    const acmAfter = windingOf(fg.root, false).get(acmPath);
+    check(
+      'clear panels: ...and the same digest DOES move on the opaque ACM board, so the check is not vacuous',
+      acmAfter !== undefined && before.get(acmPath) !== undefined && acmAfter !== before.get(acmPath),
+      `${before.get(acmPath)} -> ${acmAfter}`,
+    );
+    check(
+      'clear panels: ...and the winding pass counted them as skipped rather than silently missing them',
+      fg.winding.clearPanelTris > 10000,
+      String(fg.winding.clearPanelTris),
+    );
+    let clearDouble = 0;
+    fg.root.traverse((o) => {
+      if (!(o instanceof THREE.Mesh)) return;
+      const mat = (Array.isArray(o.material) ? o.material[0] : o.material) as THREE.Material;
+      if (mat.transparent && mat.side === THREE.DoubleSide) clearDouble++;
+    });
+    check('clear panels: still DoubleSide, as CLEAR_SHEETS_ARE_SINGLE_SIDED decided', clearDouble === 3, String(clearDouble));
+  }
+}
+
+{
+  // THE LOW LOD is the only place `DoubleSide` is used at all: the simplifier opens real holes in
+  // the small parts, and a component with no closed inside has no outward to orient it to. This
+  // pins that the split is SCOPED — a small minority, the rest single-sided and consistent.
+  const scene = WIND_FIX_LOW;
+  check('bracket winding: field-low.glb parses for its own block', scene !== null);
+  if (scene) {
+    const fg = assembleFieldGroups(scene, 'low');
+    check('bracket winding (low): the pass ran', fg.winding.meshes > 20 && fg.winding.reversedTris > 0, `${fg.winding.meshes} meshes, ${fg.winding.reversedTris} reversed`);
+    check('bracket winding (low): the decimator DOES open real holes, so the DoubleSide path is live', fg.winding.openComponents > 0 && fg.winding.openTris > 0, `${fg.winding.openComponents} comps / ${fg.winding.openTris} tris`);
+    let frontTris = 0;
+    let doubleTris = 0;
+    let stillBroken = 0;
+    let splitMeshes = 0;
+    const meshes: THREE.Mesh[] = [];
+    fg.root.traverse((o) => {
+      if (o instanceof THREE.Mesh) meshes.push(o);
+    });
+    for (const o of meshes) {
+      const mat = (Array.isArray(o.material) ? o.material[0] : o.material) as THREE.Material;
+      const idx = o.geometry.getIndex();
+      const tris = Math.floor((idx ? idx.count : o.geometry.getAttribute('position').count) / 3);
+      if (mat.transparent) continue;
+      if (o.userData.bbDoubleSided) {
+        splitMeshes++;
+        doubleTris += tris;
+        check(`bracket winding (low): the split mesh "${o.name}" renders DoubleSide`, mat.side === THREE.DoubleSide, `side=${mat.side}`);
+        check(`bracket winding (low): ...and stayed OPAQUE — a structural part is never routed through the clear-panel material`, mat.transparent !== true);
+        continue;
+      }
+      check(`bracket winding (low): "${o.name}" was not blanket-doubled`, mat.side !== THREE.DoubleSide, `side=${mat.side}`);
+      frontTris += tris;
+      for (const c of analyseMeshShells(o)) {
+        if (c.flippedEdges === 0 && (c.signedVolume >= 0 || c.open)) continue;
+        stillBroken++;
+      }
+    }
+    check('bracket winding (low): at least one open shell was actually split out', splitMeshes > 0, String(splitMeshes));
+    check('bracket winding (low): NO single-sided component is left inverted or mixed', stillBroken === 0, String(stillBroken));
+    check(
+      'bracket winding (low): the DoubleSide share stays a small minority (scoped, not blanket)',
+      doubleTris > 0 && doubleTris < frontTris * 0.15,
+      `${doubleTris} double vs ${frontTris} front`,
+    );
+  }
+}
+
+  /**
+   * ── THE PERFORATED SCORING ELEMENTS ────────────────────────────────────────────────────────
+   *
+   * Owner, 2026-09-21: "For higher graphics settings, model the balls accurately with the holes.
+   * Consider grabbing the actual accurate cad."
+   *
+   * `public/models/biobuzz/elements.glb` is a REAL CAD EXTRACTION, not a model by eye: one
+   * `am-5851: Pollen` and one `am-5852: Blue Nectar` solid out of the SAME sha-pinned field STEP
+   * `convert.py` reads and deliberately drops (`RE_ELEMENT`), through
+   * `scripts/field-cad/elements.py` + `elements.mjs` (`npm run element-cad`). These checks are
+   * what stop the asset and the game drifting apart: the CAD's own radius against the SIM's
+   * constant, the triangle budget a full field is drawn against, and the winding, which on a
+   * ball that is LOOKED THROUGH is the difference between a hole and a hole-shaped hole in the
+   * ball behind it.
+   */
+  {
+    check('elements.glb: the shipped asset decodes', ELEMENTS_GLB_SCENE !== null);
+    if (ELEMENTS_GLB_SCENE) {
+      const byName = new Map<string, THREE.Mesh>();
+      ELEMENTS_GLB_SCENE.traverse((o) => {
+        if ((o as THREE.Mesh).isMesh) byName.set(String(o.userData?.name ?? o.name), o as THREE.Mesh);
+      });
+      check('elements.glb: it carries exactly the two element meshes', byName.size === 2 && byName.has('pollen') && byName.has('nectar'), [...byName.keys()].join(','));
+
+      // PER BALL. A match has up to ~100 elements on screen across the two `InstancedMesh`es,
+      // drawn again in the sun's depth pass on High/Ultra — this is the number the tessellation
+      // deflection in `elements.mjs` is chosen against, and it is a ratchet.
+      const TRI_BUDGET = 3000;
+      for (const [kind, expectedR] of [['pollen', BB_POLLEN_R] as const, ['nectar', BB_NECTAR_R] as const]) {
+        const mesh = byName.get(kind);
+        if (!mesh) continue;
+        mesh.updateWorldMatrix(true, false);
+        const geo = mesh.geometry;
+        const pos = geo.getAttribute('position');
+        const idx = geo.getIndex();
+        const tris = (idx ? idx.count : pos.count) / 3;
+        check(`elements.glb: ${kind} is inside the ${TRI_BUDGET}-triangle budget`, tris > 0 && tris <= TRI_BUDGET, `${tris} tris`);
+
+        // ⚠️ `getX/getY/getZ`, NEVER `geometry.applyMatrix4`: `meshopt` stores POSITION as a
+        // NORMALIZED Int16 (`KHR_mesh_quantization`) and `applyMatrix4` writes floats straight
+        // back into that Int16 array. Measured on this very asset, doing it the obvious way
+        // turned two clean shells at r 1.33/1.40 into a smear of radii from 0.60 to 1.40 — a
+        // convincing-looking failure that has nothing to do with the CAD.
+        const v = new THREE.Vector3();
+        let rmax = 0;
+        let rmin = Infinity;
+        for (let i = 0; i < pos.count; i++) {
+          v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(mesh.matrixWorld);
+          rmax = Math.max(rmax, v.length());
+          rmin = Math.min(rmin, v.length());
+        }
+        check(
+          `elements.glb: ${kind}'s outer radius matches its config constant to ${ELEMENT_RADIUS_TOL_IN} in`,
+          Math.abs(rmax - expectedR) <= ELEMENT_RADIUS_TOL_IN,
+          `CAD ${rmax.toFixed(4)} vs config ${expectedR}`,
+        );
+        // IT IS A SHELL, NOT A BALL. Every vertex is on one of the two spheres or on a bore wall
+        // between them, so the closest one to the centre is the inner sphere — proof the
+        // extraction kept the cavity the holes look into, rather than a solid the bores dimpled.
+        check(`elements.glb: ${kind} is hollow — its innermost vertex is well inside its outer radius`, rmin < rmax * 0.99, `inner ${rmin.toFixed(4)}, outer ${rmax.toFixed(4)}`);
+
+        // ── WINDING. One closed, consistently-wound, outward-facing shell ──────────────────
+        // This is the check the whole asset turns on. A holed ball is seen THROUGH its holes, so
+        // the inner sphere and all 26 bore walls face the camera; if `elements.py`'s
+        // `TopAbs_REVERSED` flip were missing or inverted, those would be back-faces and every
+        // hole would show the ball's far wall or nothing at all. `field.glb` HAS this defect on
+        // its ground bars (`fixGroundBeamWinding`) — this asset must not.
+        const comps = analyseMeshShells(mesh);
+        check(`elements.glb: ${kind} is ONE connected component`, comps.length === 1, `${comps.length}`);
+        const all: number[] = [];
+        for (let t = 0; t < tris; t++) all.push(t);
+        const stats = shellWindingStats(mesh, all);
+        check(`elements.glb: ${kind} is a CLOSED shell (no boundary edges)`, stats.boundaryEdges === 0, `${stats.boundaryEdges}`);
+        check(
+          `elements.glb: ${kind} is CONSISTENTLY wound, so no component needs DoubleSide`,
+          stats.flippedEdges === 0 && stats.nonManifoldEdges === 0,
+          `${stats.flippedEdges} flipped, ${stats.nonManifoldEdges} non-manifold`,
+        );
+        // ...and wound OUTWARD, not inward: a consistently-wound shell facing the wrong way would
+        // pass every test above and render inside-out. The divergence-theorem volume is positive
+        // for outward and negative for inward, and its MAGNITUDE separates a shell from a solid.
+        const solid = (4 / 3) * Math.PI * expectedR ** 3;
+        check(
+          `elements.glb: ${kind} faces OUTWARD and encloses a shell, not a solid`,
+          stats.signedVolume > 0 && stats.signedVolume < solid * 0.35,
+          `vol ${stats.signedVolume.toFixed(3)} in3 against a solid's ${solid.toFixed(3)}`,
+        );
+      }
+
+      // THE CAD'S OWN NUMBERS SHIP BESIDE THE MESH. `elements.py` measures them off the B-rep
+      // (analytic sphere/cylinder faces), not off a triangulation, so this file is the record of
+      // what the CAD says — including the one place it disagrees with `config.ts`.
+      const meas = JSON.parse(
+        readFileSync(join(root, 'public', 'models', 'biobuzz', 'elements-measurements.json'), 'utf8'),
+      ) as Record<string, { boreCount: number; configDeltaIn: number; wallIn: number; boreDiameterIn: number }>;
+      check('elements-measurements.json: both kinds are 26-bore balls', meas.pollen?.boreCount === 26 && meas.nectar?.boreCount === 26);
+      check('elements-measurements.json: POLLEN agrees with BB_POLLEN_R exactly', meas.pollen?.configDeltaIn === 0, `${meas.pollen?.configDeltaIn}`);
+      // ⚠️ NOT A BUG, AND NOT TO BE "FIXED" HERE. The CAD says NECTAR is r 1.810 and `config.ts`
+      // says 1.800. The CAD is authoritative for DIMENSIONS (owner ruling 2026-09-18) but this
+      // radius is also the sphere Rapier solves and the number every flower/hive/intake tolerance
+      // was measured against, so moving it is a SIM change the owner decides. The delta is pinned
+      // here so it cannot drift further unnoticed while it waits.
+      check(
+        'elements-measurements.json: the NECTAR disagreement is still the known 0.010 in, and no larger',
+        Math.abs((meas.nectar?.configDeltaIn ?? 1) - 0.01) < 1e-9,
+        `${meas.nectar?.configDeltaIn}`,
+      );
+    }
+  }
+
+  /**
+   * ── THE TIER GATE, AND THE SPHERE THAT ALWAYS STANDS ───────────────────────────────────────
+   *
+   * `elementDetail` is the seventeenth setting and it is NOT `meshDetail`: that one is already
+   * `high` on Medium, and 100 perforated balls plus 100 more shadow casters is exactly what the
+   * Medium column exists to avoid. Sphere / sphere / CAD / CAD.
+   */
+  {
+    check('Low and Medium keep the cheap sphere', GFX_PRESETS.low.elementDetail === 'sphere' && GFX_PRESETS.medium.elementDetail === 'sphere');
+    check('High and Ultra get the CAD ball', GFX_PRESETS.high.elementDetail === 'cad' && GFX_PRESETS.ultra.elementDetail === 'cad');
+    // THE REPLAY EXPORT runs at a FIXED High (`SceneOptions.quality`, plan §4.7) and reads its
+    // settings straight out of that column, so it inherits the accurate balls with no branch of
+    // its own — this is the assertion that keeps that true if the column ever moves.
+    check('the fixed-tier export column carries the CAD ball', GFX_PRESETS.high.elementDetail === 'cad');
+    check('a junk stored value falls back to the tier column', coerceGraphicsSettings({ elementDetail: 'holes' }, GFX_PRESETS.high).elementDetail === 'cad');
+    check('a stored pick survives coercion', coerceGraphicsSettings({ elementDetail: 'sphere' }, GFX_PRESETS.high).elementDetail === 'sphere');
+    check('...and a blob written before this row existed keeps the rest of its settings', coerceGraphicsSettings({ shadows: 'off' }, GFX_PRESETS.ultra).elementDetail === 'cad');
+    check('the row is part of the preset identity, so picking it makes the preset honest', !matchesPreset({ ...GFX_PRESETS.high, elementDetail: 'sphere' }, 'high'));
+
+    const elSrc = readFileSync(join(SCENE_DIR, 'renderElements.ts'), 'utf8');
+    const glbSrc2 = readFileSync(join(SCENE_DIR, 'renderElementsGlb.ts'), 'utf8');
+    const sceneSrc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+    check(
+      'the spheres are built first and unconditionally, so a scene never waits on the asset',
+      /export function buildBiobuzzElements\(detail: ElementDetail = 'sphere'\)/.test(elSrc) && /sphereGeo: \{ pollen: pollenGeo, nectar: nectarGeo \}/.test(elSrc),
+    );
+    check('a CAD load failure warns and leaves the spheres, it does not throw', /console\.warn\([^)]*stay smooth spheres/.test(elSrc));
+    check('the arriving asset re-reads the INTENT, so a pick made during the fetch wins', /const geo = els\.detail === 'cad' && els\.cadGeo \? els\.cadGeo : els\.sphereGeo;/.test(elSrc));
+    check('the scene applies the row live, beside the other element setting', /setElementDetail\(this\.elements, s\.elementDetail\);/.test(sceneSrc));
+    check('...and the scene factory pre-warms the asset with the field so an export never draws a sphere', /loadElementGeometries\(\)\.catch\(\(\) => null\) : null,/.test(sceneSrc));
+    check('the loader refuses a mesh whose radius is not the config constant', /outer radius \$\{rmax\.toFixed\(4\)\} in is not/.test(glbSrc2));
+    check('the loader never applyMatrix4s the quantized attribute', !/geo\.applyMatrix4\(/.test(glbSrc2) && /pos\.getX\(i\), pos\.getY\(i\), pos\.getZ\(i\)/.test(glbSrc2));
+    check('nothing is drawn DoubleSide — the CAD winding is what makes the holes read', !/THREE\.DoubleSide/.test(elSrc) && !/THREE\.DoubleSide/.test(glbSrc2));
+    check('only what exists is drawn (the instance count is the live one, not the cap)', /els\.pollen\.count = pollenN;/.test(elSrc) && /els\.nectar\.count = nectarN;/.test(elSrc));
+
+    // THE CHUNK BOUNDARY, re-asserted for the file this row was added to: `graphics/` is read by
+    // `ui/GraphicsSection.tsx` and `src/contributors.ts`, both ordinary main-bundle files.
+    const settingsSrc = readFileSync(join(BIOBUZZ_DIR, 'graphics', 'settings.ts'), 'utf8');
+    check("graphics/settings.ts still imports neither `three` nor anything under `scene/`", !/from '[^']*\bthree\b/.test(settingsSrc) && !/from '[^']*\/scene\//.test(settingsSrc));
+  }
+
+  /**
+   * ── ROLLING WITHOUT SLIPPING, FROM DISPLACEMENT ────────────────────────────────────────────
+   *
+   * A holed ball that slides without turning reads as wrong the instant a hole is visible, and
+   * the sim keeps NO orientation for an element (`Artifact` is pos/vel/z/vz — a per-tick
+   * quaternion on 56 balls is egress nobody asked for). So the renderer integrates one, from the
+   * displacement between two DRAWN frames rather than from `v · SIM_DT`: that is exact at any
+   * frame rate, through snapshot interpolation, and on a frame the sim did not step.
+   *
+   * Driven through the real `updateBiobuzzElements` against a real `World`, not against a belief
+   * about it — the two failure modes this has to rule out (a teleport spinning the ball through
+   * tens of radians, a rewind spinning every ball at once) are both things the per-frame loop
+   * does, not things the helper does.
+   */
+  {
+    const angleOf = (a: THREE.Quaternion, b: THREE.Quaternion): number => 2 * Math.acos(Math.min(1, Math.abs(a.dot(b))));
+    const mkBall = (id: number) => ({
+      id,
+      pos: { x: 0, y: 0 },
+      vel: { x: 0, y: 0 },
+      z: 0,
+      vz: 0,
+      r: BB_POLLEN_R,
+      color: 'yellow',
+      state: { kind: 'ground' },
+    });
+    const seat = (b: unknown, w: World): void => {
+      w.balls.length = 0;
+      (w.balls as unknown[]).push(b);
+    };
+
+    const w = createBiobuzzWorld('free', 5, []);
+    const ball = mkBall(7);
+    seat(ball, w);
+    const els = buildBiobuzzElements('sphere');
+
+    // frame one only ESTABLISHES a position: there is no previous frame to have rolled from.
+    updateBiobuzzElements(els, w);
+    const seeded = els.spin.get(7)!.q.clone();
+    check('a ball is seeded with an orientation of its own, not the identity', angleOf(seeded, new THREE.Quaternion()) > 1e-3);
+
+    // A STRAIGHT ROLL: 3 in of travel on a 1.4-in ball is 3/1.4 rad about the axis perpendicular
+    // to travel. Two frames, because one frame is only a position.
+    const ROLL = 3;
+    ball.pos.x = ROLL;
+    w.tick += 1;
+    updateBiobuzzElements(els, w);
+    const rolled = els.spin.get(7)!.q.clone();
+    check(
+      'a straight roll turns distance / r radians',
+      Math.abs(angleOf(seeded, rolled) - ROLL / BB_POLLEN_R) < 1e-6,
+      `${angleOf(seeded, rolled).toFixed(6)} vs ${(ROLL / BB_POLLEN_R).toFixed(6)}`,
+    );
+    // ...about `up × travel`, which for travel along +x is +y. The opposite sign is the classic
+    // way a rolling ball reads as skidding.
+    const delta = rolled.clone().multiply(seeded.clone().invert()).normalize();
+    const axis = new THREE.Vector3(delta.x, delta.y, delta.z).normalize();
+    check(
+      '...about the axis horizontal-perpendicular to travel, in the rolling sense',
+      axis.distanceTo(new THREE.Vector3(0, 1, 0)) < 1e-4,
+      axis.toArray().map((n) => n.toFixed(4)).join(','),
+    );
+
+    // HALVING THE STEP AND TAKING TWO OF THEM IS THE SAME TOTAL — the whole point of integrating
+    // displacement rather than a velocity times a fixed timestep. A renderer running at twice the
+    // rate must not spin the ball twice as fast.
+    {
+      const els2 = buildBiobuzzElements('sphere');
+      const w2 = createBiobuzzWorld('free', 5, []);
+      const b2 = mkBall(7);
+      seat(b2, w2);
+      updateBiobuzzElements(els2, w2);
+      const start = els2.spin.get(7)!.q.clone();
+      for (let i = 1; i <= 2; i++) {
+        b2.pos.x = (ROLL * i) / 2;
+        w2.tick += 1;
+        updateBiobuzzElements(els2, w2);
+      }
+      check('two half-steps roll exactly as far as one whole one', Math.abs(angleOf(start, els2.spin.get(7)!.q) - ROLL / BB_POLLEN_R) < 1e-6);
+    }
+
+    // A TELEPORT IS NOT TRAVEL. `derive.ts` re-tags a landed element at a hive cell's own
+    // position, `park()` moves it to a cell centre, a capture takes it off the field. Integrating
+    // `d / r` across one of those spins the ball through tens of radians in a single frame.
+    const beforeJump = els.spin.get(7)!.q.clone();
+    ball.pos.x = ROLL + 60;
+    w.tick += 1;
+    updateBiobuzzElements(els, w);
+    check('a teleport does not spin the ball at all', angleOf(beforeJump, els.spin.get(7)!.q) < 1e-6);
+    // ...and it RECORDS the new position, so the next real frame rolls from there rather than
+    // replaying the jump.
+    ball.pos.x = ROLL + 61;
+    w.tick += 1;
+    updateBiobuzzElements(els, w);
+    check('...and the frame after a teleport rolls normally from the new position', Math.abs(angleOf(beforeJump, els.spin.get(7)!.q) - 1 / BB_POLLEN_R) < 1e-6);
+
+    // A REWIND moves every ball at once and none of them rolled to get there.
+    const beforeRewind = els.spin.get(7)!.q.clone();
+    ball.pos.x = 1;
+    w.tick = 0;
+    updateBiobuzzElements(els, w);
+    check('a rewind spins nothing', angleOf(beforeRewind, els.spin.get(7)!.q) < 1e-6);
+
+    // A HELD BALL KEEPS ITS ORIENTATION AND ITS ENTRY. It is hidden while held, so the point is
+    // the RELEASE: the frame it comes back it must roll from where it actually is, and it must
+    // not snap its whole hole pattern back to the identity on the way through.
+    w.tick = 100;
+    ball.pos.x = 0;
+    updateBiobuzzElements(els, w);
+    const beforeHeld = els.spin.get(7)!.q.clone();
+    (ball as { state: unknown }).state = { kind: 'held', robot: 0 };
+    for (let i = 0; i < 5; i++) {
+      ball.pos.x = i * 10;
+      w.tick += 1;
+      updateBiobuzzElements(els, w);
+    }
+    check('a held ball is tracked but never rolled', angleOf(beforeHeld, els.spin.get(7)!.q) < 1e-6);
+    check('...and it keeps its entry rather than being pruned back to a fresh orientation', els.spin.has(7));
+    (ball as { state: unknown }).state = { kind: 'ground' };
+    ball.pos.x = 42;
+    w.tick += 1;
+    updateBiobuzzElements(els, w);
+    check('...so its release is a continuation, rolling only the 2 in it has actually moved', Math.abs(angleOf(beforeHeld, els.spin.get(7)!.q) - 2 / BB_POLLEN_R) < 1e-6);
+
+    // AND A BALL THAT LEAVES THE WORLD IS PRUNED, so a long session does not grow the map.
+    w.balls.length = 0;
+    w.tick += 1;
+    updateBiobuzzElements(els, w);
+    check('an id that has left `world.balls` is dropped', els.spin.size === 0);
+
+    // TWO BALLS DO NOT SHOW THE SAME FACE. 40 POLLEN spawn with no orientation of their own, and
+    // seeding them all identically is exactly as wrong-looking as not turning them at all.
+    const faces = new Set<string>();
+    for (let id = 0; id < 40; id++) {
+      const e = buildBiobuzzElements('sphere');
+      const ww = createBiobuzzWorld('free', 5, []);
+      seat(mkBall(id), ww);
+      updateBiobuzzElements(e, ww);
+      const q = e.spin.get(id)!.q;
+      faces.add([q.x, q.y, q.z, q.w].map((n) => n.toFixed(5)).join(','));
+    }
+    check('40 freshly spawned POLLEN show 40 different faces', faces.size === 40, `${faces.size}`);
+
+    // AND THE DETAIL SWITCH IS A GEOMETRY SWAP, WITH THE SPHERE AS THE STANDING ANSWER. Node has
+    // no `fetch` for a relative URL, so `cad` here exercises exactly the failure path a player
+    // offline sees: the pick is remembered, the spheres stay on screen, nothing throws.
+    const swap = buildBiobuzzElements('sphere');
+    check('a sphere build draws the sphere geometry', swap.pollen.geometry === swap.sphereGeo.pollen && swap.nectar.geometry === swap.sphereGeo.nectar);
+    setElementDetail(swap, 'cad');
+    check('asking for CAD before the asset exists keeps the sphere on screen', swap.detail === 'cad' && swap.pollen.geometry === swap.sphereGeo.pollen);
+    setElementDetail(swap, 'sphere');
+    check('...and switching back is the same two assignments', swap.detail === 'sphere' && swap.pollen.geometry === swap.sphereGeo.pollen);
+  }
+}
+
+/**
+ * THE 3D BACKGROUND CHOICES AND THE 3D FLOWER READ-OUT (owner, 2026-09-21, two requests in one
+ * session: "Add more choices for the 3d field background" and "for the top down view of the 3d
+ * render, add a separate thing (like the 2d display) that shows inside the flower").
+ *
+ * Its own function rather than more blocks on the end of another one: both halves are about what
+ * a player SEES rather than about a mesh or a collider, and the environment half is the only
+ * place in this lane where a rendered-pixel measurement (`scratch/envshots.cjs`) is what set the
+ * bounds being asserted.
+ */
+function environmentAndReadoutChecks(check: Check): void {
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  // THE ENVIRONMENT LIST (owner, 2026-09-21: "Add more choices for the 3d field background").
+  //
+  // Eight PAINTED domes joined the two fetched HDRIs and the procedural room. Every check here
+  // is a rule the eight had to be tuned INTO rather than a transcription of what they ended up
+  // at — the measurements behind the bounds are in `graphics/environments.ts`'s own comments and
+  // in that session's report (rendered-pixel contrast, per environment, off real captures).
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  {
+    check(
+      'the settings allowlist and the picker list are the SAME ids in the SAME order',
+      ENVIRONMENT_IDS.length === BB_ENVIRONMENT_IDS.length &&
+        ENVIRONMENT_IDS.every((id, i) => id === BB_ENVIRONMENT_IDS[i]),
+      `${ENVIRONMENT_IDS.join(',')} vs ${BB_ENVIRONMENT_IDS.join(',')}`,
+    );
+    check('every id resolves to a def with that id', BB_ENVIRONMENTS.every((e) => environmentDef(e.id) === e));
+    check(
+      'the list grew to eleven and the room is still first',
+      BB_ENVIRONMENTS.length === 11 && BB_ENVIRONMENTS[0].id === 'room',
+      String(BB_ENVIRONMENTS.length),
+    );
+
+    // COERCION, both directions. A stored id this build still knows survives; anything else falls
+    // back to the TIER's own column, never to a whole-object reset (`settings.ts`'s field-by-field
+    // rule) — which is what a REMOVED environment would take on an older device.
+    for (const id of ENVIRONMENT_IDS) {
+      check(
+        `${id}: a stored pick round-trips`,
+        coerceGraphicsSettings({ environment: id }, GFX_PRESETS.medium).environment === id,
+      );
+    }
+    for (const junk of ['school_hall', 'gym-01', '', null, 7, {}] as unknown[]) {
+      check(
+        `an unknown stored environment (${JSON.stringify(junk)}) falls back to the tier column`,
+        coerceGraphicsSettings({ environment: junk }, GFX_PRESETS.high).environment === GFX_PRESETS.high.environment,
+      );
+    }
+    check('an unknown id still resolves to the room rather than throwing', environmentDef('nope' as EnvironmentId).id === 'room');
+
+    // COPY (`docs/ui-standard.md` §8) — a label, and a note that says what this place DOES to the
+    // picture rather than repeating its own name.
+    for (const e of BB_ENVIRONMENTS) {
+      const firstWord = e.note.split(' ')[0];
+      check(
+        `${e.id}: sentence-case copy that does not restate its label`,
+        e.name.length > 2 &&
+          e.name[0] === e.name[0].toUpperCase() &&
+          e.note.length > 4 &&
+          !/[.]$/.test(e.note) &&
+          firstWord === firstWord[0].toUpperCase() + firstWord.slice(1) &&
+          !e.note.toLowerCase().includes(e.name.toLowerCase()),
+        `${e.name} / ${e.note}`,
+      );
+    }
+
+    // ONE RIG PER ENVIRONMENT, AND `BASE_RIG` IS renderCore's OWN NUMBERS. `graphics/` may not
+    // import anything under `scene/` (the boundary check below), so the copy is verified by
+    // reading the constants out of the renderer's source — the same technique the lane already
+    // uses for the light-rig check.
+    {
+      const core = readFileSync(join(SCENE_DIR, 'renderCore.ts'), 'utf8');
+      const num = (name: string): number => Number(new RegExp(`export const ${name} = ([0-9.]+)`).exec(core)?.[1]);
+      const hexc = (name: string): number => Number(new RegExp(`export const ${name} = (0x[0-9a-f]+)`).exec(core)?.[1]);
+      check(
+        'BASE_RIG is renderCore.ts’s shared light rig, value for value',
+        BASE_RIG.hemiSky === hexc('SCENE_HEMI_SKY') &&
+          BASE_RIG.hemiGround === hexc('SCENE_HEMI_GROUND') &&
+          BASE_RIG.hemiIbl === num('SCENE_HEMI_INTENSITY') &&
+          BASE_RIG.hemiNoIbl === num('SCENE_HEMI_INTENSITY_NO_IBL') &&
+          BASE_RIG.sunIntensity === num('SCENE_SUN_INTENSITY') &&
+          BASE_RIG.exposure === num('SCENE_EXPOSURE'),
+        JSON.stringify(BASE_RIG),
+      );
+      check(
+        'the three environments that predate the rigs carry BASE_RIG unchanged',
+        (['room', 'school-hall', 'monochrome-studio'] as const).every((id) => environmentDef(id).rig === BASE_RIG),
+      );
+    }
+
+    // THE LEGIBILITY BOUNDS. Gameplay beats mood: the alliance colours, the yellow POLLEN and the
+    // blue NECTAR are drawn at CONSTANTS, so the lighting is the only thing that can push them out
+    // of their pairs, and each of these bounds is one way that happened during the tuning.
+    const chanOf = (hex: number): number[] => [(hex >> 16) & 255, (hex >> 8) & 255, hex & 255];
+    /** a BRIGHT colour's cast, as the ratio of its widest to its narrowest channel. Right for the
+     * key light, which is always near white; useless on a dark one, where two channels a handful
+     * of levels apart already read as a large ratio. */
+    const cast = (hex: number): number => {
+      const c = chanOf(hex);
+      return Math.max(...c) / Math.max(1, Math.min(...c));
+    };
+    /** a colour's ABSOLUTE chroma, 0..1 — the right measure for the hemisphere's dark ground
+     * bounce, where the ratio above is meaningless (`night`'s `0x1a1f2a` is 16 levels of spread
+     * and a ratio of 1.62; `gym`'s deliberately warm `0x6b5c45` is 38 levels and only 1.55). */
+    const chroma = (hex: number): number => {
+      const c = chanOf(hex);
+      return (Math.max(...c) - Math.min(...c)) / 255;
+    };
+    for (const e of BB_ENVIRONMENTS) {
+      const r = e.rig;
+      const [sx, sy, sz] = r.sun;
+      const elevation = (Math.atan2(sz, Math.hypot(sx, sy)) * 180) / Math.PI;
+      check(`${e.id}: the key light clears 25° of elevation`, elevation >= 25, `${elevation.toFixed(1)}°`);
+      check(
+        // 1.7 is `sunset`'s own amber (`0xffd2a0`, 1.59) plus a little, and it is a bound with a
+        // MEASUREMENT behind it: at that key the rendered POLLEN-to-red-NECTAR contrast is 1.65,
+        // against 1.68 under the neutral room — i.e. the warm key does not collapse the pair. A
+        // real orange (`0xff8030`) is 5.3 and would.
+        `${e.id}: the key light's own colour is a cast, not a filter`,
+        cast(r.sunColor) <= 1.7,
+        `${r.sunColor.toString(16)} ratio ${cast(r.sunColor).toFixed(2)}`,
+      );
+      check(
+        // the widest in the list is `gym`'s wood bounce at 0.149 — a saturated floor bounce is
+        // what turns a red NECTAR on a red hive tray into one shape, and this is the bound that
+        // keeps every ground term inside "tinted" rather than "coloured".
+        `${e.id}: the hemisphere GROUND bounce stays near neutral`,
+        chroma(r.hemiGround) <= 0.16,
+        `${r.hemiGround.toString(16)} chroma ${chroma(r.hemiGround).toFixed(3)}`,
+      );
+      check(
+        `${e.id}: exposure and both hemisphere intensities are in range, and the no-IBL term is the larger`,
+        r.exposure >= 1 && r.exposure <= 1.6 && r.hemiIbl > 0 && r.hemiIbl <= 4 && r.hemiNoIbl > r.hemiIbl,
+        `exp ${r.exposure}, hemi ${r.hemiIbl}/${r.hemiNoIbl}`,
+      );
+    }
+
+    // THE PAINTED DOMES. `look` is the recipe `scene/renderEnvironment.ts` paints; the room has
+    // none (three's own `RoomEnvironment` plus the THEMED letterbox) and neither does a fetched
+    // HDRI (the photograph is the surround).
+    const painted = BB_ENVIRONMENTS.filter((e) => e.look);
+    check('eight painted domes were added', painted.length === 8, String(painted.length));
+    check('no environment is both painted and fetched', BB_ENVIRONMENTS.every((e) => !(e.look && e.hdri)));
+    check(
+      'the room is neither: it is three’s RoomEnvironment on the themed backdrop',
+      !environmentDef('room').look && !environmentDef('room').hdri,
+    );
+    for (const e of painted) {
+      const look = e.look!;
+      const ts = look.sky.map(([t]) => t);
+      check(
+        `${e.id}: the dome's stops run zenith to nadir inside [0,1], no repeats`,
+        look.sky.length >= 2 &&
+          ts.every((t, i) => t >= 0 && t <= 1 && (i === 0 || t > ts[i - 1])) &&
+          look.sky.every(([, c]) => c >= 0 && c <= 0xffffff),
+        ts.join(','),
+      );
+      check(
+        `${e.id}: the background's blur and dim are in range`,
+        look.blur >= 0 && look.blur <= 1 && look.intensity > 0.5 && look.intensity <= 1,
+        `blur ${look.blur}, intensity ${look.intensity}`,
+      );
+      if (look.lamp) {
+        check(
+          `${e.id}: the lamp sits somewhere on the dome`,
+          look.lamp.az >= 0 &&
+            look.lamp.az < 360 &&
+            look.lamp.el > -90 &&
+            look.lamp.el < 90 &&
+            look.lamp.r > 0 &&
+            look.lamp.r <= 60,
+          JSON.stringify(look.lamp),
+        );
+      }
+      if (look.truss) {
+        check(
+          `${e.id}: the truss ring is a bar above the horizon`,
+          look.truss.el > 0 && look.truss.el < 90 && look.truss.h > 0 && look.truss.h < 20,
+          JSON.stringify(look.truss),
+        );
+      }
+      if (look.silhouette) {
+        const sil = look.silhouette;
+        check(
+          `${e.id}: the silhouette band is BELOW the horizon and has teeth`,
+          sil.top >= 0.5 && sil.bottom > sil.top && sil.bottom <= 1 && sil.teeth >= 4 && sil.alpha > 0 && sil.alpha <= 1,
+          JSON.stringify(sil),
+        );
+      }
+    }
+
+    // ⚠️ THE EXPORT'S ENVIRONMENT IS A CONTRACT, NOT A DEFAULT. §4.7 fixes a replay export at
+    // HIGH so the file does not come out at whatever the machine that made it was set to, which
+    // means `GFX_PRESETS.high.environment` is what every exported video is rendered in. Eight new
+    // choices must not quietly become one of them.
+    check('the fixed-High export tier still renders in the school hall', GFX_PRESETS.high.environment === 'school-hall');
+    check('...and Ultra with it', GFX_PRESETS.ultra.environment === 'school-hall');
+    check(
+      'Low and Medium still default to the generated room',
+      GFX_PRESETS.low.environment === 'room' && GFX_PRESETS.medium.environment === 'room',
+    );
+    check(
+      'every preset column names a real environment',
+      (['low', 'medium', 'high', 'ultra'] as const).every((t) =>
+        (ENVIRONMENT_IDS as readonly string[]).includes(GFX_PRESETS[t].environment),
+      ),
+    );
+
+    // AND NO GPU-ONLY DEPENDENCY CREPT INTO `graphics/`. It is read by `src/ui/GraphicsSection.tsx`
+    // and `src/contributors.ts`, both ordinary main-bundle files: an import of `three` or of
+    // anything under `scene/` from here would drag the renderer chunk into the main bundle.
+    const graphicsDir = join(BIOBUZZ_DIR, 'graphics');
+    for (const f of readdirSync(graphicsDir).filter((n) => n.endsWith('.ts'))) {
+      const src = readFileSync(join(graphicsDir, f), 'utf8');
+      check(
+        `graphics/${f} imports neither three nor scene/`,
+        !/from\s+['"]three/.test(src) && !/from\s+['"][^'"]*scene\//.test(src),
+      );
+    }
+
+    // THE Z-UP FIX. An environment map is sampled in three's own y-up frame and this scene is
+    // z-up, so an unrotated dome lies on its side — measured, the first sunset build painted the
+    // sky underfoot. Both the background and the light-gathering map take the SAME rotation.
+    {
+      const envSrc = readFileSync(join(SCENE_DIR, 'renderEnvironment.ts'), 'utf8');
+      check(
+        'the environment map is rotated into the scene’s z-up frame, background AND lighting',
+        /backgroundRotation\.copy\(MAP_ROT\)/.test(envSrc) && /environmentRotation\.copy\(MAP_ROT\)/.test(envSrc),
+      );
+      check(
+        'a painted dome is the surround even with image-based lighting OFF (Low and Medium have a picker at all)',
+        /applySky\(def, lighting\)/.test(envSrc) && /scene\.environment = lighting \? tex : null/.test(envSrc),
+      );
+      check('an HDRI with the lighting off is still NOT fetched', /if \(!lighting\) \{[\s\S]{0,120}applyRoom\(false\);/.test(envSrc));
+      // a CALL, not the words: the file's own header explains why the star field is hashed
+      // rather than random, and the check must not fail on its own reasoning
+      check('the dome is painted with no Math.random() call (an export must repaint the same sky)', !/Math\.random\(/.test(envSrc));
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  // THE FLOWER CONTENTS READ-OUT OVER THE 3D TOP-DOWN SHOT (owner, 2026-09-21: "for the top down
+  // view of the 3d render, add a separate thing (like the 2d display) that shows inside the
+  // flower").
+  //
+  // It is the 2D renderer's OWN `drawBiobuzzFlowerSections`, under an affine transform recovered
+  // from three projected floor points — so what is checked here is the three things that are this
+  // file's own: WHEN it draws, WHAT transform it draws under, and that it is still the same
+  // drawing with the same elements in the same order.
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  {
+    interface Disc {
+      x: number;
+      y: number;
+      r: number;
+      fill: string;
+    }
+    /** a permissive recording ctx: every call is a no-op, `arc` is kept with the fill in force,
+     * and the TOP-LEVEL `setTransform` is kept because that is the projection under test. */
+    const record = (draw: (ctx: CanvasRenderingContext2D) => void): { discs: Disc[]; xf: number[][] } => {
+      const discs: Disc[] = [];
+      const xf: number[][] = [];
+      let fill = '';
+      const sink: unknown = new Proxy(function () {}, { get: () => sink, apply: () => sink });
+      const ctx = new Proxy(
+        {},
+        {
+          get: (_t, k) => {
+            if (k === 'fillStyle') return fill;
+            if (k === 'arc') {
+              return (x: number, y: number, r: number) => {
+                discs.push({ x, y, r, fill: String(fill) });
+              };
+            }
+            if (k === 'setTransform') {
+              return (...a: number[]) => {
+                xf.push(a);
+              };
+            }
+            return sink;
+          },
+          set: (_t, k, v) => {
+            if (k === 'fillStyle') fill = String(v);
+            return true;
+          },
+        },
+      ) as unknown as CanvasRenderingContext2D;
+      draw(ctx);
+      return { discs, xf };
+    };
+
+    /** THE OVERHEAD CAMERA'S OWN MAP, as a `project`: `Camera.worldToScreen`'s rotate-then-y-flip,
+     * which is exactly what `renderCameras.ts`'s `updateOverhead` builds (an orthographic camera
+     * straight above the origin whose `up` is the driver's screen-up). Orthographic + a plane is
+     * affine, which is the property the read-out relies on and verifies for itself. */
+    const PX_PER_IN = 4;
+    const flatView = (viewAngle: number, camera: SceneOverlayView['camera'] = 'overhead'): SceneOverlayView => ({
+      camera,
+      viewAngle,
+      dpr: 2,
+      project: (x, y, _z, out) => {
+        const c = Math.cos(viewAngle);
+        const sn = Math.sin(viewAngle);
+        out.x = 640 + (x * c - y * sn) * PX_PER_IN;
+        out.y = 360 - (x * sn + y * c) * PX_PER_IN;
+        out.visible = true;
+      },
+    });
+
+    // A WORLD WITH SOMETHING TO SAY. The staged field is four columns of identical POLLEN, which
+    // cannot show an ORDER — so one flower gets a NECTAR on top (who owns it) and another gets one
+    // at the BOTTOM (the 5-point bonus, and the element that locks retrieval under G418).
+    const fw = createBiobuzzWorld('free', 11, []);
+    const fById = new Map(fw.balls.map((b) => [b.id, b]));
+    const fStacks = fw.biobuzz!.flowers.map((f) => f.stack);
+    check(
+      'the staged world gives every flower a column to read',
+      fStacks.every((s) => s.length >= 3),
+      fStacks.map((s) => s.length).join(','),
+    );
+    const topOf1 = fById.get(fStacks[1][fStacks[1].length - 1])!;
+    topOf1.color = 'red';
+    topOf1.r = 1.8;
+    const botOf2 = fById.get(fStacks[2][0])!;
+    botOf2.color = 'blue';
+    botOf2.r = 1.8;
+
+    const POLLEN_INK = '#f2d14b';
+    const NECTAR_BLUE_INK = '#007be1';
+    const NECTAR_RED_INK = C.COLORS.red.toLowerCase();
+    const EL_FILLS = [POLLEN_INK, NECTAR_RED_INK, NECTAR_BLUE_INK];
+    const isElement = (d: Disc): boolean => d.r >= 1 && EL_FILLS.includes(d.fill.toLowerCase());
+
+    // ── WHEN IT DRAWS ─────────────────────────────────────────────────────────────────────
+    const overhead = record((ctx) => drawBiobuzzFlowerReadout(ctx, fw, flatView(0)));
+    const drawn = overhead.discs.filter(isElement);
+    const want = fStacks.reduce((n, s) => n + s.length, 0);
+    check('overhead: one disc per element in all four columns', drawn.length === want, `${drawn.length} vs ${want}`);
+    for (const cam of ['driver', 'chase', 'orbit', 'free'] as const) {
+      check(
+        `${cam}: nothing is drawn — the column is visible through the flower's own open sides`,
+        record((ctx) => drawBiobuzzFlowerReadout(ctx, fw, flatView(0, cam))).discs.length === 0,
+      );
+    }
+    // ⚠️ THE 2D SLOT STAYS EMPTY, and that is the check that stops the sections being painted
+    // TWICE on the flat map — `drawBiobuzzField` already draws them there. The 3D slot is a
+    // SEPARATE one for a reason `games/module.ts` records: a third argument on `drawOverlays`
+    // silently handed DECODE's world-inch ramp strips a screen-pixel transform.
+    check('BIOBUZZ fills the 3D slot and leaves the 2D one empty', !BIOBUZZ_MODULE.drawOverlays && !!BIOBUZZ_MODULE.drawSceneOverlay);
+    check(
+      'the module slot draws the read-out',
+      record((ctx) => BIOBUZZ_MODULE.drawSceneOverlay!(ctx, fw, flatView(0))).discs.filter(isElement).length === drawn.length,
+    );
+    for (const id of ['decode', 'chain'] as const) {
+      check(`${id} fills no 3D overlay slot, so a scene of its own would draw none of this`, !moduleFor(id).drawSceneOverlay);
+    }
+
+    // ── AND REFUSES A PROJECTION IT CANNOT DRAW THROUGH ───────────────────────────────────
+    // The affine transform is legitimate for an ORTHOGRAPHIC top-down camera and for nothing
+    // else. A camera that grew a perspective or a tilt must make this stop drawing, not draw the
+    // four sections in the wrong places — so the recovered map is CHECKED against a fourth point.
+    const bent: SceneOverlayView = {
+      ...flatView(0),
+      project: (x, y, _z, out) => {
+        out.x = 640 + x * PX_PER_IN + x * y * 0.01;
+        out.y = 360 - y * PX_PER_IN;
+        out.visible = true;
+      },
+    };
+    check('a projection that is not affine draws nothing at all', record((ctx) => drawBiobuzzFlowerReadout(ctx, fw, bent)).discs.length === 0);
+    const degenerate: SceneOverlayView = {
+      ...flatView(0),
+      project: (_x, _y, _z, out) => {
+        out.x = 640;
+        out.y = 360;
+        out.visible = true;
+      },
+    };
+    check('a degenerate (edge-on) camera draws nothing', record((ctx) => drawBiobuzzFlowerReadout(ctx, fw, degenerate)).discs.length === 0);
+
+    // ── THE TRANSFORM IT DRAWS UNDER, AND THAT IT TURNS WITH THE ALLIANCE ─────────────────
+    check(
+      'one top-level setTransform, carrying the device pixel ratio',
+      overhead.xf.length === 1 && overhead.xf[0].length === 6,
+      JSON.stringify(overhead.xf[0]),
+    );
+    {
+      const [a, b, c2, d] = overhead.xf[0];
+      const k = PX_PER_IN * 2; // dpr 2
+      check(
+        'at viewAngle 0 the map is the overhead camera’s own rotate-then-y-flip, times the dpr',
+        Math.abs(a - k) < 1e-6 && Math.abs(b) < 1e-6 && Math.abs(c2) < 1e-6 && Math.abs(d + k) < 1e-6,
+        overhead.xf[0].map((n) => n.toFixed(3)).join(','),
+      );
+    }
+    for (const va of [Math.PI / 2, Math.PI, -Math.PI / 2]) {
+      const [a, b, c2, d] = record((ctx) => drawBiobuzzFlowerReadout(ctx, fw, flatView(va))).xf[0];
+      const k = PX_PER_IN * 2;
+      check(
+        `the read-out turns with viewAngle ${((va * 180) / Math.PI).toFixed(0)}°, like the shot it is drawn over`,
+        Math.abs(a - k * Math.cos(va)) < 1e-6 &&
+          Math.abs(b + k * Math.sin(va)) < 1e-6 &&
+          Math.abs(c2 + k * Math.sin(va)) < 1e-6 &&
+          Math.abs(d + k * Math.cos(va)) < 1e-6,
+        [a, b, c2, d].map((n) => n.toFixed(3)).join(','),
+      );
+    }
+
+    // ── AND IT IS THE SAME DRAWING, IN THE SAME ORDER ────────────────────────────────────
+    // The elements come out in `BB_FLOWERS` order and, inside a column, bottom to top — because
+    // this is `drawBiobuzzFlowerSections`, driven by `flowerStackZ`, and not a second copy of the
+    // stacking arithmetic. A fork would be free to disagree with the scorer; this cannot.
+    {
+      let k = 0;
+      let ok = true;
+      const detail: string[] = [];
+      for (const s of fStacks) {
+        for (const id of s) {
+          const colour = fById.get(id)!.color;
+          const got = drawn[k]?.fill.toLowerCase();
+          const wantFill = colour === 'red' ? NECTAR_RED_INK : colour === 'blue' ? NECTAR_BLUE_INK : POLLEN_INK;
+          if (got !== wantFill) {
+            ok = false;
+            detail.push(`#${k} want ${wantFill} got ${got}`);
+          }
+          k++;
+        }
+      }
+      check('every column reads bottom-to-top in the elements’ own colours', ok, detail.slice(0, 4).join(' | '));
+    }
+    {
+      // and the NECTAR are drawn at a NECTAR's radius: the size is the other half of what the
+      // read-out says, and it comes off the element rather than off a constant in the renderer
+      const radii = new Set(drawn.map((d) => d.r));
+      check(
+        'a NECTAR is drawn bigger than a POLLEN, at the elements’ real radii',
+        radii.has(1.8) && radii.has(BB_POLLEN_R) && radii.size === 2,
+        [...radii].join(','),
+      );
+    }
+
+    // ── THE SEAM IT REACHES THE OVERLAY THROUGH ──────────────────────────────────────────
+    {
+      const rSrc = readFileSync(join(root, 'src', 'render', 'renderer.ts'), 'utf8');
+      const readoutSrc = readFileSync(join(root, 'src', 'games', 'biobuzz', 'drawFlowerReadout.ts'), 'utf8');
+      check(
+        'the 3D overlay pass hands the game its own slot, with the camera the SCENE resolved',
+        /mod\.drawSceneOverlay\(ctx, world, \{/.test(rSrc) && /scene\.camera \?\? 'driver'/.test(rSrc),
+      );
+      const sceneSrc2 = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+      check(
+        'BiobuzzScene reports the camera the last frame RESOLVED to, not the one the host asked for',
+        /get camera\(\): SceneCamera \{[\s\S]{0,60}return this\.lastCamera;/.test(sceneSrc2),
+      );
+      const fieldSrc = readFileSync(join(root, 'src', 'games', 'biobuzz', 'drawField.ts'), 'utf8');
+      check(
+        'the read-out goes through the 2D renderer’s own section drawing',
+        /export function drawBiobuzzFlowerSections/.test(fieldSrc) && /drawBiobuzzFlowerSections/.test(readoutSrc),
+      );
+      // ⚠️ AND IT DRAWS NOTHING OF ITS OWN. This is the check that keeps the two views from ever
+      // parting company: the file works out ONE transform and hands over. The moment it grows an
+      // `arc`, a `fillStyle` or a `lineWidth` it has started keeping a second opinion about what
+      // a FLOWER looks like, and `drawFlowerSection`'s header explains why that drifts from the
+      // SCORER rather than merely from the other picture.
+      check(
+        'and draws no primitive of its own — one transform, then the shared drawing',
+        !/ctx\.(arc|fill|stroke|rect|moveTo|lineTo|beginPath)/.test(readoutSrc) &&
+          !/ctx\.(fillStyle|strokeStyle|lineWidth|globalAlpha)\s*=/.test(readoutSrc) &&
+          /ctx\.setTransform\(/.test(readoutSrc),
+      );
+      check('and the PiP minimap is left out deliberately, in writing', /PiP minimap/.test(readoutSrc));
     }
   }
 }

@@ -37,6 +37,7 @@ import {
 import type { GameId } from '../games/types';
 import { seasonFor } from '../seasons';
 import { visibleSeasons } from '../seasonVisibility';
+import { OptRow } from './OptRow';
 import { rangeFill } from './rangeFill';
 import {
   PREDICTION_BLURBS,
@@ -357,51 +358,22 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         </div>
         <p className="ds-hint">
           {game
-            ? `Only what ${seasonFor(game).name} uses. Rebind a row here and it changes in ${seasonFor(game).name} alone — the row is marked CUSTOM, and Sync puts it back on the shared bind.`
-            : 'The shared map every season starts from. Two actions can share a bind when no season uses both.'}
+            ? `Rebinding here changes ${seasonFor(game).name} alone. Sync puts a row back on the shared bind.`
+            : 'The shared map every season starts from.'}
         </p>
       </div>
-      {/* FIRST, above the bindings: this is the screen somebody lands on when the controls are
-          the thing they do not understand, and the tutorial is the answer to that. It stays here
-          for EVERYONE, unlike the Modes page's first-run card — a player who skipped it, or who
-          rebound half their keys and wants to practise the new map, has no other way back in. */}
+      {/* THE TUTORIAL STAYS VISIBLE, and first. This is the screen somebody lands on when the
+          controls are the thing they do not understand, and it is the only way back in for a
+          player who skipped the Modes page's first-run card or who has just rebound half their
+          keys. The sentence that used to sit under it said the button's own name back to it. */}
       {onTutorial && (
         <div className="ds-bind-block">
           <h3>Tutorial</h3>
           <button className="ds-btn" onClick={onTutorial}>
             Run the tutorial
           </button>
-          {/* same reason the Modes card prints no count: it is per game and per robot. */}
-          <p className="ds-hint">
-            A few steps on the real field. The hints name whichever keys and buttons you have bound.
-          </p>
         </div>
       )}
-      <div className="ds-bind-block">
-        <h3>Touch controls</h3>
-        <button className="ds-btn" onClick={onEditTouchControls}>
-          Customize touch controls
-        </button>
-      </div>
-      <div className="ds-bind-block">
-        <h3>Prediction</h3>
-        <div className="ds-opts">
-          {PREDICTION_PREFS.map((p) => (
-            <button
-              key={p}
-              className={`ds-opt mini ${prediction === p ? 'on' : ''}`}
-              onClick={() => setPredictionPref(p)}
-            >
-              <span className="ot">{PREDICTION_LABELS[p]}</span>
-              <span className="od">{PREDICTION_BLURBS[p]}</span>
-            </button>
-          ))}
-        </div>
-        <p className="ds-hint">
-          How much your machine works out for itself while it waits for the server. Saved on this
-          device, and used only in 3D-physics rooms.
-        </p>
-      </div>
       <div className="ds-binds">
         <div className="ds-bind-block">
           <h3>Keyboard</h3>
@@ -461,8 +433,14 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
           <p className="ds-hint">Backspace while a key is waiting removes it.</p>
         </div>
 
+        {/* TWO BLOCKS, NOT ONE, IN ONE COLUMN. "How the sticks feel" and "what this button
+            does" were seventeen undifferentiated `.ds-bind-row`s in one grid — the six sliders
+            and stick roles are GLOBAL (they are how a hand works), the rows under them are
+            per-season binds, and the layout said nothing about either. `.ds-bind-col` keeps
+            `.ds-binds` at two children; see its rule for what three did. */}
+        <div className="ds-bind-col">
         <div className="ds-bind-block">
-          <h3>Gamepad</h3>
+          <h3>Gamepad sticks</h3>
           <div className="ds-bind-grid">
             <div className="ds-bind-row">
               <span className="ds-bind-label">Drive stick</span>
@@ -565,6 +543,13 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
                 }
               />
             </div>
+          </div>
+          <p className="ds-hint">The stick roles and these five sliders are the same in every season.</p>
+        </div>
+
+        <div className="ds-bind-block">
+          <h3>Gamepad buttons</h3>
+          <div className="ds-bind-grid">
             {padRows.map((a) => {
               const binds = padBinds(view.pad, a);
               // singles and combos are ONE unit here — "the binds of Shoot on a pad in BIOBUZZ"
@@ -617,12 +602,15 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
               );
             })}
           </div>
+          {/* ONE SENTENCE. This was four, and two of them restated the other blocks: the
+              Backspace line is already under the keyboard grid, and the stick sliders now say
+              for themselves that they are global. What is left is the one rule a player cannot
+              work out from the keycaps — that a combo beats its own buttons, at a price. */}
           <p className="ds-hint">
-            Hold two or three buttons together for a combo, the way your own drive code reads them: the
-            combo wins over the buttons it is made of, and a button that is also part of a combo fires
-            on its own only after the combo wait. Backspace while a slot is waiting removes it. The
-            stick roles and the five sliders above are the same in every season.
+            Hold two or three buttons together for a combo. It wins over the buttons it is made of,
+            which then fire on their own only after the combo wait.
           </p>
+        </div>
         </div>
       </div>
       <div className="ds-bind-foot">
@@ -642,6 +630,40 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
           </button>
         )}
       </div>
+      {/* ── THE TWO THINGS THAT ARE NOT A BINDING ────────────────────────────────────────
+          Touch controls leaves Configure entirely (it launches Free Drive with the layout
+          editor open) and prediction is a NETCODE setting. Both used to sit above the
+          bindings with the same weight as the whole keyboard map, pushing the rows somebody
+          came for off the first screen. Folded, they cost one row; open, they are exactly
+          where they were.
+
+          PREDICTION IS STILL NOT GATED ON THE ACTIVE GAME, for the reason it never was: the
+          room whose physics decides whether it does anything has not been joined yet, and
+          hiding a control that will matter in five minutes is how a player never finds it. */}
+      <details className="ds-fold">
+        <summary>More</summary>
+        <div className="ds-fold-body">
+          <div className="ds-bind-block">
+            <h3>Touch controls</h3>
+            <button className="ds-btn" onClick={onEditTouchControls}>
+              Customize touch controls
+            </button>
+          </div>
+          <div className="ds-bind-block">
+            <h3>Network prediction</h3>
+            <OptRow<PredictionPref>
+              value={prediction}
+              onPick={setPredictionPref}
+              options={PREDICTION_PREFS.map((p) => ({
+                v: p,
+                t: PREDICTION_LABELS[p],
+                d: PREDICTION_BLURBS[p],
+              }))}
+            />
+            <p className="ds-hint">Saved on this device. Used only in 3D-physics rooms.</p>
+          </div>
+        </div>
+      </details>
     </section>
   );
 }

@@ -405,6 +405,17 @@ total. An older note here claimed the manual said 10/30; that was a PREVIOUS sea
   - **AN EXCUSED ARTIFACT CONDUCTS BUT IS NOT COUNTED.** Both halves matter: counting it anyway
     means the chain re-adds everything the mouth exemption just removed, and severing the chain
     means a robot nosing into a six-clump controls nothing at all.
+  - ⚠️ **`controlledArtifacts` IS SHARED, AND ITS FOUR `ControlGeometry` SLOTS ARE THE ONLY
+    THINGS IN IT THAT ARE NOT GAME-NEUTRAL** — `carveOut` (the LOADING-ZONE rect), `hopperCap`,
+    `radius`, and `loose` (which artifacts are on the floor at all). **Every one defaults to
+    DECODE's answer**, so DECODE passes no geometry and is byte-identical; a caller that passes
+    none gets exactly the function this file describes. The newest is `loose`, default
+    `b.state.kind === 'ground'`, and the reason it had to exist is worth knowing before adding a
+    fifth: under a 3D solve that tag is DERIVED from height and motion each tick, so a PLOWED
+    ball — which skips — reads `flight` on 14% of the ticks a chassis is pushing it, and BIOBUZZ's
+    G407 could neither count it nor keep a clock on it. DECODE's planar solve has no skip and the
+    tag and the fact agree, which is why this never bit here. See `docs/area/biobuzz.md`,
+    "SECTION 11 — G407 OVER-CONTROL".
   - **EXCESSIVE is defined by the rule**: 5+ at once (clause A) or 3+ separate greater-than-
     MOMENTARY (glossary: "fewer than approximately 3 seconds", `MOMENTARY_S`) stretches of
     controlling 4+ (clause B — the manual reads "3 or more separate **violations** in a MATCH";

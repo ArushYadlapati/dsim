@@ -1,0 +1,86 @@
+{
+  "pollen": {
+    "part": "am-5851: Pollen",
+    "outerRadiusIn": 1.4,
+    "innerRadiusIn": 1.33,
+    "wallIn": 0.07,
+    "boreRadiusIn": 0.22,
+    "boreDiameterIn": 0.44,
+    "boreCount": 26,
+    "bands": [
+      {
+        "count": 1,
+        "latitudeDeg": 90
+      },
+      {
+        "count": 4,
+        "latitudeDeg": 49.1128
+      },
+      {
+        "count": 8,
+        "latitudeDeg": 15.6048
+      },
+      {
+        "count": 8,
+        "latitudeDeg": -15.6048
+      },
+      {
+        "count": 4,
+        "latitudeDeg": -49.1128
+      },
+      {
+        "count": 1,
+        "latitudeDeg": -90
+      }
+    ],
+    "configRadiusIn": 1.4,
+    "configDeltaIn": 0,
+    "meshVerts": 1095,
+    "meshTris": 2286,
+    "meshMaxRadiusIn": 1.400006,
+    "deflectionIn": 0.03,
+    "angularDeflection": 0.9
+  },
+  "nectar": {
+    "part": "am-5852: Blue Nectar",
+    "outerRadiusIn": 1.81,
+    "innerRadiusIn": 1.725,
+    "wallIn": 0.085,
+    "boreRadiusIn": 0.3175,
+    "boreDiameterIn": 0.635,
+    "boreCount": 26,
+    "bands": [
+      {
+        "count": 1,
+        "latitudeDeg": 90
+      },
+      {
+        "count": 4,
+        "latitudeDeg": 52.1855
+      },
+      {
+        "count": 8,
+        "latitudeDeg": 17.999
+      },
+      {
+        "count": 8,
+        "latitudeDeg": -17.999
+      },
+      {
+        "count": 4,
+        "latitudeDeg": -52.1855
+      },
+      {
+        "count": 1,
+        "latitudeDeg": -90
+      }
+    ],
+    "configRadiusIn": 1.8,
+    "configDeltaIn": 0.01,
+    "meshVerts": 1223,
+    "meshTris": 2542,
+    "meshMaxRadiusIn": 1.810007,
+    "deflectionIn": 0.03,
+    "angularDeflection": 0.9
+  }
+}

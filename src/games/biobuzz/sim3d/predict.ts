@@ -82,11 +82,33 @@ export interface PredictedPose {
   vz: number;
 }
 
+/** one predicted element, in the SAME frame `Artifact` uses: `z` is the sphere's BOTTOM. */
+export interface PredictedElement {
+  id: number;
+  x: number;
+  y: number;
+  z: number;
+}
+
 export interface Predictor {
   /** `'light'` or `'full'` — what the Prediction setting and the Auto probe name it by. */
   readonly kind: 'light' | 'full';
   /** the server tick this predictor was last reset to. */
   readonly tick: number;
+  /**
+   * THE ELEMENTS THIS PREDICTOR IS CARRYING, at its current tick — `null` when it carries none
+   * (LIGHT always; FULL before its first reset).
+   *
+   * ⚠️ **THIS IS A RENDER READ, NOT A SIM ONE.** The FULL predictor has always pushed the near
+   * elements with the predicted chassis and then thrown the answer away, which is what made a
+   * pushed POLLEN the most visible netcode artifact in the game: `displayWorld` drew the local
+   * robot from the prediction (≈ the newest server tick) and the ball it was shoving from the
+   * INTERPOLATION (`INTERP_DELAY_TICKS` behind it), so the two were ~6 ticks out of step inside
+   * one frame — measured at 8.4 in of a POLLEN drawn INSIDE the chassis that was pushing it, at
+   * every RTT including zero. Nothing here is authoritative and nothing here reaches `World`;
+   * the server still owns every element's real position and corrects it on the next snapshot.
+   */
+  elements(): PredictedElement[] | null;
   /** adopt an authoritative snapshot. Cheap for LIGHT (one pose copy); for FULL this is where
    * the bodies are re-seated and the near-element set is rebuilt. */
   reset(world: World, serverTick: number): void;
@@ -219,6 +241,9 @@ export function createLightPredictor(world: World, localRobotId: number): Predic
     get tick() {
       return tick;
     },
+    // LIGHT has no elements at all — the shared drive model and the walls, nothing else. `null`
+    // rather than an empty list, so a caller can tell "I carry none" from "none are near".
+    elements: () => null,
     reset(w: World, serverTick: number): void {
       const src = w.robots.find((r) => r.id === localRobotId);
       local = src ? cloneRobot(src) : null;
@@ -324,12 +349,15 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
   let localRampReady = false;
   const otherRampReady = new Map<number, boolean>();
   const others = new Map<number, InstanceType<Rapier3d['RigidBody']>>();
-  const elements = new Map<number, InstanceType<Rapier3d['RigidBody']>>();
+  /** the near elements, plus the RADIUS each body was built with — the readback subtracts it to
+   *  get back to `Artifact.z` (the sphere's BOTTOM), the same way the chassis readback subtracts
+   *  the half-height it added. */
+  const elements = new Map<number, { body: InstanceType<Rapier3d['RigidBody']>; r: number }>();
   let tick = 0;
   let disposed = false;
 
   function clearElements(): void {
-    for (const b of elements.values()) world3d.removeRigidBody(b);
+    for (const e of elements.values()) world3d.removeRigidBody(e.body);
     elements.clear();
   }
 
@@ -337,6 +365,21 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
     kind: 'full',
     get tick() {
       return tick;
+    },
+    /**
+     * READ LAZILY, ONCE PER FRAME — not accumulated per `step`. A reconcile re-steps up to
+     * `PREDICT_MAX_TICKS` times and only the LAST pose is ever drawn, so reading inside `step`
+     * would do forty times the work for one answer. See the interface's own note for what this
+     * is for and what it deliberately is not.
+     */
+    elements(): PredictedElement[] | null {
+      if (disposed || elements.size === 0) return null;
+      const out: PredictedElement[] = [];
+      for (const [id, e] of elements) {
+        const t = e.body.translation();
+        out.push({ id, x: round4(t.x), y: round4(t.y), z: round4(t.z - e.r) });
+      }
+      return out;
     },
     reset(w: World, serverTick: number): void {
       if (disposed) return;
@@ -393,7 +436,7 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
           const dx = b.pos.x - local.pos.x;
           const dy = b.pos.y - local.pos.y;
           if (dx * dx + dy * dy > r2) continue;
-          elements.set(b.id, makeElementBody(RAPIER, world3d, b));
+          elements.set(b.id, { body: makeElementBody(RAPIER, world3d, b), r: b.r ?? BB_POLLEN_R });
         }
       }
     },

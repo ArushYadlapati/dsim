@@ -772,6 +772,38 @@ function drawFlowerSection(
   ctx.restore();
 }
 
+/**
+ * THE FOUR FLOWER SECTIONS, ON THEIR OWN — the same four `drawBiobuzzField` draws, callable
+ * without the rest of the field.
+ *
+ * EXPORTED for the 3D OVERHEAD read-out (`drawFlowerReadout.ts`, owner request 2026-09-21: "for
+ * the top down view of the 3d render, add a separate thing (like the 2d display) that shows
+ * inside the flower"). The 3D shot has the same problem the 2D plan view has and worse — the
+ * flower's own top plate is between an overhead camera and the column — and the answer is the
+ * SAME DRAWING, not a second one: this function, under a transform that maps field inches onto
+ * the 3D camera's own pixels. A forked copy would be a readout that disagrees with the points
+ * the first time `flowerStackZ` or the middle ring moves, which is exactly the failure
+ * `drawFlowerSection`'s own header was written to prevent.
+ *
+ * The id→element JOIN is repeated here rather than hoisted out of `drawBiobuzzField`: that
+ * function builds ONE map for the hives, the flowers and the nectar boxes together, and splitting
+ * it would cost the field renderer a second pass over `world.balls` every frame to save this one
+ * a pass it makes only in the 3D overhead view.
+ */
+export function drawBiobuzzFlowerSections(ctx: CanvasRenderingContext2D, world: World): void {
+  const stacks = world.biobuzz?.flowers;
+  const byId = new Map<number, Artifact>();
+  for (const b of world.balls) byId.set(b.id, b);
+  BB_FLOWERS.forEach((f, i) => {
+    const ids = stacks?.[i]?.stack ?? [];
+    drawFlowerSection(
+      ctx,
+      f,
+      ids.map((id) => byId.get(id)).filter((b): b is Artifact => b !== undefined),
+    );
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // THE RENDERER
 // ─────────────────────────────────────────────────────────────────────────────

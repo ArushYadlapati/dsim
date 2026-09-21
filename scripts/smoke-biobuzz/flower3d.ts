@@ -379,30 +379,59 @@ export function flower3dChecks(check: Check): void {
       `[smoke-bb flower3d] drive-in: started ${(wantX + 20).toFixed(2)}, driven to ${drivenX.toFixed(3)} ` +
         `(teleport convention wants ${wantX.toFixed(3)}, i.e. u ~= BB_PLACE_REACH ${BB_PLACE_REACH})`,
     );
-    // ⚠️ TOLERANCE RE-MEASURED 2026-09-20 (owner: side rollers grew to a 3-in wheel — `R` 1.0 →
-    // 1.5, `OUT` 0.9 → 0.4, `config.ts`'s own header) — MEASURED at the new geometry: a full-stick
-    // drive settles **1.518in** past the analytic flush pose (was 1.341in at the old, smaller
-    // wheel), because a bigger wheel meets the CAD's peanut-support hulls a hair sooner. 1.6in
-    // covers the measurement with a small margin, same shape as every earlier widening of this
-    // same bound.
+    /**
+     * ⚠️ **TOLERANCE RE-MEASURED 2026-09-21, AND THIS CHECK IS WHAT FIXED THE PROTRUSION**
+     * (owner: "The side rollers are rendered as being covered and still sticking out a ton").
+     * `BB_SIDE_ROLLER_OUT` 0.4 → 0.15, so the wheel's front stands 1.65 in past the tip line, not
+     * 1.90. MEASURED at the new geometry: a full-stick drive settles **1.677 in** past the
+     * analytic flush pose, against 1.518 at the longer wheel — a shorter wheel meets the CAD's
+     * peanut-support hulls later, so the chassis carries further in before anything stops it.
+     * 1.8 in covers it with the same small margin every earlier widening of this bound used.
+     *
+     * ⚠️ **AND THIS FIXTURE IS WHAT FIXED THE CUT AT 1.65.** A chassis driven full stick into a
+     * FLOWER meets the ring plate over only ONE SIDE of its own width — the driver is offset
+     * `bbSideRollerY` to put a wheel on the opening — so the normal force is a long lever and the
+     * pose picks up **18–22° of yaw** before it settles, which swings the gripping wheel out.
+     * Reach is what covers that yaw, and 1.90 sat exactly on this fixture's own boundary: driven
+     * in with the intake OFF and asked ONCE at the settled pose, it bites at 1.90 and at NO
+     * smaller value, 1.80 included. Held through the drive — the driver's own action, and what
+     * every other retrieval check here does — it bites at 1.90, 1.65 and 1.60 and not at 1.50.
+     * The wider population moves smoothly: over 36 real park-then-intake cases
+     * (`scratch/sidesweep.ts` `SS_MODE=park`, four FLOWERS × three sticks × three offsets, drive
+     * in with the intake OFF, settle, THEN hold it) **1.90 → 61.1 %, 1.65 → 58.3 %, 1.60 →
+     * 44.4 %, 1.50 → 33.3 %, 1.45 and below → 0 %**, and the held-intake sweep's straight-on
+     * column is 180/180 at 1.65 and 179/180 at 1.60. 1.65 is therefore the largest cut the owner
+     * asked for that costs neither population anything measurable; 1.40, which the held-intake
+     * sweep alone would have allowed, takes park-then-intake to ZERO.
+     */
     check(
-      "drive-in: a SIDE-ROLLER build driven full-stick into F1's foot stops close to the flush distance the teleport fixtures assume (u ~= BB_PLACE_REACH, within 1.6in)",
-      Math.abs(drivenX - wantX) < 1.6,
+      "drive-in: a SIDE-ROLLER build driven full-stick into F1's foot stops close to the flush distance the teleport fixtures assume (u ~= BB_PLACE_REACH, within 1.8in)",
+      Math.abs(drivenX - wantX) < 1.8,
       `driven to x=${drivenX.toFixed(3)}, want ${wantX.toFixed(3)} (delta ${(drivenX - wantX).toFixed(3)})`,
     );
-    // ⚠️ NO MORE ANALYTIC RE-SEAT (owner, 2026-09-20: a previous pass here teleported the robot
+    // ⚠️ STILL NO ANALYTIC RE-SEAT (owner, 2026-09-20: a previous pass here teleported the robot
     // back to the flush pose before testing the bite, papering over the fact that the CONTACT gate
-    // — the box-BITE test this replaced — no longer matched what a real drive-in lands inside once
-    // the wheel became a solid collider. The CONTACT gate (`BB_SIDE_ROLLER_GRIP`, a RADIUS of
-    // `R + BB_POLLEN_R + BB_SIDE_ROLLER_CONTACT_TOL` ≈ 3.15in) is generous enough that the REAL
-    // driven pose above bites on its own — test it AT THE POSE THE DRIVE LEFT THE ROBOT IN, no
-    // reseat, no assumed heading.
-    const ballById = new Map(w.balls.map((b) => [b.id, b] as const));
-    const took = flowerRetrieve3d(w, w.biobuzz!, rob, cmd({ intake: true }), true, ballById, kindOfIn(w));
+    // no longer matched what a real drive-in lands inside once the wheel became a solid collider).
+    // What DID change with the protrusion cut is that the intake is HELD through the drive, which
+    // is the driver's own action and what every other retrieval check here does — see the header
+    // above for the measurement that says why, and for what the last 0.25 in of reach was buying.
+    const w2 = mkWorld3d('free', 937, REACHING);
+    w2.balls.length = 0;
+    drop(w2, F, 'pollen', 1);
+    for (let t = 0; t < 300; t++) step3d(w2, 1 / 60, new Map());
+    const rob2 = w2.robots[0];
+    rob2.hopper.length = 0;
+    rob2.lastIntakeAt = -99;
+    rob2.pos.x = wantX + 20;
+    rob2.pos.y = wantY;
+    rob2.heading = Math.PI;
+    rob2.vel = { x: 0, y: 0 };
+    rob2.angVel = 0;
+    run3d(w2, new Map([[0, cmd({ driveY: 1, leftDrive: 1, rightDrive: 1, intake: true })]]), 3);
     check(
-      'drive-in: a REAL drive-in (no teleport, no reseat) bites the flower directly through flowerRetrieve3d',
-      took && w.biobuzz!.flowers[F].stack.length === 0,
-      `took=${took} stack ${JSON.stringify(w.biobuzz!.flowers[F].stack)} pose x=${rob.pos.x.toFixed(3)} y=${rob.pos.y.toFixed(3)} heading=${rob.heading.toFixed(3)}`,
+      'drive-in: a REAL drive-in with the intake held (no teleport, no reseat) empties the flower through flowerRetrieve3d',
+      w2.biobuzz!.flowers[F].stack.length === 0 && rob2.hopper.length > 0,
+      `stack ${JSON.stringify(w2.biobuzz!.flowers[F].stack)} hopper ${rob2.hopper.length} pose x=${rob2.pos.x.toFixed(3)} y=${rob2.pos.y.toFixed(3)} heading=${rob2.heading.toFixed(3)}`,
     );
   }
   {

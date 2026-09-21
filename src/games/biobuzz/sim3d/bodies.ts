@@ -1396,6 +1396,23 @@ export function reachColliderDesc(RAPIER: Rapier3d, s: Chassis3dShape): Instance
   desc.setTranslation(s.cx, s.cy, s.cz);
   if (rot) desc.setRotation(rot);
   desc.setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0);
+  /**
+   * ⚠️ **A FREE ROLLER'S WALL FRICTION WAS TRIED HERE AND MEASURED WORTHLESS — DO NOT RE-ADD IT
+   * WITHOUT A NEW MEASUREMENT** (2026-09-21). The theory was sound and the mechanism is real: a
+   * side-roller build lines ONE wheel up on a FLOWER's opening, which puts the OTHER wheel on the
+   * wall beside it, and that contact does happen (probed at the settle, penetration 0.036 in). A
+   * free-spinning compliant wheel should roll along a wall rather than grab it, so the cylinders
+   * were given `friction 0` with `CoefficientCombineRule.Min` — the tile plane's own trick a few
+   * hundred lines up, which reads 0 against a wall/static/robot (all Average) while an ELEMENT's
+   * MAX still outranks it, so a POLLEN is carried exactly as before.
+   *
+   * MEASURED, 540 real drive-ins either way: **324/540 both**, not one run flipped; the settle
+   * moved 0.002 in and one tick. The yaw that swings the gripping wheel out of reach is a NORMAL
+   * force off the flower's own plate — the chassis prism meets the rim over only one side of its
+   * width — not a friction moment, so no friction coefficient can touch it. Reverted rather than
+   * kept, because it is not free: the wheel is the first thing another ROBOT meets head-on into
+   * the intake, and that contact would have gone frictionless on no evidence at all.
+   */
   if (!s.elementSolid) desc.setCollisionGroups(GROUP_POCKET);
   else if (s.ramp) desc.setCollisionGroups(GROUP_RAMP);
   return desc;

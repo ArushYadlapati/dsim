@@ -28,7 +28,10 @@ import { viewAngleOf } from '../../src/sim/field';
 import type { Alliance, RobotCommand, World } from '../../src/types';
 import type { SceneCamera } from '../../src/games/module';
 import { setCameraPref } from '../../src/games/biobuzz/graphics/store';
+import { setGraphicsSetting, type EnvironmentId } from '../../src/games/biobuzz/graphics/settings';
+import { BB_ENVIRONMENT_IDS } from '../../src/games/biobuzz/graphics/environments';
 import { Camera } from '../../src/render/camera';
+import { Renderer } from '../../src/render/renderer';
 import { drawBiobuzzField, drawHiveCanopy } from '../../src/games/biobuzz/drawField';
 import { drawBiobuzzBalls } from '../../src/games/biobuzz/draw';
 import { drawBiobuzzRobot } from '../../src/games/biobuzz/drawRobot';
@@ -60,11 +63,31 @@ import { hiveCellLocalBox, hivePivotX } from '../../src/games/biobuzz/sim3d/bodi
 import { hiveTiltAngle } from '../../src/games/biobuzz/sim3d/hive3d';
 import { rotate2 } from '../../src/games/biobuzz/sim3d/math3';
 import { BB3_HIVE_PIVOT_Z, BB_HIVE_UP_STAGED, BB_POLLEN_R } from '../../src/games/biobuzz/config';
+import { setGraphicsPreset } from '../../src/games/biobuzz/graphics/settings';
 import { BB_TIP_SWING_S } from '../../src/games/biobuzz/hive';
 import { bbFootprint } from '../../src/games/biobuzz/robot';
 
 const urlParams = new URLSearchParams(location.search);
 const physicsMode = urlParams.get('physics') === '3d' ? '3d' : '2d';
+// ── ENVIRONMENT / CAMERA / OVERLAY PICTURES (2026-09-21) ────────────────────────────────────
+// `?env=<id>` picks one of `BB_ENVIRONMENTS`, `&ibl=0|1` forces §4.4's environment-lighting row
+// (the tier ladder has it off on Low/Medium, and a painted dome is drawn either way — that is
+// the thing worth photographing), `&cam=<SceneCamera>` opens on a camera instead of clicking the
+// button round to it, and `&overlay=1` mounts the REAL 2D overlay canvas over the scene through
+// `Renderer` with `overlayOnly`, which is the only way to photograph the 3D flower read-out
+// through the path the game actually uses. `&flowers=mixed` stages NECTAR into the four flower
+// columns so the read-out has something to say.
+const envParam = urlParams.get('env');
+const iblParam = urlParams.get('ibl');
+const camParam = urlParams.get('cam');
+const overlayOn = urlParams.get('overlay') === '1';
+const flowersParam = urlParams.get('flowers');
+// `&swatch=1` parks one POLLEN, one RED NECTAR and one BLUE NECTAR on bare tiles in a row, and
+// exposes `__bbSwatches()` — their projected screen positions plus a bare-mat point. A capture
+// script reads the RENDERED pixel at each and measures what the environment did to the three
+// colours a driver has to tell apart. Measuring the rendered pixel is the whole point: the
+// element fills are constants, and what an environment changes is the light on them.
+const swatchOn = urlParams.get('swatch') === '1';
 const hiveProbeAlliance: Alliance | null = urlParams.get('probe') === 'hive' ? 'red' : null;
 const forceTip = urlParams.get('tip') === '1';
 // INTAKE ARCHETYPE PICTURES (2026-09-20): `?intake=siderollers|ramp` builds every robot with that
@@ -74,6 +97,17 @@ const intakeParam = urlParams.get('intake');
 const parkAtFlower = urlParams.get('park') === 'flower';
 const parkOpen = urlParams.get('park') === 'open'; // robot 0 alone on open tiles, facing −x
 const deployRamp = urlParams.get('ramp') === '1';
+// DRIVETRAIN PICTURES (2026-09-21, the goBILDA wheel pass): `?drivetrain=mecanum|tank|swerve|
+// xdrive|butterfly` builds every robot on that drivetrain, and `&gfx=low|medium|high|ultra` picks
+// a graphics COLUMN before the scene is created — which is how the wheels' two tessellation
+// levels (`bbWheelDetail`) can be photographed side by side. `&tank=1` drops a butterfly's
+// traction set instead of its mecanum set.
+const drivetrainParam = urlParams.get('drivetrain');
+const gfxParam = urlParams.get('gfx');
+const butterflyTankParam = urlParams.get('tank') === '1';
+// `&wheelrig=1` stands the five real drive-wheel parts on bare tiles — see the block that builds
+// it for why a wheel on a ROBOT cannot be photographed at all.
+const wheelRig = urlParams.get('wheelrig') === '1';
 // `&chassis=orange&accent=black&decal=racing&plate=bold` — cosmetics on every robot (pictures)
 const cosmeticParams = {
   chassisColor: urlParams.get('chassis') ?? undefined,
@@ -123,13 +157,18 @@ function placeElementInUpCell(world: World, alliance: Alliance): void {
 }
 
 function setup(id: number, alliance: Alliance, startIndex: number): RobotSetup {
+  // `?drivetrain=` overrides the default build's; the spec is coerced downstream, so an unknown
+  // value simply falls back rather than producing a robot nothing can draw
+  const drive = drivetrainParam
+    ? { drivetrain: drivetrainParam as (typeof BB_DEFAULT_SPEC)['drivetrain'] }
+    : {};
   return {
     id,
     alliance,
     spec:
       intakeParam === 'siderollers' || intakeParam === 'ramp'
-        ? { ...BB_DEFAULT_SPEC, ...cosmeticParams, bbMech: { ...BB_DEFAULT_SPEC.bbMech!, intake: { kind: intakeParam } } }
-        : { ...BB_DEFAULT_SPEC, ...cosmeticParams },
+        ? { ...BB_DEFAULT_SPEC, ...cosmeticParams, ...drive, bbMech: { ...BB_DEFAULT_SPEC.bbMech!, intake: { kind: intakeParam } } }
+        : { ...BB_DEFAULT_SPEC, ...cosmeticParams, ...drive },
     assists: { ...DEFAULT_ASSISTS },
     startIndex,
   };
@@ -144,6 +183,15 @@ function status(msg: string): void {
 const checksEl = document.getElementById('checks')!;
 
 async function main(): Promise<void> {
+  // ⚠️ BEFORE THE SCENE EXISTS. `createBiobuzzScene` reads the graphics store at construction,
+  // and the wheels' tessellation is baked when a robot group is built — so a `?gfx=` set after
+  // the scene mounted would only take effect on the next rebuild. Writing the real store (rather
+  // than a private override) is also what makes the two tiers photographable through the same
+  // path a player's own preset takes.
+  if (gfxParam === 'low' || gfxParam === 'medium' || gfxParam === 'high' || gfxParam === 'ultra') {
+    setGraphicsPreset(gfxParam);
+    status(`graphics preset forced to ${gfxParam}`);
+  }
   status('booting 2D physics...');
   await initPhysics();
   if (physicsMode === '3d') {
@@ -201,6 +249,9 @@ async function main(): Promise<void> {
       r0.bbRampOut = true;
       r0.bbRampAt = world.time - 1;
     }
+    // `&tank=1`: drop a butterfly's TRACTION set instead of its mecanum set, so both halves of
+    // that drivetrain can be photographed from the same pose
+    if (butterflyTankParam) r0.butterflyTank = true;
   }
   if (parkAtFlower) {
     // robot 0 flush on F1's foot (mouth +x), front mouth toward the wall: the footprint's front
@@ -228,7 +279,55 @@ async function main(): Promise<void> {
     }
   }
 
+  // MIXED FLOWER STACKS, for the read-out pictures. `spawn.ts` stages every flower with POLLEN
+  // alone, which makes a section a column of four identical discs — the thing a driver actually
+  // has to read is the ORDER, the ownership colour and the retrieval lock, and all three need a
+  // NECTAR in there. The stack ids are untouched: only the ELEMENTS' colour/radius change, which
+  // is exactly what the renderer joins on.
+  if (flowersParam === 'mixed' && world.biobuzz) {
+    const byId = new Map(world.balls.map((b) => [b.id, b]));
+    // F0 bottom NECTAR (retrieval LOCKED, 5-point bonus), F1 top NECTAR (red owns it),
+    // F2 a blue NECTAR in the middle, F3 left all POLLEN as the control
+    const recolour: [number, number, 'red' | 'blue'][] = [
+      [0, 0, 'red'],
+      [1, 3, 'red'],
+      [2, 2, 'blue'],
+    ];
+    for (const [fi, slot, colour] of recolour) {
+      const id = world.biobuzz.flowers[fi]?.stack[slot];
+      const ball = id === undefined ? undefined : byId.get(id);
+      if (ball) {
+        ball.color = colour;
+        ball.r = 1.8; // a NECTAR is 3.6 in across (§9.8); POLLEN is 2.8
+      }
+    }
+    status('staged mixed flower stacks (F1 locked, F2 red-owned, F3 blue mid, F4 all pollen)');
+  }
+
+  // THE COLOUR SWATCHES (`&swatch=1`) — three elements on bare tiles just inside the audience
+  // wall, in the driver camera's own lower third, where nothing else stands.
+  const SWATCH_Y = -46;
+  const SWATCH_X = [-14, 0, 14];
+  if (swatchOn) {
+    const loose = world.balls.filter((b) => b.state.kind === 'ground').slice(0, 3);
+    const colours = ['yellow', 'red', 'blue'] as const;
+    loose.forEach((b, k) => {
+      b.color = colours[k];
+      b.r = k === 0 ? BB_POLLEN_R : 1.8;
+      b.pos = { x: SWATCH_X[k], y: SWATCH_Y };
+      b.z = 0;
+      b.vel = { x: 0, y: 0 };
+      b.vz = 0;
+    });
+    (window as unknown as { __bbSwatchIds: number[] }).__bbSwatchIds = loose.map((b) => b.id);
+    status(`swatches: ${loose.map((b) => `${b.id}:${b.color}`).join(' ')}`);
+  }
+
   status('loading the scene chunk...');
+  if (envParam && (BB_ENVIRONMENT_IDS as readonly string[]).includes(envParam)) {
+    setGraphicsSetting('environment', envParam as EnvironmentId);
+  }
+  if (iblParam === '0' || iblParam === '1') setGraphicsSetting('envLighting', iblParam === '1');
   const { createBiobuzzScene } = await import('../../src/games/biobuzz/scene/renderScene');
   const host = document.getElementById('host')!;
   const scene = await createBiobuzzScene(host);
@@ -239,14 +338,53 @@ async function main(): Promise<void> {
   // rather than widening the class's real public API for a debug hook.
   (window as unknown as { __bbScene: THREE.Scene }).__bbScene = (scene as unknown as { scene: THREE.Scene }).scene;
   (window as unknown as { __bbWorld: World }).__bbWorld = world;
+
+  // ── THE WHEEL RIG (2026-09-21) — `?wheelrig=1` ─────────────────────────────────────────────
+  // ⚠️ A DRIVE WHEEL CANNOT BE PHOTOGRAPHED ON A ROBOT, and that is not a bug in the wheel. It
+  // lives in the channel BETWEEN the two side plates, and the outer plate is solid except for its
+  // three lightening holes — so from outside, all a camera ever sees of a 104 mm mecanum is the
+  // middle of its steel hub plate through a 2.4-in hole, with the rollers behind it. (That is
+  // also the honest explanation of the owner's report: a `CylinderGeometry`'s flat CAP takes the
+  // roller-stripe texture too, so what actually showed through that hole was a disc with
+  // DIAGONAL LINES PAINTED ON IT — a slant where a real wheel has a plain steel plate.)
+  // So the rig stands the four real parts on bare tiles, at their true sizes, for the close-ups.
+  if (wheelRig) {
+    const { BB_WHEEL_PARTS, bbWheelDetail, buildDriveWheel } = await import(
+      '../../src/games/biobuzz/scene/renderRobots'
+    );
+    const { getGraphics } = await import('../../src/games/biobuzz/graphics/settings');
+    const g = getGraphics();
+    const detail = bbWheelDetail(g.settings, g.tier);
+    const rig = new THREE.Group();
+    rig.name = 'bb-wheel-rig';
+    // a LEFT and a RIGHT mecanum side by side is the handedness picture; the rest are one each
+    const row = [
+      ['mecanum', 1],
+      ['mecanum', -1],
+      ['omni', 1],
+      ['traction', 1],
+      ['podTraction', 1],
+    ] as const;
+    row.forEach(([kind, hand], i) => {
+      const wheel = buildDriveWheel(kind, detail, undefined, hand);
+      wheel.position.set(-18 + i * 9, 40, BB_WHEEL_PARTS[kind].r);
+      wheel.name = `rig:${kind}:${hand > 0 ? 'L' : 'R'}`;
+      rig.add(wheel);
+    });
+    (window as unknown as { __bbScene: THREE.Scene }).__bbScene.add(rig);
+    status(`wheel rig: 5 parts on bare tiles at y=40, detail=${detail}`);
+  }
   // the `GameScene` itself, so a verification script can read `cameras.free` after a synthetic drag
   (window as unknown as { __bbGameScene: unknown }).__bbGameScene = scene;
   (window as unknown as { __bbRenderer: THREE.WebGLRenderer }).__bbRenderer = (
     scene as unknown as { renderer: THREE.WebGLRenderer }
   ).renderer;
 
-  let camera: SceneCamera = 'driver';
-  let alliance: Alliance = 'red';
+  const CAMERA_IDS: readonly SceneCamera[] = ['driver', 'overhead', 'chase', 'orbit', 'free'];
+  let camera: SceneCamera = (CAMERA_IDS as readonly string[]).includes(camParam ?? '')
+    ? (camParam as SceneCamera)
+    : 'driver';
+  let alliance: Alliance = urlParams.get('alliance') === 'blue' ? 'blue' : 'red';
   let probing = false;
   /** RETICLE DEMO (Day 2): park robot 0 at a firing distance from its own HIVE, facing it, and
    * KEEP STEPPING — the turret only slews onto Aim Assist's target inside `biobuzzStep` stage
@@ -277,6 +415,8 @@ async function main(): Promise<void> {
   // click of this button and make the page look broken.
   const CAMERAS: SceneCamera[] = ['driver', 'overhead', 'chase', 'orbit', 'free'];
   setCameraPref('auto');
+  camBtn.textContent = `Camera: ${camera}`;
+  allianceBtn.textContent = `Viewpoint: ${alliance}`;
   camBtn.addEventListener('click', () => {
     camera = CAMERAS[(CAMERAS.indexOf(camera) + 1) % CAMERAS.length];
     camBtn.textContent = `Camera: ${camera}`;
@@ -341,6 +481,67 @@ async function main(): Promise<void> {
     void drawHiveCanopy; // already called inside drawBiobuzzBalls
     ctx2d.restore();
   }
+
+  // ── THE REAL 2D OVERLAY, OVER THE SCENE (`?overlay=1`, 2026-09-21) ───────────────────────
+  //
+  // The app mounts the 2D canvas ABOVE the WebGL one and draws it with `overlayOnly`, which is
+  // the pass the driver-name labels and (since 2026-09-21) the BIOBUZZ flower read-out live in.
+  // This page had no such canvas, so neither could be photographed here. It is the SHIPPING
+  // `Renderer` and the SHIPPING `setScene` hand-over — a second drawing of the overlay would be
+  // evidence about itself and nothing else.
+  const overlayCanvas = document.createElement('canvas');
+  const overlayCtx = overlayOn ? overlayCanvas.getContext('2d')! : null;
+  const overlayRenderer = new Renderer();
+  if (overlayOn) {
+    overlayCanvas.id = 'overlay';
+    overlayCanvas.style.position = 'absolute';
+    overlayCanvas.style.inset = '0';
+    overlayCanvas.style.width = '100%';
+    overlayCanvas.style.height = '100%';
+    overlayCanvas.style.zIndex = '2';
+    overlayCanvas.style.pointerEvents = 'none';
+    host.appendChild(overlayCanvas);
+    overlayRenderer.setScene(scene);
+  }
+
+  function drawOverlay(): void {
+    if (!overlayCtx) return;
+    overlayRenderer.camera.configure(overlayCanvas, alliance, bounds);
+    overlayRenderer.render(
+      overlayCtx,
+      world,
+      null,
+      alliance === 'red' ? 0 : 2,
+      true, // overlayOnly — the scene owns the field, the robots and the elements
+    );
+  }
+
+  /**
+   * WHERE THE SWATCHES LANDED ON SCREEN, in CSS pixels, through the scene's OWN live camera
+   * (`GameScene.project`). A capture script reads the rendered pixel at each of these and gets
+   * the three element colours AS LIT, plus a bare-mat reference and the backdrop above the far
+   * wall — which is everything the legibility table in the 2026-09-21 environment report is
+   * computed from.
+   */
+  (window as unknown as { __bbSwatches: () => unknown }).__bbSwatches = () => {
+    const out: Record<string, unknown> = {};
+    const o = { x: 0, y: 0, visible: false };
+    const proj = (x: number, y: number, z: number): [number, number, boolean] => {
+      scene.project?.(x, y, z, o);
+      return [o.x, o.y, o.visible];
+    };
+    const ids = (window as unknown as { __bbSwatchIds?: number[] }).__bbSwatchIds ?? [];
+    ids.forEach((id, k) => {
+      const b = world.balls.find((q) => q.id === id);
+      if (!b) return;
+      out[['pollen', 'nectarRed', 'nectarBlue'][k]] = proj(b.pos.x, b.pos.y, (b.z ?? 0) + (b.r ?? BB_POLLEN_R));
+    });
+    // a patch of bare tile a few feet in front of the swatch row, and the field centre
+    out.mat = proj(0, -58, 0.05);
+    out.matMid = proj(-30, -10, 0.05);
+    out.css = [host.clientWidth, host.clientHeight];
+    return out;
+  };
 
   // ── FREE CAMERA (2026-09-18 CAD round 2 verification) ────────────────────────────────────
   // The scene owns its two cameras (`renderCameras.ts`, another lane's file), and neither of
@@ -760,6 +961,7 @@ async function main(): Promise<void> {
       height: host.clientHeight,
       dpr: window.devicePixelRatio || 1,
     });
+    drawOverlay(); // after `scene.render` — `project` reads the camera that frame just used
     draw2d();
     if (tick % 30 === 0) {
       status(

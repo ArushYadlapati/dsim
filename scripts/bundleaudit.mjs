@@ -305,7 +305,40 @@ const BASELINE = {
   // directly against the shipped GLB, the same relationship `sheetFacingBalance` has to the
   // open-sheeting check. Real load-time logic (a `THREE.DoubleSide` material clone + a per-mesh
   // triangle partition), not a comment; scoped to the frame nodes only.
-  scene: { gzip: 209.99 * 1000, budgetCeiling: 250 * 1000 },
+  //
+  // 2026-09-21: measured at 213.95, still UNDER the 4.12 KB tolerance, so the number below is
+  // deliberately NOT moved — but recorded here, because this is the creep-under-tolerance case
+  // the header above warns about and the next pass to cross it should not have to untangle three
+  // sessions' work. **+2.15 KB of the +3.96 is the WHOLE-FIELD WINDING REPAIR**
+  // (`repairFieldWinding`, `renderFieldGlb.ts`), measured in isolation by bundling that one module
+  // at HEAD and with the change (esbuild, minified, `three` external: 15.44 -> 17.59 KB gzip). It
+  // REPLACES `fixGroundBeamWinding`, so the net is a shell-topology + orientation-propagation core
+  // and a local-frame geometry split, less the world-space partition pass that came out. The
+  // remaining ~1.8 KB is concurrent `scene/renderRobots.ts` work that was uncommitted in the tree
+  // at the time and is not this change's to claim.
+  //
+  // 2026-09-21, THE DRIVE WHEELS: 209.99 -> 216.61 (+6.62), which is past the 4.20 KB tolerance,
+  // so the number below moves. ⚠️ **ONLY ~2.7 KB OF IT IS THIS PASS.** The note directly above
+  // measured the same route at 213.95 earlier the same day and deliberately left the baseline
+  // alone — so 3.96 KB of this step is that overhang finally being booked, not new.
+  // What the wheel pass itself added, measured in isolation (the new part table + `barrelProfile`
+  // / `rollerGeometries` / `plateGeometries` / `tyreGeometries` / `buildDriveWheel` / `WHEEL_LOD`
+  // / `bbWheelDetail`, bundled alone with esbuild, minified, `three` external and the file's own
+  // helpers stubbed): **1.78 KB gzip**, against roughly 0.35 KB for the `CanvasTexture` stripe
+  // generator it REPLACES. The rest is the tier plumbing in `renderScene`/`renderPreview`.
+  // It buys real geometry for five drivetrains at two tessellation levels — eleven barrel rollers
+  // on 45° axles, two staggered omni rows, a crowned traction tyre — where there was a painted
+  // 64×64 canvas of diagonal lines. There is no cheaper way to draw a mecanum that is a mecanum,
+  // and the owner's report was that the painted one read as the wrong machine.
+  scene: { gzip: 216.61 * 1000, budgetCeiling: 250 * 1000 },
+  // 2026-09-21, THE EIGHT PAINTED ENVIRONMENTS: 4.01 -> 5.56 (+1.55), well inside the 4 KB
+  // tolerance, so the number below is deliberately NOT moved — recorded here for the same reason
+  // the `scene` note above records its own under-tolerance creep. The growth is DATA:
+  // `graphics/environments.ts` gained a light rig and a painted-dome recipe per entry, and eight
+  // entries. It is the cheap half of the trade — the alternative was eight more 1.6 MB HDRIs,
+  // which would have cost this route nothing and the PLAYER 13 MB. The PAINTING lives in
+  // `scene/renderEnvironment.ts` and lands in the `scene` route, which did not move (216.61 ->
+  // 216.60): a few hundred bytes of canvas calls against a 217 KB chunk.
   graphics: { gzip: 4.01 * 1000 },
   gallery: { gzip: 7.33 * 1000 },
   // 2026-09-19: NEW. The whole admin console, lazily loaded by `App.tsx`. See the route note

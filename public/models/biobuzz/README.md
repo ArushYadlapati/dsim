@@ -23,8 +23,13 @@ and served from the site is covered is unresolved. **The owner decided on 2026-0
 the derived files anyway** (`field.glb`, `field-low.glb`, `field-colliders.json`,
 `field-measurements.json`), accepting that risk. A courtesy note to FIRST describing the use is
 still owed (Day 0 per the plan). The constants-built fallback in `src/games/biobuzz/sim3d/` and
-`src/games/biobuzz/scene/renderField.ts` stays complete on purpose, so these four files can be
+`src/games/biobuzz/scene/renderField.ts` stays complete on purpose, so these files can be
 deleted in one commit if FIRST objects — nothing else in the game depends on them existing.
+
+The SCORING-ELEMENT files below (`elements.glb`, `elements-measurements.json`) come from the
+SAME zip under the SAME terms, so they ship under the same decision; the renderer's own
+`THREE.SphereGeometry` fallback is what stands if they are deleted, exactly as the constants-built
+field stands in for the field GLBs.
 
 ## Files
 
@@ -34,6 +39,8 @@ deleted in one commit if FIRST objects — nothing else in the game depends on t
 | `field-low.glb` | ≤ 250 KB brotli | low-detail visual mesh (same node names/hierarchy) |
 | `field-colliders.json` | ≤ 200 KB raw | statics + tray hulls + flower descriptors, for `src/games/biobuzz/sim3d/fieldColliders.ts` |
 | `field-measurements.json` | — | CAD-measured dimensions — the SOURCE the game's geometry constants are generated from |
+| `elements.glb` | ≤ 60 KB brotli | the perforated POLLEN and NECTAR — see below; built by `npm run element-cad` |
+| `elements-measurements.json` | — | the CAD's own numbers for those two solids, measured off the B-rep |
 
 Two files are GENERATED OUT OF THIS DIRECTORY and live in `src/`, because the client must not
 fetch them at runtime: `src/games/biobuzz/sim3d/fieldColliders.gen.ts` (the collider set) and
@@ -235,3 +242,44 @@ so the identity string exists once). It rewrites both GLBs, `field-colliders.jso
 `SOURCE.url`/`version`/`sha256` in that file (the script tells you the actual hash it downloaded
 if the check fails), delete `C:/Users/<you>/AppData/Local/dsim/field-cad/field-cad-step.zip`,
 and re-run.
+
+## `elements.glb` — the perforated POLLEN and NECTAR
+
+`convert.py` deliberately DROPS the loose scoring elements (`RE_ELEMENT`) because they are not
+field structure. They are, however, real perforated solids in the same STEP assembly, and the 3D
+renderer used to draw them as smooth spheres. `scripts/field-cad/elements.py` +
+`scripts/field-cad/elements.mjs` (`npm run element-cad`) are the second, small pipeline that
+extracts them; it resolves the SAME sha-pinned zip from the SAME cache and re-downloads nothing.
+
+Two meshes, named `pollen` and `nectar`, each centred on the origin, in INCHES, with the CAD's
+own pole axis on +Z. Position and indices only, no `NORMAL` — the same convention the field GLBs
+ship under; `scene/renderElementsGlb.ts` runs `computeCreasedNormals` at 40° on load, which
+shades both spheres smooth and keeps a hard rim at every bore.
+
+What the CAD says, measured off the analytic B-rep rather than off a triangulation:
+
+| | part | outer r | inner r | wall | bores | bore ⌀ | pattern | tris |
+|---|---|---|---|---|---|---|---|---|
+| POLLEN | `am-5851: Pollen` | 1.400 in | 1.330 | 0.070 | 26 | 0.440 | 1/4/8/8/4/1 at 90°, 49.11°, 15.60° | 2,286 |
+| NECTAR | `am-5852: * Nectar` | 1.810 in | 1.725 | 0.085 | 26 | 0.635 | 1/4/8/8/4/1 at 90°, 52.19°, 18.00° | 2,542 |
+
+⚠️ **`BB_POLLEN_R` agrees exactly (1.400). `BB_NECTAR_R` does NOT: the CAD says 1.810 and
+`config.ts` says 1.800.** The CAD is authoritative for DIMENSIONS (owner ruling 2026-09-18), but
+this radius is also the sphere Rapier solves and the number every flower/hive/intake tolerance was
+measured against, so changing it is a SIM decision and not a renderer's to make. The drawn NECTAR
+is 0.010 in (0.55 %) wider than the solved one until somebody rules on it; the delta is recorded
+in `elements-measurements.json` and pinned by the RENDER lane so it cannot drift further unseen.
+
+⚠️ **There is no `simplify` pass on this asset, on purpose.** A decimator's error metric is a
+distance and the feature that matters is a 0.44-in hole in a 2.8-in ball: any tolerance loose
+enough to save triangles closes hole rims first. The count is controlled at the SOURCE instead, by
+`elements.mjs`'s chord deflection (0.03 in — ~12° of arc on a POLLEN, ~12 segments round a bore).
+
+⚠️ **`elements.py` applies every CAD face's own `TopAbs_REVERSED` orientation; `convert.py` does
+not.** A holed ball is looked THROUGH, so its inner sphere and its 26 bore walls face the camera
+through the near-side holes. The flip is what makes every triangle face away from the material, so
+an ordinary single-sided material renders it correctly from both sides of the shell — no
+`DoubleSide`, and none of the inverted-winding trouble `renderFieldGlb.ts`'s `fixGroundBeamWinding`
+has to paper over on the field asset. The RENDER lane proves it on the shipped file (one closed
+component, zero flipped interior edges, positive divergence-theorem volume).
+

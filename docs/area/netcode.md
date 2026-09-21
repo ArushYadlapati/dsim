@@ -31,7 +31,59 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   REMOTE robots lerp between the two bracketing snapshots. The LOCAL robot stays predicted
   with a decaying `localSmooth` error offset (cosmetic only — never touches `this.world`).
   **BALLS are NOT interpolated** — they spawn/despawn and collide, and lerping ghost-cloned
-  fresh balls and blended colliding balls through each other.
+  fresh balls and blended colliding balls through each other. **A BIOBUZZ 3D world is the
+  exception** (its 56 elements are minted once and never destroyed), and that exception is what
+  the next two bullets are about.
+- ⚠️ **THE LOCAL ROBOT AND THE BALL IT IS PUSHING MUST BE THE SAME MOMENT, AND THEY WERE NOT.**
+  Reported as "in server-required games, the balls behave really weirdly — maybe it is something
+  with the prediction?" (owner, 2026-09-21). It was: a predicted 3D room draws the local robot
+  from the PREDICTION, which sits at about the newest server tick, and every element from the
+  INTERPOLATION, which sits `INTERP_DELAY_TICKS` behind it. Two clocks, one frame, ~6 ticks
+  (100 ms) apart — and **structural, not network**: measured through a real `Room` with a real
+  latency queue, an element was drawn **p95 8.65 in / max 8.9 in** closer to the local robot than
+  the server had it *at the robot's own tick*, and the number was the same at 0 ms RTT as at
+  140 ms with 5% loss. A POLLEN the driver was pushing sat inside their own chassis; a shot
+  crossing the field crossed it a tenth of a second late. The bisect is one line: **prediction
+  OFF draws the local robot interpolated too, at the SAME clock as the elements, and takes the
+  identical measurement to p95 0.01 in.** DECODE and Chain Reaction never had it — their balls
+  are rendered from the locally-stepped world, which IS the local robot's clock (measured p95
+  0.00–0.46 in, and a displayed ball never jumps further than its true per-tick motion).
+  **The fix changes neither clock.** The FULL predictor has always carried the near elements as
+  real dynamic bodies and pushed them with the predicted chassis, and has always thrown the
+  answer away; `Predictor.elements()` hands them back and `displayWorld` DRAWS them, so the robot
+  and the things it is touching are one moment again — **p95 0.99 in, max 1.3** on the same run.
+  Client-side only: no wire change, no `World` field, no egress, and `session: null` never
+  reaches `displayWorld` at all, so solo stays bit-identical.
+  - **`ballSmooth` IS `localSmooth` FOR ONE ELEMENT**, and the trap is WHERE it is captured. The
+    correction must be read INSIDE the reconcile, `before` against `after` at the SAME predicted
+    tick; read it across a FRAME and every correction also carries one tick of real motion, which
+    never decays, and each element is pinned a tick behind for the rest of the match — measured,
+    that put the artifact straight back (p95 8.1 in against 0.99). A ball crossing
+    `PREDICT_ELEMENT_RADIUS`, or re-tagged into a structure, is the one discontinuity the
+    reconcile cannot see, so `displayWorld` absorbs that switch whole. Past `BALL_SMOOTH_MAX`
+    (6 in — twice a POLLEN's diameter) the offset is dropped and the element snaps, which is what
+    should happen when a capture or a launch has genuinely moved it.
+  - **ONLY `ground` AND `flight` ARE DRAWN FROM THE PREDICTION.** An `element` — seated in a
+    FLOWER's bore or latched in a HIVE cell — stays interpolated: its position there is the
+    authority's derived structure, not a free body the local chassis is about to hit, and a stack
+    the prediction let settle differently would be a new artifact in place of the fixed one.
+  - **A LIGHT PREDICTOR CARRIES NO ELEMENTS**, so `elements()` returns `null` (not an empty list)
+    and it keeps the old drawing. That is the honest limit of this fix: Auto picks Full whenever
+    the machine holds `PREDICT_FULL_BUDGET_MS`, and a machine that cannot afford Full cannot
+    afford to predict elements either.
+- ⚠️ **A RE-TAG IS NOT A TELEPORT.** `displayWorld` SNAPPED an element to the newer snapshot on
+  ANY `state.kind` change, which is right for a hopper and wrong for a game whose tags are
+  DERIVED from body positions every tick (`derive.ts`): `ground`, `flight` and `element` all
+  describe the same continuously-moving sphere, and a missed shot skidding across the tiles
+  re-tags itself `flight`/`ground`/`flight` on consecutive ticks while travelling in a straight
+  line. Every flicker threw it two ticks forward and froze it for a frame — measured, the worst
+  jump ANY element made was **2.61 in against a true per-tick motion of 1.34**, a pop of nearly
+  twice the distance it was really covering, on a ball nobody had touched. Narrowed to `held` and
+  `stock` — the only two tags that mean something is CARRYING it — the worst jump is **1.36 in**,
+  which is the motion and nothing else. This half applies at every prediction setting, Off
+  included. Checks: `scripts/smoke-biobuzz/net3d.ts` §13–14, which assert the INTERPOLATED
+  baseline is still far off as well as the fixed number — a bound on one number alone passes just
+  as well when the scene stops moving.
 - **DELTA SNAPSHOTS**: `slimWorld`/`unslimWorld` strip static robot `spec` (client re-injects
   from setups) + delta the balls (send the id ORDER every frame — determinism — but only
   CHANGED ball data); reconnect re-primes with a keyframe.

@@ -59,11 +59,12 @@ import {
   type FreeCamPreset,
 } from '../games/biobuzz/graphics/freeCam';
 import { installViewKey } from '../games/biobuzz/graphics/viewKey';
+import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
 import { useCoarsePointer } from './useCoarsePointer';
 
 /**
- * GRAPHICS — the sixteen settings of `docs/biobuzz/plan-3d.md` §4.4, the preset that sets them
+ * GRAPHICS — the seventeen settings of `docs/biobuzz/plan-3d.md` §4.4, the preset that sets them
  * all at once, and the environment picker of §4.5.
  *
  * ── WHY IT IS ITS OWN SECTION AND NOT A BLOCK INSIDE "AUDIO AND VISUAL" ────────────────────
@@ -86,46 +87,9 @@ import { useCoarsePointer } from './useCoarsePointer';
  * player who changed it and saw nothing would be looking at a bug.
  */
 
-/** one row of mutually exclusive choices, rendered as the option grid the rest of Configure
- * uses. `cols` matches `.ds-opts`'s own modifiers — there is no five-wide row here, so the two
- * the grid offers are enough. */
-function OptRow<T extends string | number | boolean>({
-  label,
-  value,
-  options,
-  onPick,
-  cols,
-  hint,
-}: {
-  label: string;
-  value: T;
-  options: readonly { v: T; t: string; d?: string }[];
-  onPick: (v: T) => void;
-  cols?: 'two' | 'three' | 'four';
-  hint?: string;
-}) {
-  return (
-    <div className="ds-field">
-      <span className="cap">
-        {label}
-        {hint && <span className="val">{hint}</span>}
-      </span>
-      <div className={`ds-opts${cols ? ` ${cols}` : ''}`}>
-        {options.map((o) => (
-          <button
-            key={String(o.v)}
-            className={`ds-opt ${value === o.v ? 'on' : ''}`}
-            aria-pressed={value === o.v}
-            onClick={() => onPick(o.v)}
-          >
-            <span className="ot">{o.t}</span>
-            {o.d && <span className="od">{o.d}</span>}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
+/* `OptRow` used to live here. It is `src/ui/OptRow.tsx` now, unchanged in shape: the robot
+ * builder, the match setup and Audio and Visual all spell a pick this way too, and three
+ * copies of one row is how a design system drifts. Nothing about a row here changes. */
 
 /**
  * MAX FRAME RATE — the one row in this screen that is not a fixed set of choices, and the one
@@ -457,7 +421,10 @@ function DriverHeightRow({ value, onChange }: { value: number | null; onChange: 
           Clear
         </button>
       )}
-      <p className="ds-hint">Sets the driver camera to your real eye level, standing where your drive team stands.</p>
+      {/* the one thing the label cannot say: WHICH camera this moves, and that the answer is
+          only ever that one. Everything about "your real eye level" is already in the label
+          and in the value beside it. */}
+      <p className="ds-hint">Used by the driver camera only.</p>
     </div>
   );
 }
@@ -584,16 +551,26 @@ export function GraphicsSection() {
               ...(gfx.preset === 'custom' ? [{ v: 'custom' as GraphicsPreset, t: 'Custom' }] : []),
             ]}
           />
-          {/* the ONE line the preset row cannot say for itself: what Auto did, and that it
-              measures rather than guesses. */}
-          <p className="ds-hint">
-            Auto reads the GPU, then measures two seconds of real frames and moves one step. A
-            match that keeps dropping below 40 fps lowers the preset once and says so in the
-            match log.
-          </p>
+          {/* the ONE thing the preset row cannot say for itself: Auto measures rather than
+              guesses, and it keeps measuring. */}
+          <p className="ds-hint">Auto measures two seconds of real frames, and lowers itself a step if a match keeps dropping under 40 fps.</p>
         </div>
       </section>
 
+      {/* ── EVERYTHING BELOW IS AN OVERRIDE OF THE PRESET ────────────────────────────────
+          The Quality preset sets fifteen of these seventeen values, which six flat panels in a
+          row never said: the one control almost everybody wants had the same weight as sixteen
+          they will never touch. Folded, the preset is the screen; open, the panels are exactly
+          as they were.
+
+          THE PANELS KEEP THEIR OWN BODIES on purpose. A new row (an element or mesh detail, a
+          new AA mode) drops into the panel it belongs to and a new environment arrives as DATA
+          in `graphics/environments.ts` — neither needs this structure to change.
+          `.panels`: `.ds-panel + .ds-panel` already owns the gap between them, so the fold body
+          must not add a second one. */}
+      <details className="ds-fold">
+        <summary>Advanced</summary>
+        <div className="ds-fold-body panels">
       <section className="ds-panel">
         <div className="ds-panel-h">
           <span className="ds-panel-title">Resolution</span>
@@ -672,29 +649,17 @@ export function GraphicsSection() {
             onPick={set('environment')}
             options={BB_ENVIRONMENTS.map((e) => ({ v: e.id, t: e.name, d: e.note }))}
           />
-          <p className="ds-hint">
-            The two photographed rooms are CC0 images from Poly Haven, fetched the first time you
-            pick one and then cached by the browser. Credited on the Contributors page.
-          </p>
-          <OptRow
-            label="Environment lighting"
-            value={s.envLighting}
-            cols="two"
-            onPick={set('envLighting')}
-            options={[
-              { v: false, t: 'Off' },
-              { v: true, t: 'On' },
-            ]}
-          />
-          <OptRow
+          {/* THE ONE COST A TILE CANNOT STATE FOR ITSELF, and it does not count the rooms:
+              environments arrive as DATA (`graphics/environments.ts`), so a sentence saying
+              "the two with a size" goes stale the day a third lands. A size on a tile means a
+              download; no size means generated. Credits are on the Contributors page. */}
+          <p className="ds-hint">A choice with a size downloads once, the first time you pick it.</p>
+          <ToggleRow label="Environment lighting" value={s.envLighting} onPick={set('envLighting')} />
+          <ToggleRow
             label="Reflections"
             value={s.reflections}
-            cols="two"
             onPick={set('reflections')}
-            options={[
-              { v: false, t: 'Off' },
-              { v: true, t: 'On', d: 'Metal parts pick up the room' },
-            ]}
+            onDesc="Metal parts pick up the room"
           />
         </div>
       </section>
@@ -727,6 +692,21 @@ export function GraphicsSection() {
               { v: 'high' as const, t: 'High' },
             ]}
           />
+          {/* THE SCORING ELEMENTS. Both options name what they draw, and the CAD one states its
+              cost, the same way "Real" element shadows states theirs — a sub-line here is a
+              trade-off, never a restatement of the label (§8). Unlike "Mesh detail" above it
+              needs no "applies next time" hint: the asset is fetched once and both geometries
+              are kept, so the pick lands on the frame it is made. */}
+          <OptRow
+            label="Element detail"
+            value={s.elementDetail}
+            cols="two"
+            onPick={set('elementDetail')}
+            options={[
+              { v: 'sphere' as const, t: 'Smooth' },
+              { v: 'cad' as const, t: 'Perforated', d: '2,300 triangles each' },
+            ]}
+          />
           <OptRow
             label="Effects"
             value={s.effects}
@@ -743,7 +723,7 @@ export function GraphicsSection() {
 
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Camera and read-outs</span>
+          <span className="ds-panel-title">Camera</span>
         </div>
         <div className="ds-panel-body stack">
           <label className="ds-field">
@@ -773,25 +753,23 @@ export function GraphicsSection() {
               { v: 'full' as const, t: 'Full' },
             ]}
           />
-          <OptRow
+          <ToggleRow
             label="Minimap"
             value={s.minimap}
-            cols="two"
             onPick={set('minimap')}
-            options={[
-              { v: false, t: 'Off' },
-              { v: true, t: 'On', d: 'A second pass over the field' },
-            ]}
+            onDesc="A second pass over the field"
           />
           {/* THE PERFORMANCE OVERLAY ROW IS GONE FROM HERE. It was 3D-only, and it drew its
               own corner div on top of the event log; the read-out is one display for all
               three games now, under Audio and Visual, because it is a `GameSettings` field
               and nothing in this section is. The 3D renderer's draw calls and triangles are
-              on it, at the Detailed level. */}
-          <p className="ds-hint">The performance read-out is under Audio and Visual.</p>
-          {/* §4.4 lists two rows this build does not ship. Saying so here — with the reason —
-              beats a disabled switch, which reads as a bug, and beats silence, which reads as
-              an oversight to anyone holding the plan doc. */}
+              on it, at the Detailed level.
+              ⚠️ THE LINE THAT SAID SO IS GONE TOO. A sentence whose whole content is where
+              another screen is is signposting, not a setting — and this panel is called
+              Camera now, so nothing on it claims a read-out to go looking for. */}
+          {/* §4.4 lists two rows this build does not ship. Saying so — with the reason — beats
+              a disabled switch, which reads as a bug, and beats silence, which reads as an
+              oversight to anyone holding the plan doc. */}
           <p className="ds-hint">
             Not on this build:{' '}
             {GFX_NOT_OFFERED.map((n, i) => (
@@ -804,6 +782,8 @@ export function GraphicsSection() {
           </p>
         </div>
       </section>
+        </div>
+      </details>
     </>
   );
 }

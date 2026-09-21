@@ -2,8 +2,12 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Alliance, RobotSpec, RobotState, World } from '../../../types';
 import { chassisFill, INTAKE_RAIL_T } from '../../../config';
-import { accentFill, clampCosmetics, OUTLINE_HALO } from '../../../cosmetics';
+import { accentFill, clampCosmetics } from '../../../cosmetics';
 import { robotsEnabled } from '../../../sim/match';
+// TYPES ONLY, and the direction matters: `graphics/` may not import `scene/` or `three` (the
+// RENDER lane asserts it), but the scene reading the settings MODEL is how every other quality
+// dial already works — see `renderPreview.ts`, which imports the store itself.
+import type { GraphicsSettings, GraphicsTier } from '../graphics/settings';
 import {
   BB3_MOUTH_SLOT_Z,
   BB_BOX_TUBE_EXTEND_S,
@@ -39,12 +43,16 @@ import {
   BB_SIDE_PLATE_BOTTOM_Z,
   BB_SIDE_PLATE_FRONT_X,
   BB_SIDE_PLATE_TOP_Z,
+  BB_SIDE_ROLLER_BOSS_R,
   BB_SIDE_ROLLER_H,
-  BB_SIDE_ROLLER_HOUSE_BACK,
+  BB_SIDE_ROLLER_HUB_R,
   BB_SIDE_ROLLER_OUT,
   BB_SIDE_ROLLER_PLATE_T,
   BB_SIDE_ROLLER_R,
+  BB_SIDE_ROLLER_YOKE_BACK,
+  BB_SIDE_ROLLER_YOKE_W,
   bbSideRollerY,
+  bbSideRollerYokeY,
   BB_SIDE_ROLLER_Z,
   BB_TURRET_AXLE_Z,
   BB_TURRET_BRACE_R,
@@ -146,7 +154,9 @@ const RED = '#ef4444';
  * measurement and the reason the CAD's own rib colour was NOT taken. */
 const BLUE = '#007be1';
 const NOSE = '#e5e7eb';
-const WHEEL = '#1f242c';
+/** the one rubber tone on the robot: a mecanum's roller barrels, an omni's, a traction tyre's
+ *  band. (`WHEEL`, a second near-identical dark, is gone with the roller-stripe texture that was
+ *  its only reader — see `BB_WHEEL_PARTS`.) */
 const TREAD = '#262c35';
 const ALU = '#98a3b2';
 const ALU_DK = '#39414f';
@@ -196,11 +206,11 @@ const BB_PLATE_H = BB_DECK_Z;
 /** plate thickness. The OUTER plate's outer face is the frame line, so the footprint of the
  * built group is exactly `spec.length × spec.width`. */
 const BB_PLATE_T = 0.22;
-/** wheel radius / width — a 4-in wheel, the FTC default. */
-const BB_WHEEL_R = 2.0;
-const BB_WHEEL_W = 1.5;
-/** clear gap between the inner and outer plate: the wheel lives in it, protected. */
-const BB_PLATE_GAP = BB_WHEEL_W + 0.4;
+/** ⚠️ THE WHEEL CHANNEL'S OWN DIMENSIONS (`BB_WHEEL_R`, `BB_WHEEL_W`, `BB_PLATE_GAP`) ARE NOT
+ *  DECLARED HERE ANY MORE. They are the goBILDA 104 mm mecanum's radius and width, so they are
+ *  declared with the part they come from — see `BB_WHEEL_PARTS` below. They used to be a typed
+ *  "4-in wheel, the FTC default", which was neither the wheel the owner asked for nor the 104 mm
+ *  `C.WHEEL_DIAMETER_MM` the sim's own top speed is derived from. */
 /** square section of the cross members, the belly pan and the tower uprights. */
 const BB_RAIL_T = 0.95;
 
@@ -296,85 +306,465 @@ function framePart(key: string, build: () => THREE.BufferGeometry[]): THREE.Buff
   return merged;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// THE DRIVE WHEELS — THE REAL PARTS, MODELLED, AND NOTHING ABOUT THEM PAINTED
+// ═══════════════════════════════════════════════════════════════════════════════════════════
 /**
- * THE CHASSIS SILHOUETTE, as line geometry — this is what carries the ALLIANCE in 3D, and it
- * traces the BUMPER band (the drivetrain), which is where an alliance colour lives on a real
- * robot. It used to trace a full-height box, which is the slab complaint #9 is about.
- */
-const CHASSIS_EDGE_CACHE = new Map<string, THREE.EdgesGeometry>();
-function chassisEdges(length: number, width: number, height: number): THREE.EdgesGeometry {
-  const key = `${length}|${width}|${height}`;
-  const cached = CHASSIS_EDGE_CACHE.get(key);
-  if (cached) return cached;
-  const box = new THREE.BoxGeometry(length, width, height);
-  const geo = new THREE.EdgesGeometry(box, 30);
-  box.dispose();
-  CHASSIS_EDGE_CACHE.set(key, geo);
-  SHARED_GEO.add(geo);
-  return geo;
-}
-
-const LINE_MAT_CACHE = new Map<string, THREE.LineBasicMaterial>();
-function lineMat(color: string): THREE.LineBasicMaterial {
-  let m = LINE_MAT_CACHE.get(color);
-  if (!m) {
-    m = new THREE.LineBasicMaterial({ color });
-    LINE_MAT_CACHE.set(color, m);
-    SHARED_MAT.add(m);
-  }
-  return m;
-}
-
-/**
- * A SHARED ROLLER-STRIPE TEXTURE for the two roller-wheeled drivetrains — one canvas per kind,
- * reused by every wheel on every robot.
+ * ⚠️ **THERE USED TO BE A SLANTED-STRIPE `CanvasTexture` ON EVERY ROLLER WHEEL, AND IT WAS WRONG
+ * ON MORE DRIVETRAINS THAN IT WAS RIGHT ON** (owner, 2026-09-21: "Make the wheels be rendered
+ * accurately. Gobilda 104mm gripforce mecanum wheel, gobilda omni wheel"; then, on the shipped
+ * picture, "it makes no sense for the wheel to have slant patterns" / "which is how it is right
+ * now").
  *
- * The two kinds are not the same wheel and are not drawn the same: a MECANUM roller sits at 45°
- * to the wheel plane (which is what gives it a sideways force component and the whole
- * drivetrain its strafe), and an OMNI roller sits at 90° to it (which is why an X-drive has to
- * cant the WHEELS instead — see `buildWheels`). Diagonal stripes vs. transverse bands is that
- * difference, and it is the only thing that distinguishes a mecanum corner from an X-drive
- * corner once you are close enough to see a roller at all.
+ * One 64×64 canvas of diagonal lines was stretched over a bare `CylinderGeometry` and handed to
+ * MECANUM, to an X-drive's OMNIS and to a BUTTERFLY's corner set. A 45° slant is a statement
+ * about HARDWARE — it is the roller axis of a mecanum wheel and of nothing else — so painting it
+ * on an omni claimed a wheel that slides along its own rim, which is the opposite of what a
+ * tangential roller does. The drawing could not be fixed by choosing better stripes, because the
+ * thing being drawn was not a wheel.
+ *
+ * So every drive wheel is MODELLED from the manufacturer's published dimensions instead, and it
+ * is modelled at BOTH detail levels: the SHAPE never changes with the graphics preset, only the
+ * tessellation does (`BbWheelDetail`, `WHEEL_LOD`). Low still gets eleven real barrel rollers on
+ * real 45° axles — just five-sided ones. A tier has never been a reason to lie about the machine.
+ *
+ * ── WHAT EACH DRIVETRAIN CARRIES, AND WHY ──────────────────────────────────────────────────
+ *   MECANUM / BUTTERFLY's corner set — goBILDA 104 mm GripForce Mecanum, handed per corner.
+ *   X-DRIVE                          — goBILDA 96 mm Omni, the largest omni goBILDA sells.
+ *   TANK / BUTTERFLY's inboard set   — goBILDA 96 mm Hogback Traction.
+ *   SWERVE pod                       — goBILDA 72 mm Hogback Traction (a pod has 4.34 in of
+ *                                      headroom under the deck; see `BB_POD_WHEEL_R`).
+ *
+ * ⚠️ **NOTHING HERE IS READ BY THE SIM**, exactly as before — this block is geometry. The one
+ * number that now agrees with the sim rather than merely sitting near it is the mecanum
+ * DIAMETER: `C.WHEEL_DIAMETER_MM` is 104, the figure `C.SPEED_PER_RPM` derives the drivetrain's
+ * top speed from, and the drawn wheel was a typed 4.00 in (101.6 mm) beside it. It is the same
+ * 104 mm wheel in both places now.
  */
-const ROLLER_TEX_CACHE = new Map<string, THREE.CanvasTexture>();
-/** `accent` defaults to `WHEEL` — `tint3d(WHEEL, WHEEL, x) === WHEEL`, a no-op for any caller
- * that predates cosmetics. Cached per `kind|accent` so two robots with different accents never
- * share a texture. */
-function getRollerTexture(kind: 'mecanum' | 'omni', accent: string = WHEEL): THREE.CanvasTexture {
-  const key = `${kind}|${accent}`;
-  const hit = ROLLER_TEX_CACHE.get(key);
-  if (hit) return hit;
-  const size = 64;
-  const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = tint3d(WHEEL, accent, 0.55);
-  ctx.fillRect(0, 0, size, size);
-  ctx.strokeStyle = '#3a4250';
-  ctx.lineWidth = 4;
-  for (let i = -size; i < size * 2; i += 10) {
-    ctx.beginPath();
-    ctx.moveTo(i, 0);
-    ctx.lineTo(kind === 'mecanum' ? i - size : i, size);
-    ctx.stroke();
-  }
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  ROLLER_TEX_CACHE.set(key, tex);
-  return tex;
+const MM = 1 / 25.4;
+
+/**
+ * ONE WHEEL AS THE CATALOGUE SELLS IT. Every field is either PUBLISHED (cited at the constant
+ * that fills it) or DERIVED from published ones; nothing is styled. `rollers: 0` is a plain
+ * traction tyre, which is the absence of the whole roller mechanism rather than a variant of it.
+ */
+interface BbWheelPart {
+  /** outer radius — half the published diameter. */
+  r: number;
+  /** overall width across the wheel, outside face to outside face. */
+  w: number;
+  /** rollers per ROW. A mecanum has one row; an omni has two, staggered half a pitch. */
+  rollers: number;
+  rows: number;
+  /** the angle between a roller's OWN axis and the WHEEL's axle: 45° mecanum, 90° omni. */
+  rollerAngle: number;
+  /** the roller's radius at its waist, and its length along its own axis. */
+  rollerR: number;
+  rollerL: number;
+  /** side/core plate thickness and outer radius. */
+  plateT: number;
+  plateR: number;
 }
-const ROLLER_MAT_CACHE = new Map<string, THREE.MeshStandardMaterial>();
-function getRollerMat(kind: 'mecanum' | 'omni', accent: string = WHEEL): THREE.MeshStandardMaterial {
-  const key = `${kind}|${accent}`;
-  let m = ROLLER_MAT_CACHE.get(key);
-  if (!m) {
-    m = new THREE.MeshStandardMaterial({ map: getRollerTexture(kind, accent), roughness: 0.8 });
-    ROLLER_MAT_CACHE.set(key, m);
-    SHARED_MAT.add(m);
+
+// ── goBILDA 104 mm GripForce Mecanum Wheel, SKU 3625-0202-0104 ───────────────────────────────
+// PUBLISHED (gobilda.com product page): "Ø104mm"; "The 11 rollers deliver an incredibly smooth
+// ride while minimizing wheel width"; "40A Durometer Silicone Rubber Rollers"; "steel side
+// plates"; "236g Each"; sold as a four-wheel SET (two left-slant, two right-slant).
+// The 45° roller axis is not spelled out by goBILDA and does not need to be: it is the definition
+// of a mecanum wheel, and AndyMark states it for the equivalent part ("Angle: 45 degrees
+// (standard for mecanum design)").
+const BB_MEC_R = (104 * MM) / 2;
+/** rollers per wheel — PUBLISHED, the one roller count in this file that is not a choice. */
+const BB_MEC_ROLLERS = 11;
+/** steel, so THIN. APPROX: goBILDA publishes no plate thickness; 1.5 mm is ordinary sheet. */
+const BB_MEC_PLATE_T = 1.5 * MM;
+/**
+ * the roller's waist radius. ⚠️ APPROX, but BOUNDED, not picked: eleven parallel 45° rollers on a
+ * Ø104 rim sit `2ρ·sin(π/11)·cos45°` apart measured PERPENDICULAR to their own axes, so anything
+ * at or past half of that makes the neighbours interpenetrate — the ceiling is 0.346 in and this
+ * is 0.31, which leaves the 0.07-in daylight a real wheel has. `mecanumChecks` re-derives it.
+ */
+const BB_MEC_ROLLER_R = 0.31;
+/**
+ * ⚠️ **goBILDA PUBLISHES NO WIDTH FOR THIS WHEEL, AND 48 mm IS DERIVED RATHER THAN GUESSED.** A
+ * mecanum's rollers have to OVERLAP in azimuth or the wheel drops into a gap between them once a
+ * revolution; each roller covers `rollerL·sin45°` of circumference against a pitch of `2πρ/11`,
+ * and the width is what sets `rollerL`. 48 mm puts that overlap at 1.68×, which is the ordinary
+ * figure for a mecanum of this size — 37 mm would be the bare minimum (overlap exactly 1.0) and
+ * is visibly too narrow. APPROX, and flagged as such wherever it is used.
+ */
+const BB_MEC_W = 48 * MM;
+const BB_MECANUM: BbWheelPart = {
+  r: BB_MEC_R,
+  w: BB_MEC_W,
+  rollers: BB_MEC_ROLLERS,
+  rows: 1,
+  rollerAngle: Math.PI / 4,
+  rollerR: BB_MEC_ROLLER_R,
+  // the roller spans the clear width between the two plates, at 45°, so its AXIAL extent is
+  // exactly that clear width — which is what makes a mecanum's tread continuous across its face
+  rollerL: (BB_MEC_W - 2 * BB_MEC_PLATE_T - 0.1) * Math.SQRT2,
+  plateT: BB_MEC_PLATE_T,
+  // the plates carry the roller axles, so they reach a little past the roller centre-line and
+  // stop well inside the rolling radius — the rollers are what touches the mat, not the steel
+  plateR: BB_MEC_R - BB_MEC_ROLLER_R * 0.65,
+};
+
+// ── goBILDA 96 mm Omni Wheel, SKU 3624-0014-0096 ─────────────────────────────────────────────
+// PUBLISHED (gobilda.com product page): Ø96 mm; 50A rollers; "The core of the wheel is offset 8mm
+// on one side and 12mm on the other"; 14 mm centre thru-hole plus eight 16 mm-pattern and eight
+// 32 mm-pattern thru-holes; 119 g.
+// ⚠️ **96 mm IS THE LARGEST OMNI goBILDA SELLS** — the catalogue is 32 / 48 / 72 / 96 mm, and
+// there is no 104. So an X-drive does NOT ride on the mecanum's rolling radius and must not be
+// drawn as if it did: it is 0.157 in smaller in the radius, which is the real trade a team makes.
+// The 48 mm is goBILDA's own odometry-pod wheel and the 32 mm is smaller still; 72 mm would fit
+// but throws away rolling radius for nothing on a drivetrain this size.
+const BB_OMNI_R = (96 * MM) / 2;
+/** ⚠️ APPROX — goBILDA publishes no roller count. Nine per row is what the tiling asks for: an
+ *  omni's rollers lie END TO END around the rim (their axes ARE the tangent), so the pitch
+ *  `2ρ·sin(π/9)` = 1.16 in is the roller length, which at a 0.20-in waist is the stubby barrel
+ *  the part actually has. Two rows staggered half a pitch is PUBLISHED, in the offset core. */
+const BB_OMNI_ROLLERS = 9;
+const BB_OMNI_ROLLER_R = 0.2;
+const BB_OMNI_PLATE_T = 0.09;
+/** DERIVED, not typed: the two rows sit either side of the core plate and an omni roller's extent
+ *  along the AXLE is just its own diameter (its length runs tangentially), so the wheel is exactly
+ *  `plate + 4·rollerR` wide — 22.5 mm, which is what a 96 mm omni measures. */
+const BB_OMNI_W = BB_OMNI_PLATE_T + 4 * BB_OMNI_ROLLER_R;
+const BB_OMNI: BbWheelPart = {
+  r: BB_OMNI_R,
+  w: BB_OMNI_W,
+  rollers: BB_OMNI_ROLLERS,
+  rows: 2,
+  rollerAngle: Math.PI / 2,
+  rollerR: BB_OMNI_ROLLER_R,
+  rollerL: 2 * (BB_OMNI_R - BB_OMNI_ROLLER_R) * Math.sin(Math.PI / BB_OMNI_ROLLERS) * 0.92,
+  plateT: BB_OMNI_PLATE_T,
+  plateR: BB_OMNI_R - BB_OMNI_ROLLER_R + 0.1,
+};
+
+// ── goBILDA Hogback Traction Wheels, SKUs 3626-0014-0096 and 3626-0014-0072 ──────────────────
+// PUBLISHED (gobilda.com product pages): Ø96 mm / 82 g and Ø72 mm / 55 g, both 50A, both
+// "Plastic Core with Rubber Tread" with a bonded silicone tread and a "slight tread crown".
+// ⚠️ APPROX: no width is published for either. 32 mm and 28 mm are ordinary for the size, and the
+// CROWN is published, so the tyre is a lathe with a crowned profile rather than a cylinder.
+const BB_TRACTION_R = (96 * MM) / 2;
+const BB_TRACTION_W = 32 * MM;
+const BB_POD_TRACTION_R = (72 * MM) / 2;
+const BB_POD_TRACTION_W = 28 * MM;
+/** how far the crown stands proud of the tyre's own shoulders (in). PUBLISHED as "slight". */
+const BB_TREAD_CROWN = 0.05;
+function tractionPart(r: number, w: number): BbWheelPart {
+  return {
+    r,
+    w,
+    rollers: 0,
+    rows: 0,
+    rollerAngle: 0,
+    rollerR: 0,
+    rollerL: 0,
+    // the plastic CORE, which on a Hogback is most of the wheel and shows on both faces; the
+    // rubber is a bonded band round it
+    plateT: w,
+    plateR: r * 0.7,
+  };
+}
+const BB_TRACTION = tractionPart(BB_TRACTION_R, BB_TRACTION_W);
+const BB_POD_TRACTION = tractionPart(BB_POD_TRACTION_R, BB_POD_TRACTION_W);
+
+export type BbWheelKind = 'mecanum' | 'omni' | 'traction' | 'podTraction';
+export const BB_WHEEL_PARTS: Record<BbWheelKind, BbWheelPart> = {
+  mecanum: BB_MECANUM,
+  omni: BB_OMNI,
+  traction: BB_TRACTION,
+  podTraction: BB_POD_TRACTION,
+};
+
+/**
+ * THE WHEEL CHANNEL — sized by the WIDEST wheel any drivetrain puts in it, which is the mecanum.
+ *
+ * ⚠️ **THERE IS NO `BB_WHEEL_R` ANY MORE, AND ITS ABSENCE IS THE POINT.** A single "the wheel
+ * radius" was what let a tank, an X-drive and a swerve pod all be drawn at the mecanum's size;
+ * every drivetrain reads its own part out of `BB_WHEEL_PARTS` now, through `wheelKindOf`. What
+ * legitimately IS one number is the CHANNEL's width — `BB_PLATE_GAP`, `endWheelSpanY`, the corner
+ * end plates — because that is one pocket cut for the biggest thing that goes in it, so a tank's
+ * narrower 96 mm Hogback simply has room to spare. Sizing the pocket per drivetrain would make a
+ * frame that changes shape when the picker moves, for no gain a camera can see.
+ */
+const BB_WHEEL_W = BB_MECANUM.w;
+/** clear gap between the inner and outer plate: the wheel lives in it, protected. */
+const BB_PLATE_GAP = BB_WHEEL_W + 0.4;
+
+/**
+ * ⚠️ **THE TIER CHANGES THE TESSELLATION AND NOTHING ELSE** (owner, 2026-09-21: "of course, its
+ * fidelity and simplification should depend on graphics settings").
+ *
+ * Two levels, because the honest question a wheel asks the GPU is "how many sides does a barrel
+ * get", and a third answer between five and eight buys nothing measurable. What a level may NOT
+ * change is the roller COUNT, the roller ANGLE or the handedness — those are the machine, and a
+ * player on Low is looking at the same robot as a player on Ultra.
+ */
+export type BbWheelDetail = 'low' | 'high';
+
+/**
+ * WHICH LEVEL A DEVICE GETS — and it is read off the settings that already exist, because §4.4's
+ * table has no room for a seventeenth dial and this does not need one.
+ *
+ * TWO existing inputs, and each is doing its own job rather than being borrowed:
+ *  • **`meshDetail`** is literally "which decimation of the geometry" — the row that already
+ *    picks `field.glb` vs `field-low.glb` and the one row the UI already warns needs a rebuild.
+ *    Set to `low` by hand on any preset, it means low here too. That is the setting keeping its
+ *    promise, not an override.
+ *  • **`tier`** is the preset COLUMN, which is how the PIXEL BUDGET is already chosen
+ *    (`GFX_PIXEL_BUDGET`) for exactly the reason that applies here: there is no single setting
+ *    that separates Medium from High — their sixteen values differ only in AA, shadows and
+ *    element shadows, none of which is about mesh density — and Medium is a budget, not a
+ *    preference for coarse wheels. So Low and Medium get the cheap tessellation and High and
+ *    Ultra the full one, which is the split the request asks for.
+ *
+ * The REPLAY EXPORT passes a fixed `high` column (`opts.quality`), so an exported frame always
+ * gets the full wheel whatever the machine rendering it is set to.
+ */
+export function bbWheelDetail(settings: Pick<GraphicsSettings, 'meshDetail'>, tier: GraphicsTier): BbWheelDetail {
+  if (settings.meshDetail === 'low') return 'low';
+  return tier === 'low' || tier === 'medium' ? 'low' : 'high';
+}
+
+const WHEEL_LOD: Record<BbWheelDetail, {
+  /** sides of a roller barrel, and profile samples along it. */
+  rollerSeg: number;
+  rollerPts: number;
+  /** sides of a plate / tyre lathe, and profile samples across a crowned tyre. */
+  plateSeg: number;
+  tyrePts: number;
+  /** lightening holes in a side plate (0 = a plain disc), and axial tread bars on a tyre. */
+  holes: number;
+  ribs: number;
+}> = {
+  low: { rollerSeg: 5, rollerPts: 3, plateSeg: 12, tyrePts: 2, holes: 0, ribs: 0 },
+  high: { rollerSeg: 8, rollerPts: 7, plateSeg: 34, tyrePts: 5, holes: 8, ribs: 20 },
+};
+
+/**
+ * THE BARREL PROFILE OF ONE ROLLER — DERIVED, NOT STYLED.
+ *
+ * A mecanum or omni roller is neither a cylinder nor an ellipse: its surface has to lie ON the
+ * WHEEL's own outer cylinder, or the wheel thumps once per roller. Put the roller's axis `ρ` from
+ * the wheel axle and tilt it `α` off it; a point `s` along the roller then sits
+ * `hypot(ρ, s·sin α)` from the axle, so the roller's radius there must be `R − hypot(ρ, s·sin α)`.
+ * At the waist that is exactly `rollerR` by construction; at the ends it tapers, and by how much
+ * is the wheel's arithmetic rather than a taste call. It is also why an omni roller (α = 90°) is
+ * the stubbier, more sharply waisted barrel of the two — the taper runs at full rate.
+ *
+ * The two `0.02` end points are the flat caps: a `LatheGeometry` whose profile does not reach the
+ * axis is an open tube, and an open tube's back faces show through the wheel from the far side.
+ */
+function barrelProfile(part: BbWheelPart, pts: number): THREE.Vector2[] {
+  const rho = part.r - part.rollerR;
+  const sinA = Math.sin(part.rollerAngle);
+  const out: THREE.Vector2[] = [new THREE.Vector2(0.02, -part.rollerL / 2)];
+  for (let i = 0; i <= pts; i++) {
+    const s = -part.rollerL / 2 + (part.rollerL * i) / pts;
+    out.push(new THREE.Vector2(Math.max(0.03, part.r - Math.hypot(rho, s * sinA)), s));
   }
-  return m;
+  out.push(new THREE.Vector2(0.02, part.rollerL / 2));
+  return out;
+}
+
+/**
+ * EVERY ROLLER ON ONE WHEEL, placed in the wheel's own frame (axle = local +y, the convention
+ * `CylinderGeometry` already uses here so a wheel needs no rotation to face outward).
+ *
+ * ⚠️ **`hand` IS THE WHOLE OF MECANUM HANDEDNESS, AND THE SIGN IS THE ONE THING TO GET RIGHT.**
+ * A roller's axis is `cos α·ŷ − hand·sin α·t̂` — the axle direction, leaned into the circumference
+ * one way or the other. The azimuths are phased so a roller sits exactly at TOP DEAD CENTRE,
+ * which is both the only roller a top-down camera can see and what `mecanumChecks` measures: at
+ * the top, `t̂ = −x̂`, so `hand = +1` points that roller along `(+1, +1)` in the chassis plane —
+ * forward-and-left, i.e. a LEFT-slant wheel, which goes at the FRONT-LEFT and REAR-RIGHT corners
+ * (AndyMark, on the equivalent part: "right wheels at the FRONT RIGHT and the REAR LEFT position,
+ * while the 'left' wheel would be in the FRONT LEFT and REAR RIGHT"; REV: "Following diagonal
+ * lines created from the angle of the rollers should form an 'X' … viewed from above").
+ * `buildWheels` picks it with `x * sy >= 0 ? 1 : -1`, which is the SAME expression the 2D sprite
+ * hatches its rollers by — so the two views cannot disagree about which wheel is which.
+ */
+function rollerGeometries(part: BbWheelPart, detail: BbWheelDetail, hand: 1 | -1): THREE.BufferGeometry[] {
+  const lod = WHEEL_LOD[detail];
+  const rho = part.r - part.rollerR;
+  const cosA = Math.cos(part.rollerAngle);
+  const sinA = Math.sin(part.rollerAngle);
+  const profile = barrelProfile(part, lod.rollerPts);
+  const out: THREE.BufferGeometry[] = [];
+  // the rows sit either side of the core plate; ONE row sits on it
+  const rowYs = part.rows > 1 ? [-(part.plateT / 2 + part.rollerR), part.plateT / 2 + part.rollerR] : [0];
+  for (let row = 0; row < rowYs.length; row++) {
+    // ⚠️ THE SECOND ROW IS STAGGERED HALF A PITCH, which is the entire point of a two-row omni:
+    // one row's rollers cover the gaps the other leaves, so the wheel never rolls off the end of
+    // a roller onto nothing. Drawing both rows in phase is a wheel with a flat spot.
+    const phase = Math.PI / 2 + (row * Math.PI) / part.rollers;
+    for (let i = 0; i < part.rollers; i++) {
+      const theta = phase + (i * Math.PI * 2) / part.rollers;
+      const rx = Math.cos(theta);
+      const rz = Math.sin(theta);
+      // radial, and the tangent it leans into
+      const rad = new THREE.Vector3(rx, 0, rz);
+      const tan = new THREE.Vector3(-rz, 0, rx);
+      const axis = new THREE.Vector3(0, cosA, 0).addScaledVector(tan, -hand * sinA).normalize();
+      const third = new THREE.Vector3().crossVectors(rad, axis);
+      const g = new THREE.LatheGeometry(profile, lod.rollerSeg);
+      g.applyMatrix4(
+        new THREE.Matrix4()
+          .makeBasis(rad, axis, third)
+          .setPosition(rx * rho, rowYs[row], rz * rho),
+      );
+      out.push(g);
+    }
+  }
+  return out;
+}
+
+/**
+ * THE SIDE (or CORE) PLATES — a disc with the hub pattern in it, lying in the wheel's x–z plane.
+ *
+ * The bore set is goBILDA's own, PUBLISHED for these wheels: a 14 mm centre thru-hole and eight
+ * more on the 32 mm pattern. (The 16 mm pattern is published too and is NOT drawn: at 8 mm from
+ * the axis its holes overlap the 14 mm bore itself, so at this scale it is a smudge rather than a
+ * pattern.) At `low` the holes go and the plate is a plain disc — a hole you cannot resolve is
+ * triangles spent on nothing.
+ */
+function plateGeometries(part: BbWheelPart, detail: BbWheelDetail): THREE.BufferGeometry[] {
+  const lod = WHEEL_LOD[detail];
+  // ⚠️ `rows === 1` IS THE ONLY TWO-PLATE CASE. A mecanum's rollers hang BETWEEN two side plates;
+  // an omni's two rows sit either side of ONE core, and a traction wheel's core IS the wheel. The
+  // first cut keyed on `rows > 1` and gave traction two plates at the same y, one inside the other.
+  const ys = part.rows === 1 ? [-(part.w / 2 - part.plateT / 2), part.w / 2 - part.plateT / 2] : [0];
+  const out: THREE.BufferGeometry[] = [];
+  for (const y of ys) {
+    let g: THREE.BufferGeometry;
+    if (lod.holes > 0) {
+      const shape = new THREE.Shape();
+      shape.absarc(0, 0, part.plateR, 0, Math.PI * 2, false);
+      const bore = new THREE.Path();
+      bore.absarc(0, 0, (14 * MM) / 2, 0, Math.PI * 2, true);
+      shape.holes.push(bore);
+      const boltR = (32 * MM) / 2;
+      const holeR = Math.min(0.11, (boltR * Math.PI) / lod.holes / 2.2);
+      for (let i = 0; i < lod.holes; i++) {
+        const a = (i * Math.PI * 2) / lod.holes;
+        const p = new THREE.Path();
+        p.absarc(Math.cos(a) * boltR, Math.sin(a) * boltR, holeR, 0, Math.PI * 2, true);
+        shape.holes.push(p);
+      }
+      // ⚠️ `curveSegments` IS PER CURVE, AND AT 5 THE PLATE WAS A PENTAGON-ISH BLOB beside a
+      // perfectly round ring of rollers — the one place in this wheel where the tessellation was
+      // visibly the wrong shape rather than merely coarse. 12 makes the disc read as a disc at
+      // the range the builder's turntable puts a camera at, and it costs the high tier ~500
+      // triangles, which is inside the budget the RENDER lane measures.
+      const ex = new THREE.ExtrudeGeometry(shape, { depth: part.plateT, bevelEnabled: false, curveSegments: 12, steps: 1 });
+      // the same one-line reorientation `platePlane` makes: shape-y → world z, depth → world −y
+      ex.rotateX(Math.PI / 2);
+      ex.translate(0, part.plateT / 2, 0);
+      g = ex;
+    } else {
+      g = new THREE.CylinderGeometry(part.plateR, part.plateR, part.plateT, lod.plateSeg);
+    }
+    g.translate(0, y, 0);
+    out.push(g);
+  }
+  return out;
+}
+
+/**
+ * A TRACTION TYRE — a bonded rubber band on its plastic core, with the published CROWN.
+ *
+ * The band is a closed lathe section (inner face at the core's own radius, out to a crowned
+ * outer face and back), not a cylinder: a cylinder's square shoulders are the reason the old
+ * wheel read as a hockey puck. The tread is AXIAL bars — `ribs` of them, running across the roll
+ * direction, which is what a traction tread does and the only pattern that may ever appear here.
+ * ⚠️ NOTHING ON THIS WHEEL IS SLANTED, at any tier. A slant on a traction wheel is a picture of a
+ * mecanum, which is the bug this whole block exists to end.
+ */
+function tyreGeometries(part: BbWheelPart, detail: BbWheelDetail): THREE.BufferGeometry[] {
+  const lod = WHEEL_LOD[detail];
+  const hw = part.w / 2;
+  const ri = part.plateR;
+  const pts: THREE.Vector2[] = [new THREE.Vector2(ri, -hw)];
+  for (let i = 0; i <= lod.tyrePts; i++) {
+    const t = -1 + (2 * i) / lod.tyrePts;
+    pts.push(new THREE.Vector2(part.r - BB_TREAD_CROWN * t * t, t * hw));
+  }
+  pts.push(new THREE.Vector2(ri, hw), new THREE.Vector2(ri, -hw));
+  const out: THREE.BufferGeometry[] = [new THREE.LatheGeometry(pts, lod.plateSeg)];
+  for (let i = 0; i < lod.ribs; i++) {
+    const a = (i * Math.PI * 2) / lod.ribs;
+    const bar = new THREE.BoxGeometry(0.09, part.w * 0.84, 0.15);
+    // ⚠️ SET IN FAR ENOUGH THAT NO CORNER OF THE BAR CROSSES THE PUBLISHED DIAMETER. A bar centred
+    // at `r − 0.035` puts its outer face at `r + 0.010`: 0.011 in proud of the tyre, which the
+    // "stays inside its own published diameter" and "nothing is below the floor" checks both
+    // caught — the same 0.011 in, once as an oversized wheel and once as a wheel dug into the mat.
+    bar.translate(part.r - 0.06, 0, 0);
+    bar.rotateY(-a);
+    out.push(bar);
+  }
+  return out;
+}
+
+/**
+ * ONE DRIVE WHEEL, as a `THREE.Group` so the whole assembly takes one `rotation.y` and the
+ * rollers sweep WITH it — which is the other half of getting handedness right, and something a
+ * painted texture could never do at all.
+ *
+ * Two meshes, because a steel plate and a silicone roller are two materials and the contrast
+ * between them is most of what makes the part legible; both geometries come from `framePart`, so
+ * every wheel of a kind on every robot on the field shares the same two buffers. `accent` tints
+ * the RUBBER (the roller barrels, the tyre band) and leaves the metal alone — the same split the
+ * 2D sprite makes, and `tint3d(TREAD, TREAD, x) === TREAD` keeps the default a byte-for-byte
+ * no-op for callers that predate cosmetics.
+ */
+export function buildDriveWheel(
+  kind: BbWheelKind,
+  detail: BbWheelDetail = 'high',
+  accent: string = TREAD,
+  hand: 1 | -1 = 1,
+): THREE.Group {
+  const part = BB_WHEEL_PARTS[kind];
+  const g = new THREE.Group();
+  /**
+   * ⚠️ `ZYX`, AND AN X-DRIVE IS WHY. A `THREE.Euler` defaults to `XYZ`, i.e. `R = Rx·Ry·Rz`, so
+   * the `rotation.z` an X-drive cants its wheels by would be applied BEFORE the `rotation.y` the
+   * sync rolls them by — and the roll would then be about the CHASSIS's vertical-ish axis rather
+   * than about the wheel's own canted axle, which reads as a wheel skidding sideways on the spot.
+   * `ZYX` puts the roll inside the cant. It is the same class of bug as the turret's two nodes
+   * (`bb-turret-head` / `bb-turret-pitch`), which this repo has already paid for once.
+   */
+  g.rotation.order = 'ZYX';
+  const rubber = solidMat(tint3d(TREAD, accent, 0.45), 0.95, 0);
+  // goBILDA's own word for this wheel's plates is "steel", so they are rougher and far more
+  // metallic than the extruded-aluminium tone the frame uses
+  const steel = solidMat(ALU, 0.35, 0.7);
+  if (part.rollers > 0) {
+    const rollers = framePart(`wheel:${kind}:rollers:${detail}:${hand}`, () => rollerGeometries(part, detail, hand));
+    const plates = framePart(`wheel:${kind}:plates:${detail}`, () => plateGeometries(part, detail));
+    const rm = cast(new THREE.Mesh(rollers, rubber));
+    rm.name = 'bb-wheel-rollers';
+    g.add(rm);
+    const pm = cast(new THREE.Mesh(plates, steel));
+    // ⚠️ NAMED, AND NOT FOR THIS FILE'S BENEFIT. `podChecks` (RENDER lane) picks the swerve fork
+    // out of a pod by "the first mesh with no name", which was true while the pod's only other
+    // meshes were the named tyre and hub. A wheel that adds an anonymous mesh of its own would
+    // silently become "the fork" and the whole silhouette measurement would move to it.
+    pm.name = 'bb-wheel-plates';
+    g.add(pm);
+  } else {
+    const tyre = framePart(`wheel:${kind}:tyre:${detail}`, () => tyreGeometries(part, detail));
+    const core = framePart(`wheel:${kind}:core:${detail}`, () => plateGeometries(part, detail));
+    const tm = cast(new THREE.Mesh(tyre, rubber));
+    tm.name = 'bb-wheel-tread';
+    g.add(tm);
+    const cm = cast(new THREE.Mesh(core, steel));
+    cm.name = 'bb-wheel-core';
+    g.add(cm);
+  }
+  return g;
 }
 
 /** shared wheel geometry, one per (radius, width, segments) — four to six per robot, identical. */
@@ -395,21 +785,45 @@ function wheelGeometry(r: number, w: number): THREE.CylinderGeometry {
  * side; everything else gets the four corners.
  */
 function axleXs(spec: RobotSpec): number[] {
-  const end = spec.length / 2 - BB_WHEEL_R - 0.7;
+  // the END axle is set in by the wheel THIS drivetrain carries, not by the channel's own
+  // mecanum: a tank's 96 mm Hogback is 0.157 in smaller in the radius and sits that much further
+  // out, which is where a real six-wheel drop-centre puts it
+  const end = spec.length / 2 - BB_WHEEL_PARTS[wheelKindOf(spec.drivetrain)].r - 0.7;
   if (spec.drivetrain === 'tank') return [end, 0, -end];
   return [end, -end];
 }
 
 /**
+ * WHICH REAL PART A DRIVETRAIN RUNS. The one place the mapping is written, read by `buildWheels`,
+ * by `axleXs`, by the X-drive insets and by the RENDER lane — so "an X-drive is on omnis" is a
+ * fact with one home rather than a branch repeated at four call sites.
+ *
+ * BUTTERFLY answers `mecanum` because that is its CORNER set, the one on the axle line the
+ * channel and the end plates are cut for; its inboard traction twin is placed off `traction`
+ * explicitly in `buildWheels`.
+ */
+export function wheelKindOf(dt: RobotSpec['drivetrain']): BbWheelKind {
+  if (dt === 'xdrive') return 'omni';
+  if (dt === 'tank') return 'traction';
+  if (dt === 'swerve') return 'podTraction';
+  return 'mecanum';
+}
+
+/**
  * ⚠️ AN X-DRIVE OMNI DOES NOT LIVE IN THE WHEEL CHANNEL EITHER (owner, 2026-09-19: "selecting x
  * drive makes the wheels stick out of the robot"). Canted 45°, a wheel `2R` long and `W` wide
- * reaches `(2R + W) / (2·√2)` = 1.945 in along BOTH chassis axes, and the channel's centre-line is
- * only 1.17 in inside the frame — so every wheel stood 0.78 in proud of its side plate. Same fix
- * as the swerve pod: inset the wheel from both faces by its own canted reach, past the side plate
+ * reaches `(2R + W) / (2·√2)` along BOTH chassis axes, and the channel's centre-line is only
+ * 1.17 in inside the frame — so every wheel stood 0.78 in proud of its side plate. Same fix as
+ * the swerve pod: inset the wheel from both faces by its own canted reach, past the side plate
  * laterally and past the cross member fore-and-aft (the rail's underside is below the wheel's
  * crown), and `buildFrame` drops the inner side plate, which would otherwise run through it.
+ *
+ * ⚠️ IT IS THE OMNI'S REACH, NOT THE MECANUM'S. The formula was `BB_WHEEL_R`/`BB_WHEEL_W` — the
+ * channel's mecanum — and an X-drive has never had a mecanum in it. On the real part (goBILDA's
+ * 96 mm omni, 22.5 mm wide against the mecanum's 48) the reach is 1.650 in rather than the old
+ * 1.945, so the wheels tuck FURTHER inside the frame than the rule they were checked against.
  */
-const BB_XDRIVE_REACH = (2 * BB_WHEEL_R + BB_WHEEL_W) / (2 * Math.SQRT2);
+const BB_XDRIVE_REACH = (2 * BB_OMNI.r + BB_OMNI.w) / (2 * Math.SQRT2);
 const BB_XDRIVE_CLEAR = 0.15;
 export const BB_XDRIVE_INSET_X = BB_XDRIVE_REACH + BB_RAIL_T + BB_XDRIVE_CLEAR;
 export const BB_XDRIVE_INSET_Y = BB_XDRIVE_REACH + BB_PLATE_T + BB_XDRIVE_CLEAR;
@@ -423,8 +837,18 @@ export const BB_XDRIVE_INSET_Y = BB_XDRIVE_REACH + BB_PLATE_T + BB_XDRIVE_CLEAR;
  * in ABOVE the deck, through the structure it is supposed to hang from. A 3-in wheel is what COTS
  * FTC swerve modules actually run, and it makes the stack close: wheel [0, 3.00], fork plates
  * [0.40, 3.60], top plate [3.60, 3.90], slew ring [3.90, 4.34].
+ *
+ * ⚠️ AND IT IS A REAL 72 mm PART, NOT A TYPED 3.00. goBILDA's catalogue has no 3-in wheel: the
+ * size below the 96 mm the rest of the drivetrains run is the **72 mm Hogback Traction Wheel**
+ * (SKU 3626-0014-0072, 50A, 55 g), which is 2.835 in — inside the 3.00 the stack above was sized
+ * for, so every clearance in that paragraph gets 0.165 in BETTER and nothing above the wheel
+ * moves. Everything in the pod is derived from this constant, so the fork boss, the kingpin and
+ * the belt's lower pulley all followed it down on their own.
  */
-const BB_POD_WHEEL_R = 1.5;
+const BB_POD_WHEEL_R = BB_POD_TRACTION.r;
+/** the pod's tyre is that same part's width — the fork is built around the wheel, not around the
+ *  mecanum channel's 48 mm, which is what `BB_POD_FORK_Y` used to read. */
+const BB_POD_WHEEL_W = BB_POD_TRACTION.w;
 /** thickness of the fork plate either side of the wheel, and the clearance out to it. */
 const BB_POD_FORK_T = 0.22;
 /**
@@ -454,7 +878,7 @@ const BB_POD_RING_FLANGE = 0.15;
 /** the pod's top plate, UNDER the ring, which is in turn under the deck plate's own underside. */
 const BB_POD_PLATE_Z = BB_DECK_Z - 0.26 - BB_POD_RING_H;
 /** where each fork plate's mid-plane sits either side of the wheel. */
-const BB_POD_FORK_Y = BB_WHEEL_W / 2 + 0.2;
+const BB_POD_FORK_Y = BB_POD_WHEEL_W / 2 + 0.2;
 /** the pod's drive: a pulley on the wheel axle and a second at the top plate, with a belt
  *  between them down the OUTBOARD face of one fork plate. This is the one part the pod was
  *  missing that says the wheel is DRIVEN as well as steered, and it costs one merged geometry
@@ -482,8 +906,18 @@ const BB_POD_INSET = Math.max(Math.hypot(BB_POD_L, BB_POD_W) / 2, BB_POD_RING_R 
  * steering motor lives. It sits on the DECK and drives the ring through the belt or gear the ring
  * is toothed for, so the pod carries the ring and nothing above it. The ring is what says the pod
  * is STEERED; the belt down the fork below is what says the wheel is also DRIVEN. */
-/** how far a BUTTERFLY lifts the set that is off the ground (in). */
-const BB_BUTTERFLY_LIFT = 0.6;
+/**
+ * how far a BUTTERFLY lifts the set that is off the ground (in).
+ *
+ * ⚠️ **THE DECK IS THE CEILING, AND IT BECAME BINDING WHEN THE WHEEL BECAME 104 mm.** A typed 0.6
+ * put the lifted mecanum's crown at `2 × 2.047 + 0.6` = 4.694, through a deck plate whose
+ * underside is at `BB_DECK_Z − 0.26` = 4.34 and whose top face is 4.60 — a wheel poking out of the
+ * lid the owner had made full-footprint the day before. On the old 4.00-in wheel it landed exactly
+ * on 4.60 and got away with it. Derived against the deck now, so a future wheel change cannot
+ * reintroduce it: the lift is whatever headroom the TALLEST set has left, capped at the 0.6 this
+ * always wanted.
+ */
+const BB_BUTTERFLY_LIFT = Math.min(0.6, BB_DECK_Z - 0.26 - 2 * BB_MECANUM.r);
 
 /**
  * ONE SWERVE POD'S HARDWARE, in the pod's own frame: origin at the wheel's contact patch, +x the
@@ -591,15 +1025,19 @@ function podParts(): THREE.Object3D[] {
  * `accent` (the cosmetic accent) tints the tyre; it defaults to `TREAD` — `tint3d(TREAD, TREAD, x)
  * === TREAD` — so the RENDER lane's existing no-argument call is unchanged.
  */
-export function buildSwervePod(accent: string = TREAD): THREE.Group {
+export function buildSwervePod(accent: string = TREAD, detail: BbWheelDetail = 'high'): THREE.Group {
   const pod = new THREE.Group();
-  const wheel = new THREE.Mesh(wheelGeometry(BB_POD_WHEEL_R, BB_WHEEL_W), solidMat(tint3d(TREAD, accent, 0.4), 0.95, 0));
+  // ⚠️ A GROUP, NOT A MESH, AND THE NAME MOVED WITH IT. The tyre is `buildDriveWheel`'s real
+  // 72 mm Hogback now — a crowned rubber band with axial tread on its plastic core, which is two
+  // meshes — so `bb-pod-wheel` names the assembly. Anything measuring it wants a `Box3` over the
+  // node, which `setFromObject` gives for a group exactly as it did for the cylinder.
+  const wheel = buildDriveWheel('podTraction', detail, accent);
   wheel.name = 'bb-pod-wheel';
   wheel.position.set(0, 0, BB_POD_WHEEL_R);
-  pod.add(cast(wheel));
+  pod.add(wheel);
   // the HUB, a whisker proud of the tyre on both faces so it reads as a ring around the fork's
   // boss rather than disappearing behind it
-  const hub = new THREE.Mesh(wheelGeometry(BB_POD_HUB_R, BB_WHEEL_W + 0.14), solidMat(ALU, 0.4, 0.5));
+  const hub = new THREE.Mesh(wheelGeometry(BB_POD_HUB_R, BB_POD_WHEEL_W + 0.14), solidMat(ALU, 0.4, 0.5));
   hub.name = 'bb-pod-hub';
   hub.position.set(0, 0, BB_POD_WHEEL_R);
   pod.add(cast(hub));
@@ -613,22 +1051,44 @@ interface BbWheels {
   nodes: THREE.Object3D[];
   /** SWERVE: the four pod groups in `moduleAngles` order — [FL, FR, BL, BR]. */
   pods: THREE.Group[];
-  /** BUTTERFLY: the two wheel sets, so the sync can drop whichever one is down. */
-  traction: THREE.Object3D[];
-  roller: THREE.Object3D[];
+  /** BUTTERFLY: the two wheel sets, so the sync can drop whichever one is down. Each carries its
+   *  OWN grounded centre height, because the two sets are two different parts now — a 104 mm
+   *  mecanum at the corners and a 96 mm Hogback inboard — and one `BB_WHEEL_R` for both would
+   *  bury the smaller one 0.157 in in the tiles. */
+  traction: BbLiftSet[];
+  roller: BbLiftSet[];
+  /** every wheel that TURNS with the drive, and the rolling radius to turn it at. */
+  spin: BbSpinWheel[];
+}
+interface BbLiftSet {
+  node: THREE.Object3D;
+  /** centre height with this set on the floor. */
+  z: number;
+}
+interface BbSpinWheel {
+  node: THREE.Object3D;
+  r: number;
 }
 
 /**
  * DRIVETRAIN-STYLED WHEELS, BETWEEN THE PLATES (owner playtest #16, and swerve 2026-09-19).
  *
  * `RobotSpec.drivetrain` is one of `mecanum | tank | swerve | xdrive | butterfly` (`types.ts`) —
- * geometry only, no physics consequence — and ALL FIVE are drawn differently now:
- *  • TANK — six traction wheels, three a side, plain dark rubber.
- *  • MECANUM — four wheels with the 45° roller stripe.
- *  • X-DRIVE — four OMNIS, canted ±45° ACROSS their corners, with the 90° roller stripe.
- *  • SWERVE — four full modules: wheel in a twin-plate fork, kingpin, toothed slew ring, motor.
+ * geometry only, no physics consequence — and ALL FIVE carry a different REAL PART now
+ * (`wheelKindOf`, `BB_WHEEL_PARTS`); none of them carries a painted stripe:
+ *  • TANK — six goBILDA 96 mm Hogback traction wheels, three a side, crowned rubber on a
+ *    plastic core with AXIAL tread bars. Nothing on it is slanted.
+ *  • MECANUM — four goBILDA 104 mm GripForce mecanums: eleven modelled barrel rollers on 45°
+ *    axles between two steel side plates, HANDED per corner so the four form the X.
+ *  • X-DRIVE — four goBILDA 96 mm omnis, two staggered rows of nine tangential barrels each,
+ *    canted ±45° ACROSS their corners.
+ *  • SWERVE — four full modules on 72 mm Hogbacks: wheel in a twin-plate fork, kingpin, ring.
  *  • BUTTERFLY — BOTH sets on each side, mecanum at the corners and traction inboard, with the
  *    one that is up visibly lifted.
+ *
+ * ⚠️ **THE ONLY 45° IN THIS FILE IS A MECANUM ROLLER** (owner, 2026-09-21: "it makes no sense for
+ * the wheel to have slant patterns"). It used to be a texture, and the texture went on three of
+ * the five. A slant is hardware — see `BB_WHEEL_PARTS`'s header.
  *
  * ⚠️ X-DRIVE AND BUTTERFLY USED TO FALL THROUGH TO THE MECANUM WHEEL, AND ONE OF THOSE WAS A
  * BUG WHILE THE OTHER WAS ONLY THIN. X-drive was wrong in a way the 2D map already disagreed
@@ -643,14 +1103,14 @@ interface BbWheels {
  * Every wheel sits at `y = ±(width/2 − plate − gap/2)`, i.e. in the channel between the inner
  * and outer side plate, which is what "wheels protected between parallel plates" means.
  */
-export function buildWheels(spec: RobotSpec, accent: string = TREAD): BbWheels {
-  const out: BbWheels = { nodes: [], pods: [], traction: [], roller: [] };
+export function buildWheels(spec: RobotSpec, accent: string = TREAD, detail: BbWheelDetail = 'high'): BbWheels {
+  const out: BbWheels = { nodes: [], pods: [], traction: [], roller: [], spin: [] };
   const wheelY = spec.width / 2 - BB_PLATE_T - BB_PLATE_GAP / 2;
   const hl = spec.length / 2;
   const hw = spec.width / 2;
   const dt = spec.drivetrain;
-  const mat = dt === 'tank' ? solidMat(tint3d(TREAD, accent, 0.5), 0.95, 0) : getRollerMat(dt === 'xdrive' ? 'omni' : 'mecanum', accent);
-  const geo = wheelGeometry(BB_WHEEL_R, BB_WHEEL_W);
+  const kind = wheelKindOf(dt);
+  const part = BB_WHEEL_PARTS[kind];
   for (const x of axleXs(spec)) {
     for (const sy of [1, -1] as const) {
       if (dt === 'swerve') {
@@ -664,17 +1124,35 @@ export function buildWheels(spec: RobotSpec, accent: string = TREAD): BbWheels {
         // inside the frame; `wheelY` (the channel between the two side plates) measured +0.88 in
         // outside it at 45° of steer. `buildFrame` drops the inner side plate for swerve to make
         // room, because a chassis on pods has no wheel channel to draw.
-        const pod = buildSwervePod(accent);
+        const pod = buildSwervePod(accent, detail);
         pod.name = `robot:pod:${out.pods.length}`;
         pod.position.set((Math.sign(x) || 1) * (hl - BB_POD_INSET), sy * (hw - BB_POD_INSET), 0);
         out.nodes.push(pod);
         out.pods.push(pod);
+        const podWheel = pod.getObjectByName('bb-pod-wheel');
+        if (podWheel) out.spin.push({ node: podWheel, r: BB_POD_WHEEL_R });
         continue;
       }
-      // CylinderGeometry's axis is local Y by default — exactly a wheel's axle direction
-      // (chassis left-right), so the flat discs already face outward with no rotation needed.
-      const wheel = cast(new THREE.Mesh(geo, mat));
-      wheel.position.set(x, sy * wheelY, BB_WHEEL_R);
+      /**
+       * ⚠️ HANDEDNESS. `x * sy >= 0` is the MAIN diagonal — front-left and rear-right — and it is
+       * the same expression the 2D sprite hatches its mecanum rollers by and the same one the
+       * X-drive cant below uses, deliberately: three renderings of one machine, one predicate.
+       * `hand: 1` builds a LEFT-slant wheel (see `rollerGeometries`), which is the wheel that
+       * belongs at those two corners, so the four top rollers lie along the two diagonals and
+       * form the X. A wheel is `hand`-keyed in `framePart`, so the left pair and the right pair
+       * share one buffer each rather than four.
+       *
+       * It is inert for every other drivetrain — an omni and a traction wheel have no handedness
+       * at all — and passing it anyway keeps the placement loop one loop.
+       */
+      const hand: 1 | -1 = x * sy >= 0 ? 1 : -1;
+      // the wheel's axle is its local Y (the `CylinderGeometry`/`LatheGeometry` convention this
+      // file builds every round part on), which is chassis left-right — so a wheel needs no
+      // rotation to face outward, and `rotation.y` is its roll.
+      const wheel = buildDriveWheel(kind, detail, accent, hand);
+      wheel.name = `robot:wheel:${out.spin.length}`;
+      wheel.position.set(x, sy * wheelY, part.r);
+      out.spin.push({ node: wheel, r: part.r });
       if (dt === 'xdrive') {
         // at the CORNER, inset by the canted wheel's own reach — see `BB_XDRIVE_INSET_X`
         wheel.position.x = (Math.sign(x) || 1) * Math.max(0.5, hl - BB_XDRIVE_INSET_X);
@@ -683,15 +1161,19 @@ export function buildWheels(spec: RobotSpec, accent: string = TREAD): BbWheels {
       }
       out.nodes.push(wheel);
       if (dt === 'butterfly') {
-        // the MECANUM set is the corner set; the TRACTION set is inboard on its own axle, narrow
-        // so the two read as two sets rather than as one fat wheel. `butterflyTank` decides which
-        // one is down — the sync does that, so a preview shows the spawn default (mecanum down).
-        out.roller.push(wheel);
-        const tx = x - Math.sign(x) * (BB_WHEEL_R * 2 + 0.5);
-        const tw = new THREE.Mesh(wheelGeometry(BB_WHEEL_R, BB_WHEEL_W * 0.7), solidMat(tint3d(TREAD, accent, 0.5), 0.95, 0));
-        tw.position.set(tx, sy * wheelY, BB_WHEEL_R + BB_BUTTERFLY_LIFT);
-        out.nodes.push(cast(tw));
-        out.traction.push(tw);
+        // the MECANUM set is the corner set; the TRACTION set is a real 96 mm Hogback inboard on
+        // its own axle — narrower AND smaller in the radius, so the two read as two different
+        // parts rather than as one fat wheel. `butterflyTank` decides which one is down — the
+        // sync does that, so a preview shows the spawn default (mecanum down).
+        out.roller.push({ node: wheel, z: part.r });
+        const tPart = BB_WHEEL_PARTS.traction;
+        const tx = x - Math.sign(x) * (part.r + tPart.r + 0.5);
+        const tw = buildDriveWheel('traction', detail, accent);
+        tw.name = `robot:wheel:tank:${out.traction.length}`;
+        tw.position.set(tx, sy * wheelY, tPart.r + BB_BUTTERFLY_LIFT);
+        out.nodes.push(tw);
+        out.traction.push({ node: tw, z: tPart.r });
+        out.spin.push({ node: tw, r: tPart.r });
       }
     }
   }
@@ -835,7 +1317,14 @@ const BB_ENDPLATE_MARGIN = 0.15;
  * drawn there. `s` is the side sign, `+1` the robot's LEFT and `−1` its RIGHT. */
 export function endWheelSpanY(spec: RobotSpec, s: 1 | -1): { center: number; half: number } {
   const hw = spec.width / 2;
-  if (spec.drivetrain === 'swerve') return { center: s * (hw - BB_POD_INSET), half: BB_POD_W / 2 };
+  // ⚠️ THE POD'S HALF-EXTENT IS `BB_POD_INSET`, NOT `BB_POD_W / 2`. The fork box is not the widest
+  // thing on a pod — the slew ring's flange is, on every chassis — and `BB_POD_INSET` is already
+  // "the furthest anything on this pod reaches from its centre" by construction (the max of the
+  // slewing box's half-diagonal and that flange). The fork box happened to be wider than the ring
+  // while the fork straddled a 48 mm mecanum; building it around the pod's OWN 72 mm Hogback
+  // narrowed it to 2.12 in and left the corner plate stopping 0.19 in short of the ring it is
+  // there to hide.
+  if (spec.drivetrain === 'swerve') return { center: s * (hw - BB_POD_INSET), half: BB_POD_INSET };
   if (spec.drivetrain === 'xdrive') return { center: s * Math.max(0.5, hw - BB_XDRIVE_INSET_Y), half: BB_XDRIVE_REACH };
   // tank / mecanum / butterfly: a straight wheel dead in the channel between the two side
   // plates — butterfly's corner set (the mecanum roller) rides the same axle line as its inboard
@@ -1254,20 +1743,57 @@ interface BbSideRoller {
   phase: number;
 }
 
-/** the `siderollers` wheel geometry: a cylinder standing on its own vertical axis (`rotateX`
- *  turns the default y-axis barrel to z), 12 radial segments (owner ruling 2026-09-20, the wheel
- *  grew to a 3-in compliant wheel and the facet count grew with it) — cheap, and the facets read
- *  as the compliant wheel's own lobes rather than as a smooth puck. One geometry for every wheel
- *  on every robot; there is nothing spec-dependent about it. */
-let sideRollerGeo: THREE.CylinderGeometry | null = null;
-function sideRollerGeometry(): THREE.CylinderGeometry {
-  if (!sideRollerGeo) {
-    const g = new THREE.CylinderGeometry(BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_H, 12);
+/**
+ * the `siderollers` wheel: a moulded HUB with a LUGGED compliant tread round it, standing on its
+ * own vertical axis, built in the wheel's own local frame (z is the spin axis) so the group that
+ * carries it can simply take `rotation.z`. Two geometries because they are two materials — the
+ * hub is aluminium and the tread takes the cosmetic accent, the same split the sweeper's own
+ * barrel and flaps make. Nothing here is spec-dependent, so both are module-level singletons.
+ *
+ * ⚠️ **THE DRAWN TREAD'S EXTENT IS EXACTLY THE COLLIDER'S `BB_SIDE_ROLLER_R` CYLINDER, AND THAT
+ * IS WHAT THE 15° LUG OFFSET IS FOR.** Each lug is one facet of the same 12-gon the solid is: its
+ * outer face is the chord at `R·cos(15°)` and its corners land on `hypot(R·cos15, R·sin15) = R`.
+ * Centre the first lug on 0° and those corners fall at 15°, 45°, … — never on the mouth's own
+ * outward axis — and the drawn wheel would measure 1.449 where the sim credits 1.5. Centring them
+ * on 15° + k·30° puts corners at 0°, 90°, 180° and 270°, so the RENDER lane's "the drawn part
+ * that reaches is the part the sim credits" holds to the last decimal. The lugs ALTERNATE in
+ * height — six full, six slightly recessed — which reads as a moulded tread rather than a smooth
+ * puck without anything standing proud of the solid's own z band. 0.55 of the height was tried
+ * first and reads as a STAR, not a wheel.
+ */
+const SIDE_ROLLER_LUGS = 12;
+let sideRollerHubGeo: THREE.BufferGeometry | null = null;
+let sideRollerTreadGeo: THREE.BufferGeometry | null = null;
+function sideRollerHubGeometry(): THREE.BufferGeometry {
+  if (!sideRollerHubGeo) {
+    // a hair under the tread's full height, so the metal centre reads as recessed from above
+    const g = new THREE.CylinderGeometry(BB_SIDE_ROLLER_HUB_R, BB_SIDE_ROLLER_HUB_R, BB_SIDE_ROLLER_H * 0.86, 12);
     g.rotateX(Math.PI / 2);
     SHARED_GEO.add(g);
-    sideRollerGeo = g;
+    sideRollerHubGeo = g;
   }
-  return sideRollerGeo;
+  return sideRollerHubGeo;
+}
+function sideRollerTreadGeometry(): THREE.BufferGeometry {
+  if (!sideRollerTreadGeo) {
+    const half = Math.PI / SIDE_ROLLER_LUGS; // 15°
+    const faceR = BB_SIDE_ROLLER_R * Math.cos(half);
+    const lugW = 2 * BB_SIDE_ROLLER_R * Math.sin(half);
+    // the lug runs from just inside the hub out to the chord, so there is no seam at the root
+    const inner = BB_SIDE_ROLLER_HUB_R - 0.05;
+    const lugLen = faceR - inner;
+    const parts: THREE.BufferGeometry[] = [];
+    for (let k = 0; k < SIDE_ROLLER_LUGS; k++) {
+      const tall = k % 2 === 0; // the EVEN lugs own the 0°/90°/180°/270° corners — see the header
+      const h = tall ? BB_SIDE_ROLLER_H : BB_SIDE_ROLLER_H * 0.78;
+      parts.push(new THREE.BoxGeometry(lugLen, lugW, h).translate(inner + lugLen / 2, 0, 0).rotateZ(half + (k * 2 * half)));
+    }
+    const merged = mergeGeometries(parts.map((p) => (p.index ? p.toNonIndexed() : p)), false) ?? parts[0];
+    for (const p of parts) if (p !== merged) p.dispose();
+    SHARED_GEO.add(merged);
+    sideRollerTreadGeo = merged;
+  }
+  return sideRollerTreadGeo;
 }
 
 // ── RAMP DIMENSIONS THAT ARE THE PICTURE'S, NOT THE SIM'S — the rail section (the crossbar is now
@@ -1483,56 +2009,70 @@ export function buildIntake(
       }
     }
 
-    // ── SIDE ROLLERS: two vertical-axis compliant wheels at the mouth's own edges, each one now
-    // HOUSED between a plate above it and a plate below it, both cantilevered off the side arm's
-    // own rail and capped on the wheel's own radius (owner, 2026-09-21: "do the side roller wheels
-    // need to stick out that much for flower intaking? it looks ugly and not the most realistic in
-    // terms of packaging"). What was there before was a single diagonal strut from the arm's nose
-    // to the axle, which left the wheel hanging in free air with 63 % of it forward of the arm
-    // tips and nothing around it — a caster on a stalk.
+    // ── SIDE ROLLERS: two vertical-axis compliant wheels at the mouth's own edges, each carried
+    // on a REAR YOKE — a strap above and a strap below, both running from the side arm's own rail
+    // to the AXLE and stopping there in a bearing boss.
     //
-    // ⚠️ **THE HOUSING ENDS EXACTLY WHERE THE WHEEL'S OWN SOLID DOES** — `wheelX + R`, i.e.
-    // `tip + BB_SIDE_ROLLER_PROTRUDE`, the collider's own front — so nothing drawn reaches one
-    // thousandth past what the sim makes solid, and the module's outline IS the reach the sim
-    // credits. The protrusion itself did NOT move, and `config.ts`'s own header on
-    // `BB_SIDE_ROLLER_R` carries the 540-run measurement that says why (1.004 in is the floor at
-    // which the wheel can still touch a FLOWER's bottom POLLEN, 1.90 is the knee of the skewed
-    // retrieval curve). The RENDER lane checks both facts against a real built group.
+    // ⚠️ **NOTHING MAY COVER THE WHEEL, AND NOTHING IS DRAWN FORWARD OF THE AXLE LINE EXCEPT THE
+    // BOSS** (owner, 2026-09-21, rejecting the housed module this replaced: "The side rollers are
+    // rendered as being covered and still sticking out a ton. It cant be covered fully because it
+    // needs to actually touch the balls"). The rejected draft capped each wheel with a retainer
+    // disc on the wheel's OWN radius, which is exactly the surface that has to be seen doing the
+    // work. The yoke stops at `wheelX`; the boss is `BB_SIDE_ROLLER_BOSS_R`, well inside the
+    // tread; and the strap rides the arm rail's centreline at `BB_SIDE_ROLLER_YOKE_W` wide, which
+    // is what leaves 223° of tread visible from every angle, full height — `config.ts`'s own
+    // header on `BB_SIDE_ROLLER_BOSS_R` carries that measurement and the RENDER lane asserts it
+    // against a real built group.
+    //
+    // The PROTRUSION came down with it, 1.90 → `BB_SIDE_ROLLER_PROTRUDE` 1.40 (the axis is now
+    // INSIDE the footprint), which is the smallest value that still retrieves straight-on 100 %
+    // of the time; `config.ts`'s header on `BB_SIDE_ROLLER_R` carries the 540-drive-in sweep.
     if (kind === 'siderollers') {
-      const armY = f.half - BB_INTAKE_ARM_INSET - armT / 2; // the arm rail's own y-centre
+      // the yoke rides the arm RAIL's own centreline, and `bbSideRollerYokeY` is that number in
+      // `config.ts` so the 2D sprite can place it identically without importing this chunk — the
+      // RENDER lane asserts the two agree rather than trusting the copy.
+      const armY = bbSideRollerYokeY(f.half);
       const wheelX = tip + BB_SIDE_ROLLER_OUT;
       const wheelZ0 = BB_SIDE_ROLLER_Z - BB_SIDE_ROLLER_H / 2;
       const wheelZ1 = BB_SIDE_ROLLER_Z + BB_SIDE_ROLLER_H / 2;
-      const backX = wheelX - BB_SIDE_ROLLER_HOUSE_BACK;
+      const backX = wheelX - BB_SIDE_ROLLER_YOKE_BACK;
       for (const s of [1, -1] as const) {
         const rollerY = s * bbSideRollerY(f.half); // ±: as wide as the chassis, inboard of the arm plane
         const armOuter = s * (armY + armT / 2); // the arm rail's own outboard face
-        // ONE housing plate: a RETAINER DISC on the wheel's own radius plus a narrow STRAP back
-        // along the arm rail that carries it. A full-width slab was tried first and reads as a
-        // shelf bolted over the wheel rather than as a bracket — the strap is what a real dead
-        // axle hangs from. Built per (z, side) rather than cached across them: `rollerY` and
-        // `armY` differ by side and by chassis width, the same reason the belts above are not
-        // shared either.
-        const strapW = 0.9;
+        // ONE yoke strap: a narrow bar from the arm rail to the axle, ending in the bearing BOSS.
+        // Built per (z, side) rather than cached across them: `rollerY` and `armY` differ by side
+        // and by chassis width, the same reason the belts above are not shared either.
+        // ⚠️ **THE STRAP RUNS DIAGONALLY FROM THE RAIL TO THE AXLE, AND THAT IS WHAT KEEPS THE
+        // TREAD OPEN.** A strap parallel to the rail cannot reach the axle at all — the rail is
+        // `BB_SIDE_ROLLER_YOKE_INSET` off the mouth's edge and the axle another ~1.1 in inboard of
+        // that, so a straight bar would end beside the boss, not on it, and its front corners would
+        // sit in the tread's own radius square on the 90° line. MEASURED off the built meshes, the
+        // diagonal first occludes the tread at 132° off the outward direction (264° open) against
+        // the straight bar's 90° (180° open, and the owner asked for ~200°).
+        const dv = rollerY - s * armY;
+        const du = wheelX - backX;
+        const strapLen = Math.hypot(du, dv);
+        const strapAng = Math.atan2(dv, du);
         const plate = (z0: number): THREE.BufferGeometry =>
-          framePart(`srHouse:${wheelX.toFixed(3)}:${backX.toFixed(3)}:${rollerY.toFixed(3)}:${(s * armY).toFixed(3)}:${z0.toFixed(3)}`, () => {
-            const cap = new THREE.CylinderGeometry(BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_R, BB_SIDE_ROLLER_PLATE_T, 12);
-            cap.rotateX(Math.PI / 2);
-            cap.translate(wheelX, rollerY, z0 + BB_SIDE_ROLLER_PLATE_T / 2);
-            return [
-              boxAt(wheelX - backX, strapW, BB_SIDE_ROLLER_PLATE_T, (backX + wheelX) / 2, s * armY, z0 + BB_SIDE_ROLLER_PLATE_T / 2),
-              cap,
-            ];
+          framePart(`srYoke:${strapLen.toFixed(3)}:${strapAng.toFixed(5)}:${z0.toFixed(3)}:${backX.toFixed(3)}:${(s * armY).toFixed(3)}`, () => {
+            const boss = new THREE.CylinderGeometry(BB_SIDE_ROLLER_BOSS_R, BB_SIDE_ROLLER_BOSS_R, BB_SIDE_ROLLER_PLATE_T, 12);
+            boss.rotateX(Math.PI / 2);
+            boss.translate(wheelX, rollerY, z0 + BB_SIDE_ROLLER_PLATE_T / 2);
+            const strap = new THREE.BoxGeometry(strapLen, BB_SIDE_ROLLER_YOKE_W, BB_SIDE_ROLLER_PLATE_T)
+              .translate(strapLen / 2, 0, 0)
+              .rotateZ(strapAng)
+              .translate(backX, s * armY, z0 + BB_SIDE_ROLLER_PLATE_T / 2);
+            return [strap, boss];
           });
         for (const [tag, z0] of [
           ['top', wheelZ1],
           ['bot', wheelZ0 - BB_SIDE_ROLLER_PLATE_T],
         ] as const) {
-          const house = cast(new THREE.Mesh(plate(z0), solidMat(ALU, 0.45, 0.35)));
-          house.name = `robot:sideroller:house:${tag}:${m.edge}`;
-          g.add(house);
+          const yoke = cast(new THREE.Mesh(plate(z0), solidMat(ALU, 0.45, 0.35)));
+          yoke.name = `robot:sideroller:yoke:${tag}:${m.edge}`;
+          g.add(yoke);
         }
-        // the DEAD AXLE the wheel turns on, plate to plate — what makes the sandwich read as a
+        // the DEAD AXLE the wheel turns on, strap to strap — what makes the pair read as a
         // bearing block rather than two loose shelves.
         const axle = new THREE.CylinderGeometry(0.17, 0.17, wheelZ1 - wheelZ0 + 2 * BB_SIDE_ROLLER_PLATE_T, 8);
         axle.rotateX(Math.PI / 2);
@@ -1540,19 +2080,20 @@ export function buildIntake(
         const axleMesh = cast(new THREE.Mesh(axle, solidMat(ALU_DK, 0.5, 0.5)));
         axleMesh.name = `robot:sideroller:axle:${m.edge}`;
         g.add(axleMesh);
-        // the WEB closing the housing's outboard side between the two plates, from the plates'
-        // own back edge out to where the wheel's own radius takes over. It sits on the arm rail's
-        // outboard face, so the module is a U in section opening INWARD — the side a POLLEN is
-        // funnelled from.
+        // the WEB tying the two straps together where they leave the arm — entirely BEHIND the
+        // wheel's own rear tangent, so it takes nothing off the working arc.
         const webT = INTAKE_RAIL_T * 0.6;
-        const webLen = Math.max(0.2, BB_SIDE_ROLLER_HOUSE_BACK - BB_SIDE_ROLLER_R);
+        const webLen = Math.max(0.2, BB_SIDE_ROLLER_YOKE_BACK - BB_SIDE_ROLLER_R);
         const web = boxAt(webLen, webT, wheelZ1 - wheelZ0, backX + webLen / 2, armOuter - (s * webT) / 2, BB_SIDE_ROLLER_Z);
         const webMesh = cast(new THREE.Mesh(web, solidMat(ALU, 0.45, 0.35)));
         webMesh.name = `robot:sideroller:web:${m.edge}`;
         g.add(webMesh);
 
-        const wheel = cast(new THREE.Mesh(sideRollerGeometry(), rollerMat));
+        // the WHEEL: hub + lugged tread, one group so the whole thing takes `rotation.z`
+        const wheel = new THREE.Group();
         wheel.name = `robot:sideroller:${m.edge}:${s === 1 ? 'l' : 'r'}`;
+        wheel.add(cast(new THREE.Mesh(sideRollerTreadGeometry(), rollerMat)));
+        wheel.add(cast(new THREE.Mesh(sideRollerHubGeometry(), solidMat(ALU, 0.5, 0.4))));
         wheel.position.set(wheelX, rollerY, BB_SIDE_ROLLER_Z);
         g.add(wheel);
         // FUNNEL INWARD: the wheel's leading face (local +x, where an oncoming POLLEN first
@@ -2420,7 +2961,16 @@ function buildDumper(spec: RobotSpec, launcher: BbLauncherSpec): THREE.Group {
  * robot carries the alliance now). Scoping the cosmetic to the FILL is what keeps it from ever making a red
  * robot read as blue, which is the one thing a cosmetic may not do here.
  */
-export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance): THREE.Group {
+export function buildRobotGroup(
+  spec: RobotSpec,
+  id: number,
+  alliance: Alliance,
+  /** ⚠️ THE TIER'S WHEEL TESSELLATION, AND THE ONLY THING A TIER MAY CHANGE ABOUT THIS ROBOT.
+   *  It defaults to `high` so every existing caller — the RENDER lane included — builds exactly
+   *  what it built before; the live scene and the builder preview pass their own
+   *  (`bbWheelDetail`), and the match's `sync` rebuilds a group when it changes. */
+  detail: BbWheelDetail = 'high',
+): THREE.Group {
   const group = new THREE.Group();
   group.name = `robot:${id}`;
   const launcher = bbLauncherOf(spec, 0);
@@ -2433,22 +2983,18 @@ export function buildRobotGroup(spec: RobotSpec, id: number, alliance: Alliance)
 
   for (const part of buildFrame(spec)) group.add(part);
   for (const part of buildEndPlates(spec, id)) group.add(part);
-  const wheels = buildWheels(spec, accent);
+  const wheels = buildWheels(spec, accent, detail);
   for (const w of wheels.nodes) group.add(w);
   // the handles the per-frame sync poses a MOVING drivetrain with. Absent for the three that do
   // not move (a preview has no `RobotState` at all, so both lists are simply empty there).
   group.userData.swervePods = wheels.pods;
   group.userData.butterflySets = { traction: wheels.traction, roller: wheels.roller };
+  group.userData.spinWheels = wheels.spin;
 
-  // THE EDGE TRIM — one dark trace round the BUMPER BAND, a whisker outside the skin's own faces so
-  // it cannot z-fight them. It used to sit UNDER a red/blue ALLIANCE LINE; that line is gone
-  // (owner, 2026-09-21: "Remove the red/blue alliance outline") and the alliance is carried by the
-  // name label over the robot (`render/renderer.ts`) and the signs. The node keeps its name.
-  const halo = new THREE.LineSegments(chassisEdges(spec.length, spec.width, BB_PLATE_H), lineMat(OUTLINE_HALO));
-  halo.name = `robot:${id}:outlineHalo`;
-  halo.position.z = BB_PLATE_H / 2;
-  halo.scale.set(1.002, 1.002, 1.0015);
-  group.add(halo);
+  // NO EDGE LINE ROUND THE CHASSIS. There were two — a red/blue ALLIANCE line and a dark halo under
+  // it. The owner removed the first (2026-09-21) and then the second ("without the alliance
+  // outline, the robot now just has a black outline. fix this"): a lit, shaded body has its own
+  // edges, and a drawn line round it only ever existed to carry the alliance colour.
 
   // the NOSE — a small white block on the front cross member, so the forward end of a symmetric
   // drivetrain is readable from any angle
@@ -2711,6 +3257,19 @@ interface RobotEntry {
 
 export interface BbRobots {
   group: THREE.Group;
+  /**
+   * THE TIER'S WHEEL TESSELLATION, live. A PROPERTY, the same shape `BbElements.rollingSpin` is
+   * and for the same reason — `renderScene.applyQuality` writes both on every settings change,
+   * and the scene must not have to be torn down to answer one.
+   *
+   * It is the one graphics setting a ROBOT cannot apply in place (the wheel's geometry is baked
+   * at build time), so `sync` folds it into the entry's rebuild key beside `bbSpecKey` and the
+   * group is rebuilt on the next frame after a change. That is cheap here and nowhere near the
+   * field's own mesh-detail problem: four small groups, not a 6 MB GLB refetch.
+   */
+  wheelDetail: BbWheelDetail;
+  /** `effects` row: `minimal` stops the wheels turning (see the roll in `sync`). */
+  wheelSpin: boolean;
   dispose(): void;
 }
 
@@ -2726,6 +3285,10 @@ export function buildBiobuzzRobots(): BbRobots {
   group.name = 'bb-robots';
   const entries = new Map<number, RobotEntry>();
   let lastTime = 0;
+  // the live quality dials, overwritten by `renderScene.applyQuality`; these defaults are what a
+  // scene that never applies any settings at all (the smoke lanes) gets
+  let wheelDetail: BbWheelDetail = 'high';
+  let wheelSpin = true;
 
   function sync(world: World): void {
     const seen = new Set<number>();
@@ -2735,14 +3298,19 @@ export function buildBiobuzzRobots(): BbRobots {
     lastTime = world.time;
     for (const r of world.robots) {
       seen.add(r.id);
-      const key = bbSpecKey(r.spec);
+      // ⚠️ `bbSpecKey` PLUS THE WHEEL TIER, AND THE TIER IS NOT ADDED TO `bbSpecKey`. That key is
+      // the BUILD's geometry identity and it is read outside this chunk, by the main bundle's
+      // thumbnail cache (`specKey.ts`'s own header) — folding a per-device graphics setting into
+      // it would make two machines disagree about whether two saved robots are the same robot.
+      // This is a local rebuild key: the same spec at a different tessellation is the same build.
+      const key = `${bbSpecKey(r.spec)}|${wheelDetail}`;
       let entry = entries.get(r.id);
       if (!entry || entry.key !== key) {
         if (entry) {
           group.remove(entry.group);
           disposeRobotGroup(entry.group);
         }
-        const g = buildRobotGroup(r.spec, r.id, r.alliance);
+        const g = buildRobotGroup(r.spec, r.id, r.alliance, wheelDetail);
         entry = { group: g, key, tubeEase: 0, tubeYaw: 0, tubePitch: 0, tubeExt: 0 };
         entries.set(r.id, entry);
         group.add(g);
@@ -2811,11 +3379,39 @@ export function buildBiobuzzRobots(): BbRobots {
       const pods = entry.group.userData.swervePods as THREE.Group[] | undefined;
       if (pods) for (let i = 0; i < pods.length; i++) pods[i].rotation.z = r.moduleAngles[i] ?? 0;
       const sets = entry.group.userData.butterflySets as
-        | { traction: THREE.Object3D[]; roller: THREE.Object3D[] }
+        | { traction: BbLiftSet[]; roller: BbLiftSet[] }
         | undefined;
       if (sets && sets.traction.length > 0) {
-        for (const m of sets.traction) m.position.z = BB_WHEEL_R + (r.butterflyTank ? 0 : BB_BUTTERFLY_LIFT);
-        for (const m of sets.roller) m.position.z = BB_WHEEL_R + (r.butterflyTank ? BB_BUTTERFLY_LIFT : 0);
+        // ⚠️ EACH SET'S OWN GROUNDED HEIGHT, not one `BB_WHEEL_R` for both. The corner set is a
+        // 104 mm mecanum and the inboard set a 96 mm Hogback, so a shared constant would bury
+        // whichever one it was not measured from 0.157 in in the tiles.
+        for (const m of sets.traction) m.node.position.z = m.z + (r.butterflyTank ? 0 : BB_BUTTERFLY_LIFT);
+        for (const m of sets.roller) m.node.position.z = m.z + (r.butterflyTank ? BB_BUTTERFLY_LIFT : 0);
+      }
+
+      /**
+       * THE WHEELS TURN, AND THEY TURN AT THE SPEED THE ROBOT IS ACTUALLY DOING.
+       *
+       * ω = v/R off `r.vel` projected on the heading, integrated on the same clamped WORLD clock
+       * everything else in this sync uses — so a replay scrub that jumps backwards does not
+       * unwind a wheel a thousand turns, exactly as for the intake roller. The rolling radius
+       * comes from the part each wheel actually is (`BbSpinWheel.r`), which is the third place
+       * the 104 / 96 / 72 mm distinction has to be honoured rather than assumed.
+       *
+       * A mecanum's rollers are geometry ON this node, so they sweep with it and a LEFT-slant
+       * wheel's rollers sweep the left-slant way for free. That is the part a painted stripe
+       * could never have got right at all: a texture on a spinning cylinder keeps its slant
+       * relative to the SCREEN, not to the hardware.
+       *
+       * `wheelSpin` is the `effects` setting's own row ("minimal — … no wheel rotation"), which
+       * until now nothing implemented; `renderScene.applyQuality` sets it.
+       */
+      const spinning = entry.group.userData.spinWheels as BbSpinWheel[] | undefined;
+      if (spinning && spinning.length > 0) {
+        if (wheelSpin) {
+          const v = r.vel.x * Math.cos(r.heading) + r.vel.y * Math.sin(r.heading);
+          for (const w of spinning) w.node.rotation.y -= (v / w.r) * dt;
+        }
       }
 
       // THE BOX TUBE REACHES THE FLOWER'S OPENING WHEN ONE IS IN REACH. `bbFlowerInReach` is the
@@ -2901,6 +3497,20 @@ export function buildBiobuzzRobots(): BbRobots {
 
   return {
     group,
+    // ACCESSORS over the two closure variables, so a write from `applyQuality` reaches `sync`
+    // without the caller having to know it is a closure and without a second copy of the value
+    get wheelDetail(): BbWheelDetail {
+      return wheelDetail;
+    },
+    set wheelDetail(v: BbWheelDetail) {
+      wheelDetail = v;
+    },
+    get wheelSpin(): boolean {
+      return wheelSpin;
+    },
+    set wheelSpin(v: boolean) {
+      wheelSpin = v;
+    },
     /**
      * ⚠️ **FREE EVERY LIVE ROBOT GROUP THROUGH `disposeRobotGroup`, WHICH IS WHY THIS EXISTS.**
      *
@@ -2928,8 +3538,8 @@ export function buildBiobuzzRobots(): BbRobots {
  * ROBOT SIGN planes and their one shared material (their TEXTURE is cached per team number and
  * alliance, is shared with every other robot carrying it, and is not touched), the turret ring,
  * axle, motor and feed chute. The Box Tube's sections, the shooter's belt and the swerve
- * pod's drive all come from `framePart` and are SHARED. Anything from `solidMat`, `lineMat`,
- * `getRollerMat`, `wheelGeometry`, `framePart` or `chassisEdges` is left alone: see
+ * pod's drive all come from `framePart` and are SHARED. Anything from `solidMat`,
+ * `getRollerMat`, `wheelGeometry` or `framePart` is left alone: see
  * `SHARED_GEO`'s header. The SWERVE POD is entirely shared — its three merged geometries come
  * from `framePart` and its materials from `solidMat` — so a builder session dragging the
  * drivetrain picker back and forth frees the group and re-uses every buffer in it.

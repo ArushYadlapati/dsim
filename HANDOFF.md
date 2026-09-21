@@ -1,6 +1,60 @@
+# HANDOFF — 2026-09-21e (alpha: nine owner items in one commit — see each bullet)
+
+**READ FIRST.** Gates on the merged tree: `npm test` ALL PASS (shared + 4,357 biobuzz), `build`, `server:check`,
+`uiaudit`, `docaudit`, `contrast` (235), `bundleaudit` (scene 216.6 KB gz, baseline raised with reasons), `test:mm`
+(200), `dbtest`. Nine opus agents ran in ONE shared worktree; a usage limit killed all of them mid-edit once and
+every one resumed cleanly via SendMessage. Each area guide carries the long form; this is the index.
+
+- **THE INVISIBLE CORNER (owner, 5th report).** `slimFootBars` (2026-09-20) narrowed the hive foot bar across its
+  width and left it SQUARE-TOPPED on two ramps: the flange stood 1.91 in over a top that starts at 0.24 in, and each
+  of the four outer corners carried a 1.94-in block over a 0.19-in chamfer. ⚠️ A chassis is a floor-to-roof prism
+  and stops on a 0.16-in lip exactly as on a 2.15-in one — so FOUR driving probes were clean; what it held up was
+  ELEMENTS (a POLLEN rested 2.13 in up in mid-air). Six pieces, each now the hull of its own polytope (⚠️ six is
+  part of the fix: a stacked-box version changed the collider COUNT and flipped a ramp check 60 in away). Checks:
+  `sim3d.ts` "THE INVISIBLE CORNER". If the owner means the ROBOT catching, this is not it — ask where.
+- **FIELD MESH WINDING.** All 193 components of `field.glb` are closed shells with MIXED winding (49.2 % of
+  triangles inward); `repairFieldWinding` (`scene/renderFieldGlb.ts`) REPLACES `fixGroundBeamWinding`: propagate
+  across shared edges, orient by signed volume, index-only, before `styleScene`. Ray parity 44.9 % → 1.7 %. Clear
+  panels untouched (pinned). DoubleSide only for genuinely open comps (none on the high LOD). Real defect is
+  `convert.py`'s.
+- **BALLS IN SERVER GAMES.** Two clocks in one frame: the local robot drew from the PREDICTION, elements from the
+  INTERPOLATION ~6 ticks behind (p95 8.65 in of a pushed POLLEN drawn inside the chassis; identical at 0 and 140 ms;
+  prediction off = 0.01). `Predictor.elements()` + `drawPredictedElements`/`ballSmooth` in `game.ts` → 0.99 in. And the
+  kind-change SNAP fired on BIOBUZZ 3D's DERIVED ground/flight re-tags → narrowed to `held`/`stock`. Client-only, no
+  wire/egress change, solo bit-identical. LIGHT predictor keeps the old drawing. `net3d.ts` §13–14.
+- **G407 OVER-CONTROL.** Unreachable in 3D (a plowed ball SKIPS, `derive.ts` tags it `flight` 14.3 % of contact
+  ticks, the sweep deleted its hold clock: peak hold 0.000 s vs 0.45 s) and inert in free drive. `ControlGeometry.loose`
+  + `bbLooseElement` (`flight` under `BB_CONTROL_SKITTER_Z` 2 in, 3D only; measured 0.92 vs 7.60). ⚠️ FREE DRIVE NOW
+  BILLS in BIOBUZZ (DECODE precedent; G410 unlocked there) — flagged to the owner, one-line revert (`isFree`).
+  Egress +135 B/snap deflated in 3D. DECODE G408 healthy; Chain has no such rule by design.
+- **SIDE ROLLERS pass 2.** Protrusion 1.90 → **1.65** (not the 1.40 I asked for: park-then-intake is 58 % at 1.65,
+  44 % at 1.60, 0 % at ≤ 1.45 — reach covers the 18–22° yaw a one-sided plate contact gives). Frictionless wheels
+  tried: 324/540 both ways, reverted. Bracket = rear yoke to the axle, 264° of tread open; wheel = hub + lugged tread.
+- **NO EDGE LINE ON A 3D ROBOT** (the dark halo went too: "the robot now just has a black outline"). 2D keeps
+  `ROBOT_TRIM`. `chassisEdges`/`lineMat` deleted.
+- **ELEMENTS ARE THE REAL CAD SOLID on High/Ultra/export** (`npm run element-cad`, `elements.glb` 16 KB br; new
+  seventeenth setting `elementDetail`), they ROLL (visual only), and two instancing bugs fixed (stale frustum sphere;
+  56 instances drawn). ⚠️ OPEN OWNER DECISION: CAD NECTAR r 1.810 vs `BB_NECTAR_R` 1.800 — not changed.
+- **DRIVE WHEELS ARE CATALOGUE PARTS** (`BB_WHEEL_PARTS`): 104 mm GripForce mecanum (11 rollers, handed, X pattern
+  measured), 96 mm omni, 96/72 mm Hogback. Stripe texture gone. Renderer reads `C.WHEEL_DIAMETER_MM`. 2D: BIOBUZZ's
+  X-drive omnis were drawn radially — fixed. ⚠️ A wheel is nearly invisible behind the side plate; a cutout is the
+  owner's call.
+- **11 BACKGROUNDS** (8 painted, procedural, per-environment light rig; Low/Medium get a picker for the first time;
+  ⚠️ env maps were on their side — z-up vs three's y-up, `+π/2`; rigs held to ≥ 25° sun). **FLOWER READ-OUT** on the
+  3D overhead camera via the NEW slot `GameModule.drawSceneOverlay` + `GameScene.camera` (⚠️ a third arg on
+  `drawOverlays` drew DECODE's ramp strips in screen pixels).
+- **CONFIGURE REDESIGN.** Task order (Robot · Controls · Match · Audio and Visual · Graphics; route keys unchanged),
+  Robot = Start from/Build/Look/Driving with the preview in a sticky rail ≥ 1320 px, rare controls behind `.ds-fold`,
+  one `OptRow`/`ToggleRow` (`src/ui/OptRow.tsx`), duplicate view picker in `MatchSetup` deleted, slop strings 34 → 1.
+  Audit: `scratch/configure-audit.md`. No stored-data change.
+- Tooling: `.claude/launch.json` gained `dev-b` (5186). Headless capture scripts that destroy a window per shot need
+  `app.on('window-all-closed', () => {})` or Electron quits after shot one.
+
+---
+
 # HANDOFF — 2026-09-21d (alpha: no alliance outline; usernames over robots in alliance colour)
 
-**READ FIRST.** Gates: `npm test` ALL PASS, `build`, `server:check`, `contrast` (235), `docaudit`, `uiaudit`, `test:mm`.
+Gates: `npm test` ALL PASS, `build`, `server:check`, `contrast` (235), `docaudit`, `uiaudit`, `test:mm`.
 ⚠️ FIVE agents were still in flight in this worktree when this was committed (field-mesh winding, the hive's
 invisible corner, CAD element meshes, ball behaviour under prediction, side-roller pass 2) — their files were
 left OUT of this commit on purpose.

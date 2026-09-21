@@ -4,35 +4,71 @@
     {
       "name": "dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 5173,
       "autoPort": false
     },
     {
       "name": "admin-harness",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "--port", "5189", "--strictPort"],
+      "runtimeArgs": [
+        "vite",
+        "--port",
+        "5189",
+        "--strictPort"
+      ],
       "port": 5189,
       "autoPort": false
     },
     {
       "name": "scene-preview",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "scripts/scene-preview", "--port", "5178"],
+      "runtimeArgs": [
+        "vite",
+        "scripts/scene-preview",
+        "--port",
+        "5178"
+      ],
       "port": 5178
     },
     {
       "name": "scene-preview-b",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "scripts/scene-preview", "--port", "5177", "--strictPort"],
+      "runtimeArgs": [
+        "vite",
+        "scripts/scene-preview",
+        "--port",
+        "5177",
+        "--strictPort"
+      ],
       "port": 5177,
       "autoPort": false
     },
     {
       "name": "field-cad-preview",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "scripts/field-cad/preview", "--port", "5179"],
+      "runtimeArgs": [
+        "vite",
+        "scripts/field-cad/preview",
+        "--port",
+        "5179"
+      ],
       "port": 5179
+    },
+    {
+      "name": "dev-b",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--port",
+        "5186",
+        "--strictPort"
+      ],
+      "port": 5186,
+      "autoPort": false
     }
   ]
 }

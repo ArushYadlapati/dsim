@@ -23,8 +23,8 @@
  * It used to be a red/blue OUTLINE, and a vivid fill needed a dark halo under it to keep that line
  * readable. The owner removed the outline (2026-09-21): every sprite stroke is the neutral
  * `ROBOT_TRIM` (`render/drawRobot.ts`), and the alliance is the NAME LABEL over the robot, the
- * sign placard and the heading chevron. `OUTLINE_HALO` survives as the 3D edge trim and the
- * builder's placard swatch. So a fill still cannot change which alliance a robot reads as.
+ * sign placard and the heading chevron. `OUTLINE_HALO` survives only as the dark swatch in the
+ * builder's placard and accent pickers (the 3D edge line went the same day). So a fill still cannot change which alliance a robot reads as.
  *
  * ── TIERS ───────────────────────────────────────────────────────────────────────────────────
  * `free` is always allowed. `supporter` unlocks on the account's `supporter_until`
@@ -70,7 +70,7 @@ export function chassisFill(key: string | undefined): string {
   return (key && CHASSIS_COLORS[key as ChassisColor]) || CHASSIS_COLORS.default;
 }
 
-/** the dark edge trim round a 3D chassis, and the builder's placard swatch. */
+/** the fixed dark swatch the builder's placard and accent pickers draw against. */
 export const OUTLINE_HALO = '#0b0d10';
 
 /** ACCENT — wheels and rollers. `match` follows the chassis. */

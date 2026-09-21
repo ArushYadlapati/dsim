@@ -1004,9 +1004,10 @@ export const BB_FLOWER_BITE = 0.5;
  * no lower bound, still works there — it just never binds as tightly as it does in 3D, where the
  * solid wheel keeps the true distance pinned near the contact radius.
  *
- * ⚠️ **HOW FAR THE WHEEL HAS TO STICK OUT, MEASURED — 1.004 in IS THE FLOOR AND 1.90 IS THE KNEE**
+ * ⚠️ **HOW FAR THE WHEEL HAS TO STICK OUT, MEASURED — 1.004 in IS THE FLOOR, 1.65 IS SHIPPED**
  * (owner, 2026-09-21: "do the side roller wheels need to stick out that much for flower intaking?
- * it looks ugly and not the most realistic in terms of packaging"). Both halves were probed on the
+ * it looks ugly and not the most realistic in terms of packaging", and again on the first pass'
+ * answer: "still sticking out a ton"). Both halves were probed on the
  * real 3D colliders (`scratch/srgeom.ts` for the geometry, `scratch/sidesweep.ts` for the driving)
  * and the answer came out in two parts that point opposite ways:
  *
@@ -1024,49 +1025,102 @@ export const BB_FLOWER_BITE = 0.5;
  *     `2.404 − 1.400` = **1.004 in past the tip line** to touch it at all. Below that no
  *     tolerance saves it: the two bodies are not in contact and widening
  *     `BB_SIDE_ROLLER_CONTACT_TOL` to cover the gap would be a fake.
- *  2. **AND EVERY THOUSANDTH ABOVE THAT FLOOR IS SPENT ON THE SKEWED APPROACH.** 540 real
- *     drive-ins per value (5 lateral offsets × 3 approach angles × 3 sticks × 3 column heights ×
- *     4 FLOWERS, one held stick, no teleports), share retrieved:
+ *  2. **AND EVERY THOUSANDTH ABOVE THAT FLOOR IS SPENT ON RECOVERING FROM YAW.** Two populations,
+ *     both real drive-ins with no teleports, and they do NOT agree — which is the whole of why the
+ *     cut stopped where it did:
  *
- *       protrusion   2.05   1.90   1.85   1.80   1.75   1.70   1.65   1.40   1.20   1.00
- *       overall     73.5%  73.3%  68.5%  64.4%  60.0%  63.9%  63.9%  60.0%  43.7%  44.3%
- *       straight-on  100%   100%   100%   100%   100%   100%   100%   100%  73.3%  86.1%
+ *       protrusion         1.90   1.85   1.80   1.75   1.70  |1.65|  1.60   1.50   1.45   1.40
+ *       held-intake all   73.3%  68.5%  64.4%  60.0%  63.9% |63.9%| 57.6%  60.0%    -    60.0%
+ *       held straight-on   100%   100%   100%   100%   100% | 100%| 99.4%   100%    -     100%
+ *       PARK then intake  61.1%     -      -      -      -  |58.3%| 44.4%  33.3%   0.0%   0.0%
  *
- *     `OUT + R` = 1.90 is the KNEE: the curve is FLAT above it (2.05 buys 0.2 of a point) and
- *     falls monotonically below it, 4–5 points per 0.05 in, because at ±10° the prism stalls on
- *     the plate rim with the near wheel 4.2–4.6 in from the POLLEN and it is the last tenth of
- *     reach that decides the marginal cases. The protrusion therefore STAYS 1.90.
+ *     (held-intake: 540 runs, 5 lateral offsets × 3 approach angles × 3 sticks × 3 column heights
+ *     × 4 FLOWERS, the trigger held through the approach. PARK: 36 runs, drive in with the intake
+ *     OFF, let the chassis settle, THEN hold it — `scratch/sidesweep.ts`, `SS_MODE=park`.)
  *
- * What was actually wrong was the PACKAGING, which is what the owner's second sentence says: the
- * wheel hung in free air on a single diagonal strut, 63 % of it forward of the arm tips and
- * nothing around it. It is a HOUSED module now — `BB_SIDE_ROLLER_PLATE_T` plates above and below,
- * cantilevered off the side arm's own rail and capped on the wheel's own radius, so the drawn
- * envelope is exactly the wheel's SOLID envelope and not one thousandth further
- * (`scene/renderRobots.ts`, `drawRobot.ts`, both pinned by the RENDER lane).
+ *     The held-intake sweep alone would allow **1.40**: a driver holding the trigger takes the
+ *     POLLEN on the way in, a mean 0.24 s after the mouth reaches the opening, and never sees the
+ *     settled pose. But a chassis driven into a FLOWER meets the ring plate over only ONE SIDE of
+ *     its own width — the driver is offset `bbSideRollerY` to put a wheel on the opening — so the
+ *     normal force is a long lever and the pose picks up **18–22° of yaw** as it settles, which
+ *     swings the gripping wheel out. REACH is what covers that yaw, and at 1.45 and below a
+ *     driver who rolls up and only then presses the trigger gets **nothing at all**. 1.65 is the
+ *     largest cut that costs neither population anything measurable (58.3 % against 61.1 %,
+ *     straight-on still 180/180), and `scripts/smoke-biobuzz/flower3d.ts`'s own F1 drive-in
+ *     fixture is the canary: driven in with the intake OFF and asked once at the settled pose it
+ *     bites at 1.90 and at no smaller value at all, so that fixture now holds the trigger through
+ *     the drive and its header carries this table.
+ *
+ * ⚠️ **AND THE BRACKET MAY NOT COVER THE WHEEL** (owner, 2026-09-21, rejecting the first pass at
+ * this section, which kept 1.90 and answered the complaint with packaging alone: "The side
+ * rollers are rendered as being covered and still sticking out a ton. It cant be covered fully
+ * because it needs to actually touch the balls"). That draft capped each wheel with a retainer
+ * plate on the wheel's OWN radius — in plan, the whole wheel. It is a REAR YOKE now: a strap
+ * above and a strap below, both running diagonally from the side arm's rail to the AXLE and
+ * stopping there in a `BB_SIDE_ROLLER_BOSS_R` bearing boss, with nothing drawn forward of the
+ * axle line except that boss and **223° of tread** left visible from every angle, full height.
+ * The wheel itself is a hub with a lugged compliant tread. Both renderers build it and the RENDER
+ * lane measures the open arc off the built meshes' own vertices rather than trusting the numbers.
  */
 export const BB_SIDE_ROLLER_R = 1.5;
 /** the wheel's height (in): a 2-in compliant wheel stack. */
 export const BB_SIDE_ROLLER_H = 2.0;
 /** the wheel's mid-height off the tiles (in) — a hair above a POLLEN's own centre. */
 export const BB_SIDE_ROLLER_Z = 1.5;
-/** the wheel's axis, past the tip line (in). */
-export const BB_SIDE_ROLLER_OUT = 0.4;
+/** the wheel's axis, past the tip line (in) — NEGATIVE: the axis sits just INSIDE the footprint
+ * and only the wheel's front quadrant stands proud. See `BB_SIDE_ROLLER_PROTRUDE`. */
+export const BB_SIDE_ROLLER_OUT = 0.15;
 /** how far the wheel's own FRONT stands past the tip line (in) — the one number the owner asked
  * about, and the one the wall standoff, `bbArchetypeWallExtra`, `bbIntakeExtraReach` and both
- * drawings all read. FLOOR 1.004 (the wheel cannot otherwise touch a FLOWER's bottom POLLEN with
- * the chassis prism stopped on the ring plates); KNEE 1.90 — see this section's own header for
- * both measurements. */
+ * drawings all read. FLOOR **1.004** (the wheel cannot otherwise touch a FLOWER's bottom POLLEN
+ * with the chassis prism stopped on the ring plates); shipped **1.65**, the largest cut off the
+ * old 1.90 that costs neither retrieval population anything measurable — see this section's own
+ * header for the two sweeps that fix both ends. */
 export const BB_SIDE_ROLLER_PROTRUDE = BB_SIDE_ROLLER_OUT + BB_SIDE_ROLLER_R;
-/** the housing's own sheet (in): the plate above the wheel and the plate under it, both
- * cantilevered off the side arm's rail and capped on the wheel's own radius. The BOTTOM plate is
- * what sets this — it has to fit between the wheel's underside (`BB_SIDE_ROLLER_Z − H/2` = 0.5)
- * and the FLOWER's lower ring plate rim (0.354 in, the one thing at that height the module drives
- * over), which leaves 0.146 in; 0.12 is the nearest real sheet with clearance left (0.026 in). */
+/** the yoke's own sheet (in): the plate above the wheel and the plate under it, both cantilevered
+ * off the side arm's rail and stopping at the AXLE. The BOTTOM plate is what sets this — it has
+ * to fit between the wheel's underside (`BB_SIDE_ROLLER_Z − H/2` = 0.5) and the FLOWER's lower
+ * ring plate rim (0.354 in, the one thing at that height the module drives over), which leaves
+ * 0.146 in; 0.12 is the nearest real sheet with clearance left (0.026 in). */
 export const BB_SIDE_ROLLER_PLATE_T = 0.12;
-/** how far BACK along the side arm the housing plates run from the wheel's axis (in) — far
- * enough inboard of the arm's own nose that the module reads as bolted along the rail rather
- * than hung off its end. Drawing only; nothing in the sim reads it. */
-export const BB_SIDE_ROLLER_HOUSE_BACK = 2.4;
+/** how far BACK along the side arm the yoke's plates run from the wheel's axis (in) — far enough
+ * inboard of the arm's own nose that the module reads as bolted along the rail rather than hung
+ * off its end. Drawing only; nothing in the sim reads it. */
+export const BB_SIDE_ROLLER_YOKE_BACK = 2.4;
+/**
+ * ⚠️ **THE BRACKET IS A REAR YOKE AND IT MAY NOT COVER THE WHEEL** (owner, 2026-09-21, rejecting
+ * the housed module: "The side rollers are rendered as being covered and still sticking out a
+ * ton. It cant be covered fully because it needs to actually touch the balls"). The plates run
+ * from the arm to the AXLE and stop there in a bearing BOSS of this radius; nothing is drawn
+ * forward of the axle line except that boss, and nothing caps the wheel's radius. The yoke STRAP
+ * is `BB_SIDE_ROLLER_YOKE_W` wide and rides on the arm rail's own centreline, which is what keeps
+ * the working arc open: MEASURED off the rail's `armY` on the default chassis, the strap first
+ * occludes the wheel from above at **111.6°** off the outward direction, so **223°** of tread —
+ * the whole forward and outboard working arc — is visible from every angle, full height. A
+ * 0.9-wide strap (the first draft) starts occluding at 90° and leaves only 180°.
+ */
+export const BB_SIDE_ROLLER_BOSS_R = 0.55;
+/** the yoke strap's width (in) — see `BB_SIDE_ROLLER_BOSS_R` for the 223°-of-tread measurement
+ * this number is chosen by. */
+export const BB_SIDE_ROLLER_YOKE_W = 0.5;
+/**
+ * how far inboard of the mouth's lateral edge the yoke strap rides (in): the side ARM RAIL's own
+ * centreline, `BB_INTAKE_ARM_INSET` (`BB_PLATE_T` 0.22 + 0.06) plus half a rail (`INTAKE_RAIL_T`
+ * 0.5). Both of those live in `scene/renderRobots.ts`, which `drawRobot.ts` may not import (the
+ * lazy-chunk boundary the RENDER lane enforces), so the ONE number both drawings place the yoke
+ * by lives here instead of being typed twice — the same treatment `bbSideRollerY` gets, and the
+ * RENDER lane asserts it against the 3D arm's own `armY` rather than trusting it.
+ */
+export const BB_SIDE_ROLLER_YOKE_INSET = 0.53;
+/** the yoke strap's own y off the mouth's centreline, for a mouth of half-width `mouthHalf` (in).
+ * ONE placement, read by the 3D scene, the 2D sprite and the checks. */
+export function bbSideRollerYokeY(mouthHalf: number): number {
+  return mouthHalf - BB_SIDE_ROLLER_YOKE_INSET;
+}
+/** the wheel's own HUB radius (in): a moulded centre with the compliant tread lugged round it,
+ * the same hub-and-lug language the sweeper's barrel uses. Drawing only — the SOLID is the full
+ * `BB_SIDE_ROLLER_R` cylinder, and the drawn lugs' outer corners land exactly on it. */
+export const BB_SIDE_ROLLER_HUB_R = 0.62;
 /** how far INBOARD of the mouth's lateral edge a wheel's axis sits (in): its own radius plus a
  * 0.1-in clearance to the side arm's plane. */
 export const BB_SIDE_ROLLER_EDGE_INSET = BB_SIDE_ROLLER_R + 0.1;

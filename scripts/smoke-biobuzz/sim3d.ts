@@ -30,6 +30,7 @@ import {
   BB_FLOWER_TOP_Z,
   BB_FRAME_BAR_IN,
   BB_FRAME_BAR_OUT,
+  BB_FRAME_Y,
   BB_DUMP_BUCKET,
   BB_DUMP_RELOAD_S,
   BB_DUMP_SEAT_PITCH,
@@ -2683,32 +2684,36 @@ export function sim3dChecks(check: Check): void {
     const statics = cadStatics();
     const bars = statics.filter((s) => s.name.endsWith('_sheet_metal_foot_bar'));
     const feet = statics.filter((s) => /_frame_foot_[ab]$/.test(s.name));
-    const boxy = bars.every((b) => {
+    // ⚠️ THE PIECES ARE NO LONGER SQUARE BOXES (2026-09-21, the invisible-corner fix below): each
+    // is one hull that follows the assembly's own two ramps upward. What this check is really
+    // about survives unchanged and is read off the BASE SECTION, the rect each piece still carries
+    // at the tiles: the flange is 0.66 in wide, a foot is wider, and the two TOUCH at one x and
+    // never overlap (overlapping them is what froze a strafing chassis, see `slimFootBars`).
+    const baseXs = (b: FieldStatic) => {
+      let z0 = Infinity;
+      for (let i = 2; i < b.points.length; i += 3) z0 = Math.min(z0, b.points[i]);
       const xs = new Set<number>();
-      for (let i = 0; i < b.points.length; i += 3) xs.add(b.points[i]);
-      return b.points.length === 24 && xs.size === 2;
-    });
-    const xsOf = (b: FieldStatic) => [...new Set(b.points.filter((_, i) => i % 3 === 0))].sort((a, c) => a - c);
+      for (let i = 0; i < b.points.length; i += 3) if (b.points[i + 2] <= z0 + 1e-9) xs.add(b.points[i]);
+      return [...xs].sort((a, c) => a - c);
+    };
+    const boxy = bars.every((b) => baseXs(b).length === 2) && feet.every((f) => baseXs(f).length === 2);
     const flangeWidth = bars.map((b) => {
-      const xs = xsOf(b);
+      const xs = baseXs(b);
       return xs[1] - xs[0];
     });
-    // every foot is ALSO a plain box now (8 points, 2 distinct x), and its own inner-most x
-    // matches its bar's flange outer-most x to the bit -- touching, never overlapping (see
-    // `slimFootBars`'s header for why overlapping the two ever broke the strafe below).
     const feetTouchFlange = feet.every((f) => {
       const bar = bars.find((b) => f.name.startsWith(b.name.replace(/sheet_metal_foot_bar$/, '')));
       if (!bar) return false;
-      const fx = xsOf(f);
-      const bx = xsOf(bar);
+      const fx = baseXs(f);
+      const bx = baseXs(bar);
       const shared = fx.filter((x) => bx.includes(x));
       const barOuter = bx.find((x) => !shared.includes(x));
-      return f.points.length === 24 && fx.length === 2 && shared.length === 1 && !fx.includes(barOuter!);
+      return fx.length === 2 && shared.length === 1 && !fx.includes(barOuter!);
     });
     check(
-      'foot bar 3d: each bar is a narrow FLANGE box (0.66 in), and the two feet are their own WIDER boxes touching it, not folded away and not overlapping it',
+      'foot bar 3d: each bar is a narrow FLANGE (0.66 in) at the tiles, and the two feet are their own WIDER pieces touching it, not folded away and not overlapping it',
       bars.length === 2 && feet.length === 4 && boxy && feetTouchFlange && flangeWidth.every((w) => Math.abs(w - 0.66) < 1e-6),
-      `${bars.length} bars, ${feet.length} feet, boxes ${boxy}, widths ${flangeWidth.map((w) => w.toFixed(3)).join(',')}`,
+      `${bars.length} bars, ${feet.length} feet, base rects ${boxy}, widths ${flangeWidth.map((w) => w.toFixed(3)).join(',')}`,
     );
 
     const FACE = 24.73;
@@ -2860,6 +2865,240 @@ export function sim3dChecks(check: Check): void {
         `containmentFixes=${engine.containmentFixes}, drifted to x=${r.pos.x.toFixed(2)}`,
       );
       disposeEngineFor(w);
+    }
+  }
+
+  // ---- THE INVISIBLE CORNER (owner, 2026-09-21, fifth report: "this invisible corner in the
+  // centre structure is STILL not fixed") -------------------------------------------------------
+  //
+  // The 2026-09-20 pass above narrowed the bar ACROSS its width and left it square in the other
+  // two directions. Measured off the shipped GLB at 0.02 in (`scratch/footprofile2.ts`, and
+  // `scratch/hivetop.ts` is the per-cell collider-top-vs-drawn-top table): the drawn assembly is
+  // 0.24 in tall at the bar's own outer face and rises at 3.44 in per in to its 2.15-in plateau,
+  // and it ENDS IN A RAMP -- 0.16 in at either end of the bar, rising at 2.144 in per in to full
+  // height 0.92 in in. The flange box and both foot boxes ran square to both, so the outer 0.5 in
+  // of each bar stood up to 1.91 in above the drawn bar for its whole 38.9-in length and each of
+  // the centre structure's FOUR OUTER CORNERS carried a 1.94-in-tall block over a chamfer.
+  //
+  // A chassis is a floor-to-roof prism and is stopped by a 0.16-in lip exactly as by a 2.15-in
+  // one, which is why the 2026-09-20 driving probes came back clean and the report survived them.
+  // What it moved was everything with a HEIGHT. Hence the three shapes of check here: the RULE
+  // (no piece stands above the drawn profile), the ELEMENT (nothing rests on the corner), and the
+  // ROBOT (every stop position is exactly where it was -- the fix must move no robot at all).
+  {
+    // the measurement, stated here rather than imported, so the builder's own constants and this
+    // profile have to AGREE instead of being one number read twice
+    const DRAWN_NOSE_X = 0.24;
+    const DRAWN_RISE_X = 3.44;
+    const DRAWN_NOSE_Y = 0.16;
+    const DRAWN_RISE_Y = 2.144;
+    const DRAWN_TOP = 2.15;
+    /** the drawn assembly's own top height at a point, in the bar's own frame: `dx` is the depth
+     *  inward from the bar's true outer face, `dy` the depth inward from the nearer bar END. */
+    const drawnTop = (dx: number, dy: number): number =>
+      Math.min(DRAWN_TOP, DRAWN_NOSE_X + DRAWN_RISE_X * dx, DRAWN_NOSE_Y + DRAWN_RISE_Y * dy);
+
+    const all = cadStatics();
+    const rawBars = fieldColliders3d().statics.filter((s) => s.name.endsWith('_sheet_metal_foot_bar'));
+    const aabb = (s: FieldStatic) => {
+      const lo = [Infinity, Infinity, Infinity];
+      const hi = [-Infinity, -Infinity, -Infinity];
+      for (let i = 0; i < s.points.length; i += 3)
+        for (let k = 0; k < 3; k++) {
+          lo[k] = Math.min(lo[k], s.points[i + k]);
+          hi[k] = Math.max(hi[k], s.points[i + k]);
+        }
+      return { lo, hi };
+    };
+    // per bar: its true outer face and its own y extent, read off the RAW export (not off the
+    // built pieces), so this check never learns its geometry from the thing it is checking
+    const barOf = (name: string) => rawBars.find((b) => name.startsWith(b.name.replace(/sheet_metal_foot_bar$/, '')));
+
+    /**
+     * How far above the drawn assembly a piece stands, worst over the whole SOLID — and testing
+     * its hull's VERTICES is enough to know that, not a sample of them: over a piece's own domain
+     * `drawnTop` is a min of linear functions, i.e. CONCAVE, so if every vertex sits under it then
+     * by Jensen every convex combination of them does too.
+     */
+    const riseOf = (s: FieldStatic): number => {
+      const bar = barOf(s.name);
+      if (!bar) return NaN;
+      const b = aabb(bar);
+      const outer = Math.abs(b.lo[0]) > Math.abs(b.hi[0]) ? b.lo[0] : b.hi[0];
+      let worst = -Infinity;
+      for (let i = 0; i < s.points.length; i += 3) {
+        const dy = Math.min(Math.abs(s.points[i + 1] - b.lo[1]), Math.abs(s.points[i + 1] - b.hi[1]));
+        worst = Math.max(worst, s.points[i + 2] - drawnTop(Math.abs(s.points[i] - outer), dy));
+      }
+      return worst;
+    };
+
+    const pieces = all.filter((s) => /_sheet_metal_foot_bar|_frame_foot_[ab]/.test(s.name));
+    let worstRise = -Infinity;
+    let worstName = '';
+    for (const s of pieces) {
+      const r = riseOf(s);
+      if (r > worstRise) { worstRise = r; worstName = s.name; }
+    }
+    // TOL is the LIP's own allowance: the lip carries the part's full plan extent at
+    // `FOOT_BAR_LIP_Z`, and the drawn nose at the very corner is 0.08 in, so a tenth is the
+    // honest floor for a stack of vertical-faced boxes.
+    const TOL = 0.1;
+    check(
+      'hive corner 3d: no centre-structure collider stands more than 0.1 in above the DRAWN assembly anywhere on its own footprint',
+      Number.isFinite(worstRise) && worstRise <= TOL,
+      `worst +${worstRise.toFixed(3)} in on ${worstName} (${pieces.length} pieces)`,
+    );
+    // ...and the shape this replaced fails that rule by two inches, so the check is not vacuous
+    {
+      let oldWorst = -Infinity;
+      for (const bar of rawBars) {
+        const b = aabb(bar);
+        const outer = Math.abs(b.lo[0]) > Math.abs(b.hi[0]) ? b.lo[0] : b.hi[0];
+        const inner = outer === b.lo[0] ? b.hi[0] : b.lo[0];
+        for (let i = 0; i <= 20; i++)
+          for (let j = 0; j <= 20; j++) {
+            const x = outer + ((inner - outer) * i) / 20;
+            const y = b.lo[1] + ((b.hi[1] - b.lo[1]) * j) / 20;
+            const dy = Math.min(Math.abs(y - b.lo[1]), Math.abs(y - b.hi[1]));
+            oldWorst = Math.max(oldWorst, b.hi[2] - drawnTop(Math.abs(x - outer), dy));
+          }
+      }
+      check(
+        'hive corner 3d: ...and the square-ended box it replaced stood ~2 in above it, so that rule is not vacuous',
+        oldWorst > 1.8,
+        `old worst +${oldWorst.toFixed(3)} in`,
+      );
+    }
+    // ...AND IT IS STILL SIX PIECES, which is the other half of the fix. A collider COUNT is not
+    // a local change -- every handle made after it shifts and Rapier's islands reorder -- and
+    // MEASURED, the receding-box stack that was tried first flipped one edge-of-envelope case
+    // 60 in away (the ramp ground-capture sweep's -7.65 offset) at 3, 4, 5 and 6 steps alike,
+    // while these same six pieces with entirely different heights left it untouched.
+    {
+      let bad = '';
+      const barPieces = all.filter((s) => s.name.endsWith('_sheet_metal_foot_bar'));
+      const footPieces = all.filter((s) => /_frame_foot_[ab]$/.test(s.name));
+      if (barPieces.length !== 2 || footPieces.length !== 4) bad += `${barPieces.length} bars + ${footPieces.length} feet, want 2 + 4; `;
+      if (all.filter((s) => /_sheet_metal_foot_bar|_frame_foot_[ab]/.test(s.name)).length !== 6) bad += 'extra foot-bar pieces exist; ';
+      // the bottom of every piece still carries the part's OWN full plan extent, which is the one
+      // thing a floor-to-roof chassis can touch and is why the fix moves no robot at all
+      for (const s of [...barPieces, ...footPieces]) {
+        const p = aabb(s);
+        let lo = [Infinity, Infinity];
+        let hi = [-Infinity, -Infinity];
+        for (let i = 0; i < s.points.length; i += 3) {
+          if (s.points[i + 2] > p.lo[2] + 1e-9) continue; // the base section only
+          lo = [Math.min(lo[0], s.points[i]), Math.min(lo[1], s.points[i + 1])];
+          hi = [Math.max(hi[0], s.points[i]), Math.max(hi[1], s.points[i + 1])];
+        }
+        if (Math.abs(lo[0] - p.lo[0]) > 1e-9 || Math.abs(hi[0] - p.hi[0]) > 1e-9) bad += `${s.name}: base section lost x extent; `;
+        if (Math.abs(lo[1] - p.lo[1]) > 1e-9 || Math.abs(hi[1] - p.hi[1]) > 1e-9) bad += `${s.name}: base section lost y extent; `;
+      }
+      check('hive corner 3d: still SIX foot-bar pieces, each one hull carrying its part full plan extent at the tiles', bad === '', bad);
+    }
+
+    // THE ELEMENT: a POLLEN set down where the old block's top was is on the tiles at the same
+    // instant, at all four outer corners. 0.3 s, because free fall from 2.14 in is 0.105 s and
+    // `groundRoll3d`'s ledge VIBRATION gets 30 ticks to shake a ball off a narrow hull -- reading
+    // later would measure the workaround instead of the geometry. Pictures:
+    // `scratch/shots/hivecorner-{before,after}-*-ball.png`.
+    {
+      let bad = '';
+      for (const sx of [1, -1] as const)
+        for (const sy of [1, -1] as const) {
+          const w = mkWorld3dPair('free', 314);
+          w.balls.length = 0;
+          w.robots[0].pos = { x: 60, y: 60 };
+          w.robots[1].pos = { x: 60, y: -60 };
+          const b: Artifact = {
+            id: 953, color: 'yellow', r: BB_POLLEN_R, state: { kind: 'ground' },
+            pos: { x: sx * 23.74, y: sy * 19.25 }, vel: { x: 0, y: 0 }, z: 2.14, vz: 0,
+          };
+          w.balls.push(b);
+          for (let t = 0; t < 18; t++) step3d(w, C.SIM_DT, new Map());
+          if (b.z > 0.12) bad += `corner (${sx * 24.73}, ${sy * 19.47}): POLLEN still at z=${b.z.toFixed(2)}; `;
+          disposeEngineFor(w);
+        }
+      check('hive corner 3d: a POLLEN set on any of the four outer corners falls -- nothing invisible holds it up', bad === '', bad);
+    }
+
+    // THE ROBOT: every stop position is unchanged, and each is ON drawn structure. Driving IN
+    // from an alliance side stops on the bar's own outer face; driving OUT from under the hive
+    // stops on the flange's inner face at mid-span and on the frame foot's at a corner.
+    {
+      const FACE_OUT = 24.73; // the bar's true outer face, both alliances
+      const FACE_MID = 24.07; // the flange's inner face
+      const FACE_END = 22.75; // the frame foot's inner face, near either end
+      let bad = '';
+      for (const bar of [1, -1] as const)
+        for (const [label, y, want, outward] of [
+          ['outer mid-span', 0, FACE_OUT, false],
+          ['outer corner', 18.4, FACE_OUT, false],
+          ['inner mid-span', 0, FACE_MID, true],
+          ['inner corner', 18.4, FACE_END, true],
+        ] as const) {
+          const w = mkWorld3dPair('free', 12, { drivetrain: 'mecanum' });
+          w.balls.length = 0;
+          w.robots[1].pos.x = -62 * bar;
+          w.robots[1].pos.y = 62;
+          const r = w.robots[0];
+          r.fieldCentric = false;
+          // REAR-first, so the leading face is bare chassis (the `front` mount's reach is behind)
+          r.heading = outward === (bar > 0) ? Math.PI : 0;
+          r.pos.x = outward ? 0 : bar * 40;
+          r.pos.y = bar * y;
+          r.vel.x = r.vel.y = 0;
+          r.angVel = 0;
+          const cm = new Map([[0, cmd({ driveY: -1 })]]);
+          for (let t = 0; t < 240; t++) step3d(w, C.SIM_DT, cm);
+          const stop = outward ? Math.abs(r.pos.x) + robotExtents(r).rear : Math.abs(r.pos.x) - robotExtents(r).rear;
+          if (Math.abs(stop - want) > 0.45) bad += `bar ${bar > 0 ? '+' : '-'} ${label}: stopped with its face at ${stop.toFixed(2)}, drawn structure is at ${want}; `;
+          disposeEngineFor(w);
+        }
+      check(
+        'hive corner 3d: a chassis still stops exactly on the drawn structure from every side -- the corner fix moved no robot',
+        bad === '',
+        bad,
+      );
+    }
+
+    // AND THE 2D PIPELINE HAS NO INVISIBLE CORNER BY CONSTRUCTION: its two frame bars ARE the
+    // rects `drawField.ts` fills (one construction, read twice), so there is nothing to slim.
+    {
+      const bars = biobuzzColliders.statics.slice(BB_WALL_COUNT, BB_WALL_COUNT + 2);
+      const w = (BB_FRAME_BAR_OUT - BB_FRAME_BAR_IN) / 2;
+      const mid = (BB_FRAME_BAR_IN + BB_FRAME_BAR_OUT) / 2;
+      const drawnOk = bars.every(
+        (s) => Math.abs(s.hx - w) < 1e-9 && Math.abs(Math.abs(s.tx) - mid) < 1e-9 && Math.abs(s.hy - BB_FRAME_Y) < 1e-9 && s.rot === 0,
+      );
+      check(
+        '2D centre structure: each frame-bar collider IS the rect drawField fills, so the 2D hive has no invisible corner to slim',
+        bars.length === 2 && drawnOk,
+        bars.map((s) => `hx=${s.hx} hy=${s.hy} tx=${s.tx}`).join(' | '),
+      );
+      let bad = '';
+      for (const bar of [1, -1] as const)
+        for (const [label, y, want, outward] of [
+          ['outer mid-span', 0, BB_FRAME_BAR_OUT, false],
+          ['outer corner', 18.4, BB_FRAME_BAR_OUT, false],
+          ['inner corner', 18.4, BB_FRAME_BAR_IN, true],
+        ] as const) {
+          const wd = mkWorld('free', 12, { drivetrain: 'mecanum' });
+          wd.balls.length = 0;
+          const r = wd.robots[0];
+          r.fieldCentric = false;
+          r.heading = outward === (bar > 0) ? Math.PI : 0;
+          r.pos.x = outward ? 0 : bar * 40;
+          r.pos.y = bar * y;
+          r.vel.x = r.vel.y = 0;
+          r.angVel = 0;
+          const cm = new Map([[0, cmd({ driveY: -1 })]]);
+          for (let t = 0; t < 240; t++) biobuzzStep(wd, C.SIM_DT, cm);
+          const stop = outward ? Math.abs(r.pos.x) + robotExtents(r).rear : Math.abs(r.pos.x) - robotExtents(r).rear;
+          if (Math.abs(stop - want) > 0.45) bad += `bar ${bar > 0 ? '+' : '-'} ${label}: stopped with its face at ${stop.toFixed(2)} against a drawn face at ${want}; `;
+        }
+      check('2D centre structure: a chassis stops flush on the drawn frame bar from either side, mid-span and at a corner', bad === '', bad);
     }
   }
 

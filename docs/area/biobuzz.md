@@ -270,6 +270,49 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   feet's own faceted top (bolt holes, bevels) is smoothed by their box the same way — both narrower
   than the 1.98-in bug this fixes and both pre-existing at that scale. Checks appended in
   `scripts/smoke-biobuzz/sim3d.ts` right after the strafe check.
+- ⚠️ **AND THE TWO "KNOWN RESIDUALS" THAT FIX SIGNED OFF ON WERE THE OWNER'S INVISIBLE CORNER**
+  (2026-09-21, the fifth report of it: "this invisible corner in the center structure is STILL not
+  fixed"). Both are the same mistake the wide floor was, one axis over: a SQUARE-TOPPED BOX
+  standing on a RAMP. MEASURED off the shipped GLB at 0.02 in (`scratch/footprofile2.ts`;
+  `scratch/hivetop.ts` is the per-plan-cell collider-top-vs-drawn-top table), all four corners
+  agreeing to 0.01 in: ACROSS the bar the drawn top is **0.24 in at the true outer face** and rises
+  linearly at **3.44 in per in** to the 2.15-in plateau, so the flange box stood up to **1.91 in
+  above the drawn bar** over the outer 0.5 in of its width for the whole 38.9-in length; and ALONG
+  it the whole assembly **ENDS IN A RAMP** — 0.16 in at the end, rising at **2.144 in per in** to
+  full height 0.92 in in — so each of the centre structure's **four outer corners** carried a
+  **1.94-in-tall block** over a chamfer that is 0.19 in tall where the block is 2.13.
+  ⚠️ **THAT IS WHY FOUR DRIVING PROBES MISSED IT AND THE REPORT SURVIVED THEM.** A BIOBUZZ chassis
+  is a floor-to-roof prism to a static, so it is stopped by a 0.16-in lip exactly as by a 2.15-in
+  one: the plan EXTENT was always right and a collider that is the right width and the wrong height
+  cannot move a robot at all (measured either side, worst shortfall to drawn structure 0.170 →
+  0.180 in over 120 approaches, 0 stops more than 0.25 in short, in BOTH physics). What it moved
+  was everything with a HEIGHT — a POLLEN set down on any corner rested at **2.13 in in mid-air**,
+  which is the owner's whole complaint and the same sentence ("nothing actually holding it up") the
+  wide floor drew. Pictures: `scratch/shots/hivecorner-{before,after}-*-ball.png`.
+  **THE FIX** keeps `slimFootBars`'s six pieces and makes each one hull of its own true polytope
+  (`z ≤ min(TOP, NOSE_X + RISE_X·dx, NOSE_Y + RISE_Y·dy)` — an intersection of half-spaces, so the
+  hull of its vertices IS it, exactly, at the four section heights where its two breakpoints live).
+  The faces that slant are the top ones the ramp really has; every face a chassis can reach stays
+  VERTICAL at the part's full plan extent, because the solid is at full extent up to the nose
+  height. ⚠️ **SIX PIECES IS ITSELF PART OF THE FIX.** A stack of receding BOXES is the obvious
+  build, has no slanted face at all, and works — four steps sat within 0.043 in of the drawn
+  surface — but it adds 24 static colliders, and a collider COUNT is not a local change: every
+  handle made after it shifts and Rapier's islands reorder. MEASURED, that flipped one
+  edge-of-envelope case 60 in away (the ramp ground-capture sweep's −7.65 offset, the extreme corner
+  of the mouth) at 3, 4, 5 and 6 steps alike, while the same six pieces with entirely DIFFERENT
+  heights left it untouched. Geometry is local; the count is not.
+  **MEASURED AFTER** (`scratch/hivetop.ts`, 0.05-in plan cells against `field.glb`): the bars go
+  from **1.99 in over 17.92 in²** of invisible solid to **0.02 in over 0.00 in²**; each foot from
+  **2.06 in over 1.13 in²** to **1.26 in over 0.06 in²**. KNOWN RESIDUAL, stated rather than
+  widened away: that last 0.06 in² is the foot pad's own inner edge, which is chamfered on a
+  DIAGONAL in plan (its inner face runs from x 22.90 at |y| 18.5 to 23.20 at 19.47) where this model
+  carries a rect section — a strip about 0.1 × 0.6 in, far under the footprint a 2.8-in POLLEN needs
+  to rest on, and `groundRoll3d`'s narrow-hull vibration exists for exactly that scale. Checks in
+  `scripts/smoke-biobuzz/sim3d.ts` under "THE INVISIBLE CORNER": the RULE (no piece above the drawn
+  profile, with the square-ended box it replaced failing the same rule by 1.99 in so it is not
+  vacuous), the ELEMENT (a POLLEN set on any of the four corners falls), the ROBOT (every stop
+  position unchanged), and the 2D pipeline's own pair — whose frame bars ARE the rects
+  `drawField.ts` fills, one construction read twice, so 2D has no invisible corner to slim.
 - **Drive feel is the shared wrench.** Parity checks measure in OPEN FIELD: two solvers' wall
   contact legitimately differs; the drive model itself matches 2D to four decimals.
 - **Field geometry is CAD-derived** (owner decision 2026-09-17, licence risk accepted).
@@ -305,16 +348,124 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   inside the perimeter. A `fieldDims.gen.ts` that drifts from the measurements JSON
   fails the SIM3D lane, which re-renders it and diffs byte for byte. `docs/biobuzz-reference.md`
   carries the ruling and the full before/after table.
+- ⚠️ **THE CAD GLB IS WOUND AT RANDOM, AND THE LOADER RE-ORIENTS EVERY SHELL** (owner report
+  2026-09-21: "a lot of mounting brackets, especially black and gray ones with complex geometry,
+  have holes in them from different angles and they are glitchy and broken"). MEASURED over every
+  mesh and every welded connected component of both shipped GLBs (`scratch/bracket-winding.ts`):
+  **193 of `field.glb`'s 193 components are closed shells with MIXED winding** — 0 boundary edges
+  anywhere, and orienting each shell outward reverses **132,190 of 268,892 triangles (49.2 %)**.
+  Confirmed independently by RAY PARITY (`scratch/wparity.ts`), which never looks at winding:
+  36–56 % of sampled faces on the hive frames point INWARD, 34–50 % on the flowers, **69–76 % on
+  the perimeter rails**. `THREE.FrontSide` was deleting about half of every part on this field.
+  Two earlier passes saw a slice of this and mis-named it, and both mistakes are instructive:
+  `fixGroundBeamWinding` (2026-09-20) patched three ground bars with `DoubleSide` and took the
+  A-Frame Top Corner as a healthy REFERENCE because its volume ratio landed inside its own bbox —
+  it is 46.6 % reversed, and a scrambled shell's divergence sum is a number with no meaning;
+  `CLEAR_SHEETS_ARE_SINGLE_SIDED` (2026-09-19) read `sheetFacingBalance`'s "every plane 100 / 0"
+  as open sheeting, when a 0.020-in slab puts both faces in ONE plane cluster and 100 / 0 means
+  the two faces wind the same way. `repairFieldWinding` (`renderFieldGlb.ts`) replaces the
+  ground-beam pass: per connected component it propagates orientation across shared edges, turns
+  each face-island outward by its own signed volume, and rewrites the INDEX only — before
+  `styleScene`, so `computeCreasedNormals` reads the corrected winding and there is no second
+  place for the two to disagree. Ray parity after: **44.9 % inward → 1.7 %** on `field.glb`.
+  `DoubleSide` survives only for a genuinely OPEN component (boundary edges over
+  `OPEN_SHELL_BOUNDARY_FRAC`, 3 %), which on the high LOD is **none at all** — the field is now
+  entirely single-sided and the 6,690 triangles the ground-beam patch doubled are back on the
+  cheap path — and on `field-low.glb` is 2,518 of 83,728 (3.0 %), where the simplifier opens real
+  holes. Cost: 92–137 ms once at load on `field.glb`, `assembleFieldGroups` 152 → 214 ms,
+  +1,270 vertices (+0.3 %); keyed by GEOMETRY, so the four flower nodes that share six geometries
+  pay once. ⚠️ **THE CLEAR PANELS ARE SKIPPED ENTIRELY** — their winding, normals and `DoubleSide`
+  material are untouched, because the dielectric tuning above was all fitted against the asset as
+  it ships and a repair under them would halve the layer count the veil was sized for; the RENDER
+  lane pins that their winding is byte-identical to a fresh parse, with the opaque ACM board
+  (same `plastic#e6e6e6` name, not a clear panel) as the control that the digest can see a change
+  at all. The real defect is the exporter's, and `public/models/biobuzz/README.md` carries the
+  note; this is a no-op the day `convert.py` orients its tessellation before merging.
 - **GRAPHICS SETTINGS ARE PER DEVICE, AND THE SCENE SUBSCRIBES TO THEM** (Day 3, plan §4.4–§4.6).
-  `graphics/settings.ts` is the model — the sixteen dials, the four preset columns, the
-  0.6/1.2/2.2/4.0 MP pixel budgets, `localStorage['decodesim.graphics']` with field-by-field
-  coercion. `graphics/auto.ts` is the POLICY (first guess → two-second warm-up → the in-match
+  `graphics/settings.ts` is the model — the seventeen dials (§4.4's sixteen plus
+  `elementDetail`, below), the four preset columns, the 0.6/1.2/2.2/4.0 MP pixel budgets,
+  `localStorage['decodesim.graphics']` with field-by-field coercion. `graphics/auto.ts` is the POLICY (first guess → two-second warm-up → the in-match
   slip rule) and takes its clock as a PARAMETER, because `smoke.ts`'s determinism guard greps
   this whole directory for `performance.now()`. Nothing under `graphics/` may import `three` or
   `scene/` — it is read by `src/ui/GraphicsSection.tsx` and `src/contributors.ts`, both ordinary
-  main-bundle files, and the RENDER lane asserts it. Fourteen settings apply LIVE; mesh detail
+  main-bundle files, and the RENDER lane asserts it. All but one apply LIVE; mesh detail
   needs the next 3D view (it picks the GLB) and SSAO/SMAA are **not offered on this build**
   (`GFX_NOT_OFFERED` carries the reason, and the UI prints it).
+  - ⚠️ **THE SCORING ELEMENTS ARE THE REAL PERFORATED CAD SOLID ON HIGH AND ULTRA** (owner,
+    2026-09-21: "For higher graphics settings, model the balls accurately with the holes.
+    Consider grabbing the actual accurate cad"). `public/models/biobuzz/elements.glb` is a REAL
+    EXTRACTION from the SAME sha-pinned field STEP, not a model by eye: `convert.py` drops the
+    staged POLLEN/NECTAR (`RE_ELEMENT`) because they are not field STRUCTURE, and
+    `scripts/field-cad/elements.py` + `elements.mjs` (`npm run element-cad`) pull the two solids
+    out of the same zip. Each is an outer sphere, an inner sphere and **26 radial bores** in a
+    1/4/8/8/4/1 latitude stack — POLLEN r **1.400** in, wall 0.070, bores ⌀0.440, 2,286 tris;
+    NECTAR r **1.810**, wall 0.085, bores ⌀0.635, 2,542 tris. The README beside the asset carries
+    the full table, the licence note (same zip, same terms, same 2026-09-17 decision) and why
+    there is no `simplify` pass.
+    - ⚠️ **`BB_NECTAR_R` AND THE CAD DISAGREE BY 0.010 in AND THE CONSTANT WAS NOT MOVED.** The
+      CAD is authoritative for dimensions (2026-09-18) but that radius is the sphere Rapier
+      solves and the number every flower/hive/intake tolerance was measured against, so it is a
+      SIM decision, not a renderer's. The drawn NECTAR is 0.55 % wide until somebody rules; the
+      delta is in `elements-measurements.json` and PINNED by the RENDER lane so it cannot grow
+      unnoticed. POLLEN agrees exactly.
+    - ⚠️ **THE WINDING IS THE WHOLE ASSET.** A holed ball is looked THROUGH, so its inner sphere
+      and its 26 bore walls face the camera through the near-side holes. `elements.py` applies
+      each CAD face's own `TopAbs_REVERSED` orientation before emitting a triangle — which
+      `convert.py` does not, and which is the root of the field GLB's own mixed-winding trouble —
+      so every triangle faces away from the material and ONE single-sided material renders the
+      shell correctly from both sides. No `DoubleSide` anywhere: it would double the shadow pass
+      and light the cavity's far wall as an outer surface.
+    - ⚠️ **`geometry.applyMatrix4` IS THE WRONG WAY TO BAKE A `meshopt` ASSET.** POSITION arrives
+      as a NORMALIZED `Int16Array` (`KHR_mesh_quantization`) with the scale on the node, and
+      `applyMatrix4` writes transformed floats straight back into that Int16 array. Measured on
+      this asset, the obvious spelling turned two clean shells at r 1.33/1.40 into a smear of
+      radii from 0.60 to 1.40. `renderElementsGlb.ts` reads through `getX/getY/getZ`.
+    - **The gate is `elementDetail`, a row of its own, and NOT `meshDetail`** — that one is
+      already `high` on Medium (it is `low` on Low alone), and 100 perforated balls plus 100 more
+      shadow casters is exactly what the Medium column exists to avoid. Sphere / sphere / CAD /
+      CAD, applied LIVE, and the fixed-High replay export (§4.7) inherits the CAD ball with no
+      branch of its own. The cheap `SphereGeometry` is built FIRST and always: it stands while
+      the 22 KB fetch is in flight and forever if it fails (one `console.warn`, the same shape as
+      `buildBiobuzzField`'s fallback), and `createBiobuzzScene` pre-warms the asset alongside
+      `field.glb` so an export never draws a sphere on its first frame. MEASURED with all 56
+      elements loose and in frame (`scratch/ballperf.cjs`): **9,408** element triangles on Low
+      and on High-with-spheres against **132,112** on High-with-CAD, inside a scene total of
+      137,510 / 337,714 / 462,098 — and on High/Ultra the sun's depth pass submits the element
+      half again. The CPU side of the per-frame loop (the roll integrator and the instance
+      writes, GL-free, `scratch/ballcpu.mts`) is **0.0071 ms/frame** for 56 rolling balls,
+      0.0048 with `effects: 'minimal'`. No wall-clock GPU frame time is quoted: offscreen
+      Electron has no timer-query extension and composites on the CPU at a capped rate, so any
+      number taken there would describe the capture harness.
+  - ⚠️ **AND THE ELEMENT MESHES ARE `frustumCulled = false`, WHICH IS A BUG FIX, NOT A
+    SHORTCUT.** Three computes an `InstancedMesh`'s bounding sphere ONCE, lazily, from whatever
+    the instance matrices held at that moment, and `instanceMatrix.needsUpdate` does not
+    invalidate it. Every hidden instance is `makeScale(0,0,0)` AT THE ORIGIN, so the NECTAR mesh
+    — 16 balls, all of them off-field `stock` at the start of a match — took a bounding sphere at
+    the centre of the field and was then culled outright by any camera aimed away from it.
+    MEASURED on the scene-preview page: a NECTAR dropped on the tiles at (15, −40) cast a shadow
+    and drew NOTHING, because the shadow pass culls against the sun's own field-wide frustum and
+    was unaffected — which is what makes this read as a material bug rather than a culling one.
+    Nothing is bought back by fixing the sphere instead: two draw calls whose instances are
+    scattered over a 141-in field are inside the frustum on essentially every frame.
+  - **And each `InstancedMesh` now draws its LIVE count, not `CAP`.** Free at 176 triangles of
+    sphere; not free at 2,286 of perforated CAD, where a match's 16 NECTAR against a cap of 56
+    meant three quarters of the heavier mesh was zero-scale degenerates going through the vertex
+    shader, and through the sun's depth pass again.
+  - **THE ELEMENTS ROLL, AND THE ROLL IS VISUAL-ONLY AND INTEGRATED FROM DISPLACEMENT.** A holed
+    ball that slides without turning reads as wrong the instant a hole is visible, and the sim
+    keeps NO orientation for an element (`Artifact` is pos/vel/z/vz — a per-tick quaternion on 56
+    balls is egress nobody asked for, and none was added). `renderElements.ts` turns each ball by
+    `d / r` about `up × travel`, where `d` is how far it was seen to move since the LAST DRAWN
+    FRAME — displacement, not `v · SIM_DT`, because the renderer draws interpolated snapshot
+    positions at a free-running rate and a velocity-times-fixed-step integration is off by
+    whatever the frame-rate-to-tick-rate ratio happens to be. Four things it has to survive, each
+    checked: a TELEPORT (`derive.ts` re-tagging a landed element at a cell's own position,
+    `park()`, a capture) is dropped by a `MAX_ROLL_STEP_IN` (12 in) clamp — past any real travel
+    at 260 in/s and far under a field-scale jump; a REWIND (`world.tick` going backwards) spins
+    nothing at all, the same trigger `Engine3d` rebuilds on; a HELD, stock or PARKED ball keeps
+    its orientation and its tracked position, so its release is a continuation and its hole
+    pattern does not flip the tick it is parked in a cell; and the starting orientation is a hash
+    of the ball's own `id`, so 40 fresh POLLEN do not show 40 copies of the same face.
   - ⚠️ **MSAA is a render target this scene owns, not the canvas's `antialias`.** The context is
     created with `antialias: false` always: WebGL cannot be asked for a particular sample count
     on the default framebuffer and the attribute is fixed for the life of the context, so that
@@ -323,14 +474,72 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   - ⚠️ `WebGLRenderer.setViewport`/`setScissor` take CSS pixels and multiply by the pixel ratio
     THEMSELVES. The PiP minimap passed drawing-buffer pixels once and squared the ratio — at 75 %
     render scale the whole scene drew into 56 % of the canvas, which reads as a camera bug.
-  - **Environments** (plan §4.5) are two CC0 Poly Haven HDRIs fetched on demand as 1k `.hdr`,
-    never bundled, listed in `graphics/environments.ts` — which `src/contributors.ts` DERIVES its
-    Third-party credits from, so a new one cannot ship uncredited. Use `HDRLoader`, not
-    `RGBELoader` (renamed in three 0.186; the old name warns on every load).
+  - **Environments** (plan §4.5) are ELEVEN, listed in `graphics/environments.ts` — which
+    `src/contributors.ts` DERIVES its Third-party credits from, so a fetched one cannot ship
+    uncredited. Two are CC0 Poly Haven HDRIs fetched on demand as 1k `.hdr`, never bundled (use
+    `HDRLoader`, not `RGBELoader` — renamed in three 0.186; the old name warns on every load); one
+    is three's own `RoomEnvironment`; the other **eight are PAINTED** (owner, 2026-09-21: "Add more
+    choices for the 3d field background") — an equirectangular canvas per id, built once and run
+    through the SAME PMREM, used as `scene.background` AND as the light-gathering map. Painted and
+    not photographed for three reasons: eight more HDRIs would be 13 MB the player downloads to
+    look at scenery; `envLighting` is OFF on Low and Medium, so an HDRI there is "1.7 MB for a
+    backdrop" and those tiers had no background picker AT ALL (they do now — `env.apply` takes the
+    row as an argument and only the light-gathering half is dropped); and each painted entry
+    carries its own **`rig`** (sun direction/colour/intensity, both hemisphere terms, exposure), so
+    legibility is a number that can be tuned rather than whatever the photographer's afternoon
+    was. `BASE_RIG` is a COPY of `renderCore.ts`'s `SCENE_*` constants — `graphics/` may not import
+    `scene/` — and the RENDER lane asserts the copy value for value; the robot-builder preview
+    still lights from the constants directly, so a build cannot come out two colours.
+    - ⚠️ **AN ENVIRONMENT MAP IS SAMPLED IN THREE'S y-UP FRAME AND THIS SCENE IS z-UP.** Every
+      camera here sets `up = (0,0,1)`, but an environment map is not in the scene graph:
+      `textureCubeUV` takes a world direction and three's equirect convention is +y = zenith, so an
+      unrotated dome lies on its SIDE — ceiling toward the rear wall, floor toward the audience.
+      Invisible while the only maps were a near-symmetric hall and a white studio; glaring the
+      moment a dome has a horizon (the first sunset build painted the sky underfoot, measured).
+      `scene.backgroundRotation`/`environmentRotation` fix it for EVERY id, HDRIs included. ⚠️ The
+      sign is **`+π/2`**, not the `−π/2` the arithmetic gives: `WebGLRenderer` negates all three
+      Euler components before handing the matrix to the shader.
+    - ⚠️ **A GRAZING KEY LIGHT BLACKS THE MAT OUT, AND AMBIENT WILL NOT BUY IT BACK.** `sunset`
+      first shipped with a 15° sun and MEASURED a rendered mat luminance of **0.0018**, against
+      0.046 for `school-hall` and 0.097 for the room — no tile grid, no element shadows, no
+      shot-path line. A 15° key lands `cos(15°) = 0.25` of itself on a horizontal floor and the
+      perimeter walls shadow the first 40 in of every edge. Raising the fill does NOT fix it:
+      hemisphere 1.15 → 2.6 → 3.2 moved the mat only 0.0018 → 0.0102 → 0.0110, because the floor's
+      albedo is dark and ambient is a small share of it. The key's ANGLE was the whole variable;
+      the rig sits at 40° and the RENDER lane holds every environment to **25° minimum**. Measured
+      mat band across the eleven: 0.011 (`sunset`, warm-cast) … 0.097 (`room`), with every element
+      at 7.1–12.9:1 against its own mat.
   - **The view key `t` is armed by `InputManager.attach`/`detach`** (`graphics/viewKey.ts`,
     reference-counted). It CANNOT live in the scene: the listener dies with the scene, so from
     the 2D map there is nothing left to press. It is not a `KeyAction` — it changes which
     renderer is mounted, not the robot.
+  - **THE FLOWER CONTENTS READ-OUT ON THE TOP-DOWN 3D SHOT** (owner, 2026-09-21: "for the top down
+    view of the 3d render, add a separate thing (like the 2d display) that shows inside the
+    flower"). A FLOWER is a 21.5-in column and its contents are the one thing a plan view cannot
+    say — four discs from above are four discs whatever HEIGHT they are at, and height is the rule
+    — so the 2D renderer draws a SECTION beside each one, outside the perimeter, in the camera's
+    own view margin. The 3D overhead camera has the same problem plus the flower's own top plate
+    between it and the column. `drawFlowerReadout.ts` puts the SAME drawing there: it recovers ONE
+    affine transform from three projected floor points and calls `drawBiobuzzFlowerSections`, the
+    function `drawBiobuzzField` itself calls, so the two views cannot drift from each other or
+    from the scorer.
+    - **An affine transform is legitimate here and nowhere else.** `drawProjectedOverlay`'s own
+      header says a perspective camera is not an affine map, and it is right about driver, chase,
+      orbit and free. The OVERHEAD camera is an `OrthographicCamera` straight above the origin, and
+      an orthographic projection of a PLANE is affine exactly. It is CHECKED rather than assumed —
+      a fourth point past `AFFINE_TOL` draws nothing — so a future overhead camera that grew a
+      tilt stops drawing instead of drawing in the wrong places.
+    - **Overhead only.** On every other camera the flower is seen from the side through its own
+      open bores and the heights are read off the picture; four opaque cards over the tiles would
+      repeat what is already there. The PiP minimap is excluded too: 120–260 px across puts a whole
+      column inside about eight pixels.
+    - ⚠️ **IT IS `GameModule.drawSceneOverlay`, A SLOT OF ITS OWN, NOT A THIRD ARGUMENT ON
+      `drawOverlays`.** That was tried and it is a trap: `drawOverlays` is written in FIELD INCHES,
+      a game that ignores an extra argument still compiles, and DECODE's ramp strips were duly
+      drawn in world coordinates onto a screen-pixel transform. An optional second slot cannot do
+      that. It needs one thing the overlay pass cannot derive — `GameScene.camera`, the camera the
+      last frame RESOLVED to, because on an interactive scene the device's own camera preference
+      wins over what the host asked for.
   - ⚠️ **`Renderer.render(…, overlayOnly)` CLEARS the whole canvas.** Right for the live view
     (the 2D canvas is a separate sheet above the WebGL one); fatal anywhere both passes share a
     canvas. The replay export draws the overlay onto a sheet of its own and composites — without
@@ -374,6 +583,63 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   `t`. Looking at a robot close up also found the TURRET and the BOX TUBE built INSIDE the chassis
   box, `specKey` missing `drivetrain`, and a discarded group never disposed — all three were the
   MATCH's bugs and all three are fixed there.
+- ⚠️ **THE DRIVE WHEELS ARE CATALOGUE PARTS, AND NOTHING ABOUT THEM IS PAINTED** (owner,
+  2026-09-21: "Make the wheels be rendered accurately. Gobilda 104mm gripforce mecanum wheel,
+  gobilda omni wheel"; then, on the shipped picture, "it makes no sense for the wheel to have slant
+  patterns" / "which is how it is right now"). One 64×64 `CanvasTexture` of diagonal lines was
+  stretched over a bare `CylinderGeometry` and handed to MECANUM, to an X-drive's OMNIS and to a
+  BUTTERFLY's corner set — and a `CylinderGeometry`'s flat CAP is UV-mapped too, so what a player
+  actually saw through the side plate's lightening hole was **a disc with diagonal lines painted on
+  it**, where a real wheel has a plain steel hub plate. A 45° slant is hardware: it is the roller
+  axis of a mecanum and of nothing else.
+  `BB_WHEEL_PARTS` (`scene/renderRobots.ts`) is the part table, every field either PUBLISHED and
+  cited at the constant or DERIVED from published ones — goBILDA **104 mm GripForce Mecanum**
+  (3625-0202-0104, **eleven** rollers, 40A silicone between steel side plates, 236 g) for mecanum
+  and a butterfly's corner set; **96 mm Omni** (3624-0014-0096, two rows staggered half a pitch —
+  that is what the published "core offset 8 mm one side and 12 mm on the other" means) for X-drive,
+  because 96 is the LARGEST omni goBILDA sells and an X-drive is therefore honestly 0.157 in
+  smaller in the radius; **96 mm / 72 mm Hogback Traction** (3626-0014-0096/0072) for tank, a
+  butterfly's inboard set and a swerve pod. `wheelKindOf` is the one place that mapping lives.
+  - **104 mm IS `C.WHEEL_DIAMETER_MM`** — the number `C.SPEED_PER_RPM` derives the drivetrain's top
+    speed from. The drawn wheel was a typed 4.00 in (101.6 mm) beside it; the picture and the drive
+    model are the same wheel now, and `BB_WHEEL_R` is GONE (a single "the wheel radius" is what let
+    four drivetrains be drawn at the mecanum's size). What legitimately stays one number is the
+    CHANNEL's width, cut for the widest thing that goes in it.
+  - **A barrel's profile is derived, not styled.** A roller's surface has to lie on the wheel's own
+    outer cylinder or the wheel thumps once a revolution, so its radius at `s` along its axis is
+    `R − hypot(ρ, s·sin α)` — exactly `rollerR` at the waist, tapering to ~0.10 at the ends, and
+    sharper for an omni (α = 90°) than a mecanum (45°). The two APPROX values are flagged: goBILDA
+    publishes no mecanum WIDTH (48 mm is the figure at which the eleven rollers overlap 1.68× in
+    azimuth — under 1.0 the wheel rolls into a gap) and no omni ROLLER COUNT (nine per row is what
+    end-to-end tiling asks for).
+  - **THE TIER CHANGES THE TESSELLATION AND NOTHING ELSE** ("of course, its fidelity and
+    simplification should depend on graphics settings"). `bbWheelDetail(settings, tier)` reads two
+    settings that already exist — `meshDetail` set by hand, and otherwise the preset COLUMN, the
+    same input `GFX_PIXEL_BUDGET` uses and for the same reason (nothing separates Medium from High
+    but AA and shadows). Low/Medium get the cheap one, High/Ultra and the fixed-High replay export
+    the full one; **no seventeenth dial was added**, and the RENDER lane asserts that. A LOW mecanum
+    still has eleven real 45° rollers — measured, not promised. It is baked at build time, so
+    `sync` folds it into its own rebuild key beside `bbSpecKey` (NOT into `bbSpecKey`, which the
+    main chunk's thumbnail cache reads and which must not carry a per-device setting).
+  - **Handedness is `x * sy >= 0 ? 1 : -1`, the 2D sprite's own expression**, and `hand: 1` is a
+    LEFT-slant wheel at the FRONT-LEFT and REAR-RIGHT corners (AndyMark/REV on the equivalent
+    part). The RENDER lane MEASURES it: it isolates the topmost roller by its contiguous run in the
+    merged buffer — azimuth and a z-slab both fail, because the rollers overlap in azimuth by
+    design and a slab of a barrel is a circle with no principal axis — and asserts FL∥BR, FR∥BL and
+    the two hands perpendicular, for every `intakeMount`.
+  - **The wheels TURN now** (`v/R` off `r.vel`, each at its own part's radius), which is the §4.4
+    `effects` row that had nothing behind it. A wheel is a `THREE.Group` with `rotation.order =
+    'ZYX'` so an X-drive's roll stays INSIDE its 45° cant — the same class of bug as the turret's
+    two nodes. A painted stripe could never have got this right at all: a texture on a spinning
+    cylinder keeps its slant relative to the SCREEN.
+  - Two knock-ons, both caught by measurement: `BB_BUTTERFLY_LIFT` is DERIVED against the deck now
+    (a typed 0.6 under a 104 mm wheel puts the lifted crown at 4.694, through a lid at 4.34), and
+    `endWheelSpanY`'s swerve half-extent is `BB_POD_INSET` rather than `BB_POD_W / 2` (the fork box
+    stopped being the widest thing on a pod once it was built around the pod's own 72 mm wheel).
+  - ⚠️ **A WHEEL CANNOT BE PHOTOGRAPHED ON A ROBOT**, and that is the chassis, not the wheel: it
+    lives in the channel between two side plates and the outer plate is solid but for three
+    lightening holes. `scripts/scene-preview/main.ts`'s `?wheelrig=1` stands the five real parts on
+    bare tiles for that; `?drivetrain=` and `?gfx=` are the other two params this pass added.
 - **THE SHOT PATH IS ONE PREDICTOR AND TWO DRAWINGS** (owner playtest feedback 2026-09-18, items
   5–6). `src/games/biobuzz/shotPath.ts` — NOT under `scene/`, because nothing outside `scene/` may
   import from it — answers "would this shot go in, and what does it fly through". `drawShot.ts`
@@ -811,11 +1077,13 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     angle that ENDS on the lineup pose rather than a heading error held blind for 16 in, which is
     a driver aiming from one side rather than simply missing. It reproduces the envelope at
     **73.3 % overall, 100 % straight-on**, −10° 80 %, +10° 40 %.
-  - ⚠️ **HOW FAR THE WHEELS HAVE TO STICK OUT — 1.004 in IS THE FLOOR, 1.90 IS THE KNEE, AND THE
-    PROTRUSION DID NOT MOVE** (owner, 2026-09-21: "do the side roller wheels need to stick out
-    that much for flower intaking? it looks ugly and not the most realistic in terms of
-    packaging"). Both halves are measured; `config.ts`'s own header on `BB_SIDE_ROLLER_R` carries
-    the working and the full table.
+  - ⚠️ **HOW FAR THE WHEELS HAVE TO STICK OUT — 1.004 in IS THE FLOOR, 1.65 IS SHIPPED, AND THE
+    BRACKET MAY NOT COVER THE WHEEL** (owner, 2026-09-21: "do the side roller wheels need to stick
+    out that much for flower intaking? it looks ugly and not the most realistic in terms of
+    packaging"; and again, rejecting a first pass that kept 1.90 and answered with packaging alone:
+    "The side rollers are rendered as being covered and still sticking out a ton. It cant be
+    covered fully because it needs to actually touch the balls"). `config.ts`'s own header on
+    `BB_SIDE_ROLLER_R` carries the full working and both tables.
     - **What the chassis stops against is the FLOWER's own ring plates, on the TIP LINE.** A
       BIOBUZZ chassis is one RECTANGULAR PRISM to a static (frame + arms + lintel +
       `chassis3dPocketShapes`), so its whole front face stops at `uOut`. Probed off the real 3D
@@ -827,21 +1095,44 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
       `2.404 − BB_POLLEN_R` = **1.004 in** past the tip line to touch the bottom POLLEN at all.
       Relieving the arm nose to get deeper is not available: the pocket filler is what stopped a
       fork driving over the hive's foot bars.
-    - **And everything above that floor is spent on the SKEWED approach.** 540 real drive-ins per
-      value: protrusion 2.05 → 73.5 %, **1.90 → 73.3 %**, 1.85 → 68.5 %, 1.80 → 64.4 %,
-      1.75 → 60.0 %, 1.40 → 60.0 %, 1.20 → 43.7 %, 1.00 → 44.3 %; straight-on holds 100 % down to
-      1.40 and breaks below it. The curve is FLAT above 1.90 and falls 4–5 points per 0.05 in
-      below it, so the shipped value is the KNEE and the honest reduction is ZERO.
-    - **What was actually wrong was the PACKAGING**, which is the owner's second sentence. The
-      wheel hung on one diagonal strut with 63 % of it forward of the arm tips and nothing around
-      it. It is a bracketed module now — a retainer plate over it, a plate under it, a dead axle
-      between them and a strap/web back to the side arm's own rail — and the drawn envelope ENDS
-      on `tip + BB_SIDE_ROLLER_PROTRUDE`, the wheel's own solid front, so the package added no
-      reach. `BB_SIDE_ROLLER_PLATE_T` (0.12) is set by the BOTTOM plate, which is the one part
-      that drives over the lower ring rim: 0.5 − 0.354 leaves 0.146 in. Pinned in the RENDER lane
-      (3D nodes + the 2D sprite's closed filled path) and the ROBOT lane (the 1.004-in floor, and
-      that `BB_SIDE_ROLLER_PROTRUDE` is the one number `BbFlowerReach.out[1]`,
-      `bbArchetypeWallExtra` and `bbIntakeExtraReach` all read).
+    - **Above that floor the reach buys recovery from YAW, and two populations disagree.** A
+      chassis driven into a FLOWER meets the ring plate over only ONE SIDE of its own width — the
+      driver is offset `bbSideRollerY` to put a wheel on the opening — so the normal force is a
+      long lever and the settled pose picks up **18–22° of yaw**, which swings the gripping wheel
+      out. `scratch/sidesweep.ts`, real drive-ins, no teleports:
+
+      | protrusion | 1.90 | 1.85 | 1.80 | 1.75 | 1.70 | **1.65** | 1.60 | 1.50 | 1.45 | 1.40 |
+      |---|---|---|---|---|---|---|---|---|---|---|
+      | held-intake, all 540 | 73.3% | 68.5% | 64.4% | 60.0% | 63.9% | **63.9%** | 57.6% | 60.0% | — | 60.0% |
+      | held-intake, straight-on | 100% | 100% | 100% | 100% | 100% | **100%** | 99.4% | 100% | — | 100% |
+      | PARK then intake (36) | 61.1% | — | — | — | — | **58.3%** | 44.4% | 33.3% | 0.0% | 0.0% |
+
+      The held-intake sweep alone would allow **1.40** — a driver holding the trigger takes the
+      POLLEN on the way in, mean 0.24 s — but a driver who rolls up and only THEN presses it gets
+      nothing at all below 1.45. **1.65** is the largest cut that costs neither population
+      anything measurable. `scripts/smoke-biobuzz/flower3d.ts`'s F1 drive-in fixture is the
+      canary: driven in with the intake OFF and asked once at the settled pose it bites at 1.90
+      and at no smaller value at all, so it now holds the trigger through the drive and its own
+      header carries this table.
+    - ⚠️ **AND THE WHEEL FRICTION EXPERIMENT IS RECORDED AS A FAILURE, NOT A FIX.** A free-spinning
+      compliant wheel should roll along a wall rather than grab it, and the far wheel really does
+      reach the wall beside a FLOWER (probed at the settle, 0.036 in of penetration), so the
+      cylinders were given `friction 0` with `CoefficientCombineRule.Min` — the tile plane's own
+      trick, which reads 0 against a wall/static/robot while an ELEMENT's MAX still outranks it.
+      MEASURED, 540 runs either way: **324/540 both**, not one run flipped, settle moved 0.002 in.
+      The yaw is a NORMAL-force moment off the plate, not a friction moment. Reverted; the reason
+      is in `reachColliderDesc`'s own header so it is not re-tried blind.
+    - **The bracket is a REAR YOKE.** Two straps, above and below, running diagonally from the side
+      arm's rail to the AXLE and ending in a `BB_SIDE_ROLLER_BOSS_R` bearing boss; a dead axle
+      between them; a web behind the wheel's own rear tangent. Nothing is drawn forward of the axle
+      line except the boss and nothing caps the tread, so **223°** of it stays visible from every
+      angle, full height (a strap parallel to the rail cannot even reach the axle and starts
+      occluding at 90°; the RENDER lane measures the open arc off the built meshes' own vertices).
+      The wheel is a hub with a lugged compliant tread — twelve facets of the same 12-gon the
+      SOLID is, offset 15° so their corners land exactly on `BB_SIDE_ROLLER_R`, six full height
+      and six slightly recessed. `bbSideRollerYokeY` (`config.ts`) is the one number both
+      renderers place the yoke by, because `drawRobot.ts` may not import the scene chunk.
+
 - **Verification:** `scripts/smoke-biobuzz/sim3d.ts` (SIM3D lane: seam, drive parity, two-run
   hash, conservation, containment with `containmentFixes === 0`, CCD, capture, launch into either
   up cell, 18/29-in clearance, tip/spill, perf ≤ 1.5 ms, CAD probe agreement) and `render.ts`
@@ -849,6 +1140,109 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   `scripts/field-cad/preview` (GLB viewer). In an automated browser, drive the game through the
   live `GameController` (React fiber from the canvas) and judge progress by `world.tick`, since
   `requestAnimationFrame` only advances when a paint is forced.
+
+---
+
+# SECTION 11 — G407 OVER-CONTROL, AND THE TWO WAYS IT WAS UNREACHABLE
+
+`src/games/biobuzz/penalties.ts` is the engine; read its header first. This section is only the
+part that was BILLING NOTHING, because both halves of it are the kind of bug a passing test
+suite hides.
+
+⚠️ **OWNER REPORT 2026-09-21: "Overpossession penalties are not being given right now."** It was
+true, in the two places the owner actually plays, and twenty placed G407 fixtures were green the
+whole time. MEASURED (`scratch/g407probe.ts` — a driven six- and eight-element herd, empty and
+full hopper, intake on and off, AUTO / TELEOP / free drive, both pipelines):
+
+| pipeline / phase | peak per-element hold | count reached | billed |
+|---|---|---|---|
+| 2D, AUTO + TELEOP | 1.27 s | 6 (10 with a full hopper) | WARNING + STRATEGIC MAJOR |
+| 2D, free drive | **0.00 s** | 0 | **nothing** |
+| 3D, every phase | **0.00 s** | 0 (4 with a full hopper) | **nothing** |
+
+Two independent causes, one per broken row. Neither is a tuning question and neither was
+reachable from a hand-advanced fixture.
+
+- ⚠️ **IN 3D A PLOWED ELEMENT IS TAGGED `flight`, AND BOTH HALVES OF THE RULE READ THE TAG.**
+  `derive.ts` calls an element airborne when its bottom is off the tiles by `AIRBORNE_Z` (0.05 in)
+  or its `vz` exceeds 1 in/s and it has not read at rest — a fair description of a ball in the air
+  and ALSO of a 3-in ball being shoved across a tile seam, because **a plowed ball SKIPS**.
+  Measured on a driven herd, the element was tagged `flight` on **14.3%** of the ticks it was in
+  chassis contact, interleaved with the `ground` ones every few frames. `controlledArtifacts`
+  filtered the field to `ground`, so a skipping element was not a candidate to be counted; and
+  `bbSweepControlClocks` treated a non-`ground` element as GONE and **deleted** its hold, anchor
+  and carry, so every skip reset the confirm clock to zero. That is why the hold peaked at
+  exactly 0.000 against a `POSSESSION_CONFIRM` of 0.45 — not "nearly", *never*. **And every
+  server-connected match is 3D** (the 2026-09-18 ruling above), so G407 was unreachable in every
+  room on the server, by construction.
+  The fix is `ControlGeometry.loose` — a fourth slot on the shared interface, defaulting to
+  `b.state.kind === 'ground'` so DECODE and Chain Reaction are byte-identical — and
+  `bbLooseElement`, which asks the physical question the tag was standing in for: is it loose,
+  and is it on the floor. `ground` always is; `flight` is too when its bottom is under
+  `BB_CONTROL_SKITTER_Z`. **`bbSweepControlClocks` MUST use the same predicate** — a sweep
+  stricter than the count deletes the clock of an element the count is still looking at, which
+  is the whole of the second half of this bug.
+  ⚠️ **THE `flight` ARM IS GATED ON THE 3D SOLVE AND THAT IS NOT SUPERSTITION.** The 2D pipeline
+  is PERMANENT and has no skip — a `ground` element stays `ground` from the moment it lands — so
+  the arm buys it nothing, while a 2D arc's descending tail does pass through the band. Taking it
+  out of 2D is the difference between a fix and a fix plus a change nobody asked for.
+  **`BB_CONTROL_SKITTER_Z` (2 in) is MEASURED** (`scratch/skitter.ts`, four seeds × three
+  headings): over 14,340 ticks of chassis-on-element contact while plowing, the element's bottom
+  never rose above **0.92 in**; over 246 ticks of a real shot passing over a chassis in plan, it
+  was never below **7.60 in**. The two distributions do not touch, so the constant is a gap and
+  not a threshold — it sits 2.2× above the skip and 3.8× below the lowest shot, and neither
+  number has to be re-measured to the inch for it to keep holding.
+- ⚠️ **FREE DRIVE COUNTS** (and DECODE got here first, for the same reported reason — see the
+  "FREE DRIVE COUNTS" paragraph in `src/sim/penalties.ts`). `freeplay` fell through this engine's
+  "no fouls outside the played periods" guard, so the whole of Section 11 was inert in the mode
+  people practise in. Free Drive is DRIVER PRACTICE, and practising without the fouls a match
+  would give you is the opposite of practice. The phase-specific rules stay inert on their own
+  terms rather than by a second list: G402 tests `isAuto`, G407 and G421 are about what a robot
+  is doing right now, and — the one carve-out — **G410 is explicitly unlocked in `freeplay`**.
+  Its cue is written as "unlocked WHEN teleop is inside 1:00" and negated, so every other phase
+  is locked BY DEFAULT, which is the safe direction in a match and the wrong one in a mode with
+  no clock to be early against: without the carve-out, opening free drive made every NECTAR ever
+  placed in a FLOWER in practice a MAJOR.
+
+**FALSE POSITIVES — 0, on every carve-out shape** (`scratch/g407fp2.ts`, six seeds each, clumps
+of six and eight, both pipelines): a POKE that touches and reverses inside `POSSESSION_CONFIRM`,
+a DRIVE-PAST that clips the clump with a flank in transit, and PARKING against a clump for six
+seconds all bill **nothing**. The BIOBUZZ tutorial — whose worlds are FREE DRIVE, i.e. exactly
+the mode just opened — bills **0 G407 lines over all seven steps × both alliances × both
+pipelines**, ten seconds of scripted driving each.
+
+**AND THE RATE ON REAL PLAY IS THE 2D RATE.** The honest control here is free: 2D match play was
+already billing this rule and had been shipping, so it is the accepted baseline. Over 8 seeded
+2v2 AI-vs-AI matches per cell, 60 s of TELEOP, four bots driving:
+
+| tier | 2D warnings / majors | 3D warnings / majors |
+|---|---|---|
+| easy | 15 / 0 | 13 / 1 |
+| medium | 11 / 0 | 12 / 0 |
+| hard | 12 / 0 | 9 / 0 |
+
+3D now sits inside the 2D band rather than at zero. No threshold was invented to get there — the
+3D pipeline was made to agree with the one that has been enforcing this rule all along.
+
+**EGRESS.** No new `World`/`RobotState` field, but `world.penalties.{ballHold,ballAnchor,ballCarry}`
+rode every 3D snapshot as EMPTY objects before (the sweep wiped them each tick) and now carry
+entries, and `slimWorld` keeps `penalties` verbatim. Measured, 2v2 3D, hard bots, 1,800 snapshots
+at 30 Hz: **+257 B/snapshot raw** (3.7% of a 7.0 KB frame), **+135 B/snapshot deflated**
+(**+3.94 KiB/s per client**, 6.35%) — and that deflate figure is a CEILING, since it is measured
+per frame while the server runs `permessage-deflate` with context takeover and these maps are
+highly repetitive across frames. If it ever has to come down, the lever is stripping the three
+maps from `slimWorld` (they are read by the penalty engine alone), which is a netcode change and
+a prediction-divergence question, not a rules one.
+
+**Verification:** `g407DrivenChecks` in `scripts/smoke-biobuzz/rules.ts` — 34 checks. It
+deliberately breaks that lane's "do not drive" doctrine for the same reason `g402DrivenChecks`
+does, and it is the same class of bug a second time: a placed fixture cannot fail for a rule that
+never reaches a robot which had to drive. It asserts the billing AND the three carve-outs on a
+driven robot, in both pipelines and all three live phases, and it asserts the per-element hold
+clock actually latched rather than only the tally. ⚠️ The `loose` predicate itself is checked
+KINEMATICALLY and must stay that way: `state.kind` is DERIVED from height and motion every tick,
+so a driven fixture that hand-tags a row `flight` has it re-tagged before the next penalty pass
+reads it, and the run then measures the tagger instead of the rule.
 
 ---
 

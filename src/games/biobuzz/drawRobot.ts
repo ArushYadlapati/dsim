@@ -14,10 +14,14 @@ import {
   BB_RAMP_DEPLOY_S,
   BB_RAMP_OUT,
   BB_RAMP_PIVOT_BACK,
-  BB_SIDE_ROLLER_HOUSE_BACK,
+  BB_SIDE_ROLLER_BOSS_R,
+  BB_SIDE_ROLLER_HUB_R,
   BB_SIDE_ROLLER_OUT,
   BB_SIDE_ROLLER_R,
+  BB_SIDE_ROLLER_YOKE_BACK,
+  BB_SIDE_ROLLER_YOKE_W,
   bbSideRollerY,
+  bbSideRollerYokeY,
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
   bbHopperCap,
@@ -364,29 +368,40 @@ export function drawBiobuzzIntakeReach(ctx: CanvasRenderingContext2D, r: RobotSt
       for (const s of [1, -1] as const) {
         const y = s * bbSideRollerY(f.half); // AT THE EDGE (owner, 2026-09-20), not the centreline
         const x = tip + BB_SIDE_ROLLER_OUT;
-        // ⚠️ **THE HOUSING, NOT A BRACKET LINE** (owner, 2026-09-21: "it looks ugly and not the
-        // most realistic in terms of packaging"). This used to be a bare segment from the tip
-        // line to the axle with a loose circle on the end — a wheel on a stick, in plan as much
-        // as in 3D. It is the same sandwich `scene/renderRobots.ts` builds: a plate from the side
-        // arm's rail out around the wheel, capped on the WHEEL'S OWN RADIUS, so the drawn outline
-        // ends exactly where the collider does (`tip + BB_SIDE_ROLLER_PROTRUDE`) and not a
-        // thousandth further.
-        const backX = x - BB_SIDE_ROLLER_HOUSE_BACK;
-        const inner = y - s * BB_SIDE_ROLLER_R;
+        // ⚠️ **A REAR YOKE, AND IT MAY NOT COVER THE WHEEL** (owner, 2026-09-21, rejecting the
+        // housed draft this replaces: "The side rollers are rendered as being covered and still
+        // sticking out a ton. It cant be covered fully because it needs to actually touch the
+        // balls"). That draft capped the wheel with a plate on the WHEEL'S OWN RADIUS, which in
+        // plan is the whole wheel. The yoke is the same one `scene/renderRobots.ts` builds: a
+        // narrow strap from the side arm's rail to the AXLE, ending in a bearing boss, with
+        // nothing drawn forward of the axle line except that boss.
+        const backX = x - BB_SIDE_ROLLER_YOKE_BACK;
+        const armY = s * bbSideRollerYokeY(f.half);
+        // the DIAGONAL strap, rail to axle, then the bearing BOSS — the same two parts, at the
+        // same places, `scene/renderRobots.ts` builds. Drawn as a plain quad rather than a
+        // rounded rect because it is not axis-aligned: the rail sits further outboard than the
+        // axle, and a bar parallel to the rail would never reach it.
+        const nx = (y - armY) / Math.hypot(x - backX, y - armY);
+        const ny = -(x - backX) / Math.hypot(x - backX, y - armY);
+        const hwid = BB_SIDE_ROLLER_YOKE_W / 2;
         ctx.fillStyle = 'rgba(152,163,178,0.32)';
         ctx.strokeStyle = ALU;
         ctx.lineWidth = 0.14;
         ctx.beginPath();
-        ctx.moveTo(backX, inner);
-        ctx.lineTo(x, inner);
-        // ⚠️ the cap must sweep through the OUTWARD point (+x), never round the back of the
-        // wheel: for the −y wheel that means the anticlockwise arc, not the same sweep mirrored.
-        ctx.arc(x, y, BB_SIDE_ROLLER_R, (-s * Math.PI) / 2, (s * Math.PI) / 2, s < 0);
-        ctx.lineTo(backX, s * f.half);
+        ctx.moveTo(backX + nx * hwid, armY + ny * hwid);
+        ctx.lineTo(x + nx * hwid, y + ny * hwid);
+        ctx.lineTo(x - nx * hwid, y - ny * hwid);
+        ctx.lineTo(backX - nx * hwid, armY - ny * hwid);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
-        // the wheel itself — the same rubber shading the sweeper's own roller wears
+        ctx.beginPath();
+        ctx.arc(x, y, BB_SIDE_ROLLER_BOSS_R, 0, TAU);
+        ctx.fill();
+        ctx.stroke();
+        // the wheel itself — hub and lugged tread, the same two parts the 3D wheel is built from
+        // and the same rubber shading the sweeper's own roller wears. Drawn AFTER the yoke, so
+        // the tread is never under it.
         ctx.fillStyle = on ? RUBBER_HI : RUBBER_LO;
         ctx.beginPath();
         ctx.arc(x, y, BB_SIDE_ROLLER_R, 0, TAU);
@@ -394,6 +409,21 @@ export function drawBiobuzzIntakeReach(ctx: CanvasRenderingContext2D, r: RobotSt
         ctx.strokeStyle = 'rgba(210,224,240,0.35)';
         ctx.lineWidth = 0.12;
         ctx.stroke();
+        // the LUGS: twelve radial ticks from the hub out to the tread, the plan-view of the same
+        // 12 facets the 3D tread is lugged into (`sideRollerTreadGeometry`).
+        ctx.strokeStyle = on ? 'rgba(34,197,94,0.38)' : 'rgba(190,205,220,0.26)';
+        ctx.lineWidth = 0.1;
+        ctx.beginPath();
+        for (let k = 0; k < 12; k++) {
+          const a = (Math.PI / 12) * (1 + 2 * k);
+          ctx.moveTo(x + Math.cos(a) * BB_SIDE_ROLLER_HUB_R, y + Math.sin(a) * BB_SIDE_ROLLER_HUB_R);
+          ctx.lineTo(x + Math.cos(a) * BB_SIDE_ROLLER_R, y + Math.sin(a) * BB_SIDE_ROLLER_R);
+        }
+        ctx.stroke();
+        ctx.fillStyle = ALU_MID;
+        ctx.beginPath();
+        ctx.arc(x, y, BB_SIDE_ROLLER_HUB_R, 0, TAU);
+        ctx.fill();
       }
     } else {
       // 'ramp' — rails from the pivot line out to the eased reach, plus the crossbar joining

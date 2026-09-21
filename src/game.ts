@@ -1,5 +1,6 @@
 import type {
   Alliance,
+  Artifact,
   ArtifactColor,
   CardColor,
   ChainScoreMode,
@@ -67,6 +68,13 @@ export type { GameSettings };
 // past SMOOTH_MAX_DIST — a real desync, not jitter).
 const SMOOTH_HALFLIFE = 0.06; // s — the offset halves every 60ms (~gone in 200ms)
 const SMOOTH_MAX_DIST = 16; // in — larger corrections snap instead of floating
+/**
+ * The same thing for ONE ELEMENT (`ballSmooth`), and it is much smaller than the robot's on
+ * purpose: a POLLEN is 3 in across, so an offset the size of a chassis is not a correction being
+ * eased in, it is a different ball. Past this the offset is dropped and the element snaps to the
+ * prediction, which is what should happen when a capture, a launch or a re-tag has moved it.
+ */
+const BALL_SMOOTH_MAX = 6; // in
 
 // Minecraft-style entity INTERPOLATION for REMOTE robots + balls: render them a
 // couple snapshots in the PAST and lerp between the two authoritative states that
@@ -113,6 +121,16 @@ const PREDICT_SLIP_WINDOW = 60;
  */
 type Predictor = ReturnType<ReturnType<typeof physics3dImpl>['createLightPredictor']>;
 type PredictedPose = ReturnType<Predictor['step']>;
+/** one element the FULL predictor is carrying — same derivation, same no-imports reason. */
+type PredictedElement = NonNullable<ReturnType<Predictor['elements']>>[number];
+
+/**
+ * IS THIS ELEMENT TAG A TELEPORT? Only the two that mean "something is CARRYING it": a hopper
+ * (`held`) and a human player's hand (`stock`). Every other tag in a 3D BIOBUZZ world is
+ * DERIVED from where the body already is, so a change between them is a re-description of a
+ * continuous motion, never a jump. See `displayWorld`'s element block for the measurement.
+ */
+const isCarried = (kind: string): boolean => kind === 'held' || kind === 'stock';
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 /** shortest-arc angle lerp */
@@ -505,6 +523,33 @@ export class GameController {
    * correction is eased in (render loop decays it) instead of snapping — hides
    * rubberbanding from jittery snapshots. Never affects `this.world`. */
   private localSmooth = { x: 0, y: 0, heading: 0 };
+  /**
+   * ⚠️ **THE ELEMENTS' OWN `localSmooth` — AND THE BUG IT EXISTS FOR IS THE ONE PEOPLE REPORT
+   * AS "the balls behave really weirdly in a server game".**
+   *
+   * In a predicted 3D room the LOCAL ROBOT is drawn from the prediction, which sits at (about)
+   * the newest server tick, while every element is drawn INTERPOLATED, which sits
+   * `INTERP_DELAY_TICKS` behind it. Those are two different moments in one frame, and the gap
+   * does not depend on the network at all: measured through a real `Room` at 0, 60 and 140 ms
+   * RTT alike, an element was drawn **p95 8.65 in / max 8.9 in** closer to the local robot than
+   * the server had it, so a POLLEN the driver was pushing sat inside their own chassis and a
+   * shot leaving the field crossed it a tenth of a second late. Turning prediction OFF — which
+   * draws the local robot interpolated too, at the SAME clock as the elements — took the same
+   * measurement to **p95 0.01 in**, which is the whole bisect: the clocks, not the physics.
+   *
+   * The fix does not change either clock. The FULL predictor has always carried the near
+   * elements as real dynamic bodies and pushed them with the predicted chassis, and has always
+   * thrown the answer away; `displayWorld` now DRAWS them, so the robot and the things it is
+   * touching are one moment again (p95 0.99 in). These three maps are the continuity machinery:
+   * the offset per element, what it was last DRAWN at, and whether that drawing came from the
+   * prediction — so a re-seat, or an element crossing in or out of the predictor's radius, eases
+   * over `SMOOTH_HALFLIFE` instead of popping. Purely cosmetic, exactly like `localSmooth`:
+   * nothing here touches `this.world`, the server still owns every element, and a LIGHT
+   * predictor (which carries no elements) is unaffected.
+   */
+  private ballSmooth = new Map<number, { x: number; y: number; z: number }>();
+  private ballDrawn = new Map<number, { x: number; y: number; z: number }>();
+  private ballPredicted = new Set<number>();
   /** set by the UI for a RECORD run: the restart binding asks for a whole new run
    * (session teardown + fresh room) instead of an in-place rebuild. Null elsewhere,
    * which is what keeps the binding inert in a versus match. */
@@ -2180,6 +2225,7 @@ export class GameController {
     const p = this.predictor;
     this.predictor = null;
     this.predictorKind = null;
+    this.clearElementSmoothing();
     try {
       p?.dispose();
     } catch (err) {
@@ -2226,11 +2272,45 @@ export class GameController {
     // code measuring client code, which is the reason `probeFullReconcileMs` takes `now` as an
     // argument rather than defaulting it.
     const t0 = performance.now();
+    // the ELEMENTS' half of `localSmooth`, captured exactly the way the robot's is: BEFORE and
+    // AFTER are the SAME predicted tick (the replay ends where the last window ended), so what
+    // is left is the prediction error and nothing else. Read across a FRAME instead and every
+    // correction would also carry one tick of real motion, which never decays and pins each
+    // element a tick behind for the rest of the match (measured: it put the artifact straight
+    // back, p95 8.1 in against 0.99).
+    const before = p.elements();
     p.reset(this.world, serverTick);
     let pose: PredictedPose | null = null;
     for (const b of this.inputBuf) pose = p.step(b.cmd);
     if (pose) this.applyPredictedPose(pose);
+    if (before) this.noteElementCorrection(before, p.elements());
     this.notePredictionCost(performance.now() - t0);
+  }
+
+  /** accumulate each predicted element's re-seat correction into its visual offset, so the
+   *  drawn position stays continuous across a reconcile and eases onto the new prediction. */
+  private noteElementCorrection(before: PredictedElement[], after: PredictedElement[] | null): void {
+    if (!after) return;
+    const was = new Map(before.map((e) => [e.id, e] as const));
+    for (const e of after) {
+      const w = was.get(e.id);
+      if (!w) continue; // it entered the near set this reconcile — `displayWorld` absorbs that
+      const o = this.ballSmooth.get(e.id);
+      const x = (o ? o.x : 0) + (w.x - e.x);
+      const y = (o ? o.y : 0) + (w.y - e.y);
+      const z = (o ? o.z : 0) + (w.z - e.z);
+      if (Math.hypot(x, y, z) > BALL_SMOOTH_MAX) this.ballSmooth.delete(e.id);
+      else this.ballSmooth.set(e.id, { x, y, z });
+    }
+  }
+
+  /** drop every element's visual offset. Called wherever the interpolation buffer is cleared
+   *  and wherever the predictor goes away — an offset against a predictor that no longer exists
+   *  would hold the last correction on screen for the ~200 ms it takes to decay. */
+  private clearElementSmoothing(): void {
+    this.ballSmooth.clear();
+    this.ballDrawn.clear();
+    this.ballPredicted.clear();
   }
 
   /**
@@ -2425,9 +2505,17 @@ export class GameController {
      *  · an id absent from either bracketing snapshot falls back to the predicted ball. It
      *    cannot happen while the count is conserved, which is exactly why it must not be
      *    ASSUMED — a future rule that spawns one would otherwise draw it at the origin.
-     *  · a `state.kind` CHANGE SNAPS to the newer pose. An element entering a hopper or
-     *    leaving a human player's hand teleports in the sim, and easing it there draws it
-     *    travelling through a chassis.
+     *  · a `state.kind` change SNAPS to the newer pose — but ONLY when `held` or `stock` is one
+     *    of the two kinds. ⚠️ It used to snap on ANY kind change, which is wrong for a game
+     *    whose tags are DERIVED from body positions every tick (`derive.ts`): `ground`,
+     *    `flight` and `element` all describe the SAME continuously-moving sphere, and a skidding
+     *    missed shot re-tags `flight`/`ground`/`flight` on consecutive ticks with its position
+     *    moving smoothly the whole way. Every one of those flickers threw the element two ticks
+     *    forward and then froze it for a frame — measured, the worst frame-to-frame jump any
+     *    element made was **2.61 in against a true per-tick motion of 1.34**, i.e. a pop of
+     *    nearly twice the distance it was actually travelling, on a ball nobody had touched.
+     *    Narrowed to the two kinds that genuinely TELEPORT (into a hopper, into a human player's
+     *    hand) the worst jump is **1.36 in**, which is the real motion and nothing else.
      *  · `held` and `stock` elements are left ALONE. Their position is written every tick by
      *    the thing carrying them, not by the solve, so the predicted value is the correct one
      *    and a stale snapshot pose would drag them behind their own robot.
@@ -2439,14 +2527,67 @@ export class GameController {
       const p = b0.get(ball.id);
       const q = b1.get(ball.id);
       if (!p || !q) return ball;
-      if (p.kind !== q.kind) return { ...ball, pos: { x: q.x, y: q.y }, z: q.z };
+      if (p.kind !== q.kind && (isCarried(p.kind) || isCarried(q.kind))) {
+        return { ...ball, pos: { x: q.x, y: q.y }, z: q.z };
+      }
       return {
         ...ball,
         pos: { x: lerp(p.x, q.x, a), y: lerp(p.y, q.y, a) },
         z: lerp(p.z, q.z, a),
       };
     });
-    return { ...this.world, robots, balls };
+    return { ...this.world, robots, balls: this.drawPredictedElements(balls, dtSec) };
+  }
+
+  /**
+   * DRAW THE ELEMENTS THE PREDICTOR IS CARRYING AT THE PREDICTION'S OWN CLOCK — see `ballSmooth`
+   * for the measurement this exists for.
+   *
+   * It runs only where the predictor has an opinion: a FULL predictor, and an element it holds a
+   * body for whose tag says it is loose on the field (`ground`) or in the air (`flight`). An
+   * `element` — seated in a FLOWER's bore or latched in a HIVE cell — is deliberately left
+   * interpolated: its position there is the authority's derived structure rather than a free
+   * body the local chassis is about to hit, so the client has nothing to add and a stack the
+   * prediction let settle differently would be a new artifact in place of the one being fixed.
+   * A LIGHT predictor carries no elements at all and `elements()` returns null, so this is one
+   * map lookup and out.
+   */
+  private drawPredictedElements(balls: Artifact[], dtSec: number): Artifact[] {
+    const pe = this.predictor?.elements();
+    if (!pe && this.ballSmooth.size === 0 && this.ballDrawn.size === 0) return balls;
+    const by = pe ? new Map(pe.map((e) => [e.id, e] as const)) : null;
+    const k = Math.pow(2, -dtSec / SMOOTH_HALFLIFE);
+    return balls.map((ball) => {
+      const e = by?.get(ball.id);
+      const kind = ball.state.kind;
+      const use = !!e && (kind === 'ground' || kind === 'flight');
+      const base = use ? { x: e!.x, y: e!.y, z: e!.z } : { x: ball.pos.x, y: ball.pos.y, z: ball.z };
+      let off = this.ballSmooth.get(ball.id) ?? null;
+      // A SOURCE SWITCH is the one discontinuity `noteElementCorrection` cannot see: an element
+      // crossing `PREDICT_ELEMENT_RADIUS`, or being re-tagged into or out of a structure, moves
+      // between two legitimate answers that are ~`INTERP_DELAY_TICKS` apart. Absorb it whole.
+      const prev = this.ballDrawn.get(ball.id);
+      if (prev && this.ballPredicted.has(ball.id) !== use) {
+        off = { x: prev.x - base.x, y: prev.y - base.y, z: prev.z - base.z };
+      }
+      if (off && Math.hypot(off.x, off.y, off.z) > BALL_SMOOTH_MAX) off = null;
+      if (use) this.ballPredicted.add(ball.id);
+      else this.ballPredicted.delete(ball.id);
+      if (!off) {
+        this.ballSmooth.delete(ball.id);
+        if (!use) {
+          this.ballDrawn.delete(ball.id);
+          return ball;
+        }
+        this.ballDrawn.set(ball.id, base);
+        return { ...ball, pos: { x: base.x, y: base.y }, z: base.z };
+      }
+      off = { x: off.x * k, y: off.y * k, z: off.z * k };
+      this.ballSmooth.set(ball.id, off);
+      const drawn = { x: base.x + off.x, y: base.y + off.y, z: base.z + off.z };
+      this.ballDrawn.set(ball.id, drawn);
+      return { ...ball, pos: { x: drawn.x, y: drawn.y }, z: drawn.z };
+    });
   }
 
   /** adopt the authoritative world, discard inputs it already reflects, and
@@ -2575,6 +2716,7 @@ export class GameController {
     this.snapBuf = [];
     this.renderTick = 0;
     this.localSmooth = { x: 0, y: 0, heading: 0 };
+    this.clearElementSmoothing();
     // A REMATCH IS A NEW MATCH, so it gets a new probe and a new slip window. The predictor is
     // dropped rather than reset: `reset` re-seats bodies against a world, and the world it was
     // built from has just been replaced.
