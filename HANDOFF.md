@@ -1,6 +1,91 @@
+# HANDOFF — 2026-09-21j (alpha: rewards stage A COMPLETE, stage B's server half, and the venue)
+
+**READ FIRST.** Gates on alpha at `3272b6f`: `npm test` ALL PASS (**2,202** shared + 4,702
+biobuzz), `build`, `server:check`, `dbtest` ALL PASS, `uiaudit` (all at baseline), `contrast`
+(**239**), `docaudit`, `bundleaudit`. `dsim-alpha` redeployed; 0045/0046/0047 applied at boot.
+
+**STAGE A IS DONE AND SHIPPED.** Season awards, equippable titles, the badge, the board chip
+and the picker. **STAGE B's server half is done too** — schema, anti-farm, entitlement, set
+algebra, fetch and sweep. What B still needs is not code: **the owner enabling GitHub in the
+Neon Auth project** (Neon offers Google/GitHub/Vercel only — see below), after which the link
+button is the last piece. Stage C (Discord) needs bespoke OAuth for the same reason.
+
+- **AWARDS** (`0045`, `0046`). Owner's counts: ranked top 3/mode, record overall top 3 +
+  per-drivetrain top 1, and the DUO record board the same pair. Champion / Finalist /
+  Semifinalist.
+  - ⚠️ **`startNewSeason` IS ONE TRANSACTION NOW.** It was four loose `q()` calls and `q()`
+    takes a connection PER CALL. With awards in the roll that stops being untidy: insert the
+    new season, fail to write the awards, and the closed season is permanently un-awarded,
+    because the next attempt reads `closing` from a `seasons` table that already moved on.
+  - ⚠️ **THE CLOSING SEASON IS AWARDED, AT THE ACT IT BELONGED TO.** `act` may already be
+    bumped for the season being OPENED; stamping that names the wrong act in every title on
+    any roll that starts a new act.
+  - ⚠️ **`user_id` IS IN THE UNIQUE SLOT INDEX BECAUSE A DUO AWARD HAS TWO HOLDERS.** Keying
+    on (board, rank) alone lets the first insert and rejects the second — silently awarding
+    one half of a team.
+  - Every board read is the board's own function called the way the site calls it:
+    `recordLeaderboard` with NO `physics` argument (passing one mints an award for a holder
+    the public board hides) and ranked through `eloHistoryLeaderboard`, keyed by
+    BALANCE_VERSION — `eloLeaderboard` is keyed by ACT and names the wrong person on every
+    season but an act's last.
+- **TITLES ARE DERIVED, NOT STORED** (`awardTitleId`, and it lives in `src/awards.ts` beside
+  `parseAwardTitleId` so the writer and reader cannot drift). ⚠️ **A PARSED ID HAS NO
+  ACT/SEASON** — they are on the ROW for the sentence, so a parsed award renders through
+  `awardShortText` and NOT `awardTitleText`. ⚠️ **THE BOARD CHIP COSTS NO JOIN**: `badgeCols`
+  carries `profiles.title` off a row it already joined and the client parses it. That is why
+  the id is derived from the slot rather than being a surrogate key.
+- **THE BADGE** (owner delegated): a HEXAGON with the rank numeral, one saturated violet
+  (`--ds-award`). ⚠️ **GOLD/SILVER/BRONZE IS THE TRAP** — gold already means supporter, and
+  silver and bronze are desaturated by definition, which is the exact failure
+  `docs/area/accounts.md` records. Checked by eye in both themes.
+- **STAGE B, SERVER HALF** (`0047`). ⚠️ **A TABLE, NOT A COLUMN, BECAUSE OF THE UNLINK**:
+  `(provider, provider_user_id)` is the PK and an unlink stamps `unlinked_at` rather than
+  deleting, so unlink-and-relink on a second account cannot mint the reward again. Stores the
+  provider id and two timestamps — **never a token**, because every reward asks the platform
+  about its OWN resource.
+  - ⚠️ **A LEDGER TITLE IS NOT A ROBOT-SPEC AXIS.** The plan said to put `title:` in
+    `COSMETIC_AXES`; that is wrong on contact — that registry is the axes of a `Cosmetics` on
+    a `RobotSpec` and `clampCosmetics` folds each onto a FIELD of it. `TITLE_KEYS` is its own
+    closed set in the same ledger.
+  - ⚠️ **THE SWEEP DECIDES BY SET DIFFERENCE, AND A TEST CAUGHT WHY.** `grantCosmetic` is
+    idempotent in EFFECT but not in its RETURN — its UPDATE matches the profile row either
+    way — so driving the audit off it wrote a `cosmetics.grant` row on EVERY sweep.
+  - ⚠️ **`complete: false` CHANGES NOTHING** — the whole cost of unstarring revoking. Every
+    failure path in `fetchStargazers` sets it: non-2xx, throw, unparseable body, a body that
+    is not an array (the rate-limit shape), MAX_PAGES. Revoking also CLEARS an equipped title.
+- ⚠️ **A NEW dbtest IMPORT MAY HAVE TO BE LAZY.** `server/stargazers` at the top of the file
+  pulls `db/repo` → `server/moderation`, which reads its key AT MODULE SCOPE, so it resolved
+  DISABLED before the stub sets the env and the replay name-scrub check went red three
+  thousand lines away. The stub's header warns about it; the eager import walked in anyway.
+- **THE VENUE** — real geometry around the field, `scene/renderVenue.ts`, written up in
+  `docs/area/biobuzz.md` under Environments. The "blurry lights" were the dome's lower half
+  smeared by `backgroundBlurriness`, plus no ground at all on the CAD field.
+- **PASS TO YOUR PARTNER** (`bbPass`) — the target is a POINT, never the partner.
+
+## Next
+
+- **Stage B's last piece**: the link button, once GitHub is enabled in Neon Auth. ⚠️ **Neon
+  Auth offers Google, GitHub and Vercel ONLY** (owner, 2026-09-21), so **Discord needs a
+  bespoke authorization-code flow** in `server/api.ts` — `identify` scope, store the
+  snowflake, discard the tokens. Budget +0.5–1 day on stage C.
+- **Stage C still hinges on the `GUILD_MEMBERS` privileged intent.** `guilds.members.read`
+  returns `premium_since` and needs no intent, but re-checking then needs a stored refresh
+  token or a user-present button. If the intent is refused, re-cost the perk rather than
+  building it.
+- **NO INSTAGRAM FOLLOW REWARD** (owner, decided). A follow is unverifiable: the
+  follower/relationship endpoints went in 2018, Basic Display died 2024-12-04, and there is no
+  `follows` webhook. `docs/rewards-round2-plan.md` §10 is the framework for the next platform.
+- ⚠️ **ALPHA'S ENTRY CHUNK IS ~20.7 KB OVER ITS OWN BASELINE AND IT IS NOT THE DISCORD PR'S.**
+  The results redesign (5392737..918173b) grew it without re-measuring; the baseline was
+  raised to 946.79 with the split attributed in `bundleaudit.mjs`. Still unexplained.
+- The two HDRIs (`school-hall`, `monochrome-studio`) still download 1.6–1.7 MB and now buy
+  only IBL and reflections, since the venue geometry hides the photograph. Product call.
+
+---
+
 # HANDOFF — 2026-09-21i (alpha: the venue, PASS, rewards stage A, and four fixes)
 
-**READ FIRST.** Gates on alpha at `4755321`: `npm test` ALL PASS (**2,184** shared + **4,702**
+Gates on alpha at `4755321`: `npm test` ALL PASS (**2,184** shared + **4,702**
 biobuzz), `build`, `server:check`, `dbtest`, `uiaudit` (all at baseline), `contrast` (237),
 `docaudit`, `bundleaudit`. `dsim-alpha` redeployed and healthy (0045/0046 applied at boot).
 
