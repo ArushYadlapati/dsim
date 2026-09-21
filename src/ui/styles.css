@@ -1245,14 +1245,29 @@ button {
 .resx-breakdown {
   grid-area: 2 / 2 / 3 / 3;
 }
+/* ---- ONE PANEL — a record run, or practice with no opponent. TWO columns: the alliance
+   panel owns the left one TOP TO BOTTOM, and the header, the breakdown and the actions stack
+   down the right one. That span IS the feature: the title arriving in row 1 and the actions
+   row arriving in row 3 cannot trim the panel, shrink it or overlap it at any point in the
+   reveal, because they are never in its column.
+
+   ⚠️ It was a CENTRED FLEX COLUMN — header above the panel, buttons below it, both eating
+   into the fill, and the panel's height changing as the sequence revealed them. The width cap
+   on every child was what made a side column impossible. Row and column placement is
+   inherited from `.resx-body` above: its rows are already header / breakdown / actions and
+   its column 2 is already the content column, so only the track sizes and the half move. ---- */
 .resx-body-solo {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  grid-template-columns: 1fr 2fr;
 }
-/* flex items, so every `grid-area` above is inert and DOM order is the layout. */
-.resx-body-solo > * {
-  width: min(640px, 100%);
+/* ⚠️ COMPOUND, and a LIST. Plain `.resx-body-solo .resx-half` ties `.resx-half.red
+   { grid-area }` at (0,2,0) and loses on source order — which is precisely what once left the
+   half spanning three rows with the header auto-placed underneath it. `.red`/`.blue` wins at
+   (0,3,0), and a multi-selector list claims no name, so `duplicate-selector` stays at 0.
+   Red's own area is already this; BLUE's points at a third column that does not exist here,
+   and a record run is always blue (`RecordRun.tsx` forces it). */
+.resx-body-solo .resx-half.red,
+.resx-body-solo .resx-half.blue {
+  grid-area: 1 / 1 / 4 / 2;
 }
 /* RED above BLUE on a narrow screen, breakdown between, full width each — instead of
    three columns squeezed into 375px (which clipped every value). The header stays FIRST:
@@ -1301,16 +1316,37 @@ button {
   color: var(--ds-blue-chip-ink);
   animation: resx-half-in-right 700ms cubic-bezier(0.2, 0.9, 0.25, 1) both;
 }
-/* the SOLO half always slides from the left — there is no second half to meet it. `flex:
-   1 0 auto` and not `1`: it takes the slack so its total still pins to the bottom edge, but a
-   long breakdown GROWS it rather than being clipped by a zero basis. */
+/* the lone half always slides in from the left — there is no second half to meet it, and it
+   is the left column. ONE block: `uiaudit` does not catch a repeated DESCENDANT selector. */
 .resx-body-solo .resx-half {
-  flex: 1 0 auto;
   animation-name: resx-half-in-left;
 }
 @media (max-width: 720px) {
   .resx-body:not(.resx-body-solo) .resx-half {
     min-height: 40vh;
+  }
+}
+/* the one-panel screen had NO narrow rules at all — every rule above is `:not(.resx-body-solo)`
+   — so at 375px it kept trying to hold a 1fr/2fr split. One column, panel first. */
+@media (max-width: 720px) {
+  .resx-body-solo {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto auto;
+  }
+  .resx-body-solo .resx-half.red,
+  .resx-body-solo .resx-half.blue {
+    grid-area: 1 / 1 / 2 / 2;
+    min-height: 40vh;
+  }
+  .resx-body-solo .resx-bar {
+    grid-area: 2 / 1 / 3 / 2;
+  }
+  .resx-body-solo .resx-wait,
+  .resx-body-solo .resx-breakdown {
+    grid-area: 3 / 1 / 4 / 2;
+  }
+  .resx-body-solo .resx-secondary {
+    grid-area: 4 / 1 / 5 / 2;
   }
 }
 
@@ -1332,6 +1368,13 @@ button {
 .resx-winbanner {
   visibility: hidden;
   display: block;
+  /* ⚠️ `min-height`, or an EMPTY banner reserves NOTHING. `visibility: hidden` keeps a box,
+     but a block with no text has no line box either, so the slot collapsed to its 8px of
+     padding — measured, the losing half's roster sat 28px above the winner's, which is the
+     one thing this reserved slot exists to prevent. `1em` is this element's own font-size and
+     the padding below is added back because the box is border-box, so an empty banner is
+     exactly a filled one's height and stays that way if either value changes. */
+  min-height: calc(1em + 2 * var(--ds-s-1));
   background: var(--ds-on-field);
   color: var(--ds-stage-bg);
   border-radius: var(--ds-round-full);
@@ -1360,27 +1403,44 @@ button {
      to EACH segment, so the banner rubber-bands twice on the way in. */
   animation: resx-winbanner-in 450ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-.resx-winbanner.tie {
+/* QUIET: a tie, a plain placing, a practice run — present and readable, but not a result
+   anyone is being congratulated for. */
+.resx-winbanner.quiet {
   background: var(--ds-on-field-dim);
 }
+/* GOLD is the design system's only medal token and its own comment says it is a FILL, which
+   is exactly this. `--ds-gold-ink` on `--ds-gold` is ALREADY an audited AA pair
+   (`contrast.mjs`), so the loudest thing on the screen costs no new colour. A WORLD RECORD
+   gets it; a personal best keeps the ordinary banner, because it is the player's own best and
+   spending the loudest treatment there leaves nothing above it. */
+.resx-winbanner.gold {
+  background: var(--ds-gold);
+  color: var(--ds-gold-ink);
+}
 
-/* ---- record-run standing (PB / WR / rank) — takes the WINNER banner's slot ---- */
+/* ---- the line UNDER the banner on a record run: the category, and the placing when the
+   banner did not already say it. It was a two-line flex block carrying the whole message,
+   back when there was no banner above it to carry the headline. ---- */
 .resx-standing {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.resx-standing strong {
-  font-size: var(--ds-t-lg);
-  font-weight: 800;
-  letter-spacing: 1px;
-}
-.resx-standing span {
-  font-size: var(--ds-t-sm);
-}
-p.resx-standing {
   margin: 0;
   font-size: var(--ds-t-sm);
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+/* the three no-rank states are a different kind of sentence from a placing — prose, not a
+   label — so they drop the tracking and the weight. */
+.resx-standing.pending,
+.resx-standing.signin {
+  font-weight: 400;
+  letter-spacing: 0;
+}
+/* ⚠️ the sign-in offer sits ON THE ALLIANCE FILL, not on the dark stage, so it takes the
+   panel's own ink (`currentColor` is the chip ink) and NOT `--ds-on-field-dim`, which is
+   2.78:1 against the red fill. Specificity (0,3,0) is what it takes to outrank
+   `.resx-stage .resx-linkbtn` further down, which is written for the stage. */
+.resx-stage .resx-standing.signin {
+  color: inherit;
+  text-decoration: underline;
 }
 
 /* ---- team list ---- */
@@ -1443,11 +1503,10 @@ p.resx-standing {
 .resx-breakdown th {
   padding: 3px var(--ds-s-4);
 }
+/* a grid item in the content column now, not a flex child of the panel — so it takes
+   `.resx-breakdown`'s own centring and margin and only has to be allowed to shrink. */
 .resx-breakdown-solo {
-  flex: 1;
   min-width: 0;
-  margin: 0;
-  align-self: center;
 }
 .resx-section th {
   padding-top: var(--ds-s-3);
@@ -1510,11 +1569,6 @@ p.resx-standing {
   display: flex;
   flex-direction: column;
 }
-.resx-body-solo .resx-half-lower {
-  flex-direction: row;
-  align-items: flex-end;
-  gap: var(--ds-s-5);
-}
 .resx-total {
   padding-top: var(--ds-s-3);
   border-top: 1px solid currentColor;
@@ -1522,15 +1576,6 @@ p.resx-standing {
   align-items: baseline;
   justify-content: space-between;
   gap: var(--ds-s-3);
-}
-/* `column-REVERSE`: the children are written number-then-label (inner→outer, see
-   `AllianceHalf`), and this screen wants its label ABOVE the number. */
-.resx-body-solo .resx-total {
-  flex-direction: column-reverse;
-  align-items: flex-end;
-  gap: 2px;
-  border-top: none;
-  padding-top: 0;
 }
 /* the alliance's own name, labelling its total — and the half's ONLY heading, so it is what
    names the `<section>` to a screen reader. `margin: 0` because it is an `<h3>`: the UA
@@ -1572,6 +1617,13 @@ p.resx-standing {
    together once the sequence reaches `done` ---- */
 .resx-secondary {
   grid-area: 3 / 2 / 4 / 3;
+  /* ⚠️ KNOWN, on the VERSUS board only: this row's buttons are wider than the breakdown, and
+     the versus centre track is `auto`, so when the row appears at `done` the track grows and
+     both alliance panels narrow — measured, 525px to 516px. Neither `width: 0; min-width:
+     100%` nor `contain: inline-size` stops an intrinsic contribution here; the deterministic
+     fix is a percentage track (`33% 1fr 33%`), which changes the versus board's proportions
+     and so wants its own commit. The ONE-PANEL screens are unaffected: their columns are
+     `1fr 2fr`, and an `fr` track never sizes to content. */
   display: flex;
   flex-direction: column;
   align-items: center;

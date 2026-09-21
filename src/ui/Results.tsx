@@ -10,6 +10,8 @@ import type { RecordRankInfo } from '../net/protocol';
 import type { Replay, ReplayResult } from '../sim/replay';
 import type { RobotSetup } from '../sim/spawn';
 import { moduleFor } from '../games';
+import { recordBanner } from './recordBanner';
+import type { ResultBanner } from './recordBanner';
 import { seasonFor } from '../seasons';
 import type { Alliance, ScoreBreakdown } from '../types';
 
@@ -401,6 +403,11 @@ function SoloTable({ sections, rowsActive }: { sections: readonly SoloSection[];
   );
 }
 
+/** one side of a VERSUS board: the winner names itself, a tie names both, and the loser keeps
+ *  the slot and prints nothing so the two halves' rosters and totals stay on one line. */
+const versusBanner = (win: boolean, tie: boolean): ResultBanner =>
+  tie ? { text: 'TIE', tone: 'quiet' } : { text: win ? 'WINNER' : '' };
+
 /** the alliance's own name, which LABELS its total — the fill already says which side this
  *  is, so the word `TOTAL` beside the number was saying nothing the panel had not said. */
 const ALLIANCE_NAME: Record<Alliance, string> = { red: 'Red', blue: 'Blue' };
@@ -426,24 +433,23 @@ const ALLIANCE_NAME: Record<Alliance, string> = { red: 'Red', blue: 'Blue' };
 function AllianceHalf({
   alliance,
   phase,
-  win,
-  tie,
+  banner,
   versus,
   standing,
   roster,
   showElo,
   total,
   totalLabel,
-  soloSections,
-  rowsActive,
 }: {
   alliance: Alliance;
   phase: Phase;
-  win: boolean;
-  tie: boolean;
-  /** there is an OPPOSING half beside this one. It decides two things: this half mirrors
-   *  (above), and the WINNER banner keeps a hidden slot on the loser so both halves' rosters
-   *  and totals stay on one line. A solo or record half has no partner to do either with. */
+  /** the slot across the top of the panel. An EMPTY `text` RESERVES the space and prints
+   *  nothing — which is both the losing half of a versus board and a record run whose rank
+   *  has not landed yet, from one rule. Absent means no slot at all. See `recordBanner`. */
+  banner?: ResultBanner;
+  /** there is an OPPOSING half beside this one, so this panel is one of a left/right pair and
+   *  the RIGHT-hand one mirrors. A lone panel sits in the left column of its own grid and
+   *  reads like the red half, which is why `outward` below is true for it. */
   versus?: boolean;
   standing?: React.ReactNode;
   roster: readonly RosterEntry[];
@@ -454,12 +460,12 @@ function AllianceHalf({
    *  not equal the breakdown above it — which is why that screen prints a negative penalties
    *  row — and `Red` would delete the only word explaining the difference. */
   totalLabel?: string;
-  soloSections?: readonly SoloSection[];
-  rowsActive: boolean;
 }) {
   const settled = phase !== 'wait' && phase !== 'wipe';
   const totalsActive = phase === 'totals' || phase === 'done';
-  const outward = versus === true && alliance === 'red';
+  // "this panel is on the LEFT": the red half of a pair, or a lone panel, which the one-panel
+  // grid puts in the left column. Only the right-hand half of a pair mirrors.
+  const outward = !versus || alliance === 'red';
   const label = totalLabel ?? ALLIANCE_NAME[alliance];
   // the panel's ONLY heading, and so the accessible name for the `<section>` around it — a
   // `<section>` with none is not exposed as a region at all. It used to be the `RED` /
@@ -481,23 +487,24 @@ function AllianceHalf({
   return (
     <section className={`resx-half ${alliance}`}>
       <div className="resx-half-top">
-        {/* rendered on BOTH versus halves and hidden on the loser, so the two rosters and
-            totals stay on one line without anyone having to guess this pill's height. */}
-        {versus && (
+        {/* the slot holds its height whatever is in it, so the driver row never jumps when a
+            rank lands late and the two halves of a versus board stay on one line. */}
+        {banner && (
           <span
-            className={`resx-winbanner${tie ? ' tie' : ''}${totalsActive && (win || tie) ? ' on' : ''}`}
+            className={`resx-winbanner${banner.tone ? ` ${banner.tone}` : ''}${
+              totalsActive && banner.text ? ' on' : ''
+            }`}
           >
-            {tie ? 'TIE' : 'WINNER'}
+            {banner.text}
           </span>
         )}
         {settled && standing}
         {settled && <RosterList roster={roster} showElo={showElo} outerFirst={outward} />}
       </div>
-      {/* VERSUS: this wraps just the total, which `margin-top: auto` pins to the half's
-          bottom edge. SOLO: it wraps the breakdown table TOO, and `.resx-body-solo` turns
-          it into a row — "breakdown beside the big total", per the brief. */}
+      {/* just the total, which `margin-top: auto` pins to the panel's bottom edge. The
+          one-panel screens used to wrap their breakdown in here too; it is a sibling out in
+          the content column now, so this is the same shape on every screen. */}
       <div className="resx-half-lower">
-        {soloSections && <SoloTable sections={soloSections} rowsActive={rowsActive} />}
         <div className="resx-total">{outward ? [name, num] : [num, name]}</div>
       </div>
     </section>
@@ -564,6 +571,7 @@ export function Results({
   reportable,
   onReport,
   onReportScore,
+  onSignIn,
   localRobotId,
 }: {
   hud: HudSnapshot;
@@ -607,6 +615,9 @@ export function Results({
   onReport?: (robotId: number, reason: string, detail: string) => void;
   /** file a MISSCORE claim about this match — see ScoreReportDialog */
   onReportScore?: (detail: string) => void;
+  /** open the account screen. A signed-out RECORD run is offered the sign-in that would put
+   *  its score on the board; absent, the offer degrades to a plain sentence. */
+  onSignIn?: () => void;
   /** this client's own robot id (`GameController.localRobotId`) — marks the "YOU" row
    *  in a roster built from `matchResult`/`practiceRun`'s recorded setups. Optional so
    *  an older caller still renders (just without the marker). */
@@ -684,6 +695,7 @@ export function Results({
         onRematchVote={onRematchVote}
         onExit={onExit}
         onWatchReplay={onWatchReplay}
+        onSignIn={onSignIn}
         roster={hud.alliance === 'red' ? redRoster : blueRoster}
       />
     );
@@ -826,41 +838,40 @@ export function Results({
         )}
         {phase !== 'wait' &&
           (solo ? (
-            <AllianceHalf
-              alliance={hud.alliance}
-              phase={phase}
-              win={false}
-              tie={false}
-              roster={hud.alliance === 'red' ? redRoster : blueRoster}
-              showElo={false}
-              total={hud.alliance === 'red' ? redTotal : blueTotal}
-              soloSections={soloSections}
-              rowsActive={rowsActive}
-            />
+            // the breakdown is a SIBLING of the panel, not a child of it: the panel is a
+            // full-height column in the one-panel grid and the table belongs in the content
+            // column beside it, where the header and the buttons are.
+            <>
+              <AllianceHalf
+                alliance={hud.alliance}
+                phase={phase}
+                banner={recordBanner(null, true)}
+                roster={hud.alliance === 'red' ? redRoster : blueRoster}
+                showElo={false}
+                total={hud.alliance === 'red' ? redTotal : blueTotal}
+              />
+              {soloSections && <SoloTable sections={soloSections} rowsActive={rowsActive} />}
+            </>
           ) : (
             <>
               <AllianceHalf
                 alliance="red"
                 phase={phase}
-                win={winner === 'red'}
-                tie={winner === 'tie'}
+                banner={versusBanner(winner === 'red', winner === 'tie')}
                 versus
                 roster={redRoster}
                 showElo={ranked}
                 total={redTotal}
-                rowsActive={rowsActive}
               />
               <BreakdownTable sections={sections} rowsActive={rowsActive} />
               <AllianceHalf
                 alliance="blue"
                 phase={phase}
-                win={winner === 'blue'}
-                tie={winner === 'tie'}
+                banner={versusBanner(winner === 'blue', winner === 'tie')}
                 versus
                 roster={blueRoster}
                 showElo={ranked}
                 total={blueTotal}
-                rowsActive={rowsActive}
               />
             </>
           ))}
@@ -985,51 +996,60 @@ export function Results({
   );
 }
 
-/** the PB / WR / rank line on a record run's results screen. Null info ⇒ either
- * the run is still being scored (signed in) or it was anonymous (prompt to sign
- * in — anonymous runs are never persisted, so no rank exists). Takes the WINNER
- * banner's slot in the layout when earned. */
-function RecordStanding({ info, signedIn }: { info: RecordRankInfo | null; signedIn: boolean }) {
+/**
+ * The line UNDER the banner on a record run — the one that qualifies it.
+ *
+ * The banner (`recordBanner`) carries the headline; this carries what the headline does not
+ * say, and NEVER the same fact twice. A world record and a personal best both need their
+ * category and their placing spelled out; a plain placing has no headline at all, so its rank
+ * IS the banner and only the category is left down here.
+ *
+ * Null info ⇒ the run is still being scored, or the build does not persist, or it was
+ * anonymous (anonymous runs are never persisted, so no rank will ever exist). The banner is
+ * blank through all three and this line is what speaks.
+ */
+function RecordStanding({
+  info,
+  signedIn,
+  onSignIn,
+}: {
+  info: RecordRankInfo | null;
+  signedIn: boolean;
+  /** opens the account screen. Optional, so a caller that cannot navigate still renders — it
+   *  just gets the sentence without the offer, rather than an arrow pointing at nothing. */
+  onSignIn?: () => void;
+}) {
   if (!info) {
     // alpha builds are not persisted server-side (no recordResult ever arrives) —
     // don't leave a signed-in player spinning on "Saving…"
     if (appChannel() === 'alpha') {
       return <p className="resx-standing pending">Not saved on this test build.</p>;
     }
-    return signedIn ? (
-      <p className="resx-standing pending">Saving · computing your rank…</p>
+    if (signedIn) return <p className="resx-standing pending">Saving · computing your rank…</p>;
+    // ⚠️ A BUTTON, not a sentence with an arrow stuck on the end. This was a `<p>` reading
+    // "… see your rank →", which promises an affordance the markup did not have: a signed-out
+    // player could read the offer and had no way at all to take it from this screen. The
+    // stage swallows clicks to skip the sequence, hence `stopPropagation`.
+    return onSignIn ? (
+      <button
+        className="ds-linkbtn resx-linkbtn resx-standing signin"
+        onClick={(e) => {
+          e.stopPropagation();
+          onSignIn();
+        }}
+      >
+        Sign in to save this run &amp; see your rank →
+      </button>
     ) : (
-      <p className="resx-standing signin">Sign in to save this run &amp; see your rank →</p>
+      <p className="resx-standing signin">Sign in to save this run to the leaderboard.</p>
     );
   }
   const cat = `${info.mode === 'duo' ? 'Duo' : 'Solo'} · ${prettyDrivetrain(info.drivetrain)}`;
-  if (info.isWR) {
-    return (
-      <div className="resx-standing wr">
-        <strong>🏆 WORLD RECORD</strong>
-        <span>
-          {cat} · #1 of {info.total}
-        </span>
-      </div>
-    );
-  }
-  if (info.isPB) {
-    return (
-      <div className="resx-standing pb">
-        <strong>★ NEW PERSONAL BEST</strong>
-        <span>
-          {cat} · #{info.rank} of {info.total}
-        </span>
-      </div>
-    );
-  }
+  const tone = info.isWR ? 'wr' : info.isPB ? 'pb' : 'rank';
   return (
-    <div className="resx-standing rank">
-      <strong>#{info.rank}</strong>
-      <span>
-        of {info.total} · {cat}
-      </span>
-    </div>
+    <p className={`resx-standing ${tone}`}>
+      {info.isWR || info.isPB ? `${cat} · #${info.rank} of ${info.total}` : cat}
+    </p>
   );
 }
 
@@ -1053,6 +1073,7 @@ function RecordResults({
   onRematchVote,
   onExit,
   onWatchReplay,
+  onSignIn,
   roster,
 }: {
   hud: HudSnapshot;
@@ -1075,6 +1096,8 @@ function RecordResults({
   onRematchVote: () => void;
   onExit: () => void;
   onWatchReplay?: (replay: Replay) => void;
+  /** open the account screen — see the same prop on `Results` */
+  onSignIn?: () => void;
   /** who ran it — one row solo, two for a duo-record — from the replay's own setups */
   roster: readonly RosterEntry[];
 }) {
@@ -1163,19 +1186,23 @@ function RecordResults({
             equal the breakdown beside it — which is exactly why that breakdown prints a
             NEGATIVE penalties row. `Red` would delete the only word explaining the gap. */}
         {phase !== 'wait' && (
-          <AllianceHalf
-            alliance={hud.alliance}
-            phase={phase}
-            win={false}
-            tie={false}
-            standing={phase !== 'wipe' ? <RecordStanding info={recordResult} signedIn={signedIn} /> : null}
-            roster={roster}
-            showElo={false}
-            total={netCount}
-            totalLabel={cr ? 'TOTAL' : 'NET SCORE'}
-            soloSections={sections}
-            rowsActive={rowsActive}
-          />
+          <>
+            <AllianceHalf
+              alliance={hud.alliance}
+              phase={phase}
+              banner={recordBanner(recordResult, false)}
+              standing={
+                phase !== 'wipe' ? (
+                  <RecordStanding info={recordResult} signedIn={signedIn} onSignIn={onSignIn} />
+                ) : null
+              }
+              roster={roster}
+              showElo={false}
+              total={netCount}
+              totalLabel={cr ? 'TOTAL' : 'NET SCORE'}
+            />
+            <SoloTable sections={sections} rowsActive={rowsActive} />
+          </>
         )}
         {doneVisible && (
           <div className="resx-secondary">

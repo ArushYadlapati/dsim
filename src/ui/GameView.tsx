@@ -178,6 +178,9 @@ interface Props {
   session?: NetSession | null;
   /** watch the just-played run's replay (a server match, or a solo practice run) */
   onWatchReplay?: (replay: Replay) => void;
+  /** open the account screen. The results screen offers it to a signed-out RECORD run, whose
+   *  score cannot reach the leaderboard until there is an account to hang it on. */
+  onSignIn?: () => void;
   /** a SOLO PRACTICE run just finished — the app keeps it (locally, and on the account) */
   onPracticeRun?: (replay: Replay, result: ReplayResult) => void;
   /** whether the player is signed in — drives the record results "sign in to
@@ -230,6 +233,7 @@ export function GameView({
   onExit,
   session = null,
   onWatchReplay,
+  onSignIn,
   onPracticeRun,
   signedIn = false,
   onSettingsChange,
@@ -871,6 +875,7 @@ export function GameView({
           recordResult={controllerRef.current?.getRecordResult() ?? null}
           signedIn={signedIn}
           onWatchReplay={onWatchReplay}
+          onSignIn={onSignIn}
           /* marks the "YOU" row in the results roster (built from the match's own
              recorded setups) — slot 0 in solo, the lobby-assigned id in multiplayer. */
           localRobotId={controllerRef.current?.localRobotId}

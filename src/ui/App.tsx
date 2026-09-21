@@ -1498,6 +1498,7 @@ export function App() {
           navigate('replay');
         }}
         onPracticeRun={keepPracticeRun}
+        onSignIn={() => navigate('account')}
         onQueueAgain={queueAgain}
         /* CUSTOM ROOMS ONLY. A ranked room is the matchmaker's pairing and re-opening it
            would hand a rated match a roster nobody was matched into; a record run already
