@@ -992,7 +992,14 @@ export function Menu({ settings, onChange }: Props) {
                 it used to replace the whole section, and BIOBUZZ lost the identity fields,
                 the drivetrain picker, the RPM sliders and the chassis colour row with it. */}
             {Builder ? (
-              <Builder spec={spec} onChange={setSpec} game={settings.game} />
+              <Builder
+                spec={spec}
+                onChange={setSpec}
+                game={settings.game}
+                alliance={settings.alliance}
+                startIndex={settings.startIndex}
+                startPose={settings.startPose}
+              />
             ) : (
               <>
                 {/* ---- SCORING ---- */}

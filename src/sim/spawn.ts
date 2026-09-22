@@ -523,6 +523,12 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     out.heightIn = sp.heightIn as RobotSpec['heightIn'];
     // and the declared stow height (R102), read structurally downstream -- same reason
     out.stowHeightIn = sp.stowHeightIn as RobotSpec['stowHeightIn'];
+    // and the PASS TARGET pair (`PassPicker.tsx`) -- same trap, same fix. Without this, every
+    // edit from the builder's map/preset picker reverted on the very next coercion (which
+    // `setSpec` runs on every keystroke), reading as "the picker does nothing" even though the
+    // click handler fires and the patch reaches this function correctly.
+    out.bbPassTarget = sp.bbPassTarget as RobotSpec['bbPassTarget'];
+    out.bbPassPreset = sp.bbPassPreset as RobotSpec['bbPassPreset'];
     return coerceBiobuzzSpec(out, base);
   }
   return out;

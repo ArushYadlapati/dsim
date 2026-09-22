@@ -1,4 +1,4 @@
-import type { RobotSpec } from '../../types';
+import type { Alliance, RobotSpec, StartPose } from '../../types';
 import { rangeFill } from '../../ui/rangeFill';
 import {
   BB3_HEIGHT_MAX,
@@ -51,6 +51,7 @@ import {
   bbLiftKindLabel,
 } from './labels';
 import { bbDials } from './robotConfig';
+import { BbPassPicker } from './PassPicker';
 
 /**
  * The BIOBUZZ half of the My Robot builder — the `GameModule.Builder` slot.
@@ -88,6 +89,14 @@ export interface BiobuzzBuilderProps {
   spec: RobotSpec;
   /** apply a partial edit. The host re-coerces and re-renders; this component does not. */
   setSpec(patch: Partial<RobotSpec>): void;
+  /** the active setup's alliance + start, for the PASS TARGET picker's `from` (`PassPicker.tsx`)
+   * — `pastGoal`/`farEnd` are relative to the thrower, so the picker needs to know where this
+   * build actually starts. Defaulted by `HudSlots.tsx`'s `BiobuzzBuilderSlot`, the one seam that
+   * resolves `GameBuilderProps`' optional trio, so every other block in this file can go on
+   * ignoring them. */
+  alliance: Alliance;
+  startIndex: number;
+  startPose: StartPose | null | undefined;
 }
 
 /**
@@ -149,7 +158,7 @@ function TwinTurretGrid(props: {
   );
 }
 
-export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
+export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose }: BiobuzzBuilderProps) {
   // THE TWO SLOTS, READ THROUGH THE CANONICAL RESOLVERS — never off the raw `scoreMode`/
   // `shooterMount`/`bbMech` fields directly, for the same reason `robot.ts` and `elements.ts`
   // don't either: `bbLauncherOf`/`bbLiftOf` are the ONE place "what launcher, and is there a
@@ -322,6 +331,9 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
       {!bbIsTurreted(launcher) && (
         <p className="ds-hint">Lobs its load from up to {BB_DUMP_MAX_DIST} in away.</p>
       )}
+
+      {/* ---- PASS TARGET: where PASS throws (`RobotSpec.bbPassTarget`/`bbPassPreset`) ---- */}
+      <BbPassPicker spec={spec} alliance={alliance} startIndex={startIndex} startPose={startPose} onChange={setSpec} />
 
       {/* ---- FLOWER SCORING: the Box Tube ---- */}
       <h3 className="ds-subh">Flower scoring</h3>

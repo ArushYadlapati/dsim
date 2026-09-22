@@ -256,6 +256,22 @@ export interface GameBuilderProps {
   /** apply a PARTIAL spec change (the caller owns storage + coercion) */
   onChange(patch: Partial<RobotSpec>): void;
   game: GameId;
+  /**
+   * THE ACTIVE SETUP'S ALLIANCE + START, so a per-game builder can answer "where does this
+   * robot actually begin" without re-deriving it from `GameSettings` itself (which a DOM-free
+   * builder slot never sees). Added for BIOBUZZ's pass-target picker (`bbPassTarget`/
+   * `bbPassPreset`, `PassPicker.tsx`): `pastGoal`/`farEnd` are relative to the THROWER, and the
+   * thrower's honest position is its configured start anchor, not a guess.
+   *
+   * Optional and unread by DECODE/Chain Reaction's inline builder branches and by any
+   * `Builder` slot that has no use for a start pose — passing them costs a filled game nothing.
+   * `startIndex`/`startPose` mirror `GameSettings`' own pair (a set `startPose` overrides the
+   * anchor), so a slot that DOES want the start reads the same "custom pose wins" contract the
+   * spawner and the start editor already use.
+   */
+  alliance?: Alliance;
+  startIndex?: number;
+  startPose?: StartPose | null;
 }
 
 /** props for `GameModule.Preview` — matches `RobotPreview` / `ChainRobotPreview` */

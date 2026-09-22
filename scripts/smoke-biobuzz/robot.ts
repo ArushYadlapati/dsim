@@ -1,4 +1,5 @@
 import type { Artifact, RobotCommand, RobotSpec, RobotState, Vec2, World } from '../../src/types';
+import { readFileSync } from 'node:fs';
 import * as C from '../../src/config';
 import { datan2, hyp, wrapAngle } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
@@ -3601,6 +3602,57 @@ export function robotChecks(check: Check): void {
         ['TOP', { x: 34, y: 60 }],
         ['BOTTOM', { x: 46, y: -60 }],
       ];
+
+      /**
+       * ⚠️ **EVERY BIOBUZZ-ONLY SPEC FIELD MUST BE CARRIED ACROSS `coerceSpec`, AND THIS BUG
+       * HAS NOW SHIPPED THREE TIMES.**
+       *
+       * `src/sim/spawn.ts`'s `coerceSpec` builds its output from `base` and copies BIOBUZZ-only
+       * fields onto it BY NAME, because no shared pass knows them. A field that lands on
+       * `RobotSpec` without a line in that block is already gone by the time
+       * `coerceBiobuzzSpec` runs — so it reverts to the base spec's value on every load, every
+       * wire ingress and every `createWorld`, which reads to a player as "the builder keeps
+       * forgetting my setting".
+       *
+       * The casualties so far: `bbMech` (the whole mechanism loadout), then
+       * `heightIn`/`stowHeightIn`, then `bbPassTarget`/`bbPassPreset` — that last pair found
+       * only by driving the real picker in a browser and watching clicks do nothing, with the
+       * click handler firing correctly the whole time. `spawn.ts` documents the trap in a ⚠️
+       * block and asks the next person to remember. Three misses is enough to say a comment is
+       * not the right instrument.
+       *
+       * GREPPED, not driven, and deliberately: the failure is a MISSING LINE, so what has to be
+       * compared is the set of fields that exist against the set that are carried. Round-tripping
+       * a spec would also work but only for the fields somebody thought to put in the fixture —
+       * which is the same blind spot that caused all three.
+       */
+      {
+        const typesSrc = readFileSync('src/types.ts', 'utf8');
+        const spawnSrc = readFileSync('src/sim/spawn.ts', 'utf8');
+        /* the RobotSpec interface only — `RobotState` and the wire types have `bb*` members too
+           and are not this function's business. */
+        const at = typesSrc.indexOf('export interface RobotSpec');
+        const specBody = typesSrc.slice(at, typesSrc.indexOf('\n}', at));
+        const declared = [...specBody.matchAll(/^ {2}(bb[A-Za-z0-9_]*)\??:/gm)].map((m) => m[1]);
+        /* the biobuzz arm of `coerceSpec`, from the game test to its return — scoped so a
+           mention of the field ANYWHERE else in the file cannot satisfy this. */
+        const armAt = spawnSrc.indexOf("if (game === 'biobuzz')");
+        const arm = spawnSrc.slice(armAt, spawnSrc.indexOf('return coerceBiobuzzSpec', armAt));
+        const missing = declared.filter((f) => !arm.includes(`out.${f} =`));
+        check(
+          '⚠️ spec: EVERY `bb*` field on RobotSpec is carried across coerceSpec (3 fields have shipped without it)',
+          declared.length > 0 && missing.length === 0,
+          declared.length === 0
+            ? 'FOUND NO bb* FIELDS — the interface scan broke, not the carry-across'
+            : `${declared.length} declared: ${declared.join(', ')} · missing: ${missing.join(', ') || 'none'}`,
+        );
+        /* AND THE TWO THAT ARE NOT `bb`-PREFIXED, named because the scan above cannot find them:
+           `heightIn`/`stowHeightIn` are BIOBUZZ-only despite reading like shared fields, which is
+           precisely why they were the second casualty. */
+        for (const f of ['heightIn', 'stowHeightIn']) {
+          check(`spec: ...and \`${f}\`, BIOBUZZ-only despite the shared-sounding name`, arm.includes(`out.${f} =`));
+        }
+      }
 
       // (a) THE REGISTRY IS COMPLETE. A preset with no label ships as a blank radio button.
       check(

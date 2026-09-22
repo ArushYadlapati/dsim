@@ -41,9 +41,22 @@ const other = (a: Alliance): Alliance => (a === 'red' ? 'blue' : 'red');
  * is the same contract under this game's own spelling. `game` is dropped: a per-game builder
  * already knows which game it is, and reading it would be the first step back toward one
  * component with a branch per season.
+ *
+ * `alliance`/`startIndex`/`startPose` are forwarded (defaulted to `'blue'`/`0`/`undefined`
+ * here, not inside `BiobuzzBuilder`, so the one fallback lives at the seam every other slot's
+ * optional prop is resolved at) — the pass-target picker's `from` needs them; every other
+ * block in the builder ignores them.
  */
-export function BiobuzzBuilderSlot({ spec, onChange }: GameBuilderProps) {
-  return <BiobuzzBuilder spec={spec} setSpec={onChange} />;
+export function BiobuzzBuilderSlot({ spec, onChange, alliance, startIndex, startPose }: GameBuilderProps) {
+  return (
+    <BiobuzzBuilder
+      spec={spec}
+      setSpec={onChange}
+      alliance={alliance ?? 'blue'}
+      startIndex={startIndex ?? 0}
+      startPose={startPose}
+    />
+  );
 }
 
 /** the words for one held element, for the row's accessible name. POLLEN is yellow; a NECTAR

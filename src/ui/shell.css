@@ -5574,6 +5574,26 @@ button.ds-key:active {
 .ds-startpos-presets .ds-opt.mini {
   flex: 1 1 auto;
 }
+/* ---- BIOBUZZ pass-target picker (My Robot builder, `PassPicker.tsx`) ------
+   The map itself borrows `.ds-startpos-stage`/`.ds-startpos-canvas` directly, just above —
+   a shrinkable square field canvas is the same shape for both pickers, and the shrink rule's
+   own comment already says why it stays generic (a CSS-scaled canvas re-derives the click
+   transform from `getBoundingClientRect`, not from a fixed size). Only the ROW layout is new
+   here: canvas on the left, presets + readout in a column that wraps under it on a narrow
+   panel. */
+.ds-passpick {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.ds-passpick-presets {
+  flex: 1 1 220px;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 /* ---- 2v2 start-role swap bar ---------------------------------------------- */
 .ds-roleswap {
   display: flex;
