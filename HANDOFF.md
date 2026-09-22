@@ -1,3 +1,45 @@
+# HANDOFF — 2026-09-22c (the solo breakdown sits on the page's own centre line)
+
+**State: green.** `npm run build`, `npm run uiaudit` (all rules at baseline) and the measured
+harness below all pass. `npm test` has the TWO known machine-load perf flakes and nothing else
+(`perf: bot-driven 2v2 step3d p95 <= 1.5ms`, `FULL reconciles 40 ticks inside
+PREDICT_FULL_BUDGET_MS`) — see 2026-09-22b's note; this change is CSS and a comment, and the
+smoke harness never loads either. Uncommitted: `src/ui/styles.css`, `src/ui/Results.tsx`,
+`docs/ui-components.md` (regenerated — the CSS edit moved ~23 lines, so nine `ds-*` line numbers
+in the index shifted; `uiaudit`'s `stale-component-index` is a hard 0, so it must be committed
+WITH the CSS).
+
+Owner: the three blocks stacked in the one-panel content column — the header, the breakdown, the
+notes + buttons — did not share a centre line. The middle one sat left.
+
+- ⚠️ **`.resx-val` IS OUT OF FLOW ON THE ONE-PANEL TABLE, and that is what centres the labels.**
+  In flow it took a table column of its own, so `.resx-cat` (`width: 100%`) absorbed only what
+  was LEFT of it and centred its label on THAT midline — measured 32.9px left of the title and
+  the button row at 1440px, 52px at 2560px. Positioned (`absolute; top: 0; right: 0`, containing
+  block `.resx-breakdown-solo tr`), the label cell is the table's only column, so its centre IS
+  the table midline, which is already the axis `.resx-bar` and `.resx-secondary` centre on.
+  **The number does not move**: `right: 0` plus the cell's own `1em` padding is exactly where the
+  in-flow column put it (measured identical to 0.0px, horizontally and vertically).
+- **`.resx-cat`'s `padding-inline: 4em` is SYMMETRIC on purpose.** It reserves the gutter the
+  value now floats over, and being equal on both sides it cannot move the centre — so the number
+  only has to be big enough to keep a long label off the value, never exact. Worst label in the
+  app is a DECODE record run's `Fouls committed (3 minor · 1 major)`: it clears by 162px at
+  1440×860 and 86px at 390×844.
+- The `colSpan={1}` ruling below (2026-09-22b) STANDS and its reason is now simpler: with one
+  in-flow column the heading's box is the whole table, which is the label's box. Its comment in
+  `Results.tsx` was rewritten — spanning two would also land on the axis today, and would drift
+  again the moment the value returned to flow.
+- **Verified by measurement, not by squinting**: `scratch/center.cjs` (gitignored, beside the
+  existing `scratch/results.html` harness — `npm run dev`, then
+  `env -u ELECTRON_RUN_AS_NODE npx electron scratch/center.cjs --port <n>`). It reads the label
+  and heading TEXT centres (a `Range` rect, not the cell's — a centred cell with lopsided padding
+  still paints its label off-axis), then re-applies the OLD rules in the same page and diffs, so
+  "labels moved onto the axis, values did not move" is two numbers. `--label` forces the long
+  record-run label in; `--w/--h` covers the narrow stacked layout.
+- VERSUS is untouched: it has `.resx-rv`/`.resx-bv` and is already symmetric about `.resx-cat`.
+
+---
+
 # HANDOFF — 2026-09-22b (biobuzz results: points-only rows, name marquee, section-label fix)
 
 **Owner follow-up #3 — the one-panel content stack CENTRES as a group.**

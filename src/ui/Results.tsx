@@ -441,11 +441,12 @@ function SoloTable({ sections, rowsActive }: { sections: readonly SoloSection[];
       <tbody>
         {sections.map(([title, rows], s) => (
           <Fragment key={title}>
-            {/* ⚠️ colSpan ONE, not two. Spanning both columns centres the heading on the
-                TABLE's midline, while `.resx-cat` (which carries `width: 100%`) centres its
-                label on the midline of everything left of the value column — so every heading
-                sat a half-value-column to the RIGHT of the labels under it. One column means
-                the heading's box IS the label's box and the two centres are the same point. */}
+            {/* ⚠️ colSpan ONE, not two — the heading's box must stay the LABEL's box, whatever
+                the label column is. It is the only in-flow column now (`.resx-val` is
+                positioned; see its CSS), so one column is the whole table and the heading
+                centres exactly where the labels do. Spanning two also happens to land there
+                today, but it would drift again the moment the value column returned to
+                flow. */}
             <tr className={`resx-section ${cls}`} style={{ animationDelay: `${headDelay(s)}ms` }}>
               <th className="resx-section-label" scope="colgroup">
                 {title}

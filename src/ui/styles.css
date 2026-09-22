@@ -1716,6 +1716,16 @@ button {
    1280px column. */
 .resx-breakdown-solo .resx-cat {
   text-align: center;
+  /* SYMMETRIC, and that is the whole trick: the value below is OUT OF FLOW, so this cell is
+     the table's only column and its centre is the table midline — the same axis `.resx-bar`
+     and `.resx-secondary` centre on. The gutters only have to be WIDE ENOUGH to keep a long
+     label (a record run's `Fouls committed (3 minor · 1 major)`) off the value; they cannot
+     move the centre, because they are equal. */
+  padding-inline: 4em;
+}
+/* the containing block for the value below — see it for why the value is positioned at all */
+.resx-breakdown-solo tr {
+  position: relative;
 }
 .resx-rv,
 .resx-bv,
@@ -1732,6 +1742,19 @@ button {
 }
 .resx-val {
   text-align: right;
+}
+/* ⚠️ OUT OF FLOW, so that the LABEL column can span the whole table. In flow it took a column
+   of its own, and `.resx-cat` (`width: 100%`) then centred on the midline of everything LEFT
+   of it — so every label and every section heading sat half a value-column to the left of the
+   header and the button row above and below them, which centre on the content column itself.
+   The number does not move: `right: 0` plus the cell's own `1em` padding is exactly where the
+   in-flow column put it, against the table's right edge. `top: 0` lands on the label's line,
+   since both carry the same `0.16em` cell padding and the same line-height, and the row's
+   height is now the label's alone. */
+.resx-breakdown-solo .resx-val {
+  position: absolute;
+  top: 0;
+  right: 0;
 }
 /* ⚠️ THE ENTRANCE IS A SEPARATE CLASS BECAUSE IT IS GATED ON THE ROWS BEAT, not applied on
    mount. The table mounts during `wipe` but `rowsActive` is 1350 ms later, so an
