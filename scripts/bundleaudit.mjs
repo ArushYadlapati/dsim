@@ -308,16 +308,29 @@ const fmtKB = (bytes) => `${(bytes / 1000).toFixed(2)} KB`;
  *               +2.16), none of it this branch's. Left where alpha left them, for alpha to
  *               re-measure with whatever moved them.
  *
+ * ── RE-MEASURED 2026-09-22, the BIOBUZZ bot rewrite (`src/games/biobuzz/ai/`) ─────────────
+ *   Both trees built the same minute, same machine: clean `origin/alpha` (d734a65) against the
+ *   rewrite on top of it.
+ *   main        963.55 KB — RAISED from 946.79. Clean alpha builds 955.52, so **+8.03 is the
+ *               bots** (the new policy, `ai/geom.ts`, the build roster) and +8.73 is alpha's own
+ *               drift since 2026-09-21, still under the tolerance and called out here rather than
+ *               folded in silently.
+ *   hostWorker  720.96 KB — RAISED from 706.26, which it was FAILING by 0.57 KB. Clean alpha
+ *               builds 713.37: **+7.59 is the bots** (the LAN host runs a `Room`, and a `Room`
+ *               seats bots) and +7.11 alpha's drift. The AI is sim code the server and the worker
+ *               both need, so it cannot be lazy the way the 3D chunk is.
+ *   Every other route identical to clean alpha to 0.01 KB.
+ *
  * RECALIBRATE by running `npm run build && npm run bundleaudit` and copying the printed gzip
  * totals in here, the same way `uiaudit.mjs`'s header describes lowering ITS baseline.
  */
 const BASELINE = {
-  main: { gzip: 946.79 * 1000 },
+  main: { gzip: 963.55 * 1000 },
   // `@discord/embedded-app-sdk` behind `watchDiscordParticipants`'s dynamic import —
   // loaded only inside a real Discord Activity embed (`onDiscordHost()` gates the
   // import), so no ordinary player downloads it. MEASURED 2026-09-18.
   discord: { gzip: 44.30 * 1000 },
-  hostWorker: { gzip: 706.26 * 1000 },
+  hostWorker: { gzip: 720.96 * 1000 },
   physics3d: { gzip: 1125.06 * 1000 },
   // 2026-09-19: 199.48 -> 201.44 (+1.96). The owner's render pass made three meshes REAL —
   // a swerve pod that is a pod (top plate, azimuth ring, fork, 3-in wheel, belt drive)
