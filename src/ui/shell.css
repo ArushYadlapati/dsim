@@ -386,6 +386,23 @@
   top: 0;
   z-index: 10;
 }
+/* the loaded SEASON beside the app mark — muted, so DSIM stays the brand and the season reads
+   as its state. The separator is its own span so the name alone is what a reader hears. */
+.ds-bar-season {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: -8px; /* pulls the dot toward the mark; the bar's own gap is 20px */
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ds-mut);
+  white-space: nowrap;
+}
+.ds-bar-season .sep {
+  color: var(--ds-line-strong);
+  font-weight: 400;
+}
 .ds-mark {
   display: flex;
   align-items: center;

@@ -109,6 +109,14 @@ export function AppShell({
           <Logo size={24} />
           {APP_NAME}
         </button>
+        {/* WHICH SEASON IS LOADED, on every shell screen (owner, 2026-09-22: "the UI does not show
+            which game mode I am in"). The app is DSIM and the season is what is loaded, so the
+            two are separate words with a separator, not one name. Plain text, not a control: the
+            game is switched on the home page. */}
+        <span className="ds-bar-season" aria-label={`Season: ${season.name}`}>
+          <span className="sep" aria-hidden="true">·</span>
+          {season.name}
+        </span>
         <div className="ds-bar-right">
           {/* the header is on EVERY menu screen, so this is the one placement that
               makes queue depth visible everywhere rather than only where someone
