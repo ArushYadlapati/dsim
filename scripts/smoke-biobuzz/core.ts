@@ -322,6 +322,32 @@ export function coreChecks(check: Check): void {
       titles.join(' | ') === 'AUTONOMOUS | HIVE | FLOWER | GARDEN | END OF MATCH | PENALTIES',
       titles.join(' | '),
     );
+    // ---- POINTS ONLY, and the COUNT is what the row budget pays with ------
+    // The results screen is display-scaled off one viewport unit, and the arithmetic that
+    // sized it only closes at NINE rows — 17 of them overruns a 2560x1392 display by ~390px.
+    // So the row set is a layout invariant, not a content preference, and nothing asserted
+    // it: the section titles above ship green whatever rows hang off them.
+    const labels = (rows?.({ alliance: 'red' } as unknown as HudSnapshot) ?? []).flatMap(
+      ([, rs]) => rs.map(([label]) => label),
+    );
+    check('the breakdown is NINE rows — the display scale is sized for exactly this', labels.length === 9, String(labels.length));
+    check(
+      'points-only, bare labels: no unit parenthetical survives',
+      labels.every((l) => !l.includes('(')),
+      labels.filter((l) => l.includes('(')).join(' | ') || 'none',
+    );
+    check(
+      'the nine rows, in order',
+      labels.join(' | ') ===
+        'LEAVE | PARK | TIPS | Up CELL contents | OWNED FLOWER | Bottom NECTAR Bonus | GARDEN | PARK | Fouls awarded',
+      labels.join(' | '),
+    );
+    // `label` is the React key and PARK appears in TWO sections, so uniqueness is only ever
+    // per-section — the `<Fragment key={title}>` boundary in Results.tsx is what holds that.
+    for (const [title, rs] of rows?.({ alliance: 'red' } as unknown as HudSnapshot) ?? []) {
+      const ls = rs.map(([l]) => l);
+      check(`${title}: its row labels are unique within the section`, new Set(ls).size === ls.length, ls.join(' | '));
+    }
   }
 
   // ---- the one-panel results banner (the WINNER slot, on a screen with no opponent) ----
@@ -346,7 +372,7 @@ export function coreChecks(check: Check): void {
     const plain = recordBanner(info({}), false);
     const pending = recordBanner(null, false);
     const practice = recordBanner(null, true);
-    check('WORLD RECORD takes the gold fill', wr.text === '🏆 WORLD RECORD' && wr.tone === 'gold', `${wr.text} / ${wr.tone}`);
+    check('WORLD RECORD takes the gold fill', wr.text === 'WORLD RECORD' && wr.tone === 'gold', `${wr.text} / ${wr.tone}`);
     // a world record is ALWAYS also a personal best, so the order of those two tests is
     // itself the behaviour — read the other way round, a WR would announce itself as a PB.
     check('a world record outranks the personal best it also is', wr.text !== pb.text, `${wr.text} vs ${pb.text}`);

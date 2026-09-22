@@ -1138,6 +1138,24 @@ button {
    with the app's light/dark preference. A broadcast scoreboard does not go light-mode. */
 
 .resx-stage {
+  /* ONE UNIT drives every size on this stage, and every multiplier below is the ratio this
+     screen already shipped — so the proportions hold at any viewport with no second
+     breakpoint, and there is exactly one number to tune. This screen was chrome-sized type
+     on what is often a 1400px-tall display: only `.resx-sting` and `.resx-total-num` scaled,
+     so at 2560x1392 a 28px title and a 15px table floated in a void (measured: the whole red
+     half carried ink on 22 rows out of 1340).
+
+     `vh` is the primary arm because the ROW COUNT sets the budget — 9 rows + 6 headings is
+     57.3u, and DECODE's inline 11 rows + 4 headings is 58.0u, so one unit serves both games.
+     The `0.62vw` arm takes over below aspect 1.484 (under 16:10, over 4:3) because the
+     content column is only half the width. The 7px floor is what keeps the SMALLEST step
+     (`.resx-note`, 1.8u) above the 12px it replaces on a short window; the 19px cap wants
+     ~2065px of height before it binds, so it costs a normal display nothing. */
+  --resx-u: clamp(7px, min(0.92vh, 0.62vw), 19px);
+  /* every EDGE inset on this stage, and the one value that must never fall below today's
+     24px. It drives `.resx-half`'s padding, BOTH winbanner bleeds, `.resx-bar`'s top and
+     `.resx-secondary`'s bottom, so the four cannot drift apart. */
+  --resx-pad: clamp(24px, 3vmin, 64px);
   position: fixed;
   inset: 0;
   z-index: 40; /* above the HUD and the pre-match countdown (z-index 30) */
@@ -1169,6 +1187,22 @@ button {
   outline-color: var(--ds-on-field);
 }
 
+/* SCOPED TO THIS STAGE. `.overlay-buttons` is shared chrome — the pre-match panel and every
+   dialog use it — and keeps its own `10px 22px` everywhere else.
+   `em` padding so the box tracks its own text and there is one number to tune. The explicit
+   `line-height` is what makes the vertical budget checkable; without it the height rides on
+   the UA's `normal`. The tracking OVERRIDES `.overlay-buttons button`'s flat `1.5px`, which
+   is fine at 14px and reads as gaps between letters at 30px.
+   Nothing here needs a `max-width` to satisfy "two side by side and one or two under":
+   `.overlay-buttons` is already `flex-wrap: wrap`, and now that the centre track is a fixed
+   percentage the wrap falls out of the widths by itself. */
+.resx-stage .overlay-buttons button {
+  font-size: calc(2.3 * var(--resx-u));
+  line-height: 1.2;
+  padding: 0.5em 1.2em;
+  letter-spacing: 0.08em;
+}
+
 .resx-sting {
   position: fixed;
   inset: 0;
@@ -1190,25 +1224,25 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: var(--ds-s-5) var(--ds-s-4) var(--ds-s-3);
+  gap: calc(0.5 * var(--resx-u));
+  padding: var(--resx-pad) var(--ds-s-4) var(--ds-s-3);
   text-align: center;
   animation: resx-bar-drop 500ms ease-out 650ms both;
 }
 .resx-eyebrow {
-  font-size: var(--ds-t-xs);
-  letter-spacing: 2px;
+  font-size: calc(2 * var(--resx-u));
+  letter-spacing: 0.18em;
   font-weight: 700;
   color: var(--ds-on-field-dim);
 }
 .resx-title {
   margin: 0;
-  font-size: var(--ds-t-2xl);
-  letter-spacing: 4px;
+  font-size: calc(5.4 * var(--resx-u));
+  letter-spacing: 0.06em;
   font-weight: 800;
 }
 .resx-season {
-  font-size: var(--ds-t-sm);
+  font-size: calc(2.3 * var(--resx-u));
   color: var(--ds-on-field-dim);
 }
 
@@ -1216,7 +1250,10 @@ button {
   margin: 0;
   padding-bottom: var(--ds-s-5);
   text-align: center;
-  letter-spacing: 2px;
+  /* it declared NO size and inherited the document's 16px — the one piece of text on this
+     stage that never scaled with anything, and the only thing on screen during `wait`. */
+  font-size: calc(2.6 * var(--resx-u));
+  letter-spacing: 0.1em;
   color: var(--ds-on-field-dim);
 }
 
@@ -1230,7 +1267,20 @@ button {
 .resx-body {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  /* ⚠️ PERCENTAGES, NOT `1fr auto 1fr`. The `auto` centre track sized itself to the table,
+     which is why a shrink-wrapped breakdown floated in a void between two near-empty panels
+     — and it is also what made both halves NARROW by 9px (measured 525 → 516) the moment the
+     wider actions row appeared at `done`. A percentage track cannot size to content, so the
+     old ⚠️ KNOWN note below is closed by construction; keep it a percentage.
+     25 + 25 gives the two alliances half the stage between them and leaves the details column
+     the other half, which is the same rule the one-panel board applies.
+     `minmax(0, …)` because a bare `1fr` is `minmax(auto, 1fr)`, and `.overlay-buttons button`
+     is `white-space: nowrap` — a min-content floor would let the actions row push the panels
+     back in exactly the way the percentage is here to prevent. */
+  grid-template-columns: 30% minmax(0, 1fr) 30%;
+  /* item 8 at the one seam the padding does not cover: the outer value column would otherwise
+     sit flush against the alliance fill now that the table spans its track. */
+  column-gap: calc(1.5 * var(--resx-u));
   grid-template-rows: auto 1fr auto;
   align-items: stretch;
   min-height: 0;
@@ -1257,7 +1307,12 @@ button {
    inherited from `.resx-body` above: its rows are already header / breakdown / actions and
    its column 2 is already the content column, so only the track sizes and the half move. ---- */
 .resx-body-solo {
-  grid-template-columns: 1fr 2fr;
+  /* the owner's ask, verbatim: "make the alliance take up half the screen during solo
+     practice matches". `minmax(0, …)` on the CONTENT track for the same reason the versus
+     board needs it — `.resx-secondary` has no `min-width: 0` and its buttons are
+     `white-space: nowrap`, so a bare `1fr` keeps a content floor the width of the widest
+     button and the panel is not the half it says it is. */
+  grid-template-columns: 50% minmax(0, 1fr);
 }
 /* ⚠️ COMPOUND, and a LIST. Plain `.resx-body-solo .resx-half` ties `.resx-half.red
    { grid-area }` at (0,2,0) and loses on source order — which is precisely what once left the
@@ -1269,10 +1324,50 @@ button {
 .resx-body-solo .resx-half.blue {
   grid-area: 1 / 1 / 4 / 2;
 }
+/* ---- A BLUE ONE-PANEL BOARD MIRRORS: panel RIGHT, content left. ----
+   The winner banner bleeds toward its own alliance's OUTER wall — red's to the left, blue's
+   to the right — and that direction is a property of the alliance, not of the layout. With
+   every one-panel board pinned to the left column, a blue panel squared its banner against
+   the INNER seam, so the tag read as glued to the details column instead of running off the
+   edge of the screen. Record runs are forced blue server-side, so that was every one of them.
+
+   Scoped to `min-width: 721px`, the exact complement of the narrow breakpoint below: stacked,
+   there is one column and nothing to mirror, and scoping it here means the narrow rules do
+   not each need a `:has()` counterpart to out-specify. `@media` interiors are exempt from
+   `duplicate-selector`, and only the TRACKS and the placements move — `.resx-half.blue`'s own
+   colours, bleed and rounding are already right, which is the whole point. */
+@media (min-width: 721px) {
+  .resx-body-solo:has(.resx-half.blue) {
+    grid-template-columns: minmax(0, 1fr) 50%;
+  }
+  .resx-body-solo:has(.resx-half.blue) .resx-half.blue {
+    grid-area: 1 / 2 / 4 / 3;
+    /* it arrives from the wall it is pinned to, like the versus board's blue half */
+    animation-name: resx-half-in-right;
+  }
+  .resx-body-solo:has(.resx-half.blue) .resx-bar {
+    grid-area: 1 / 1 / 2 / 2;
+  }
+  .resx-body-solo:has(.resx-half.blue) .resx-wait,
+  .resx-body-solo:has(.resx-half.blue) .resx-breakdown {
+    grid-area: 2 / 1 / 3 / 2;
+  }
+  .resx-body-solo:has(.resx-half.blue) .resx-secondary {
+    grid-area: 3 / 1 / 4 / 2;
+  }
+}
+
 /* RED above BLUE on a narrow screen, breakdown between, full width each — instead of
    three columns squeezed into 375px (which clipped every value). The header stays FIRST:
    stacked, there is no centre column for it to sit beside. */
 @media (max-width: 720px) {
+  /* STACKED, the content column is the full width, so the `0.62vw` arm's premise is gone and
+     the `vh` arm alone would give 8.1px at 375x812 — SMALLER than the chrome type it
+     replaced. A width driver is the right one here. Re-declaring `.resx-stage` inside a
+     media query is exempt from `duplicate-selector` (it only inspects depth 0). */
+  .resx-stage {
+    --resx-u: clamp(7px, 1.9vw, 11px);
+  }
   .resx-body:not(.resx-body-solo) {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto auto auto auto;
@@ -1300,9 +1395,12 @@ button {
 .resx-half {
   display: flex;
   flex-direction: column;
-  gap: var(--ds-s-4);
+  gap: calc(1.6 * var(--resx-u));
   min-width: 0;
-  padding: var(--ds-s-5);
+  /* ⚠️ COUPLED to both `.resx-winbanner` bleeds below, which cancel exactly this value to
+     reach the stage wall. Scale one without the other and the banner is inset on one side
+     and overhanging on the other. `--resx-pad` never drops below the 24px it replaces. */
+  padding: var(--resx-pad);
 }
 .resx-half.red {
   grid-area: 1 / 1 / 4 / 2;
@@ -1320,6 +1418,12 @@ button {
    is the left column. ONE block: `uiaudit` does not catch a repeated DESCENDANT selector. */
 .resx-body-solo .resx-half {
   animation-name: resx-half-in-left;
+}
+/* a one-panel board has ONE driver row in a half-width panel, where a versus board has up to
+   two in a 30% one — so it carries the name and team number at display size rather than at
+   the versus board's. */
+.resx-body-solo .resx-roster-row {
+  font-size: calc(5.2 * var(--resx-u));
 }
 @media (max-width: 720px) {
   .resx-body:not(.resx-body-solo) .resx-half {
@@ -1350,10 +1454,16 @@ button {
   }
 }
 
+/* the standing + roster block, and it CENTRES. The banner used to live in here and is a
+   direct child of the half now, so it stays welded to the top edge while this grows into
+   whatever is left between it and the total — which is what closes "name and stats towards
+   the centre". `.resx-half-lower`'s `margin-top: auto` still pins the total under it. */
 .resx-half-top {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  gap: var(--ds-s-2);
+  justify-content: center;
+  gap: calc(1.1 * var(--resx-u));
 }
 /* a light banner ON the alliance fill, not a coloured tag — the fill already IS the
    alliance's colour, so the badge reads by flipping the relationship, like a real
@@ -1374,23 +1484,31 @@ button {
      one thing this reserved slot exists to prevent. `1em` is this element's own font-size and
      the padding below is added back because the box is border-box, so an empty banner is
      exactly a filled one's height and stays that way if either value changes. */
-  min-height: calc(1em + 2 * var(--ds-s-1));
+  min-height: calc(1em + 2 * 0.34em);
   background: var(--ds-on-field);
   color: var(--ds-stage-bg);
   border-radius: var(--ds-round-full);
-  padding: var(--ds-s-1) var(--ds-s-3);
-  font-size: var(--ds-t-2xl);
+  /* ⚠️ THE VERTICAL HALF IS COUPLED TO THE `min-height` ABOVE and the two must move together:
+     the reserved slot has to equal a FILLED banner's height exactly, and with `line-height: 1`
+     that height is `1em + 2 × this`. Both are `em` of the banner's own font-size, so they stay
+     equal at every viewport — the `2 *` is written out rather than pre-multiplied so the
+     relationship is readable at the two sites.
+     4px of vertical padding was a chrome-scale number under 67px type: the pill was a tight
+     band around the glyphs. The horizontal is `--ds-round-full`, so at this size the effective
+     radius is ~37px and a flat inset puts the first glyph inside the curve. */
+  padding: 0.34em 0.75em;
+  font-size: calc(5.2 * var(--resx-u));
   font-weight: 800;
-  letter-spacing: 2px;
+  letter-spacing: 0.04em;
   line-height: 1;
 }
 .resx-half.red .resx-winbanner {
-  margin-left: calc(-1 * var(--ds-s-5));
+  margin-left: calc(-1 * var(--resx-pad));
   border-radius: 0 var(--ds-round-full) var(--ds-round-full) 0;
   text-align: right;
 }
 .resx-half.blue .resx-winbanner {
-  margin-right: calc(-1 * var(--ds-s-5));
+  margin-right: calc(-1 * var(--resx-pad));
   border-radius: var(--ds-round-full) 0 0 var(--ds-round-full);
   text-align: left;
 }
@@ -1423,9 +1541,9 @@ button {
    back when there was no banner above it to carry the headline. ---- */
 .resx-standing {
   margin: 0;
-  font-size: var(--ds-t-sm);
+  font-size: calc(2.3 * var(--resx-u));
   font-weight: 700;
-  letter-spacing: 1px;
+  letter-spacing: 0.04em;
 }
 /* the three no-rank states are a different kind of sentence from a placing — prose, not a
    label — so they drop the tracking and the weight. */
@@ -1450,42 +1568,92 @@ button {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--ds-s-1);
+  gap: calc(0.5 * var(--resx-u));
 }
+/* ⚠️ `nowrap`, and the NAME is the part that gives. It used to wrap, which is how a long name
+   pushed the team number onto a second line — and on a versus board that put the two halves'
+   rows at different heights, the one thing the reserved banner slot exists to prevent. The
+   name marquees instead (`DriverName`), so the row is always exactly one line. */
 .resx-roster-row {
   display: flex;
   align-items: baseline;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: space-between;
-  gap: 2px var(--ds-s-2);
-  font-size: var(--ds-t-lg);
+  /* the column gap is the ONLY thing separating the name block from the team number once a
+     long name has eaten the slack that `space-between` would otherwise provide. */
+  gap: 2px calc(2 * var(--resx-u));
+  font-size: calc(3 * var(--resx-u));
   opacity: 0;
   animation: resx-row-in 400ms ease-out both;
 }
+/* it TAKES the slack and it SHRINKS: `min-width: 0` is what lets a flex item go narrower than
+   its content, which is the whole precondition for the clip inside it ever overflowing. */
 .resx-roster-name {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 0.25em;
+  flex: 0 1 auto;
   min-width: 0;
   font-weight: 700;
-  /* a long typed-in username WRAPS onto its own line (the row above is `flex-wrap`)
-     rather than pushing the drivetrain/ELO meta off the edge of the half. */
-  overflow-wrap: anywhere;
 }
+/* ---- a long name MARQUEES rather than wrapping (`DriverName` measures it) ----
+   It used to `overflow-wrap: anywhere` onto a second line, which on a versus board put the
+   two halves' rows at different heights. `.scroll` is only ever set when the text genuinely
+   does not fit, so a name that fits never moves. */
+.resx-name-clip {
+  display: inline-block;
+  /* SHRINK-ONLY, like its parent: growing would drag the YOU chip away from the name it
+     belongs to and park it against the team number. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  /* the non-scrolling fallback, and what reduced motion falls back to */
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.resx-name-clip.scroll {
+  display: inline-flex;
+  gap: 2em;
+}
+.resx-name-text {
+  white-space: nowrap;
+}
+.resx-name-clip.scroll .resx-name-text {
+  flex: none;
+  animation: resx-marquee 14s linear infinite;
+}
+/* `-100%` is the copy's own width and the gap is the space behind it, so the second copy
+   lands exactly where the first began — no snap. */
+@keyframes resx-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(calc(-100% - 2em));
+  }
+}
+/* both of these are sized in `em` OFF THE ROSTER ROW rather than off the unit: they are
+   parts of that row, so they scale for free and cannot drift out of proportion with it. */
 .resx-you {
-  font-size: var(--ds-t-xs);
+  font-size: 0.85em;
   font-weight: 800;
-  letter-spacing: 1px;
+  letter-spacing: 0.08em;
   border: 1px solid currentColor;
   border-radius: var(--ds-round-sm);
-  padding: 0 4px;
+  padding: 0 0.35em;
 }
+/* OVER 1em on purpose — the team number is the thing a driver looks for on a scoreboard, so
+   it is the largest item in the row rather than the smallest. The ELO delta rides the same
+   size for the same reason: it is the other number that belongs to the player. */
 .resx-roster-meta {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  flex: none;
+  gap: 0.6em;
   font-family: var(--ds-font-mono);
-  font-size: var(--ds-t-sm);
+  font-size: 1.05em;
 }
 .resx-elo {
   font-variant-numeric: tabular-nums;
@@ -1494,38 +1662,60 @@ button {
 /* ---- the breakdown: red value | category | blue value (versus, centred between the
    two halves) — or category | value beside the total (solo) ---- */
 .resx-breakdown {
+  /* `width: 100%` is what stops the table shrink-wrapping in the middle of its track. With
+     `.resx-cat` below taking the surplus, `.resx-rv`/`.resx-bv`'s existing right/left
+     alignment finally means something: the values go hard out to the two alliance panels,
+     which is the anatomy of the real FTC audience display.
+     `align-self: center` STAYS — the leftover vertical is ~65px across 15 rows, and buying
+     4px a row with a stretched table box would make Chain Reaction's three rows look broken. */
   align-self: center;
+  width: 100%;
   border-collapse: collapse;
   margin: var(--ds-s-4) auto;
-  font-size: var(--ds-t-lg);
+  font-size: calc(2.6 * var(--resx-u));
 }
 .resx-breakdown td,
 .resx-breakdown th {
-  padding: 3px var(--ds-s-4);
+  padding: 0.16em 1em;
 }
 /* a grid item in the content column now, not a flex child of the panel — so it takes
    `.resx-breakdown`'s own centring and margin and only has to be allowed to shrink. */
 .resx-breakdown-solo {
   min-width: 0;
+  /* ⚠️ ONE-PANEL ONLY. On the versus board the value column is MEANT to sit hard against the
+     alliance fill beside it — that is the audience-display anatomy, and the fill catches it.
+     Here the outer edge is the stage WALL and nothing catches it, so the table takes the same
+     inset as every other edge on this stage.
+     ⚠️ It has to be WIDTH, not padding: this table is `border-collapse: collapse`, and in the
+     collapsing border model a table's own padding is ignored outright. Measured — with
+     `padding-inline` the last value's box still ended exactly on the viewport edge (gap 0).
+     `margin: … auto` above re-centres what the width gives back, so both sides match. */
+  width: calc(100% - 2 * var(--resx-pad));
 }
 .resx-section th {
-  padding-top: var(--ds-s-3);
-  font-size: var(--ds-t-xs);
+  padding-top: calc(0.9 * var(--resx-u));
+  font-size: calc(2 * var(--resx-u));
   font-weight: 800;
-  letter-spacing: 2px;
+  letter-spacing: 0.16em;
   color: var(--ds-on-field-dim);
   text-align: center;
 }
 .resx-breakdown-solo .resx-section th {
-  text-align: left;
+  text-align: center;
 }
 .resx-cat {
+  /* the label column absorbs the whole surplus, which is what pushes the two value columns
+     out to the edges of the track rather than leaving them huddled around the label. */
+  width: 100%;
   text-align: center;
   color: var(--ds-on-field-dim);
   font-weight: 400;
 }
+/* CENTRED, the same as the versus board. Left-aligned, the label sat hard against the panel
+   seam with its value at the far wall and the row read as two unrelated things across a
+   1280px column. */
 .resx-breakdown-solo .resx-cat {
-  text-align: left;
+  text-align: center;
 }
 .resx-rv,
 .resx-bv,
@@ -1570,25 +1760,29 @@ button {
   flex-direction: column;
 }
 .resx-total {
-  padding-top: var(--ds-s-3);
+  padding-top: calc(1.2 * var(--resx-u));
   border-top: 1px solid currentColor;
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--ds-s-3);
+  gap: calc(1.2 * var(--resx-u));
 }
 /* the alliance's own name, labelling its total — and the half's ONLY heading, so it is what
    names the `<section>` to a screen reader. `margin: 0` because it is an `<h3>`: the UA
    margin would break the baseline `.resx-total` aligns on. */
 .resx-total-label {
   margin: 0;
-  font-size: var(--ds-t-2xl);
+  font-size: calc(5.2 * var(--resx-u));
   font-weight: 800;
-  letter-spacing: 1px;
+  letter-spacing: 0.03em;
 }
 .resx-total-num {
   font-family: var(--ds-font-mono);
-  font-size: clamp(40px, 6vw, 72px);
+  /* 11u against the title's 5.4u holds the 2:1 this screen has always had between the score
+     and its own heading. The old `6vw` was the only WIDTH-driven size here and it pinned at
+     its 72px ceiling on every desktop, so the number stopped growing while nothing else had
+     started. It lives in the alliance panel, so it costs the breakdown's budget nothing. */
+  font-size: calc(11 * var(--resx-u));
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
@@ -1617,31 +1811,32 @@ button {
    together once the sequence reaches `done` ---- */
 .resx-secondary {
   grid-area: 3 / 2 / 4 / 3;
-  /* ⚠️ KNOWN, on the VERSUS board only: this row's buttons are wider than the breakdown, and
-     the versus centre track is `auto`, so when the row appears at `done` the track grows and
-     both alliance panels narrow — measured, 525px to 516px. Neither `width: 0; min-width:
-     100%` nor `contain: inline-size` stops an intrinsic contribution here; the deterministic
-     fix is a percentage track (`33% 1fr 33%`), which changes the versus board's proportions
-     and so wants its own commit. The ONE-PANEL screens are unaffected: their columns are
-     `1fr 2fr`, and an `fr` track never sizes to content. */
+  /* ⚠️ FIXED, and it must stay fixed: this row's buttons are wider than the breakdown, so
+     while the versus centre track was `auto` it GREW when the row appeared at `done` and
+     both alliance panels narrowed — measured, 525px to 516px. Neither `width: 0; min-width:
+     100%` nor `contain: inline-size` stopped the intrinsic contribution; a PERCENTAGE track
+     did, because it cannot size to content at all. `.resx-body` is `25% minmax(0, 1fr) 25%`
+     now. Put an `auto` track back and this returns. */
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--ds-s-2);
-  padding: var(--ds-s-4) var(--ds-s-4) var(--ds-s-5);
+  /* deliberately the TIGHTEST rhythm on the stage: this block is the binding constraint on
+     the vertical budget (2 notes + a 2-row button block + 2 report links, on ranked). */
+  gap: calc(0.6 * var(--resx-u));
+  padding: var(--ds-s-4) var(--ds-s-4) var(--resx-pad);
   animation: resx-fade-up 400ms ease-out both;
 }
 .resx-void {
   margin: 0;
   text-align: center;
   font-weight: 700;
-  font-size: var(--ds-t-md);
+  font-size: calc(2 * var(--resx-u));
   color: var(--ds-on-field);
 }
 .resx-note {
   margin: 0;
   text-align: center;
-  font-size: var(--ds-t-sm);
+  font-size: calc(1.8 * var(--resx-u));
   color: var(--ds-on-field-dim);
 }
 .resx-note.ok {
@@ -1653,6 +1848,14 @@ button {
    which loads after this file and would otherwise win the tie. */
 .resx-stage .resx-linkbtn {
   color: var(--ds-on-field-dim);
+  /* ⚠️ THE SIZE HAS TO BE SET HERE, and inheritance cannot do it. `.results-report` and
+     `.results-report-done` set theirs through a `font:` SHORTHAND in shell.css, and a
+     shorthand's expanded longhand is not something an ancestor's `font-size` can reach — so
+     the three report links sat at 12px under 30px buttons. Every one of them also carries
+     `resx-linkbtn` (Results.tsx), and this selector is (0,2,0), which beats the shorthand's
+     (0,1,0) whichever file loads last. One declaration, all four elements, no shell.css edit
+     — which is also what keeps `off-scale-font-size` frozen at its baseline. */
+  font-size: calc(1.8 * var(--resx-u));
 }
 .resx-stage .resx-linkbtn:hover {
   color: var(--ds-on-field);
@@ -1772,6 +1975,14 @@ button {
   }
   .resx-sting {
     display: none;
+  }
+  /* the marquee is INFINITE, so capping its duration would only make it loop faster. It is
+     switched off outright and the clip falls back to the ellipsis it already declares. */
+  .resx-name-clip.scroll {
+    display: inline-block;
+  }
+  .resx-name-clip.scroll .resx-name-text {
+    animation: none !important;
   }
 }
 @keyframes resx-reduced-fade {

@@ -434,11 +434,19 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
  * things from the same numbers: the versus results print red | blue, and a solo record run
  * has no opponent column at all.
  *
- * ── COUNTS AND POINTS, BOTH ─────────────────────────────────────────────────
- * Every achievement that has both gets two rows. A points-only table cannot be checked
- * against the field — GARDEN 7 is seven elements at 1 each, and nothing on the screen says
- * so — and a count-only table does not add up to the total printed under it. The
- * parenthetical names the unit, and it is the same word on every row that shares one.
+ * ── POINTS ONLY, BY OWNER RULING (2026-09-21) ───────────────────────────────
+ * Every achievement that has both a count and a points value USED to get two rows, so that
+ * the table could be checked against the field (GARDEN 7 is seven elements at 1 each). It
+ * does not any more: 17 rows of small type was the reason the results screen was a wall of
+ * 15px text in a 1400px-tall void, and the screen is display-scaled now — 17 rows of it
+ * overruns any display by ~390px, so the cut is what PAYS for the size. The counts are
+ * therefore surfaced NOWHERE post-match; `BiobuzzScoreBar` never showed them either.
+ * Every `*Count` field is still computed and still rides `BbAllianceScore`, so putting any
+ * row back is one `row(…)` tuple.
+ *
+ * The labels are bare for the same reason. `(points at the buzzer)` existed to explain a 0
+ * sitting beside a non-zero COUNT — `<Results>` only ever mounts after the buzzer, and with
+ * the count rows gone there is no such pair left to explain.
  *
  * ── THERE IS NO TOTAL ROW HERE, DELIBERATELY ────────────────────────────────
  * Both consumers append their own (`Results.tsx`'s `.resx-total`, off the shared
@@ -465,50 +473,13 @@ export function biobuzzResultsRows(hud: HudSnapshot): readonly ResultsSection[] 
   const row = (label: string, k: keyof BbAllianceScore) =>
     [label, n(f?.score[me], k), n(f?.score[opp], k)] as const;
   return [
-    [
-      'AUTONOMOUS',
-      [
-        // the COUNT rows are the live, provisional readout and the POINTS rows wait for the
-        // instant §10.5 names, so the label carries the instant — the same thing the up-CELL
-        // row below has always done, and the only way a 0 beside a 2 in the count column reads
-        // as the rule rather than as a bug.
-        row('LEAVE (robots)', 'leaveCount'),
-        row('LEAVE (points at the end of AUTO)', 'leave'),
-        row('PARK (robots)', 'parkAutoCount'),
-        row('PARK (points at the end of AUTO)', 'parkAuto'),
-      ],
-    ],
-    [
-      'HIVE',
-      [
-        row('TIPS (count)', 'tips'),
-        row('TIPS (points)', 'tipPts'),
-        row('Up CELL contents (elements)', 'cellCount'),
-        // 0 for the whole match — Table 10-2 pays for what is LEFT IN the cell at the buzzer
-        // (owner ruling, 2026-09-12), so the label says when the number arrives rather than
-        // leaving a driver to read a permanent 0 beside a tray with four elements in it.
-        row('Up CELL contents (points at the buzzer)', 'cellPts'),
-      ],
-    ],
-    [
-      'FLOWER',
-      [
-        row('OWNED FLOWER (elements)', 'ownedCount'),
-        row('OWNED FLOWER (points)', 'ownedPts'),
-        row('Bottom NECTAR Bonus (FLOWERS)', 'bottomCount'),
-        row('Bottom NECTAR Bonus (points)', 'bottomPts'),
-      ],
-    ],
-    // §10.5 E is word for word §10.5 C's instant — "at the end of TELEOP when all ROBOTS and
-    // SCORING ELEMENTS have come to rest" — so the GARDEN line waits exactly as the CELL line
-    // does, and says so in the same words.
-    ['GARDEN', [row('GARDEN (elements)', 'gardenCount'), row('GARDEN (points at the buzzer)', 'gardenPts')]],
-    [
-      'END OF MATCH',
-      [row('PARK (robots)', 'parkTeleCount'), row('PARK (points at the end of the MATCH)', 'parkTele')],
-    ],
+    ['AUTONOMOUS', [row('LEAVE', 'leave'), row('PARK', 'parkAuto')]],
+    ['HIVE', [row('TIPS', 'tipPts'), row('Up CELL contents', 'cellPts')]],
+    ['FLOWER', [row('OWNED FLOWER', 'ownedPts'), row('Bottom NECTAR Bonus', 'bottomPts')]],
+    ['GARDEN', [row('GARDEN', 'gardenPts')]],
+    ['END OF MATCH', [row('PARK', 'parkTele')]],
     // points AWARDED to each alliance, i.e. earned from the OPPONENT's violations — the same
     // direction the shared breakdown prints, so the two reconcile against their totals.
-    ['PENALTIES', [row('Fouls awarded (points)', 'foul')]],
+    ['PENALTIES', [row('Fouls awarded', 'foul')]],
   ];
 }

@@ -1,3 +1,167 @@
+# HANDOFF — 2026-09-21i (the results screen is DISPLAY type now: one viewport unit, nine rows)
+
+**Owner follow-up #3 — the one-panel content stack CENTRES as a group.**
+
+- ⚠️ **`.resx-body-solo` IS FIVE ROWS: `1fr auto auto auto 1fr`.** The header, the breakdown and
+  the actions sit in rows 2/3/4 and the two `1fr` spacers centre THE WHOLE STACK. The versus
+  board pins its header to the top and its actions to the bottom because two alliance panels
+  flank the column and give it edges — a one-panel board has nothing on one side, so the same
+  three-row map left the title marooned at the top, the buttons at the bottom, and two voids
+  around a centred table (owner: "all this stuff for solo match results should appear
+  vertically centered with each other").
+  - **The panel now spans rows 1 → 6**, so "top to bottom and nothing trims it" is unchanged —
+    re-measured, `panel steady` in all eight states at 2560×1392.
+  - The `:has(.resx-half.blue)` mirror block carries the SAME five-row map; its placements are
+    rows 2/3/4 of column 1. If you change one map, change both.
+  - The narrow `@media (max-width: 720px)` block still re-declares its own four-row map and
+    still wins on source order — verified, nothing scrolls at 1280×720 and the blue mirror
+    correctly does not apply below 721.
+  - VERSUS is untouched: only `.resx-body-solo` moved.
+
+**Owner follow-up #2 — the roster row, and a marquee.**
+
+- ⚠️ **A LONG DRIVER NAME MARQUEES; THE ROW NEVER WRAPS.** `.resx-roster-row` is `nowrap` and
+  the NAME is the only part that gives (`flex: 0 1 auto` + `min-width: 0` on both the name and
+  the clip inside it) — it used to wrap, which pushed the team number onto a second line and,
+  on a versus board, put the two halves' rows at different heights. `DriverName`
+  (`Results.tsx`) measures the overflow and sets `.scroll`; a name that fits never moves.
+  Three bugs were found by LOOKING at the capture, and each would have shipped silently:
+  - ⚠️ **`scrollWidth` ON AN INLINE ELEMENT IS 0**, so the overflow test was false for every
+    name however long and the marquee never once fired. It is
+    `getBoundingClientRect().width` now. The text span has to STAY inline for the
+    `text-overflow: ellipsis` fallback to apply to it, so making it a block was not the fix.
+  - ⚠️ **THE FIRST MEASUREMENT IS TAKEN IN THE FALLBACK FACE.** Both families are `@fontsource`
+    variable cuts, and the fallback is narrower — a name that overflows Plus Jakarta measured
+    as fitting. `document.fonts?.ready` re-measures. A `ResizeObserver` cannot catch it: the
+    CLIP's box never changes, only the text's.
+  - `flex: 1 1 auto` on the name made it GROW, which dragged the YOU chip off the name it
+    belongs to and parked it against the team number. Shrink-only is the whole intent.
+  - Reduced motion switches the marquee off outright — capping an INFINITE animation's
+    duration only makes it loop faster — and the clip falls back to its ellipsis.
+- **The roster row is display type now.** `.resx-you` 0.85em, `.resx-roster-meta` **1.05em** —
+  deliberately over 1em, because the team number is what a driver looks for on a scoreboard, so
+  it is the LARGEST item in the row rather than the smallest. The ELO delta rides the same size.
+  One-panel rows are 5.2u (67px at 1392). The row's column gap is `2u`: once a long name has
+  eaten the slack, that gap is the only thing separating the name block from the team number.
+- **`🏆` is gone from WORLD RECORD** — the gold fill is already the loudest treatment on the
+  stage and an emoji beside it says the same thing twice, in a face that is not the UI's. The
+  `core.ts` assertion on that exact string moved with it.
+- ⚠️ **THE SOLO SECTION HEADING IS `colSpan={1}`, NOT 2.** Spanning both columns centred it on
+  the TABLE's midline while `.resx-cat` (which carries `width: 100%`) centres its label on the
+  midline of everything left of the value column — so every heading sat half a value-column to
+  the RIGHT of the labels under it. One column means the heading's box IS the label's box.
+- ⚠️ **`npm run test:bb` has ONE failure and it is NOT this work.** `perf: a 2v2 BIOBUZZ ROOM
+  tick costs <= 1.2x a 2v2 Chain Reaction room tick` (ratio 1.33). **Verified by STASHING every
+  change and re-running: the clean tree fails it identically at 1.33** (4507 checks vs 4516).
+  It and the `step3d p95` gate below trade places depending on machine load.
+
+**Owner follow-up, same session — six changes on top of everything below.**
+
+- ⚠️ **A BLUE ONE-PANEL BOARD NOW SITS ON THE RIGHT** (`@media (min-width: 721px)`, a
+  `:has(.resx-half.blue)` block). The winner banner bleeds toward its own ALLIANCE's outer wall
+  — red's left, blue's right — and that is a property of the alliance, not of the layout. With
+  every one-panel board pinned to the left column, a blue panel squared its banner against the
+  INNER seam, so the tag read as glued to the details column instead of running off the screen.
+  Record runs are forced blue server-side, so that was every one of them. Owner: "this way, it
+  will always look like the banner extends from off the screen."
+  - Scoped to the **complement of the narrow breakpoint** so the stacked layout needs no
+    `:has()` counterpart to out-specify — one column has nothing to mirror. Verified at 400×800:
+    the panel is still at x=0.
+  - `AllianceHalf`'s `outward` is now just `alliance === 'red'`, and **the `versus` prop is
+    gone** — it existed only to make a lone panel read as the left one, which is no longer true.
+- **The banner is the thing that changed most.** `padding: 0.34em 0.75em` with
+  `min-height: calc(1em + 2 * 0.34em)`. ⚠️ **Those two are one edit**: the reserved slot must
+  equal a filled banner exactly, and with `line-height: 1` that height IS `1em + 2 × the
+  vertical padding`. Both `em` of the banner's own size, so they stay equal at every viewport;
+  the `2 *` is written out rather than pre-multiplied so the relationship is legible at both
+  sites. Measured `bannerH=[69,69]` (was 36 before this session, 49 mid-way).
+- Versus panels **25% → 30%** each. One-panel categories and section heads are **centred**, like
+  the versus board's — left-aligned they sat against the panel seam with the value at the far
+  wall and the row read as two unrelated things across a 1280px column.
+- `.resx-body-solo .resx-roster-row` is **4.4u** (58px at 1392): a one-panel board has ONE driver
+  row in a half-width panel where a versus board has up to two in a 30% one.
+- **Gates after the follow-up:** `uiaudit` ALL AT OR UNDER (146/146), `build`, `contrast` (237),
+  `shiftaudit` (596 changes, 0 shifts), `resshot` panel steady in all 8 states — and the
+  one-panel boards now report `x=1280`, which is the mirror landing.
+- ⚠️ **`npm run test:bb` is 4516 checks with ONE failure, and it is the documented flake:**
+  `perf: bot-driven 2v2 step3d p95 <= 1.5ms` (1.629ms under load). **It PASSES at 1.416ms when
+  `--lane ai` runs alone**, which is exactly what the note below predicts. A second perf check
+  (`BIOBUZZ ROOM tick <= 1.2x Chain`) also failed once while a dev server and Electron captures
+  were running and passed on a quiet machine. Nothing in this work touches sim code.
+
+---
+
+**READ FIRST — the screen is sized off ONE custom property and the row count PAYS for it.**
+`--resx-u: clamp(7px, min(0.92vh, 0.62vw), 19px)` on `.resx-stage`, and every size on the
+stage is an inline `calc(n * var(--resx-u))`. The multipliers are the ratios the screen already
+shipped, so nothing is re-proportioned — it just SCALES now, which it never did: only
+`.resx-sting` and `.resx-total-num` were viewport-driven and everything else was flat chrome
+type on what is often a 1400px display. Measured before: the whole red half of a versus board
+carried ink on **22 rows out of 1340**.
+
+- ⚠️ **NINE ROWS IS A LAYOUT INVARIANT, NOT A CONTENT PREFERENCE.** `biobuzzResultsRows` is
+  points-only now (owner ruling) — 17 → 9. The arithmetic only closes at nine: at 2560×1392 the
+  worst board (ranked versus: 2 notes, a 2-row button block, 2 report links) lands at **1347 of
+  1392**, and seventeen rows of the same type overruns any display by ~390px. `core.ts` pins the
+  row count, the exact nine labels in order, that no unit parenthetical survives, and per-section
+  label uniqueness — none of which anything asserted before. The `*Count` fields are still
+  computed; putting a row back is one `row(…)` tuple, but it costs the type size.
+- ⚠️ **PADDING ON A `border-collapse: collapse` TABLE IS IGNORED OUTRIGHT.** The one-panel
+  boards' value column ran to the stage wall (nothing catches it there — on the versus board the
+  alliance fill does). `padding-inline` on `.resx-breakdown-solo` did NOTHING: measured, the last
+  value's box still ended exactly on the viewport edge, gap 0. It is
+  `width: calc(100% - 2 * var(--resx-pad))` with the existing `margin: … auto` re-centring it.
+  Now 42px each side at 1392, 24px at 720.
+- ⚠️ **THE REPORT LINKS CANNOT BE SIZED BY INHERITANCE.** `.results-report` /
+  `.results-report-done` set size through a `font:` SHORTHAND in `shell.css`, and an expanded
+  longhand is not reachable from an ancestor's `font-size` — they sat at 12px under 30px buttons.
+  All four elements also carry `resx-linkbtn`, so one declaration in the existing
+  `.resx-stage .resx-linkbtn` block does it: (0,2,0) beats the shorthand's (0,1,0) whichever file
+  loads last. Measured back at 23.05px. **No `shell.css` edit**, which is what keeps
+  `off-scale-font-size` frozen at 46.
+- **The versus centre track is `25% minmax(0,1fr) 25%`** — that closes 21h's ⚠️ KNOWN item. The
+  `auto` track was why a shrink-wrapped table floated in a void AND why both panels narrowed
+  525 → 516 when the actions row arrived. `resshot` now prints `panel steady` for versus too.
+  The comment at that rule was rewritten; **do not put an `auto` track back.** One-panel is
+  `50% minmax(0,1fr)` (the owner's "half the screen"). `minmax(0,…)` on BOTH boards: a bare
+  `1fr` is `minmax(auto,1fr)` and the buttons are `white-space: nowrap`, so the one-panel board
+  was never actually immune the way 21h claimed.
+- **The banner moved OUT of `.resx-half-top`** (the only `Results.tsx` edit) so that block can
+  be `flex: 1; justify-content: center` — banner welded to the top edge, roster centred, total
+  pinned at the bottom. That closes 21h's "name and stats towards the centre" open item.
+  `min-height: calc(1em + 2 * var(--ds-s-1))` is UNTOUCHED and still self-corrects; measured
+  `bannerH=[49,49] rosterTop=[390,390]`, both pairs equal. Only the banner's HORIZONTAL padding
+  scales (`0.5em`) — the vertical token is what the min-height calc references.
+- ⚠️ **21h's "uiaudit does not catch a repeated DESCENDANT selector" IS WRONG.**
+  `scripts/uiaudit.mjs:133` records any single selector at depth 0, descendant ones included;
+  only `@media` interiors are exempt. The new `.resx-stage .overlay-buttons button` block is safe
+  because the two existing `.resx-stage .overlay-buttons …` rules are comma LISTS, which claim no
+  name. Grep before adding another.
+- `off-grid-gap` baseline **149 → 146** (`scripts/uiaudit.mjs:69`): all three resx offenders were
+  off-grid because they were sized for 15px type, and they are `em` now.
+- **Gates, all green on this tree:** `uiaudit` (146/146, ALL AT OR UNDER), `build`, `contrast`
+  (237), `test:bb` all lanes (**4516 CHECKS, ALL PASS**), `shiftaudit` (596 state changes, 0
+  shifts), `resshot` panel steady in all 8 states at 2560×1392 and 1280×720, and nothing scrolls
+  at 2560×1392 / 1440×860 / 1280×720.
+- **`npm run shiftaudit` fails in an agent shell** — the npm script runs bare `electron`, and the
+  shell exports `ELECTRON_RUN_AS_NODE=1`, so `app` is undefined. Use
+  `env -u ELECTRON_RUN_AS_NODE npx electron scripts/shiftaudit.cjs`. Same gotcha the verify skill
+  documents for `scratch/*.cjs`; it bites the packaged script too.
+- **`@discord/embedded-app-sdk` was in `package.json` but missing from `node_modules`**, so
+  `npm run build` failed on an import unrelated to any of this. `npm install` fixes it; I reverted
+  the `package-lock.json` churn it produced (`peer: true` flags, a different npm version).
+- `scratch/edge.cjs` is new (gitignored): prints the computed ladder, the table's edge gaps and
+  whether the stage scrolls, per state and viewport. That is what caught the table-padding bug.
+- **OPEN, owner's call:** the ad. When `ResultsAd` renders it adds a fixed 300×264 box the ladder
+  cannot scale, plus `.menu-ad`'s `32px 0 8px` — ~296px against 45px of slack on the worst board.
+  The stage is `overflow-y: auto` and already scrolled there before this work. Sizing the board to
+  fit WITH the ad needs the unit near 0.7vh, which undoes the ask; the better answer is where the
+  ad lives.
+- **Chain Reaction stays airy** — 3 sections / 3 rows against a unit sized for BIOBUZZ's and
+  DECODE's ~58u breakdowns. If that comes back as a complaint the answer is rows, not a unit.
+
+---
+
 # HANDOFF — 2026-09-21h (the ONE-PANEL results screen: a full-height panel beside its content)
 
 **READ FIRST — `npm test` is red on this tree for TWO reasons and NEITHER is this work.**

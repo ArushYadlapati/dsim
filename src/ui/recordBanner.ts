@@ -45,7 +45,9 @@ export function recordBanner(info: RecordRankInfo | null, practice: boolean): Re
   // best, not the board's, and spending the loudest treatment on it leaves nothing for a WR.
   if (practice) return { text: 'PRACTICE', tone: 'quiet' };
   if (!info) return { text: '' };
-  if (info.isWR) return { text: '🏆 WORLD RECORD', tone: 'gold' };
+  // no glyph: the GOLD fill is already the loudest treatment on the stage and an emoji beside
+  // it says the same thing twice, in a face that is not the UI's.
+  if (info.isWR) return { text: 'WORLD RECORD', tone: 'gold' };
   if (info.isPB) return { text: '★ PERSONAL BEST' };
   return { text: `#${info.rank} OF ${info.total}`, tone: 'quiet' };
 }

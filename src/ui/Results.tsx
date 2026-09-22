@@ -271,6 +271,64 @@ function useEloPending(ranked: boolean, eloResults: EloResultRow[] | null): stri
   return timedOut ? 'No rating change this match.' : 'Updating ELO…';
 }
 
+/**
+ * A driver name that does not fit its panel SCROLLS instead of wrapping.
+ *
+ * The roster row is one line on a broadcast board, and a wrapped name used to push the team
+ * number onto a second line — which, on a versus board, desynced the two halves' rows. The
+ * overflow has to be MEASURED: the panel is a percentage of the viewport, so whether a given
+ * name fits is a question about the window, not about the string. `over` is read off the
+ * first copy against the clip, never off the clip's own `scrollWidth`, so it still answers
+ * correctly once the second copy exists and the marquee can switch back off when the window
+ * grows.
+ */
+function DriverName({ name }: { name: string }) {
+  const clip = useRef<HTMLSpanElement>(null);
+  const text = useRef<HTMLSpanElement>(null);
+  const [over, setOver] = useState(false);
+  useEffect(() => {
+    const c = clip.current;
+    const t = text.current;
+    if (!c || !t) return;
+    // ⚠️ `getBoundingClientRect`, NOT `scrollWidth`. `.resx-name-text` is an INLINE element
+    // (it has to stay inline for the `text-overflow: ellipsis` fallback to apply to it), and
+    // `scrollWidth` on a non-replaced inline box is 0 — so the comparison was false for every
+    // name, however long, and the marquee never once fired. The rect is the text's real
+    // layout width; the parent's `overflow: hidden` clips at PAINT and does not shrink it.
+    // 1px of slack: sub-pixel metrics otherwise scroll a name that visually fits.
+    const measure = () => setOver(t.getBoundingClientRect().width > c.clientWidth + 1);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(c);
+    // ⚠️ AND AGAIN ONCE THE WEBFONT LANDS. Both families are variable cuts loaded by
+    // `@fontsource`, so the first measurement is taken in the fallback face — which is
+    // narrower here, so a name that overflows Plus Jakarta measured as fitting and never
+    // scrolled. The observer cannot catch it: the CLIP's box does not change, only the
+    // text's. `fonts` is absent in no browser this app runs in, but it is optional chaining
+    // because the harness renders under jsdom-less test conditions too.
+    let live = true;
+    document.fonts?.ready.then(() => live && measure());
+    return () => {
+      live = false;
+      ro.disconnect();
+    };
+  }, [name]);
+  return (
+    <span ref={clip} className={`resx-name-clip${over ? ' scroll' : ''}`}>
+      <span ref={text} className="resx-name-text">
+        {name}
+      </span>
+      {/* the second copy is what makes the loop seamless rather than a snap back to the
+          start. It is decorative: a screen reader must not read the name twice. */}
+      {over && (
+        <span className="resx-name-text" aria-hidden="true">
+          {name}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function RosterList({
   roster,
   showElo,
@@ -300,7 +358,7 @@ function RosterList({
         <li key={p.robotId} className="resx-roster-row" style={{ animationDelay: `${i * 90}ms` }}>
           {order(
             <span className="resx-roster-name">
-              {p.name}
+              <DriverName name={p.name} />
               {p.isLocal && <span className="resx-you">YOU</span>}
             </span>,
             <span className="resx-roster-meta">
@@ -383,8 +441,13 @@ function SoloTable({ sections, rowsActive }: { sections: readonly SoloSection[];
       <tbody>
         {sections.map(([title, rows], s) => (
           <Fragment key={title}>
+            {/* ⚠️ colSpan ONE, not two. Spanning both columns centres the heading on the
+                TABLE's midline, while `.resx-cat` (which carries `width: 100%`) centres its
+                label on the midline of everything left of the value column — so every heading
+                sat a half-value-column to the RIGHT of the labels under it. One column means
+                the heading's box IS the label's box and the two centres are the same point. */}
             <tr className={`resx-section ${cls}`} style={{ animationDelay: `${headDelay(s)}ms` }}>
-              <th className="resx-section-label" colSpan={2} scope="colgroup">
+              <th className="resx-section-label" scope="colgroup">
                 {title}
               </th>
             </tr>
@@ -434,7 +497,6 @@ function AllianceHalf({
   alliance,
   phase,
   banner,
-  versus,
   standing,
   roster,
   showElo,
@@ -447,10 +509,7 @@ function AllianceHalf({
    *  nothing — which is both the losing half of a versus board and a record run whose rank
    *  has not landed yet, from one rule. Absent means no slot at all. See `recordBanner`. */
   banner?: ResultBanner;
-  /** there is an OPPOSING half beside this one, so this panel is one of a left/right pair and
-   *  the RIGHT-hand one mirrors. A lone panel sits in the left column of its own grid and
-   *  reads like the red half, which is why `outward` below is true for it. */
-  versus?: boolean;
+
   standing?: React.ReactNode;
   roster: readonly RosterEntry[];
   showElo: boolean;
@@ -463,9 +522,12 @@ function AllianceHalf({
 }) {
   const settled = phase !== 'wait' && phase !== 'wipe';
   const totalsActive = phase === 'totals' || phase === 'done';
-  // "this panel is on the LEFT": the red half of a pair, or a lone panel, which the one-panel
-  // grid puts in the left column. Only the right-hand half of a pair mirrors.
-  const outward = !versus || alliance === 'red';
+  // "this panel is on the LEFT", which is now the same question as "is it red" on every board:
+  // a pair is red|blue left-to-right, and a LONE panel takes its own alliance's side too — red
+  // in the left column, blue in the right — so its banner bleeds off the outer edge of the
+  // screen rather than into the details column. Everything inside a half is written
+  // inner→outer and the left-hand one renders each group outer-first.
+  const outward = alliance === 'red';
   const label = totalLabel ?? ALLIANCE_NAME[alliance];
   // the panel's ONLY heading, and so the accessible name for the `<section>` around it — a
   // `<section>` with none is not exposed as a region at all. It used to be the `RED` /
@@ -486,18 +548,21 @@ function AllianceHalf({
   );
   return (
     <section className={`resx-half ${alliance}`}>
+      {/* the slot holds its height whatever is in it, so the driver row never jumps when a
+          rank lands late and the two halves of a versus board stay on one line.
+          ⚠️ It is a direct child of the HALF, not of `.resx-half-top`: that block centres
+          itself in whatever is left between here and the total, and the banner has to stay
+          welded to the top edge it bleeds out to. */}
+      {banner && (
+        <span
+          className={`resx-winbanner${banner.tone ? ` ${banner.tone}` : ''}${
+            totalsActive && banner.text ? ' on' : ''
+          }`}
+        >
+          {banner.text}
+        </span>
+      )}
       <div className="resx-half-top">
-        {/* the slot holds its height whatever is in it, so the driver row never jumps when a
-            rank lands late and the two halves of a versus board stay on one line. */}
-        {banner && (
-          <span
-            className={`resx-winbanner${banner.tone ? ` ${banner.tone}` : ''}${
-              totalsActive && banner.text ? ' on' : ''
-            }`}
-          >
-            {banner.text}
-          </span>
-        )}
         {settled && standing}
         {settled && <RosterList roster={roster} showElo={showElo} outerFirst={outward} />}
       </div>
@@ -858,7 +923,6 @@ export function Results({
                 alliance="red"
                 phase={phase}
                 banner={versusBanner(winner === 'red', winner === 'tie')}
-                versus
                 roster={redRoster}
                 showElo={ranked}
                 total={redTotal}
@@ -868,7 +932,6 @@ export function Results({
                 alliance="blue"
                 phase={phase}
                 banner={versusBanner(winner === 'blue', winner === 'tie')}
-                versus
                 roster={blueRoster}
                 showElo={ranked}
                 total={blueTotal}

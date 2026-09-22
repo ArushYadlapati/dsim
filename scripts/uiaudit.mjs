@@ -66,7 +66,12 @@ const BASELINE = {
   // at the other to keep them agreeing; both are `--ds-s-5` now, so they agree by construction.
   // `.ds-binds`'s own `14px` went the same way when the gamepad split gave it a sibling that
   // would otherwise have had to copy the number.
-  'off-grid-gap': 149,
+  // 149 → 146, 2026-09-21: the results screen went to a viewport-driven display scale, and
+  // all three of its off-grid values were off-grid because they were sized for 15px type —
+  // `.resx-roster-name` and `.resx-roster-meta`'s `6px` gaps and `.resx-breakdown`'s `3px`
+  // cell padding. They are `em` now, so they scale with the row they sit in and there is no
+  // number left to round.
+  'off-grid-gap': 146,
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
   // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
   // not the 31 first measured. The other two start where they stand: paying them down needs a
