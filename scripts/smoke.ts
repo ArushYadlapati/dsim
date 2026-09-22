@@ -6070,7 +6070,11 @@ function queueTenth(w: World): void {
    * THE KEY HALF IS STILL ABSOLUTE. An action with no default key at all cannot be pressed
    * by a new player on any device, which is the failure this check was written for.
    */
-  const PAD_DEFAULT_EXEMPT: readonly string[] = ['bbPass'];
+  /* EMPTY NOW, AND THAT IS THE POINT. `bbPass` was the only member: it shipped with no pad
+     button "because there is no button left to give it", while two chain-only actions sat on
+     LB and L3. Sharing those by role bound it, so the exemption is gone — and the check
+     immediately below fails if a member ever gains a default and is not removed from here. */
+  const PAD_DEFAULT_EXEMPT: readonly string[] = [];
   const noKey = KEY_ACTIONS.filter((a) => DEFAULT_BINDINGS.keys[a].length === 0);
   const noPad = PAD_ACTIONS.filter((a) => DEFAULT_BINDINGS.pad.buttons[a].length === 0 && !PAD_DEFAULT_EXEMPT.includes(a));
   const exemptBound = PAD_DEFAULT_EXEMPT.filter((a) => (DEFAULT_BINDINGS.pad.buttons[a as PadAction] ?? []).length > 0);
@@ -6084,43 +6088,102 @@ function queueTenth(w: World): void {
     exemptBound.length === 0,
     `still exempt but now bound: ${exemptBound.join(',') || 'none'}`,
   );
-  const keyOwner = new Map<string, string>();
+  /**
+   * ⚠️ **A DEFAULT MAY BE SHARED BY TWO ACTIONS — IT MAY NOT BE SHARED BY TWO CONFLICTING
+   * ONES.** This check used to demand GLOBAL uniqueness, and that was the wrong invariant. It
+   * is also the reason the defaults ran out of keys: `actionsConflict` has always permitted a
+   * duplicate across games (two actions collide only if some game uses BOTH, and no session
+   * offers Chain Reaction's claw beside BIOBUZZ's Box Tube), the steal policy's own comment
+   * names `catalyst`/`bbPlace` as the example — and then this check forbade exactly that. So
+   * every new season hunted for another free letter, BIOBUZZ landed on x/z/n/l/t while c and v
+   * sat idle in it, and `bbPass` shipped with NO pad button at all "because there is no button
+   * left", next to two chain-only bindings on LB and L3.
+   *
+   * The real rule is per-GAME: inside one game, no key does two things. That is what is
+   * asserted now, game by game, over `keyActionsFor`/`padActionsFor` — which is stricter than
+   * the old check where it matters and permissive exactly where the design says it should be.
+   */
   const dupKeys: string[] = [];
-  for (const a of KEY_ACTIONS) {
-    for (const k of DEFAULT_BINDINGS.keys[a]) {
-      if (keyOwner.has(k)) dupKeys.push(`${k} (${keyOwner.get(k)} + ${a})`);
-      else keyOwner.set(k, a);
-    }
-  }
-  const padOwner = new Map<number, string>();
   const dupPad: string[] = [];
-  for (const a of PAD_ACTIONS) {
-    for (const i of DEFAULT_BINDINGS.pad.buttons[a]) {
-      if (padOwner.has(i)) dupPad.push(`${i} (${padOwner.get(i)} + ${a})`);
-      else padOwner.set(i, a);
+  for (const g of GAME_IDS) {
+    const kOwner = new Map<string, string>();
+    for (const a of keyActionsFor(g)) {
+      for (const k of DEFAULT_BINDINGS.keys[a]) {
+        if (kOwner.has(k)) dupKeys.push(`${g}: ${k} (${kOwner.get(k)} + ${a})`);
+        else kOwner.set(k, a);
+      }
+    }
+    const pOwner = new Map<number, string>();
+    for (const a of padActionsFor(g)) {
+      for (const i of DEFAULT_BINDINGS.pad.buttons[a]) {
+        if (pOwner.has(i)) dupPad.push(`${g}: ${i} (${pOwner.get(i)} + ${a})`);
+        else pOwner.set(i, a);
+      }
     }
   }
   check(
-    'bindings: no default key or pad button is bound to two actions',
+    'bindings: inside ONE GAME no default key or pad button does two things (a cross-game duplicate is legal)',
     dupKeys.length === 0 && dupPad.length === 0,
     `${dupKeys.join(' ')} ${dupPad.join(' ')}`.trim(),
   );
+  /**
+   * …AND THE SHARING IS REAL, not merely allowed. A default map that happens to be globally
+   * unique passes the check above without ever exercising the cross-game path, and would quietly
+   * drift back to a letter per season — which is the state the owner asked to be rid of. So at
+   * least one key and one pad button must genuinely be held by two non-conflicting actions.
+   */
+  const shared = (list: readonly string[], binds: (a: string) => readonly unknown[]): string[] => {
+    const out: string[] = [];
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        if (actionsConflict(list[i] as KeyAction, list[j] as KeyAction)) continue;
+        const bi = binds(list[i]).map((x) => JSON.stringify(x));
+        if (binds(list[j]).some((x) => bi.includes(JSON.stringify(x)))) out.push(`${list[i]}+${list[j]}`);
+      }
+    }
+    return out;
+  };
+  const sharedKeys = shared(KEY_ACTIONS, (a) => DEFAULT_BINDINGS.keys[a as KeyAction]);
+  const sharedPad = shared(PAD_ACTIONS, (a) => DEFAULT_BINDINGS.pad.buttons[a as PadAction]);
+  check(
+    '⚠️ bindings: ...and the defaults ACTUALLY share across games, so the capability cannot rot',
+    sharedKeys.length > 0 && sharedPad.length > 0,
+    `keys ${sharedKeys.join(' ') || 'NONE'} · pad ${sharedPad.join(' ') || 'NONE'}`,
+  );
+  /* EVERY SHARED DEFAULT NAMES THE SAME ROLE IN BOTH GAMES, which a test cannot judge — but it
+     CAN insist the two actions are the ones the design says. A future edit that parks an
+     unrelated pair on one key passes every rule above and is still a surprise under the hand. */
+  check(
+    'bindings: ...and the shared pairs are the intended ROLE pairs (place / send-away), not incidental collisions',
+    JSON.stringify([...sharedKeys].sort()) === JSON.stringify(['catalyst+bbPlace', 'fling+bbPass'].sort()) &&
+      JSON.stringify([...sharedPad].sort()) === JSON.stringify(['catalyst+bbPlace', 'fling+bbPass'].sort()),
+    `keys ${sharedKeys.join(' ')} · pad ${sharedPad.join(' ')}`,
+  );
   // Escape is reserved for menu / cancel and is never bindable.
-  check('bindings: escape is never a default key', !keyOwner.has('escape'));
+  /* read off the lists directly: the old `keyOwner` map was a by-product of the global
+     uniqueness scan above, which is gone — this never needed ownership, only membership. */
+  check('bindings: escape is never a default key',
+    KEY_ACTIONS.every((a) => !DEFAULT_BINDINGS.keys[a].includes('escape')));
   /* THE TANK RIGHT SIDE IS A BINDING NOW, not two hard-coded key names.
      `input.ts` used to read `arrowup` / `arrowdown` DIRECTLY, so half a tank chassis was
      unrebindable: reassigning the arrows to some other action left them still driving the
      right side, and pressing one then did two things at once. The defaults are unchanged
      (arrows), so nothing moves for a player who never opened the controls screen — but they
      are OWNED by an action now, which is what makes the duplicate check above cover them. */
+  /* asserted FORWARDS now (action -> key) rather than through the old ownership map. It is the
+     same fact and a stronger statement: the map could only say "nobody else has arrowup",
+     which stopped meaning much once a key may legally be held twice. */
   check(
     'bindings: the tank right side owns the arrows by default',
-    keyOwner.get('arrowup') === 'tankRightUp' && keyOwner.get('arrowdown') === 'tankRightDown',
-    `${keyOwner.get('arrowup')} / ${keyOwner.get('arrowdown')}`,
+    DEFAULT_BINDINGS.keys.tankRightUp.includes('arrowup') &&
+      DEFAULT_BINDINGS.keys.tankRightDown.includes('arrowdown'),
+    `${DEFAULT_BINDINGS.keys.tankRightUp.join('/')} / ${DEFAULT_BINDINGS.keys.tankRightDown.join('/')}`,
   );
   // Standard-mapping pads report 17 buttons; anything past that is a pad-specific extra no
   // ordinary controller has, so a default there is a button most people cannot press.
-  const offPad = [...padOwner.keys()].filter((i) => i > 16);
+  /* straight off the lists, for the same reason the escape check is: `padOwner` was a
+     by-product of the retired global-uniqueness scan, and membership is all this needs. */
+  const offPad = PAD_ACTIONS.flatMap((a) => DEFAULT_BINDINGS.pad.buttons[a]).filter((i) => i > 16);
   check('bindings: every default pad button is a standard-mapping index', offPad.length === 0, offPad.join(','));
 }
 
@@ -23484,8 +23547,12 @@ const dumperSetup = (): RobotSetup => {
   let b = assignPadBind(DEFAULT_BINDINGS, 'fling', 1, [12, 7]); // slot 1 on a one-single action = add
   check(
     'combos: assignPadBind appends a combo and leaves the singles alone',
+    /* `bbPlaceNectar`, not `bbPlace`: the point of naming a single here is that it SHARES a
+       button with the combo just added ([12, 7] contains D-UP), and D-UP moved to
+       `bbPlaceNectar` when `bbPlace` went to LB alongside `catalyst`. Re-pointed rather than
+       re-baselined — an expected value edited to whatever the code now returns tests nothing. */
     J(b.pad.combos.fling) === J([[7, 12]]) && J(b.pad.buttons.fling) === J([10]) &&
-      J(b.pad.buttons.fire) === J([7, 0]) && J(b.pad.buttons.bbPlace) === J([12]),
+      J(b.pad.buttons.fire) === J([7, 0]) && J(b.pad.buttons.bbPlaceNectar) === J([12]),
     J({ fling: b.pad.combos.fling, fire: b.pad.buttons.fire }),
   );
   check(
@@ -24152,7 +24219,7 @@ const dumperSetup = (): RobotSetup => {
   const J = (v: unknown): string => JSON.stringify(v);
   const main = cloneBindings(DEFAULT_BINDINGS);
   // Catalyst (Chain Reaction only) keeps LB, and gets RT + D-UP as a combo — which in the main
-  // map would mask Shoot's RT and Place POLLEN's D-UP.
+  // map would mask Shoot's RT and Place NECTAR's D-UP.
   main.pad.combos.catalyst = [[7, 12]];
 
   const inChain = effectiveBindings(main, 'chain');
@@ -24165,14 +24232,62 @@ const dumperSetup = (): RobotSetup => {
   const rb = new PadChordResolver();
   const bs = rb.resolve([7, 12], inBB.pad, 0);
   check(
-    'resolver/effective: in BIOBUZZ the same buttons are Shoot and Place POLLEN, with nothing masked',
-    bs.catalyst === false && bs.fire === true && bs.bbPlace === true,
+    'resolver/effective: in BIOBUZZ the same buttons are Shoot and Place NECTAR, with nothing masked',
+    bs.catalyst === false && bs.fire === true && bs.bbPlaceNectar === true,
     J(bs),
   );
   // …and no WAIT either: with the Chain combo gone there is no wider chord pending, so the
   // fast path runs and RT fires on the frame it is pressed.
   const rb2 = new PadChordResolver();
   check('resolver/effective: and RT fires at once, with no combo wait to serve', rb2.resolve([7], inBB.pad, 0).fire === true);
+  /**
+   * ⚠️ **THE SHARED DEFAULT: ONE BUTTON, A DIFFERENT ACTION IN EACH GAME, AND NEVER BOTH.**
+   * (Owner, 2026-09-22 — the defaults must be allowed duplicates across games or they run out.)
+   * `catalyst` and `bbPlace` both default to LB, and `fling` and `bbPass` both to L3. The rules
+   * above say that is LEGAL; this says it is CORRECT — that the effective map for each game
+   * resolves the press to that game's own action and leaves the other one dark. If both ever
+   * fired it would be the silent double-fire the d-pad comment warns about, on the button the
+   * whole scheme rests on.
+   */
+  const plainMain = cloneBindings(DEFAULT_BINDINGS);
+  for (const [game, mine, theirs] of [
+    ['chain', 'catalyst', 'bbPlace'],
+    ['biobuzz', 'bbPlace', 'catalyst'],
+  ] as const) {
+    const eff = effectiveBindings(plainMain, game);
+    const st = new PadChordResolver().resolve([4], eff.pad, 0);
+    check(
+      `resolver/effective: LB in ${game} is ${mine} alone — the shared default is not a double-fire`,
+      st[mine] === true && st[theirs] === false,
+      J({ [mine]: st[mine], [theirs]: st[theirs] }),
+    );
+  }
+  for (const [game, mine, theirs] of [
+    ['chain', 'fling', 'bbPass'],
+    ['biobuzz', 'bbPass', 'fling'],
+  ] as const) {
+    const eff = effectiveBindings(plainMain, game);
+    const st = new PadChordResolver().resolve([10], eff.pad, 0);
+    check(
+      `resolver/effective: L3 in ${game} is ${mine} alone`,
+      st[mine] === true && st[theirs] === false,
+      J({ [mine]: st[mine], [theirs]: st[theirs] }),
+    );
+  }
+  /* AND THE KEYBOARD HALF, which has no resolver: the effective map is the whole answer, so a
+     shared key must appear on exactly one action in each game's map. */
+  for (const [game, mine, theirs] of [
+    ['chain', 'catalyst', 'bbPlace'],
+    ['biobuzz', 'bbPlace', 'catalyst'],
+  ] as const) {
+    const eff = effectiveBindings(plainMain, game);
+    check(
+      `bindings: 'c' in ${game} belongs to ${mine} and not ${theirs}`,
+      eff.keys[mine].includes('c') && !eff.keys[theirs].includes('c'),
+      J({ [mine]: eff.keys[mine], [theirs]: eff.keys[theirs] }),
+    );
+  }
+
   // The same in DECODE, which has neither of the season actions.
   const inDec = effectiveBindings(main, 'decode');
   const rd = new PadChordResolver();

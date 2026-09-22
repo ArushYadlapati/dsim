@@ -195,8 +195,15 @@ export class InputManager {
       // BIOBUZZ `ramp` intake — held here, edge-triggered in the sim off `bbRampHeld`, same
       // contract as `driveMode` below (a replayed input can't double-toggle a client-side edge).
       bbRamp: heldAny(keys.bbRamp) || g.bbRamp || this.virtualState.bbRamp,
-      // BIOBUZZ pass — held here, edge-triggered in the sim off `bbPassHeld`, exactly as the
-      // ramp above is: a held button passes once, not once per tick.
+      /* BIOBUZZ pass — held, and UNLIKE the ramp above it is NOT edge-triggered. This comment
+         used to claim it was, "off `bbPassHeld`, exactly as the ramp above is: a held button
+         passes once, not once per tick" — and `bbPassHeld` does not exist anywhere
+         (`bbRampHeld` is real, on `RobotState`, which is what made the sentence read as true).
+         A held pass fires CONTINUOUSLY at the launcher's own cadence, exactly like a held
+         `fire` (`robot.ts`'s `bbLaunch`). That is the right behaviour — the cadence is what
+         stops a burst, and a driver emptying a hopper to a partner should not have to tap —
+         but a comment describing the opposite would send whoever reads it next looking for a
+         latch that was never written. */
       bbPass: heldAny(keys.bbPass) || g.bbPass || this.virtualState.bbPass,
       // BUTTERFLY wheel-set swap — also passed HELD, edge-triggered in the sim. Doing the
       // edge sim-side (not here) keeps it deterministic under prediction + reconcile:

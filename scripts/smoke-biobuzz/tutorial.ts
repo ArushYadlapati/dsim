@@ -318,7 +318,13 @@ export function tutorialChecks(check: Check): void {
     check('hint: the drive line names the four bound translation keys', ['W', 'A', 'S', 'D'].every((k) => dk.includes(k)), dk);
     const dp = driveHint(pad);
     check('hint: on a pad it names the chosen drive stick instead', dp.includes('left stick') && dp.includes('right stick'), dp);
-    check('control(): falls back to the key when the action has no pad twin', control(kb, 'bbPlace') === 'Z', control(kb, 'bbPlace'));
+    /* ⚠️ 'C', NOT 'Z': `bbPlace` shares Chain Reaction's claw key now (owner, 2026-09-22 —
+       the defaults must be allowed duplicates across games, by ROLE, or they run out of keys).
+       The old NAME of this check was "falls back to the key when the action has no pad twin",
+       which describes a case that no longer exists at all: `bbPass` was the last action with no
+       pad button and it shares L3 now, so `PAD_DEFAULT_EXEMPT` is empty and the shared suite
+       asserts it. What this actually tests is that a KEYBOARD context names the key. */
+    check('control(): a keyboard context names the bound KEY', control(kb, 'bbPlace') === 'C', control(kb, 'bbPlace'));
     // A PHONE HAS NO KEYBOARD. A hint that said "hold SHIFT" under two on-screen joysticks is the
     // same failure as naming an unbound key, one device further along — measured at 375px while
     // this was being built, which is why `touch` is in the context at all.

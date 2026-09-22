@@ -6,6 +6,7 @@ import {
   bbCellSideOf,
   bbDumpShotEnters,
   bbHumanPlayerTick,
+  bbPassTargetOf,
   bbPretendHive,
   bbTurretShotEnters,
 } from '../play';
@@ -17,6 +18,7 @@ import {
   bbRampStep,
   bbRampSwingProgress,
   bbSlewTurret,
+  bbTurretOnTarget,
   bbTurretSolution,
   type BbShot,
 } from '../robot';
@@ -166,11 +168,33 @@ export function elements3dAimAndLaunch(
     // THE SWING GUARD, right after the toggle — see `bbRampSwingStep3d`'s own header.
     bbRampSwingStep3d(world, rob);
     const launcher = bbLauncherOf(rob.spec, BB_HOOD_DEFAULT_DEG);
-    const target = bbAimTarget(world, rob);
-    // THE SAME LANDING GATE THE 2D PIPELINE RUNS (`play.ts` stage 5b) — see this file's header,
-    // where Day 1's alignment-only deviation was reported.
-    const pretend = bb ? bbPretendHive(bb.hives[rob.alliance], bbCellSideOf(target)) : null;
-    const asking = enabled && (cmds.get(rob.id)?.fire ?? false) && rob.hopper.length > 0;
+    /**
+     * ⚠️ **THE PASS IS HANDLED HERE AT ALL, WHICH IT WAS NOT.** `bbPass` shipped wired into
+     * the 2D pipeline (`play.ts` stage 5b) and NOWHERE in this one — `bbPass` did not appear in
+     * this file. `target` was always the hive, and `asking` read `fire` alone, so in 3D the
+     * button did nothing whatsoever: no shot, no hopper change, no error.
+     *
+     * That is the whole feature missing where it is actually used. `docs/area/biobuzz.md`:
+     * every server-connected match runs 3D, and `GameSettings.practicePhysics` defaults to
+     * `'3d'` for solo too — so the one backend the pass worked under was the one almost nobody
+     * plays. The owner reported it as "I'm not sure if the passing feature is working".
+     *
+     * It is the SAME four lines 2D runs, deliberately, so the two cannot drift again:
+     */
+    const passing = enabled && bbIsTurreted(launcher) && (cmds.get(rob.id)?.bbPass ?? false);
+    const target = passing ? bbPassTargetOf(rob) : bbAimTarget(world, rob);
+    /**
+     * THE SAME LANDING GATE THE 2D PIPELINE RUNS (`play.ts` stage 5b) — see this file's header,
+     * where Day 1's alignment-only deviation was reported.
+     *
+     * ⚠️ `pretend` IS BUILT FROM THE HIVE TARGET, NEVER FROM `target`, and that matters only
+     * now that `target` can be a floor point: `bbCellSideOf` would otherwise be asked which
+     * side of a patch of tiles is open. 2D states the same rule in its own comment. The
+     * distinction was invisible while `target` was always the hive, which is exactly how a
+     * copied line goes wrong later.
+     */
+    const pretend = bb ? bbPretendHive(bb.hives[rob.alliance], bbCellSideOf(bbAimTarget(world, rob))) : null;
+    const asking = enabled && ((cmds.get(rob.id)?.fire ?? false) || passing) && rob.hopper.length > 0;
     if (bbIsTurreted(launcher)) {
       const speed: (number | undefined)[] = [];
       const lands: boolean[] = [];
@@ -179,7 +203,14 @@ export function elements3dAimAndLaunch(
         const sol = bbTurretSolution(rob, target, which);
         bbSlewTurret(rob, sol?.yaw ?? null, sol?.pitch ?? null, dt, which);
         speed[which] = sol?.speed;
-        lands[which] = asking && !!pretend && !!sol && sol.reachable && bbTurretShotEnters(pretend, rob, which, sol.speed, dt);
+        /* A PASS IS A DELIVERY TO A POINT, so "will it land" is `sol.reachable` plus
+           `bbTurretOnTarget` and nothing more — the hive's pretend-tilt and `bbTurretShotEnters`
+           are about arriving through a HOLE and mean nothing here. `bbTurretOnTarget` is not
+           optional: gating on `reachable` alone releases while the turret is still slewing, and
+           measured in 2D that put passes 34.8, 64.2 and 78.3 inches short. */
+        lands[which] = passing
+          ? asking && !!sol && sol.reachable && bbTurretOnTarget(rob, sol, which)
+          : asking && !!pretend && !!sol && sol.reachable && bbTurretShotEnters(pretend, rob, which, sol.speed, dt);
       }
       shots.set(rob.id, { target, speed, lands });
     } else {

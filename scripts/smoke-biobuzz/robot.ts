@@ -148,7 +148,7 @@ import { BB_DEFAULT_SPEC, bbDials } from '../../src/games/biobuzz/robotConfig';
 import { BB_SCENES, bbPollen, bbSceneAt } from '../../src/games/biobuzz/scenes';
 import { bbSpecKey } from '../../src/games/biobuzz/specKey';
 import { cadFlowerRings, fieldColliders3d } from '../../src/games/biobuzz/sim3d/fieldColliders';
-import { bbCoerce, cmd, mkWorld, run, setup, type Check } from './harness';
+import { bbCoerce, cmd, mkWorld, mkWorld3d, run, setup, type Check } from './harness';
 
 /**
  * LANE B's smoke: THE ROBOT.
@@ -3428,6 +3428,27 @@ export function robotChecks(check: Check): void {
    */
   {
     const NEAR = 8; // in — worst measured is 6.6; a miss without the on-target gate is 34+
+    /**
+     * ⚠️ **3D IS MEASURED AT CLOSEST APPROACH, NOT WHERE THE ELEMENT COMES TO REST, AND THE
+     * DIFFERENCE IS NOT A FUDGE.** Under Rapier the element lands and then ROLLS — bounce and
+     * roll on the tiles are real there and scripted away in 2D. MEASURED, three passes at the
+     * 101.7-in preset:
+     *
+     *     closest approach 0.3, 0.3, 0.3 in   →  final rest 32.3, 32.9, 34.2 in
+     *     and at a mid-field point (40, -40): closest 0.3-1.0  →  final 4.8-11.4
+     *
+     * DELIVERY is what the aiming system controls and what a driver is judged on, and it is
+     * sub-inch. Where it then rolls to is a property of the TARGET — the preset sits one
+     * radius off the wall (`bbLoadingZoneSpot`, shared with staging and the human player's own
+     * entry, both of which want exactly that) and an element arriving there at speed runs on
+     * down the wall. Asserting rest position would therefore pin field geometry under the guise
+     * of pinning the shooter, and would have to be loosened to ~35 in — wide enough to hide a
+     * genuinely bad shot.
+     */
+    const NEAR_3D = 3;
+    /* the settle bound is a SANITY rail, not an accuracy claim: it catches an element that
+       left the field or never stopped, and nothing finer. See the note above. */
+    const SETTLE_3D = 40;
     const throwTo = (target?: Vec2): { worst: number; thrown: number; inHive: number; pt: Vec2 } => {
       const w = mkWorld('free', 5, 'biobuzz');
       const r = w.robots[0];
@@ -3465,6 +3486,88 @@ export function robotChecks(check: Check): void {
       custom.thrown === 3 && custom.worst < NEAR && Math.abs(custom.pt.x - 40) < 1e-9 && Math.abs(custom.pt.y + 40) < 1e-9,
       `thrown ${custom.thrown}/3, worst ${custom.worst.toFixed(1)}in from (${custom.pt.x.toFixed(1)}, ${custom.pt.y.toFixed(1)})`,
     );
+
+    /**
+     * ⚠️ **AND THE SAME THING IN 3D, WHICH IS WHERE IT ACTUALLY HAS TO WORK.**
+     *
+     * The pass shipped wired into the 2D pipeline and NOWHERE in the 3D one — `bbPass` did not
+     * appear in `sim3d/elements3d.ts` at all, so `target` was always the hive and `asking` read
+     * `fire` alone. Pressing pass in 3D did nothing whatsoever: no shot, no hopper change, no
+     * error. And 3D is not the minority path: `docs/area/biobuzz.md` has EVERY server-connected
+     * match running 3D, and `GameSettings.practicePhysics` defaults to `'3d'` for solo too. So
+     * the feature worked only under the backend almost nobody plays, and the owner reported it
+     * as "I'm not sure if the passing feature is working".
+     *
+     * ⚠️ THE CHECK ABOVE COULD NOT HAVE CAUGHT THAT, AND THAT IS THE LESSON: it was written
+     * against `mkWorld`, which is 2D. A behaviour the two backends are supposed to SHARE has to
+     * be asserted of both, or a whole feature can be missing from one and every test still pass.
+     * `thrown === 3` is the load-bearing half here — the old code's failure was silence, not
+     * inaccuracy.
+     */
+    {
+      const throwTo3d = (target?: Vec2): { worst: number; closest: number; thrown: number; pt: Vec2 } => {
+        const w = mkWorld3d('free', 5);
+        const r = w.robots[0];
+        if (target) r.spec = { ...r.spec, bbPassTarget: target };
+        w.balls.length = 0;
+        for (const f of w.biobuzz!.flowers) f.stack = [];
+        w.biobuzz!.hives.red.contents = [];
+        w.biobuzz!.hives.blue.contents = [];
+        r.hopper = ['yellow', 'yellow', 'yellow'];
+        r.hopper.forEach((c, i) => {
+          w.balls.push({
+            id: i + 1, color: c, state: { kind: 'held', robot: r.id, slot: i },
+            pos: { x: r.pos.x, y: r.pos.y }, vel: { x: 0, y: 0 }, z: 0, vz: 0, r: BB_POLLEN_R,
+          } as Artifact);
+        });
+        const pt = bbPassPoint(r);
+        /* STEPPED BY HAND rather than through `run`, because the number that matters is the
+           CLOSEST the element ever got to the point — see the `NEAR_3D` note. After it settles
+           that information is gone. */
+        const closestOf = new Map<number, number>();
+        const cmds = new Map([[0, cmd({ bbPass: true })]]);
+        for (let i = 0; i < Math.round(8 / C.SIM_DT); i++) {
+          biobuzzStep(w, C.SIM_DT, cmds);
+          for (const b of w.balls) {
+            const d = hyp(b.pos.x - pt.x, b.pos.y - pt.y);
+            if (!closestOf.has(b.id) || d < closestOf.get(b.id)!) closestOf.set(b.id, d);
+          }
+        }
+        /* `element` counts too: a 3D pass that has come to rest on the tiles is settled by the
+           same predicate the hive path uses, so accepting only `ground` would under-count a
+           landed pass and read as a miss. */
+        const loose = w.balls.filter((b) => b.state.kind === 'ground' || b.state.kind === 'element');
+        const worst = loose.length
+          ? Math.max(...loose.map((b) => hyp(b.pos.x - pt.x, b.pos.y - pt.y)))
+          : Infinity;
+        const closest = loose.length ? Math.max(...loose.map((b) => closestOf.get(b.id) ?? Infinity)) : Infinity;
+        return { worst, closest, thrown: 3 - r.hopper.length, pt };
+      };
+
+      const fmt = (v: number): string => (v === Infinity ? 'nothing landed' : `${v.toFixed(1)}in`);
+      const p3 = throwTo3d();
+      check(
+        '⚠️ pass 3D: the PRESET actually THROWS — in 3D the button used to do nothing at all',
+        p3.thrown === 3,
+        `thrown ${p3.thrown}/3`,
+      );
+      check(
+        'pass 3D: ...and every one is DELIVERED to the point, not to the hive',
+        p3.closest < NEAR_3D,
+        `worst closest approach ${fmt(p3.closest)} to (${p3.pt.x.toFixed(1)}, ${p3.pt.y.toFixed(1)}), bound ${NEAR_3D}in · settles at ${fmt(p3.worst)}`,
+      );
+      check(
+        'pass 3D: ...and none of them leaves the field or rolls forever',
+        p3.worst < SETTLE_3D,
+        `worst rest ${fmt(p3.worst)}, rail ${SETTLE_3D}in`,
+      );
+      const c3 = throwTo3d({ x: 40, y: -40 });
+      check(
+        'pass 3D: a CUSTOM `bbPassTarget` is honoured here too',
+        c3.thrown === 3 && c3.closest < NEAR_3D && Math.abs(c3.pt.x - 40) < 1e-9 && Math.abs(c3.pt.y + 40) < 1e-9,
+        `thrown ${c3.thrown}/3, worst closest ${fmt(c3.closest)}, settles at ${fmt(c3.worst)}`,
+      );
+    }
 
     // the CONTROL: the same build holding FIRE still aims at the HIVE and still scores.
     const w = mkWorld('free', 5, 'biobuzz');

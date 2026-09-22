@@ -294,30 +294,58 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     rotateCW: ['arrowright', 'e'],
     intake: ['shift', 'k'],
     fire: [' '],
+    /**
+     * ⚠️ **THE MECHANISM KEYS ARE SHARED ACROSS GAMES, BY ROLE, AND THAT IS THE POINT.**
+     * (Owner, 2026-09-22: "the default keybind should have duplicates across games ... we
+     * can't have the default keybind not have duplicates. That is unrealistic and unhelpful
+     * and we will run out.")
+     *
+     * `actionsConflict` has always permitted this — two actions collide only if some game uses
+     * BOTH, and no session ever offers Chain Reaction's claw alongside BIOBUZZ's Box Tube —
+     * and the steal policy's own comment names `catalyst`/`bbPlace` as the example. The
+     * defaults simply never used the capability, so every new season had to find another free
+     * key and BIOBUZZ ended up on x/z/n/l/t while c and v sat idle in it. That does not scale,
+     * and it put the two games' equivalent controls under different fingers for no reason.
+     *
+     * So a key means a ROLE, and each game fills it:
+     *
+     *     c   the primary manipulator: PLACE into the structure in reach
+     *         chain `catalyst` (claw grab/place) . biobuzz `bbPlace` (pollen into the flower)
+     *     v   send it AWAY at range
+     *         chain `fling` (catapult throw)     . biobuzz `bbPass` (pass to a partner)
+     *     x   biobuzz's SECOND place — nectar, which Chain Reaction has no equivalent of
+     *     z   biobuzz `bbRamp`
+     *
+     * A player who drives both seasons learns one hand. `fire` and `intake` are in every game
+     * and still steal from everything, which is unchanged.
+     */
+    /* ⚠️ THE ORDER OF THESE ENTRIES IS `KEY_ACTIONS` ORDER, NOT READING ORDER, and it is
+       load-bearing: `cloneBindings`/`mergeBindings` rebuild the map by iterating `KEY_ACTIONS`,
+       and three checks compare the result to this literal with `JSON.stringify` — which is
+       order-sensitive. Grouping the shared pairs together here (nicer to read) broke all three.
+       The role table above is where the pairing is documented; this list stays canonical. */
     catalyst: ['c'],
-    // CATAPULT throw (launcher catalyst mechanism) — its OWN button, so it is never
-    // ambiguous with the claw's grab/place on the same press.
     fling: ['v'],
-    // BIOBUZZ Box Tube: place a held NECTAR into the FLOWER in reach. 'x' and 'z' extend the
-    // bottom-row mechanism cluster (c / v / b) leftward, so every mechanism button sits on one
-    // row under the drive hand; both were free on the default map.
+    // BIOBUZZ Box Tube: place a held NECTAR into the FLOWER in reach. Its own key because
+    // BIOBUZZ is the one game with TWO place targets; 'x' keeps it adjacent to 'c'.
     bbPlaceNectar: ['x'],
-    // BIOBUZZ Box Tube: place a held POLLEN into the FLOWER in reach.
-    bbPlace: ['z'],
+    // ...and POLLEN into the flower shares 'c' with Chain Reaction's claw — both games'
+    // primary "place into the structure in reach". See the role table above.
+    bbPlace: ['c'],
     // BIOBUZZ HUMAN PLAYER: enter one NECTAR into the alliance's own LOADING ZONE. 'n' for
     // nectar, and deliberately NOT on the c/v/b/x/z mechanism row: this is the one button that
     // does something to the ALLIANCE rather than to the robot, and it is pressed at a cue
     // rather than in the drive rhythm, so it sits away from the cluster a thumb sweeps.
     bbNectar: ['n'],
-    // BIOBUZZ, the `ramp` intake: drop / fold the deployable ramp. 'l' for "lower"; free on the
-    // default map. NOT 'g', 'h', 'j' or 'y' — every one of those is a stock "assumed free key"
-    // fixture the bindings smoke lane reuses across independent tests, and a real default there
-    // makes an unrelated conflict test grow a stray per-game override.
-    bbRamp: ['l'],
+    // BIOBUZZ, the `ramp` intake: drop / fold the deployable ramp. On 'z' with the mechanism
+    // cluster now that sharing c and v freed the row up, not the old 'l' out on its own.
+    // NOT 'g', 'h', 'j' or 'y': every one of those is a stock "assumed free key" fixture the
+    // bindings smoke lane reuses across independent tests, and a real default there makes an
+    // unrelated conflict test grow a stray per-game override.
+    bbRamp: ['z'],
     // BIOBUZZ: PASS to your partner — launch the held element at a field POINT rather than at
-    // your own hive. 't' for toss; free on the default map, and NOT 'g'/'h'/'j'/'y' for the
-    // reason the ramp's own comment above gives.
-    bbPass: ['t'],
+    // your own hive. Shares 'v' with Chain Reaction's catapult throw; see the role table above.
+    bbPass: ['v'],
     // BUTTERFLY: drop the other wheel set. 'b' for butterfly; free on the default map.
     driveMode: ['b'],
     flipFront: ['f'],
@@ -330,38 +358,37 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     buttons: {
       fire: [7, 0], // RT or A
       intake: [6, 1], // LT or B
+      /**
+       * ⚠️ **THE SAME ROLE-SHARING THE KEYBOARD DOES, AND ON THE PAD IT FIXES A REAL HOLE.**
+       * `bbPass` used to ship **completely unbound** here, with a comment explaining that the
+       * standard mapping's 0..15 were all spoken for — while `catalyst` (Chain Reaction only)
+       * held LB and `fling` (Chain Reaction only) held L3, two buttons BIOBUZZ never reads.
+       * There was no shortage of buttons; the defaults were just refusing to reuse one.
+       *
+       *     LB (4)   place into the structure: chain `catalyst` . biobuzz `bbPlace`
+       *     L3 (10)  send it away:            chain `fling`    . biobuzz `bbPass`
+       *
+       * That also retires the argument for a default COMBO, which was the other way to reach
+       * `bbPass` and is worth NOT doing: `padChords.ts`'s fast path is "no combo bound => the
+       * old any-button test, no state", so the first default combo moves EVERY player onto the
+       * resolver's stateful path to give one season one button.
+       *
+       * RS (11) comes free as a result, and is LEFT free — the bindings lane uses it as an
+       * "assumed unbound button" fixture in two independent tests.
+       */
+      /* PAD_ACTIONS ORDER, for the reason the keys list gives. */
       catalyst: [4], // LB
       fling: [10], // L3 (left stick click)
-      // D-DOWN — place a NECTAR. The pair sits on the d-pad because placement is a MOMENTARY
-      // press, which can afford to cost the drive thumb its stick; every trigger, bumper and
-      // face button was already taken.
-      bbPlaceNectar: [13],
-      // D-UP — place a POLLEN.
-      bbPlace: [12],
-      // D-LEFT. It is NOT on D-DOWN, which this lane originally took: Lane B's placement pair
-      // landed on D-UP/D-DOWN in the same round, and two actions on one index is a silent
-      // double-fire, not a conflict the rebinder reports. The d-pad is still the right home —
-      // a MOMENTARY press can afford the drive thumb leaving its stick for an instant — and
-      // this button keeps its own direction, one step away from the pair it must not be
-      // confused with.
+      // D-UP — place a NECTAR. The d-pad because placement is a MOMENTARY press, which can
+      // afford to cost the drive thumb its stick.
+      bbPlaceNectar: [12],
+      bbPlace: [4], // LB — shared with `catalyst`; no game offers both
+      // D-LEFT. Its own direction, one step from the two other d-pad actions: two actions on
+      // one index is a silent double-fire, not a conflict the rebinder reports.
       bbNectar: [14],
-      // RS (11) — the right-stick click was the last free button; a ramp toggle is a MOMENTARY
-      // press like the d-pad pair above, so costing the stick for an instant is the same trade.
-      bbRamp: [11],
-      /**
-       * ⚠️ PASS SHIPS UNBOUND ON THE PAD, because there is no button left to give it. The
-       * standard mapping's 0..15 are all spoken for — fire 7/0, intake 6/1, catalyst 4, fling
-       * 10, place 13/12, nectar 14, ramp 11, driveMode 5, flip 3, park 2, start 9, restart 8,
-       * and 15 is the in-match MENU button (`PAD_MENU_BUTTON`). 16 is the guide button, which
-       * a browser often does not report at all.
-       *
-       * A default COMBO was the other option and is deliberately NOT taken: `padChords.ts`'s
-       * fast path is “no combo bound ⇒ the old any-button test, no state”, so shipping the
-       * first default combo would move EVERY player onto the resolver's stateful path to give
-       * one season one button. Binding it is one row in Controls, and the keyboard default
-       * ('t') means the action is never unreachable.
-       */
-      bbPass: [],
+      // D-DOWN — drop / fold the deployable ramp. Also momentary, so the same trade.
+      bbRamp: [13],
+      bbPass: [10], // L3 — shared with `fling`
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
       park: [2], // X
