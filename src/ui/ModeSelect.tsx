@@ -87,7 +87,7 @@ export function ModeSelect({
               per ROBOT (`TutorialStep.applies`), so the only honest place it can be printed is the
               card itself, which does print it. */}
           <span className="ds-tut-offer-sub">
-            Learn the controls on the real field — drive, collect, score, park.
+            Learn the controls on the real field.
           </span>
           <button className="ds-btn primary" onClick={onTutorial}>
             Start the tutorial →

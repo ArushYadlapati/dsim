@@ -324,9 +324,9 @@ export function AdminAnalytics() {
             <p className="ds-hint warn" role="status">
               {t && t.views === 0 ? (
                 <>
-                  This range reaches past the 30 days of raw data and the daily rollups hold
-                  nothing for it — which is what a service younger than the range looks like, not
-                  a range with no traffic. Pick a shorter one to read it exactly.
+                  This range reaches past the 30 days of raw data, and the daily rollups hold
+                  nothing for it. The service is younger than the range. Pick a shorter one to
+                  read it exactly.
                 </>
               ) : (
                 <>
@@ -610,9 +610,9 @@ function ProductSection({ data }: { data: ProductReport }) {
     <>
       <h2 className="ds-h2 an-h2">Product</h2>
       <p className="ds-sub an-sub">
-        Read off the tables the game already writes — no extra column is recorded for any of it.
+        Read off the tables the game already writes. No extra column is recorded for any of it.
         Queue wait times, graphics tier and disconnect rates are missing because nothing stores
-        them; they are left out rather than estimated.
+        them.
       </p>
 
       <div className="an-grid two">

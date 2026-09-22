@@ -70,7 +70,7 @@ const READY_WINDOW_NOTE = (
   <>
     Once a match is found: <b>{Math.round(RANKED_JOIN_GRACE_MS / 1000)}s</b> to load in, then{' '}
     <b>{Math.round(STRATEGY_DURATION_MS / 1000)}s</b> to ready up. Miss either and the match is
-    cancelled and your standing drops. <b>Don’t refresh or close the tab</b> — that counts as
+    cancelled and your standing drops. <b>Don’t refresh or close the tab.</b> That counts as
     leaving.
   </>
 );
@@ -788,7 +788,7 @@ export function Matchmaking({
       return;
     }
     if (restartPending) {
-      setError('Server is restarting shortly - try again in a minute.');
+      setError('Server is restarting shortly. Try again in a minute.');
       return;
     }
     /**
@@ -1149,7 +1149,7 @@ export function Matchmaking({
       {dodgeNote()}
       {lockNote()}
       {restartPending && (
-        <p className="ds-form-err">⚠ Server is restarting shortly - queueing is paused for a moment.</p>
+        <p className="ds-form-err">⚠ Server is restarting shortly. Queueing is paused for a moment.</p>
       )}
       <div className="ds-actions">
         <button className="ds-cta" disabled={restartPending} onClick={() => void find()}>

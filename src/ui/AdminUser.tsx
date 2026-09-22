@@ -183,7 +183,7 @@ export function AdminUser({
     );
     if (why === null) return;
     if (!why.trim()) {
-      setStatus('Give a reason — the player is shown it.');
+      setStatus('Give a reason. The player is shown it.');
       return;
     }
     void act(
@@ -225,7 +225,7 @@ export function AdminUser({
   const doDelete = (): void => {
     const expect = u.username ?? userId;
     const typed = window.prompt(
-      `Delete ${name} and everything they own — records, matches, reports, replays, membership.\n\n` +
+      `Delete ${name} and everything they own: records, matches, reports, replays, membership.\n\n` +
         'This cannot be undone. The audit log keeps the record of it.\n\n' +
         `Type ${expect} to confirm.`,
       '',
@@ -422,7 +422,7 @@ export function AdminUser({
       </div>
       <p className="ds-hint">
         A suspension blocks every online room and the ranked queue, on every region, and ends by
-        itself on the day it names — free drive and practice keep working. The reason is shown to
+        itself on the day it names. Free drive and practice keep working. The reason is shown to
         the player; anything private belongs in a note below.
       </p>
       {status && <p className="ds-hint">{status}</p>}
@@ -686,7 +686,7 @@ export function AdminUser({
                         !confirmed(
                           'Flag the payment',
                           `${p.amount ?? ''} ${p.currency ?? ''} (${p.transactionId})`,
-                          'It is marked charged back. The membership is NOT ended — use Revoke above for that.',
+                          'It is marked charged back. The membership is NOT ended. Use Revoke above for that.',
                         )
                       )
                         return;

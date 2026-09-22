@@ -132,7 +132,7 @@ export function TermsGate({
         <p className="ds-hint">
           {updated
             ? `The Terms of Use and Privacy Policy were updated on ${LEGAL_UPDATED}. Accept the new version to carry on using your account.`
-            : 'Accepting these is part of having an account. They are short, and they say what is collected and what is not.'}
+            : 'Accepting these is part of having an account.'}
         </p>
         <p className="ds-hint">
           <TermsAgreement />

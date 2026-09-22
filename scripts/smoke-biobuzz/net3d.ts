@@ -1080,7 +1080,7 @@ export function net3dChecks(check: Check): void {
     const rec = readFileSync('src/ui/RecordRun.tsx', 'utf8');
     check(
       'ruling: a record run PREFLIGHTS the 3D chunk and refuses rather than falling back',
-      /initPhysics3d\(\)/.test(rec) && /Record runs are played on it/.test(rec),
+      /initPhysics3d\(\)/.test(rec) && /that record runs need/.test(rec),
     );
     const view = readFileSync('src/ui/GameView.tsx', 'utf8');
     check(

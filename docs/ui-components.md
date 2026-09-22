@@ -292,7 +292,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opt` | src/ui/shell.css:1615 | 72 |
+| `.ds-opt` | src/ui/shell.css:1615 | 75 |
 | `.ds-opt-add` | src/ui/shell.css:4180 | 1 |
 | `.ds-opt-del` | src/ui/shell.css:4157 | 2 |
 
@@ -316,7 +316,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-sub` | src/ui/shell.css:1633 | 33 |
+| `.ds-sub` | src/ui/shell.css:1633 | 32 |
 | `.ds-sub-row` | src/ui/shell.css:1658 | 2 |
 | `.ds-sub-tight` | src/ui/shell.css:3860 | 3 |
 
@@ -479,7 +479,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-checkline` | src/ui/shell.css:1970 | 5 |
+| `.ds-checkline` | src/ui/shell.css:1970 | 3 |
 
 ## `ds-chip` — 1
 
@@ -635,7 +635,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-opts` | src/ui/shell.css:4062 | 42 |
+| `.ds-opts` | src/ui/shell.css:4062 | 43 |
 
 ## `ds-padhint` — 1
 

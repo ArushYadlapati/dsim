@@ -106,7 +106,7 @@ export function AdminLive({
         {accountSessions} session{accountSessions === 1 ? '' : 's'} belong to {players.length} account
         {players.length === 1 ? '' : 's'} + {guests.length} guest{guests.length === 1 ? '' : 's'} ={' '}
         {accountSessions + guests.length} of {sockets}
-        {accountSessions + guests.length !== sockets && ' — the rest are sockets that have not identified themselves yet (still connecting)'}
+        {accountSessions + guests.length !== sockets && ' (the rest are sockets that have not identified themselves yet, still connecting)'}
         . One player with two tabs is two sessions and one account.
       </p>
 
@@ -199,10 +199,10 @@ export function AdminLive({
         onWatch={onWatch}
       />
       <p className="ds-hint">
-        A guest row is keyed by its <b>connection id</b> — the server’s own per-socket
-        routing id. It isn’t an IP or a fingerprint, it’s stored nowhere else, and it dies with
-        the socket: the same person reconnecting gets an unrelated id. It tells two live sessions
-        apart; it can’t link either to a past one.
+        A guest row is keyed by its <b>connection id</b>, the server’s own per-socket routing id.
+        It isn’t an IP or a fingerprint, it’s stored nowhere else, and it dies with the socket:
+        the same person reconnecting gets an unrelated id. It tells two live sessions apart; it
+        can’t link either to a past one.
       </p>
 
       <h3 className="adm-h3">
@@ -234,7 +234,7 @@ export function AdminLive({
         </div>
       )}
       <p className="ds-hint">
-        Every region and every kind — ranked, custom and record runs alike. Players only see ranked
+        Every region and every kind: ranked, custom and record runs alike. Players only see ranked
         matches on Watch Live; custom rooms stay reachable by their code.
       </p>
 
@@ -475,8 +475,8 @@ function MaintenancePanel() {
         </button>
       </div>
       <p className="ds-hint">
-        Blocks new matches, ranked queueing and custom rooms for everyone except admins — enforced
-        on the server, not just hidden in the UI. Matches already running are left alone to finish.
+        Blocks new matches, ranked queueing and custom rooms for everyone except admins. It is
+        enforced on the server, not hidden in the UI. Matches already running are left alone to finish.
         Set “starts in” above 0 so players get told before it bites.
       </p>
       {status && <p className="ds-hint">{status}</p>}

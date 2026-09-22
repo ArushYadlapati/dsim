@@ -136,8 +136,8 @@ export function MatchSetup({
       } catch (error) {
         const errMsg = getErrorMessage(error);
         const message = errMsg.includes('Invalid file format')
-          ? 'That does not look like a Pedro Pathing file.'
-          : `Error loading file: ${errMsg}`;
+          ? 'That isn’t a Pedro Pathing file.'
+          : `Couldn’t read that file. ${errMsg}`;
         setImportNotice(message, 'error');
       } finally {
         event.target.value = '';

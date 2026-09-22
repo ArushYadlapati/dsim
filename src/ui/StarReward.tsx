@@ -92,8 +92,7 @@ export function StarReward() {
       <div className="ds-panel star-reward">
         <div className="ds-panel-body stack start">
           <p className="ds-hint">
-            GitHub connected. Star the repo and the Stargazer title and star decal are yours —
-            they arrive as soon as you do.
+            GitHub connected. Star the repo to earn the Stargazer title and the star decal.
           </p>
         </div>
       </div>
@@ -111,7 +110,7 @@ export function StarReward() {
           <li>
             <TitleChip id={STAR_TITLE} />
             <span>
-              The <b>{titleLabel(STAR_TITLE)}</b> title — equip it below and it shows beside
+              The <b>{titleLabel(STAR_TITLE)}</b> title. Equip it below and it shows beside
               your name on the leaderboards.
             </span>
           </li>
@@ -124,7 +123,7 @@ export function StarReward() {
               </svg>
             </span>
             <span>
-              The <b>star decal</b> — pick it in the robot builder, under Decal.
+              The <b>star decal</b>. Pick it in the robot builder, under Decal.
             </span>
           </li>
         </ul>

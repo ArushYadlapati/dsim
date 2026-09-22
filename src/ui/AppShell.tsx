@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { showConsentSettings } from '../ads/adsense';
-import { APP_NAME, seasonFor, LINKS } from '../seasons';
+import { APP_NAME, seasonFor } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
 import { useLanEnabled } from './useLanEnabled';
 import type { GameId } from '../games/types';
@@ -208,18 +208,16 @@ export function AppShell({
           {/* main replaced the bare GitHub link with Changes — keep that, plus
               monetization's Support/Privacy/Terms destinations.
 
-              NO `.bold`. These eight are peer destinations, and the row was
-              rendering them in three weights purely by accident of markup: 400
-              for the six plain `.ds-foot-link`s, 700 for this one because it
-              carried `.bold`, and 600 for Discord because it is the only `<a>`.
-              Neither ranking was designed. One treatment for all eight; if an
-              item ever has to lead, promote it by POSITION. */}
+              NO `.bold`. These are peer destinations, and the row once rendered
+              them in two weights by accident of markup: 400 for the plain
+              `.ds-foot-link`s and 700 for this one because it carried `.bold`.
+              One treatment for all of them; if an item ever has to lead, promote
+              it by POSITION. No Discord link here: the home page carries it, and
+              the footer copy came back through a main merge with no `<a>` rule
+              behind it (a0bb3b4 had removed both). */}
           <button className="ds-foot-link" onClick={onChangelog}>
             Changes
           </button>
-          <a href={LINKS.discord} target="_blank" rel="noreferrer">
-            Discord
-          </a>
         </span>
       </footer>
     </div>

@@ -65,42 +65,37 @@ export function TitlePicker() {
           A title you have earned shows beside your name on the leaderboards. You can wear one
           at a time.
         </p>
-        <ul className="title-pick">
-          <li>
-            <label className="ds-checkline">
-              <input type="radio" name="title" checked={title === null} onChange={() => pick(null)} />
-              <span>No title</span>
-            </label>
-          </li>
+        {/* ONE SPELLING OF A PICK (docs/area/ui.md): the same `.ds-opt` tiles every other
+            choice in the app uses, not a radio list. The tile CONTENT is the badge or the
+            chip itself — an award gets its numeral plus the board (two facts), a ledger title
+            gets the chip alone (the chip IS the words), so a row previews exactly what will
+            sit beside the name. `?? id` is the last resort for a `title:` key from a newer
+            build; `npm test` asserts every key this build knows has a label. */}
+        <div className="ds-opts two" role="group" aria-label="Title">
+          <button
+            className={`ds-opt mini${title === null ? ' on' : ''}`}
+            aria-pressed={title === null}
+            onClick={() => pick(null)}
+          >
+            <span className="ot">No title</span>
+          </button>
           {earned.map((id) => {
             const award = parseAwardTitleId(id);
             return (
-              <li key={id}>
-                <label className="ds-checkline">
-                  <input type="radio" name="title" checked={title === id} onChange={() => pick(id)} />
+              <button
+                key={id}
+                className={`ds-opt mini${title === id ? ' on' : ''}`}
+                aria-pressed={title === id}
+                onClick={() => pick(id)}
+              >
+                <span className="ot title-pick-ot">
                   {award && <AwardBadge award={award} />}
-                  {/* AN AWARD gets badge + words, because the badge is a RANK NUMERAL and the
-                      words are the board it was won on — two different facts. A LEDGER TITLE
-                      gets the chip ALONE: the chip IS the words, so rendering both printed
-                      "Stargazer Stargazer" (caught in a harness against the real stylesheet).
-                      Showing the chip rather than plain text also means the row previews
-                      exactly what will appear beside the name.
-                      ⚠️ The `?? id` is still the last resort, for a `title:` key from a NEWER
-                      build that this one has no label for — the raw slug is ugly but it is
-                      better than a radio button with no text at all. `npm test` asserts every
-                      key this build knows has a label, so it is unreachable here. */}
-                  {award ? (
-                    <span>{awardShortText(award)}</span>
-                  ) : titleLabel(id) ? (
-                    <TitleChip id={id} />
-                  ) : (
-                    <span>{id}</span>
-                  )}
-                </label>
-              </li>
+                  {award ? awardShortText(award) : titleLabel(id) ? <TitleChip id={id} /> : id}
+                </span>
+              </button>
             );
           })}
-        </ul>
+        </div>
         {status === 'error' && (
           <p className="ds-hint warn">Couldn’t save that title. Check your connection and try again.</p>
         )}

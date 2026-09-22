@@ -278,7 +278,7 @@ export function Admin({
   };
 
   const purgeReplays = async (): Promise<void> => {
-    if (!window.confirm('Delete the replays of every ARCHIVED season? Boards stay; those runs just stop being watchable. This frees storage and cannot be undone.')) return;
+    if (!window.confirm('Delete the replays of every ARCHIVED season? Boards stay; those runs stop being watchable. This frees storage and cannot be undone.')) return;
     setSeasonBusy(true);
     const freed = await adminPurgeReplays();
     setSeasonBusy(false);
@@ -518,8 +518,8 @@ export function Admin({
         {status && <p className="ds-hint">{status}</p>}
       </div>
       <p className="ds-hint adm-gap">
-        Reminder: this only warns players. It doesn’t restart the server. Run your deploy when
-        the countdown reaches 0.
+        This only warns players. It doesn’t restart the server. Run your deploy when the
+        countdown reaches 0.
       </p>
         </>
       )}
@@ -528,7 +528,7 @@ export function Admin({
         <>
       <h2 className="ds-h2">Announcements</h2>
       <p className="ds-sub adm-sub">
-        Publish patch notes, bug-fix summaries, or a new season / act. Each player sees it once -
+        Publish patch notes, bug-fix summaries, or a new season / act. Each player sees it once,
         the first time they open the app after you publish. A new season or act plays a full-screen
         cinematic reveal; patch notes show in a “What’s new” panel.
       </p>

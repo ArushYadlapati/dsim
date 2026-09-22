@@ -281,7 +281,7 @@ export function StartPositionEditor({
 
       <div className="ds-startpos-side">
         <div className={`ds-startpos-status ${legality.legal ? 'ok' : 'bad'}`}>
-          {legality.legal ? reason : `${reason} - won't save`}
+          {legality.legal ? reason : `${reason} · won’t save`}
         </div>
 
         <div className="ds-startpos-inputs">
@@ -300,7 +300,7 @@ export function StartPositionEditor({
         </div>
 
         <div className="ds-startpos-tools">
-          <label className="ds-startpos-toggle" title="When on, releasing a drag on an illegal spot snaps the robot to the nearest legal pose. Off = free placement (illegal poses aren't saved).">
+          <label className="ds-startpos-toggle" title="On: releasing a drag on an illegal spot snaps to the nearest legal pose. Off: free placement, and an illegal pose isn’t saved.">
             <input type="checkbox" checked={snapOn} onChange={(e) => setSnapOn(e.target.checked)} />
             <span>Snap to legal</span>
           </label>

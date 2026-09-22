@@ -96,7 +96,7 @@ export function DiscordLobbyList({
             — an inline spacing literal, and off the 4px grid — and slipped past `uiaudit` only
             because that rule's regex does not match a leading minus. */}
         <p className="ds-sub">
-          Everyone in this activity sees the same lobbies. Join one, or start another game.
+          Everyone in this activity sees the same lobbies.
         </p>
 
         <section className="ds-sec">
@@ -115,7 +115,7 @@ export function DiscordLobbyList({
           {lobbies === null ? (
             <p className="ds-hint">Loading…</p>
           ) : others.length === 0 ? (
-            <p className="ds-hint">No other lobbies open — join the main one, or start a separate game below.</p>
+            <p className="ds-hint">No other lobbies open.</p>
           ) : (
             <div className="ds-lobbies">
               {others.map((l) => {

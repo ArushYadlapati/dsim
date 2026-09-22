@@ -84,8 +84,8 @@ export function AdminReports({
       <h2 className="ds-h2">Moderation · reports</h2>
       <p className="ds-sub adm-sub">
         Players other players have reported, most recently reported first. Open one to read the
-        reports and watch their recent matches — a cheating or throwing report is only
-        judgeable from the replay.
+        reports and watch their recent matches. A cheating or throwing report is only judgeable
+        from the replay.
       </p>
 
       <div className="adm-toolbar">
@@ -190,7 +190,7 @@ function ReportedRow({
         'Uphold the reports against',
         u.handle,
         `That costs ${STANDING_COST.reportUpheld} standing, locks them out of ranked, and takes ` +
-          'rating — more each time it happens.',
+          'rating. Each repeat costs more.',
       )
     )
       return;
@@ -369,8 +369,8 @@ function ScoreReportQueue({
       <h2 className="ds-h2">Moderation · misscores</h2>
       <p className="ds-sub adm-sub">
         Claims that a match scored wrong. Open the replay and check it: UPHELD records that the
-        sim got it wrong, REJECTED closes it. Smite only a claim that was made in bad faith —
-        the count beside each filer is how many of theirs have been rejected before.
+        sim got it wrong, REJECTED closes it. Smite only a claim that was made in bad faith.
+        The count beside each filer is how many of theirs have been rejected before.
       </p>
       <div className="sr-list">
         {rows.map((r) => (

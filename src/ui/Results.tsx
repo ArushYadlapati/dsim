@@ -991,7 +991,7 @@ export function Results({
                       : '✓ Saved on this computer. Sign in to save it to your account.'
                     : '✓ Match over. The host keeps the replay.'
                   : matchResult.kind === 'record'
-                    ? '✓ Recorded - sign in to save it to the leaderboard.'
+                    ? '✓ Recorded. Sign in to save it to the leaderboard.'
                     : '✓ Match recorded.'}
               </p>
             )}

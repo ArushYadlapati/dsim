@@ -133,7 +133,7 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
     <>
       <h1 className="ds-h1">Support DSIM</h1>
       <p className="ds-sub">
-        DSIM is free and stays free. Servers and a database are not - this is what keeps them
+        DSIM is free and stays free. Servers and a database are not. This is what keeps them
         running.
       </p>
 

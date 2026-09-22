@@ -168,7 +168,7 @@ export function RecordRun({
         // eslint-disable-next-line no-console
         console.warn('BIOBUZZ 3D physics failed to load; refusing to start a record run.', err);
         setError(
-          'Couldn’t load the 3D physics. Record runs are played on it — check your connection and try again.',
+          'Couldn’t load the 3D physics that record runs need. Check your connection and try again.',
         );
       });
     } else {

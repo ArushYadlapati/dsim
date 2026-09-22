@@ -1886,9 +1886,6 @@ export function App() {
         <div className="overlay">
           <div className="overlay-panel">
             <h2 className="ds-dialog-title">You’re already in a game</h2>
-            <p className="ds-sub overlay-sub">
-              You can only be in one game at a time.
-            </p>
             <div className="overlay-buttons ds-dialog-actions">
               <button
                 onClick={() => {
@@ -1915,8 +1912,7 @@ export function App() {
           <div className="overlay-panel">
             <h2 className="ds-dialog-title">That match is over</h2>
             <p className="ds-sub overlay-sub">
-              It finished, or it was held open too long for you to get back into. Start a new one
-              when you’re ready.
+              It finished, or it was held open too long for you to get back into.
             </p>
             <div className="overlay-buttons ds-dialog-actions">
               <button onClick={() => setRejoinGone(false)}>Got it</button>

@@ -167,7 +167,7 @@ function AnalyticsRow() {
           <span>Send anonymous usage counts</span>
         </label>
         <p className="ds-hint">
-          On by default, because the measurement is cookieless and carries no identifiers — no
+          On by default, because the measurement is cookieless and carries no identifiers: no
           user id, no username, no email, no ad id, nothing that could link two visits. It counts
           pages reached, downloads taken and whether an ad rendered, and it is what the
           presenting sponsor’s monthly numbers are read off. Turning it off stops every beacon
@@ -201,7 +201,7 @@ function AnalyticsRow() {
  * instead, and this is the sentence it lands on.
  */
 export const CONSENT_UNAVAILABLE =
-  'Consent settings are provided by Google’s consent tool, and there is no consent to withdraw in your region or on this build. Where the tool does apply — the UK, the EEA and Switzerland — this button reopens it.';
+  'Consent settings are provided by Google’s consent tool, and there is no consent to withdraw in your region or on this build. Where the tool does apply (the UK, the EEA and Switzerland), this button reopens it.';
 
 /**
  * ADS PERSONALISATION — a door to Google's consent tool, plus the facts that are true whether
@@ -336,7 +336,7 @@ function ExportRow() {
           settings, robot presets, records, practice runs, self-hosted matches, ranked rating and
           history, a summary of every match you played, your standing and playtime, friends,
           blocks, invites, and the payment rows behind your membership. Replays are listed by id
-          and metadata — the input log itself is downloadable one match at a time.
+          and metadata. The input log itself is downloadable one match at a time.
         </p>
         <p className="ds-hint">
           Other players are deliberately left out. A match you played is in there as your own
@@ -355,9 +355,9 @@ function ExportRow() {
           </>
         ) : (
           <p className="ds-hint">
-            Sign in to export. There is nothing on a server to export until you do — signed out,
+            Sign in to export. There is nothing on a server to export until you do. Signed out,
             everything DSIM has is the browser storage listed above, which your browser can show
-            you and clear at any time.
+            you and clear.
           </p>
         )}
       </div>
@@ -392,7 +392,7 @@ function DeleteUnavailable() {
         <p className="ds-hint">
           Sign in to delete your account. It removes your profile, username, settings, robot
           presets, records and practice runs with their replays, rating and rating history, and
-          every friendship, block and invite — immediately and permanently. Email{' '}
+          every friendship, block and invite, immediately and permanently. Email{' '}
           {LEGAL_CONTACT} if you cannot sign in and it will be done by hand.
         </p>
       </div>

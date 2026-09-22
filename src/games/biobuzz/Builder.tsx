@@ -132,7 +132,7 @@ type BbCellMark = 'turret' | 'nectar' | 'dumper' | 'tube';
  * NOSE-UP, like everything else that draws this robot: the top of a cell is the FRONT of the
  * chassis (`ROBOT_FRAME` in `RobotPreview.tsx`), so a turret's barrel points at the top of the
  * cell and a dumper's tray lies across the side it throws over. The shapes are the preview's,
- * cut down — a ring with a barrel, a tray on two arms, a hollow section with a placement ring.
+ * cut down — a ring with a barrel, a tray on two arms, a nested three-section mast.
  */
 function BbMountGlyph({ mark }: { mark: BbCellMark }) {
   const s = 'currentColor';
@@ -145,9 +145,11 @@ function BbMountGlyph({ mark }: { mark: BbCellMark }) {
           <line x1="12" y1="6" x2="12" y2="12" stroke={s} strokeWidth="1.4" strokeLinecap="round" />
         </>
       ) : mark === 'tube' ? (
+        // a telescoping mast: three nested sections, widest at the cradle, drawn as one stack
         <>
-          <rect x="6" y="5" width="4" height="10" fill="none" stroke={s} strokeWidth="1.5" />
-          <circle cx="8" cy="2.4" r="2" fill="none" stroke={s} strokeWidth="1.4" />
+          <rect x="3" y="10.5" width="10" height="4.5" rx="0.8" fill="none" stroke={s} strokeWidth="1.5" />
+          <rect x="5" y="6" width="6" height="4.5" fill="none" stroke={s} strokeWidth="1.4" />
+          <rect x="6.5" y="1.5" width="3" height="4.5" fill={s} />
         </>
       ) : (
         <>

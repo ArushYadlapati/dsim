@@ -7306,16 +7306,12 @@ button.ds-key:active {
   color: var(--ds-ink);
 }
 
-/* the title picker's radio list (`src/ui/TitlePicker.tsx`) — the rows are `.ds-checkline`
-   like every other choice on the Account page; this only removes the list chrome and
-   spaces them on the grid. */
-.title-pick {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
+/* the title picker (`src/ui/TitlePicker.tsx`) is `.ds-opt` tiles; an award tile's label is
+   the numeral badge beside the board name, so the label is a flex row. */
+.title-pick-ot {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-s-1);
 }
 
 /* ── A LEDGER TITLE BESIDE A NAME (`ui/TitleChip.tsx`) ──────────────────────────────────────

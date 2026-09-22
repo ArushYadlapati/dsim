@@ -185,8 +185,8 @@ function ReplayPrivacy() {
       </div>
       <div className="ds-panel-body stack start">
         <p className="ds-hint">
-          Your match replays are private. Only the people who played in a match can watch it
-          back — your results, scores and rating stay on your public profile either way.
+          Only the people who played in a match can watch it back. Your results, scores and
+          rating stay on your public profile.
         </p>
         {value === null ? (
           <p className="ds-hint">Checking…</p>

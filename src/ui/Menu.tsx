@@ -158,7 +158,7 @@ interface Props {
  * than a vague one, because they go and look.
  */
 const EARN_HINT: Record<string, string> = {
-  'decal:star': 'Star the repo on GitHub — connect it in Account',
+  'decal:star': 'Star the repo on GitHub, then connect it in Account',
 };
 
 function lockReason(id: CosmeticId, supporter: boolean, earned: readonly string[]): string | undefined {

@@ -126,8 +126,8 @@ function Verify({ onAccount }: { onAccount: () => void }) {
         <p className="ds-hint err">{result.message}</p>
         {result.reason === 'invalid-token' && (
           <p className="ds-hint">
-            Verification links work once. If you have followed this one already, your address is
-            verified and there is nothing left to do.
+            Verification links work once. If you have already followed this one, your address is
+            verified.
           </p>
         )}
         {email && resend !== 'sent' && (

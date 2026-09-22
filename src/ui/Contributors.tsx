@@ -116,7 +116,7 @@ export function Contributors({ onOpenProfile }: { onOpenProfile: (username: stri
           <div className="ds-field credit-row">
             <span className="cap">Source code</span>
             <p className="ds-hint">
-              DSIM is open source — read it, fork it, or send a pull request on{' '}
+              DSIM is open source. The code is on{' '}
               <a href={LINKS.repo} target="_blank" rel="noreferrer">
                 GitHub
               </a>
@@ -129,12 +129,12 @@ export function Contributors({ onOpenProfile }: { onOpenProfile: (username: stri
               A pull request needs a signed{' '}
               <a href={`${LINKS.repo}/blob/main/CLA.md`} target="_blank" rel="noreferrer">
                 Contributor License Agreement
-              </a>{' '}
-              — see{' '}
+              </a>
+              .{' '}
               <a href={`${LINKS.repo}/blob/main/CONTRIBUTING.md`} target="_blank" rel="noreferrer">
                 CONTRIBUTING.md
               </a>{' '}
-              for how to sign it.
+              says how to sign it.
             </p>
           </div>
           <div className="ds-field credit-row">

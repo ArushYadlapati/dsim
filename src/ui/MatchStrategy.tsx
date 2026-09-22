@@ -416,9 +416,9 @@ export function MatchStrategy({
         </div>
         <p className="ds-hint">
           {!startLegal
-            ? '⚠ Your start position isn’t legal for this chassis - fix it above (or pick a preset) to ready up.'
+            ? '⚠ Your start position isn’t legal for this chassis. Fix it above, or pick a preset, to ready up.'
             : allReady
-              ? 'Everyone ready - starting…'
+              ? 'Everyone ready. Starting…'
               : `The match starts when all ${players.length} drivers are ready. It CANCELS if anyone isn’t ready in ${secsLeft}s.`}
         </p>
       </div>

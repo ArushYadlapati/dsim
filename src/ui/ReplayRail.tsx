@@ -296,7 +296,7 @@ export function ScoreEditor({
 
       <p className={`rr-outcome${changed ? ' changed' : ''}`}>
         {valid ? winner : 'Both scores are required.'}
-        {changed && storedWinner !== winner && ' — this changes the result.'}
+        {changed && storedWinner !== winner && '. This changes the result.'}
       </p>
 
       <label className="rr-field wide">

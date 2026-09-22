@@ -67,14 +67,14 @@ export function useUsernameCheck(raw: string, ownValue?: string): UsernameCheck 
       : status === 'invalid'
         ? 'Only lowercase letters and numbers (4–20).'
         : status === 'blocked'
-          ? 'That username isn’t allowed. Please choose another.'
+          ? 'That username isn’t allowed. Pick another.'
           : status === 'checking'
             ? 'Checking…'
             : status === 'available'
               ? 'Available ✓'
               : status === 'taken'
                 ? 'That username is taken.'
-                : 'Couldn’t check right now - try again.';
+                : 'Couldn’t check right now. Try again.';
 
   return { normalized, status, ok: status === 'available', message };
 }

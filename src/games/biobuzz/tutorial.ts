@@ -339,7 +339,7 @@ const steps: TutorialStep[] = [
     id: 'tip',
     title: 'Tip the hive',
     hint: (c) =>
-      `One more POLLEN tips it. Hold ${control(c, 'fire', 'fire')} — the CELL swings over and drops its load.`,
+      `One more POLLEN tips it. Hold ${control(c, 'fire', 'fire')} and the CELL swings over and drops its load.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (r) loadCell(w, r.alliance, 2);
@@ -386,7 +386,7 @@ const steps: TutorialStep[] = [
     // the lesson lends a sweeper-only build SIDE ROLLERS (see `stage`), and says so: the robot on
     // screen grows a pair for this step, and the driver should know why their own build cannot
     hint: (c) =>
-      `Drive square into the FLOWER’s foot with ${control(c, 'intake', 'intake')} held. POLLEN come out of the bottom — only an intake that reaches into the opening can take them, so this lesson lends you side rollers. Line an END of the intake up on the opening — the pair is too far apart to straddle it.`,
+      `Drive square into the FLOWER’s foot with ${control(c, 'intake', 'intake')} held. POLLEN come out of the bottom, and only an intake that reaches into the opening can take them, so this lesson lends you side rollers. Line one END of the intake up on the opening: the pair is too far apart to straddle it.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (!r) return;

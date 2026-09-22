@@ -146,7 +146,7 @@ const steps: TutorialStep[] = [
     title: 'Return to your base',
     hint: (c) =>
       // same as BIOBUZZ's park step: no on-screen PARK button, so the clause goes on touch.
-      `${driveHint(c)}. Get a wheel inside the BASE square — all four is worth more.${c.touch ? '' : ` ${control(c, 'park', 'park')} caps your speed.`}`,
+      `${driveHint(c)}. Get a wheel inside the BASE square. All four is worth more.${c.touch ? '' : ` ${control(c, 'park', 'park')} caps your speed.`}`,
     stage: (w, id) => place(w, id, 22, 6, -Math.PI / 2),
     done: (w, id) => {
       const r = me(w, id);

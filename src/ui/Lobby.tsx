@@ -1141,7 +1141,7 @@ export function Lobby({
         </div>
         {!startLegal && (
           <p className="ds-hint">
-            ⚠ Your start position isn’t legal for this chassis - fix it above (or pick a preset) to
+            ⚠ Your start position isn’t legal for this chassis. Fix it above, or pick a preset, to
             ready up.
           </p>
         )}

@@ -124,7 +124,7 @@ function PowerGauge({ draw }: { draw: number }) {
   return (
     <span
       className="power-gauge"
-      title={`Drive power draw - flywheel spin-up + intake pulling current off the drive motors (${pct}% slower right now)`}
+      title={`Drive power draw. Flywheel spin-up and intake pull current off the drive motors (${pct}% slower right now)`}
     >
       <span className="v-gauge">
         {/* the LEVEL, not a height: the fill is full-size and clipped to it, so the bar
@@ -403,7 +403,7 @@ export function GameView({
           // eslint-disable-next-line no-console
           console.warn('BIOBUZZ 3D physics failed to load; playing this practice on 2D physics.', err);
           effectiveSettings = { ...settings, practicePhysics: '2d' };
-          physicsFallbackNotice = 'Couldn’t load 3D physics — playing this practice on 2D physics.';
+          physicsFallbackNotice = 'Couldn’t load 3D physics. Playing this practice on 2D physics.';
         }
       }
       if (cancelled) return;

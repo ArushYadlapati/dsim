@@ -345,7 +345,7 @@ export function ChainStartEditor({
 
       <div className="ds-startpos-side">
         <div className={`ds-startpos-status ${legality.legal ? 'ok' : 'bad'}`}>
-          {legality.legal ? reason : `${reason} - won't save`}
+          {legality.legal ? reason : `${reason} · won’t save`}
         </div>
         {/* KEPT IN THE LAYOUT when illegal rather than unmounted. Legality flips
             while you are dragging, and this sits above the inputs, the tabs and the
@@ -376,7 +376,7 @@ export function ChainStartEditor({
           {/* CR snaps LIVE, every move (see `onMove`) — G04 plus the corner assembly
               leave a band too narrow to free-drag. DECODE's twin snaps on RELEASE, so
               the two tooltips must not be the same sentence. */}
-          <label className="ds-startpos-toggle" title="When on, the robot follows your cursor along the legal band as you drag. Off = free placement (illegal poses aren't saved).">
+          <label className="ds-startpos-toggle" title="On: the robot follows your cursor along the legal band as you drag. Off: free placement, and an illegal pose isn’t saved.">
             <input type="checkbox" checked={snapOn} onChange={(e) => setSnapOn(e.target.checked)} />
             <span>Snap to legal</span>
           </label>

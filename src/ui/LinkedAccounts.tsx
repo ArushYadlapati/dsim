@@ -78,8 +78,7 @@ export function LinkedAccounts() {
       </div>
       <div className="ds-panel-body stack start">
         <p className="ds-hint">
-          Linking stores the account’s id and nothing else — no email, no password, and no
-          access token. You can disconnect at any time.
+          Linking stores the account’s id. No email, no password, no access token.
         </p>
         {state.available.map((p) => {
           const on = state.linked.includes(p);
