@@ -34,7 +34,9 @@ import {
   roomCapacity,
   DEFAULT_ROOM_CONFIG,
   RANKED_JOIN_GRACE_MS,
+  READY3D_DEADLINE_MS,
   STRATEGY_DURATION_MS,
+  reportsPhysicsReady,
   type BallDelta,
   type ClientMsg,
   type EloDelta,
@@ -282,6 +284,15 @@ export interface Client {
   /** protocol capabilities this client build advertised on join/queue (mixed-version
    * safe: a room opens the strategy window only if EVERY member supports 'strategy') */
   caps?: string[];
+  /**
+   * This client has said its 3D physics chunk is loaded (`{ t: 'physicsReady' }`).
+   *
+   * Only ever consulted for a client that advertised `READY3D_CAP` — see `seatWaiting3d`,
+   * the one reader. Deliberately NOT cleared on a drop: the chunk is loaded in that tab
+   * whether or not its socket is, and a reattach re-sends the message regardless, so
+   * clearing it could only hold a returning driver up for something already done.
+   */
+  ready3d?: boolean;
   /** release channel this client build reported ('alpha' | 'stable' | …). The first
    * client to join sets the ROOM's channel; alpha rooms are never persisted. */
   channel?: string;
@@ -497,6 +508,23 @@ export class Room {
    *  `resolveScoreReport`). Empty until the result has persisted. */
   private lastMatchId: string | null = null;
   private strategyTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * ⚠️ THE 3D READINESS WINDOW — the epoch ms past which a `'3d'` room stops waiting for a
+   * seat's physics chunk and STARTS ANYWAY (`READY3D_DEADLINE_MS` from the moment the room
+   * first wanted to start). 0 ⇒ nothing is waiting.
+   *
+   * It is a SECOND clock, beside `strategyDeadline`, and they mean opposite things on
+   * expiry: the strategy deadline is strict and cancels a ranked pairing nobody readied for;
+   * this one is generous and starts the match regardless. Conflating them would either cancel
+   * matches over a slow download or give a client a free dodge by never reporting in — see
+   * `READY3D_DEADLINE_MS`.
+   */
+  private ready3dDeadline = 0;
+  private ready3dTimer: ReturnType<typeof setTimeout> | null = null;
+  /** a CUSTOM room whose host pressed START while a seat was still loading its 3D chunk: the
+   *  room is in `phase === 'strategy'` with no `pendingMatch`, waiting to build the world it
+   *  was already asked for. See `startMatch`. */
+  private customStart = false;
   private readonly slotOf = new Map<string, number>(); // clientId -> roster slot (= robotId)
 
   /** which game this room runs. Ranked comes from the staged PendingMatch, custom
@@ -561,6 +589,67 @@ export class Room {
    */
   private physicsReadyForRoom(): boolean {
     return physicsReady() && (this.physics !== '3d' || physics3dReady());
+  }
+
+  /**
+   * IS A SEAT STILL LOADING THE 3D PHYSICS THIS ROOM WILL RUN? — the gate every start path
+   * asks after `physicsReadyForRoom`, which is the same question about the SERVER's own copy.
+   *
+   * Owner request, 2026-09-22: "only start any server-required game once 3D physics loads".
+   * A client's Rapier 3D wasm and `sim3d/` barrel are lazy chunks; until they land the driver
+   * cannot be given a controller at all (`game.ts` asserts it) and sits behind the loading
+   * panel watching a match that is already running — in ranked, one that is already
+   * accounting them away.
+   *
+   * THREE THINGS COUNT AS READY, and each one is a real seat somewhere:
+   *  · a client that never advertised `READY3D_CAP` — an older build that will never send the
+   *    message. Waiting on one holds a whole room for the full deadline for nothing.
+   *  · a DROPPED client. Its seat is held for the grace and nothing is going to arrive on a
+   *    socket that is gone; the ranked paths have their own answer for a missing driver.
+   *  · a BOT. It has no chunk to load and the server's own physics is up before any tick.
+   *
+   * ⚠️ AND IT IS FALSE OUTRIGHT PAST `ready3dDeadline`, which is what makes this a WAIT and
+   * not a REFUSAL. See `READY3D_DEADLINE_MS`.
+   *
+   * ⚠️ IT ARMS THAT CLOCK ITSELF, on the first call that would have waited — which is exactly
+   * "the first moment this room wanted to start". Every caller is a start path, and a deadline
+   * re-stamped by each of them (three start paths, plus a 200 ms poll inside two of them)
+   * would never expire at all, which is the one failure the deadline exists to prevent.
+   */
+  private seatWaiting3d(): boolean {
+    if (this.physics !== '3d') return false;
+    let waiting = false;
+    for (const c of this.clients.values()) {
+      if (c.connected && reportsPhysicsReady(c.caps) && !c.ready3d) waiting = true;
+    }
+    if (!waiting) return false;
+    if (!this.ready3dDeadline) this.ready3dDeadline = Date.now() + READY3D_DEADLINE_MS;
+    return Date.now() < this.ready3dDeadline;
+  }
+
+  /**
+   * ARM a timer for the 3D readiness deadline (idempotent).
+   *
+   * Only the paths with NOTHING ELSE POLLING need it — the ranked strategy window and the
+   * custom room's own window. `startMatch`'s and `startRankedImmediate`'s 200 ms retries are
+   * their own clock and re-ask `seatWaiting3d` on their own.
+   */
+  private armReady3d(onDeadline: () => void): void {
+    if (this.ready3dTimer) return;
+    const wait = Math.max(0, this.ready3dDeadline - Date.now());
+    this.ready3dTimer = setTimeout(() => {
+      this.ready3dTimer = null;
+      onDeadline();
+    }, wait);
+    if (this.ready3dTimer.unref) this.ready3dTimer.unref();
+  }
+
+  /** stop waiting: the match is starting (or the room is going away). */
+  private clearReady3d(): void {
+    if (this.ready3dTimer) {
+      clearTimeout(this.ready3dTimer);
+      this.ready3dTimer = null;
+    }
   }
 
   // ─────────────────────────────────────────────────────────── BOT SEATS (plan §6) ──
@@ -1283,6 +1372,10 @@ export class Room {
       if (this.clients.size === 0) {
         this.stop();
         this.onEmpty();
+      } else if (this.customStart) {
+        // the seat we were holding the start for has left: it cannot report in any more, so
+        // re-ask rather than waiting out a deadline for somebody who is gone
+        this.beginCustomStart();
       }
     } else {
       c.connected = false;
@@ -1435,14 +1528,18 @@ export class Room {
      * were away, and a client that had to guess would show them a full window and let
      * them run out of a clock that was already half gone.
      */
-    if (!this.world && this.pendingMatch && this.phase === 'strategy') {
+    if (!this.world && this.phase === 'strategy') {
+      const p = this.pendingMatch;
       send({
         t: 'strategyStart',
-        deadline: this.strategyDeadline,
+        // a CUSTOM room's window (`enterCustomStart`) has no strategy clock of its own — the
+        // number it counts down to is the 3D readiness deadline
+        deadline: p ? this.strategyDeadline : this.ready3dDeadline,
         yourRobotId: this.slotOf.get(c.id) ?? 0,
-        mode: this.pendingMatch.mode,
-        intros: this.intros,
+        mode: p?.mode ?? (this.seatsTaken > 2 ? '2v2' : '1v1'),
+        intros: p ? this.intros : [],
         game: this.game,
+        ...(p ? {} : { ranked: false }),
       });
     }
     this.broadcastRoster();
@@ -1589,10 +1686,28 @@ export class Room {
         if (this.phase === 'strategy') this.maybeBeginRanked();
         break;
       }
+      /**
+       * THIS SEAT'S 3D PHYSICS CHUNK HAS LANDED (owner request, 2026-09-22).
+       *
+       * Latched, never cleared, and it re-runs whichever start the room is holding — the
+       * ranked strategy window, a custom room's own window, or nothing at all, which is the
+       * case in every 2D room and every room already playing. `broadcastRoster` first, so the
+       * screens showing "Loading 3D physics…" on this seat drop the chip even when this was
+       * not the last seat and nothing starts.
+       */
+      case 'physicsReady':
+        if (c.ready3d) break; // idempotent: a reconnect re-sends it
+        c.ready3d = true;
+        this.broadcastRoster();
+        if (this.phase === 'strategy') {
+          if (this.pendingMatch) this.maybeBeginRanked();
+          else if (this.customStart) this.beginCustomStart();
+        }
+        break;
       case 'start':
         // physics WASM may still be loading in the first moment after boot; refuse
         // rather than throw inside step() (which would kill the tick loop)
-        if (id === this.hostId && this.world === null) {
+        if (id === this.hostId && this.world === null && this.phase === 'connecting') {
           if (this.physicsReadyForRoom()) this.startMatch();
           else c.send({ t: 'error', message: 'Server is starting up - try again in a moment.' });
         }
@@ -1743,6 +1858,30 @@ export class Room {
           return;
         }
       }
+    }
+    /**
+     * A SEAT IS STILL LOADING THE 3D PHYSICS THIS ROOM RUNS — hold the start and say so
+     * (owner request, 2026-09-22). The validation above runs FIRST, because an illegal start
+     * pose is something the driver has to go and fix and should not be told about after a
+     * 45-second wait.
+     *
+     * ⚠️ **EVERY MEMBER MUST SUPPORT BOTH CAPABILITIES, OR THE OLD IMMEDIATE START STANDS.**
+     * `'strategy'` is what lets a client render the waiting screen at all — one that cannot
+     * would sit on a lobby that silently stopped responding to START — and `READY3D_CAP` is
+     * what makes the wait finite, since a client that never reports in can only be waited out
+     * to the deadline. With a mixed roster the room starts exactly as it did before this
+     * existed, which is the same discipline `maybeStartRanked` applies to the ranked window.
+     *
+     * A RECORD room takes this path too: it is one seat, `RecordRun` has already awaited the
+     * chunk before dialling, and the wait is therefore normally zero — but the gate is here as
+     * the backstop the client's own preflight is checked against.
+     */
+    const canWait = [...this.clients.values()].every(
+      (c) => c.connected && c.caps?.includes('strategy') && reportsPhysicsReady(c.caps),
+    );
+    if (canWait && this.seatWaiting3d()) {
+      this.enterCustomStart();
+      return;
     }
     // record runs are OPPONENT-FREE co-op: every robot on one alliance (blue).
     // Each driver brings their OWN build, so a duo may mix drivetrains — a mixed
@@ -2011,9 +2150,14 @@ export class Room {
    * queued with — correct. */
   private startRankedImmediate(): void {
     const p = this.pendingMatch;
-    if (!p || this.world !== null || this.phase !== 'connecting') return;
+    // `cancelled` leaves the phase where it was, so a retry loop that only checked the phase
+    // could still build a world for a pairing the room has already torn down and billed
+    if (!p || this.world !== null || this.phase !== 'connecting' || this.cancelled) return;
     // BOTH backends (see `physicsReadyForRoom`): a ranked BIOBUZZ room steps `step3d`.
-    if (!this.physicsReadyForRoom()) {
+    // And the CLIENTS' 3D chunks (`seatWaiting3d`) — this path is the mixed-version one, so
+    // there is no strategy screen to wait on, but a seat that did advertise `READY3D_CAP` is
+    // still worth the (deadline-bounded) wait. The 200 ms poll is its own clock.
+    if (!this.physicsReadyForRoom() || this.seatWaiting3d()) {
       setTimeout(() => this.startRankedImmediate(), 200); // WASM still loading; retry
       return;
     }
@@ -2075,12 +2219,109 @@ export class Room {
     this.broadcastRoster(); // redacted per-recipient (opponent builds hidden)
   }
 
+  /**
+   * A CUSTOM ROOM'S OWN WAITING WINDOW — the host has pressed START, every driver has already
+   * readied, and the only thing left is a seat's 3D physics chunk (owner request, 2026-09-22).
+   *
+   * It reuses `phase === 'strategy'` and the `strategyStart` message, which is what puts the
+   * alliance screen up on every client, but it is NOT the ranked window and the three
+   * differences are all deliberate: nobody is asked to ready a second time (they already did,
+   * or the host could not have pressed START), no ELO travels (`ranked: false`, `intros: []`),
+   * and the roster is NOT redacted — a custom lobby has shown every build all along, so hiding
+   * them for the last two seconds would be a reveal running backwards.
+   *
+   * The seats are numbered in `clients` order, which is exactly the order `startMatch` builds
+   * its setups in, so a card's slot is the robot id it becomes.
+   */
+  private enterCustomStart(): void {
+    if (this.world !== null || this.phase !== 'connecting') return;
+    this.phase = 'strategy';
+    this.customStart = true;
+    this.slotOf.clear();
+    [...this.clients.values()].forEach((c, i) => this.slotOf.set(c.id, i));
+    this.armReady3d(() => this.beginCustomStart());
+    const seats = this.seatsTaken;
+    for (const c of this.clients.values()) {
+      c.send({
+        t: 'strategyStart',
+        deadline: this.ready3dDeadline,
+        yourRobotId: this.slotOf.get(c.id) ?? 0,
+        // a label only, and the screen does not print it for an unranked window — a custom
+        // room's shape is its roster, which the same message's roster already carries
+        mode: seats > 2 ? '2v2' : '1v1',
+        intros: [],
+        game: this.game,
+        ranked: false,
+      });
+    }
+    this.broadcastRoster();
+  }
+
+  /** every seat has reported in (or the deadline lapsed): build the match the host already
+   *  asked for. Re-entrant and idempotent — `physicsReady`, a departure and the deadline
+   *  timer all call it, and whichever arrives first wins. */
+  private beginCustomStart(): void {
+    if (!this.customStart || this.world !== null || this.phase !== 'strategy') return;
+    if (this.seatWaiting3d()) return;
+    // the SERVER's own wasm, exactly as the `start` handler checks it — a cold boot can still
+    // be finishing while the clients are long since ready
+    if (!this.physicsReadyForRoom()) {
+      setTimeout(() => this.beginCustomStart(), 200);
+      return;
+    }
+    this.clearReady3d();
+    this.customStart = false;
+    this.phase = 'connecting'; // `startMatch` builds from here and sets 'match' itself
+    this.startMatch();
+  }
+
+  /**
+   * ⚠️ **THE STRATEGY COUNTDOWN MUST NOT RUN OUT ON A DOWNLOAD** (owner request, 2026-09-22).
+   *
+   * Everyone has readied, so the strict deadline has been satisfied — and the only thing left
+   * is a seat's 3D chunk, which is not a decision anybody made and must not be charged as one.
+   * `onStrategyDeadline` is STRICT and CANCELS, which for this case would bill a `unready`
+   * dodge to a player who pressed the button on time.
+   *
+   * So the window is pushed out to `ready3dDeadline` (the same 45 s cap the rest of this
+   * handshake runs on, measured from the first moment this room wanted to start — so the
+   * extension is bounded and cannot be re-triggered into a loop), and a fresh `strategyStart`
+   * carries the new number: the screen's countdown is a promise about when the match cancels,
+   * and one that keeps ticking past a deadline nobody is going to enforce is a lie the driver
+   * can read. Returns true when it extended.
+   */
+  private extendStrategyForReady3d(): boolean {
+    if (!this.seatWaiting3d()) return false;
+    if (this.strategyDeadline >= this.ready3dDeadline) return true; // already extended
+    this.strategyDeadline = this.ready3dDeadline;
+    if (this.strategyTimer) clearTimeout(this.strategyTimer);
+    this.strategyTimer = setTimeout(
+      () => this.onStrategyDeadline(),
+      Math.max(0, this.strategyDeadline - Date.now()),
+    );
+    if (this.strategyTimer.unref) this.strategyTimer.unref();
+    const p = this.pendingMatch;
+    for (const c of this.clients.values()) {
+      if (!c.connected) continue;
+      c.send({
+        t: 'strategyStart',
+        deadline: this.strategyDeadline,
+        yourRobotId: this.slotOf.get(c.id) ?? 0,
+        mode: p?.mode ?? '1v1',
+        intros: this.intros,
+        game: this.game,
+      });
+    }
+    return true;
+  }
+
   /** start as soon as every connected driver has readied up */
   private maybeBeginRanked(): void {
     const p = this.pendingMatch;
     if (!p || this.phase !== 'strategy' || this.world !== null) return;
     const connected = [...this.clients.values()].filter((c) => c.connected);
     if (connected.length === p.roster.length && connected.every((c) => c.player.ready)) {
+      if (this.extendStrategyForReady3d()) return;
       this.beginRanked();
     }
   }
@@ -2093,6 +2334,9 @@ export class Room {
     if (!p || this.phase !== 'strategy' || this.world !== null) return;
     const connected = [...this.clients.values()].filter((c) => c.connected);
     if (connected.length === p.roster.length && connected.every((c) => c.player.ready)) {
+      // a seat still loading its 3D chunk buys the window more time, once, up to the same
+      // 45 s cap — see `extendStrategyForReady3d`
+      if (this.extendStrategyForReady3d()) return;
       this.beginRanked();
     } else {
       // NEVER READIED: the players who sat out the window. Anyone who readied is innocent —
@@ -2115,12 +2359,15 @@ export class Room {
    * by `createWorld`→`coerceSetup`). A missing/dropped slot ⇒ cancel (unratable). */
   private beginRanked(): void {
     const p = this.pendingMatch;
-    if (!p || this.world !== null || this.phase !== 'strategy') return;
+    if (!p || this.world !== null || this.phase !== 'strategy' || this.cancelled) return;
     // BOTH backends (see `physicsReadyForRoom`): a ranked BIOBUZZ room steps `step3d`.
-    if (!this.physicsReadyForRoom()) {
-      setTimeout(() => this.beginRanked(), 200); // WASM still loading; retry shortly
+    // And every SEAT's own 3D chunk (`seatWaiting3d`) — this is the last gate before a world
+    // exists, so it is the one that has to hold even if a caller forgot to ask.
+    if (!this.physicsReadyForRoom() || this.seatWaiting3d()) {
+      setTimeout(() => this.beginRanked(), 200); // still loading; retry shortly
       return;
     }
+    this.clearReady3d();
     if (this.strategyTimer) {
       clearTimeout(this.strategyTimer);
       this.strategyTimer = null;
@@ -2182,6 +2429,7 @@ export class Room {
       clearTimeout(this.strategyTimer);
       this.strategyTimer = null;
     }
+    this.clearReady3d();
     const p = this.pendingMatch;
     /**
      * BILL THE DODGE before tearing the room down.
@@ -2827,6 +3075,11 @@ export class Room {
 
     this.world = null;
     this.phase = 'connecting';
+    // the 3D readiness wait belongs to ONE start, so the next one gets a fresh budget rather
+    // than inheriting an expired clock from the match that just finished
+    this.clearReady3d();
+    this.ready3dDeadline = 0;
+    this.customStart = false;
     this.matchSeed = 0;
     this.matchSetups = [];
     this.matchDrivers = [];
@@ -3017,6 +3270,7 @@ export class Room {
 
   private stop(): void {
     this.stopLoop();
+    this.clearReady3d(); // nothing left to wait for; an unref'd timer still holds a closure
     // free the match's Rapier 3D world. The engine map is a WeakMap keyed on the World, so
     // dropping the World drops the only handle without calling free(), and wasm linear memory
     // never shrinks — a server that has run a few hundred 3D matches would hold every one.
@@ -3206,6 +3460,25 @@ export class Room {
     for (const s of this.spectators.values()) to(s);
   }
 
+  /**
+   * ONE CLIENT'S ROSTER ROW — its own `player`, plus the fields the ROOM knows about it and
+   * the client does not.
+   *
+   * Today that is `ready3d` alone: whether this seat's 3D chunk has landed is a fact the
+   * server collects (`{ t: 'physicsReady' }`) and the screens have to show, and it must not be
+   * settable from a `PlayerPatch` — a seat that could declare itself loaded would skip the
+   * wait for everyone. Same discipline as `supporter` and `role` beside it.
+   *
+   * ⚠️ SET ONLY WHERE THERE IS SOMETHING TO WAIT FOR: a 2D room, or a client that never
+   * advertised `READY3D_CAP`, leaves the key ABSENT rather than sending `false`. A `false`
+   * there would put a "Loading 3D physics…" chip on every DECODE lobby row for a wait that
+   * does not exist and will never end.
+   */
+  private rosterPlayer(c: Client): LobbyPlayer {
+    if (this.physics !== '3d' || !reportsPhysicsReady(c.caps)) return c.player;
+    return { ...c.player, ready3d: !!c.ready3d };
+  }
+
   private broadcastRoster(): void {
     // a STAGED ranked room must never reveal opponent builds before the redacted
     // strategy roster: while still 'connecting' its clients self-report alliance
@@ -3213,13 +3486,19 @@ export class Room {
     // withhold the roster until `enterStrategy` sends the redacted one. (The
     // matchmaking client shows no roster while connecting anyway.)
     if (this.pendingMatch && this.phase === 'connecting') return;
-    // outside the strategy window everyone sees the same roster (custom lobby / not
-    // yet staged): the full build reveal is fine there.
-    if (this.phase !== 'strategy') {
+    // outside the STAGED RANKED strategy window everyone sees the same roster (custom lobby,
+    // not yet staged, or a custom room's own 3D-readiness window): the full build reveal is
+    // fine there. ⚠️ The redaction below is keyed on `pendingMatch` as well as the phase —
+    // `enterCustomStart` reuses this phase for a room whose builds have been on screen since
+    // everyone joined, and hiding them for the last two seconds before the match would be the
+    // pre-match reveal running backwards.
+    if (this.phase !== 'strategy' || !this.pendingMatch) {
       // BOT SEATS RIDE THE SAME ROSTER, after the humans — the order the setups are built in
       // (`startMatch`), so a lobby row and a robot id line up. An old client renders them as
       // ordinary drivers, which is what they are; see `LobbyPlayer.bot`.
-      const players = [...this.clients.values()].map((c) => c.player).concat(this.bots.map((b) => this.botPlayer(b)));
+      const players = [...this.clients.values()]
+        .map((c) => this.rosterPlayer(c))
+        .concat(this.bots.map((b) => this.botPlayer(b)));
       this.broadcast({ t: 'roster', players, hostId: this.hostId });
       return;
     }
@@ -3233,7 +3512,7 @@ export class Room {
       const mine = c.player.alliance;
       const players: LobbyPlayer[] = all.map((o) => {
         const slot = this.slotOf.get(o.id);
-        if (o.id === c.id || o.player.alliance === mine) return { ...o.player, slot };
+        if (o.id === c.id || o.player.alliance === mine) return { ...this.rosterPlayer(o), slot };
         return {
           clientId: o.player.clientId,
           name: o.player.name,
@@ -3242,6 +3521,11 @@ export class Room {
           alliance: o.player.alliance,
           startIndex: 0,
           ready: o.player.ready,
+          // NOT redacted, and it is the one field here that is about the MATCH rather than
+          // about the build: a screen that hid an opponent's load state would show three
+          // ready cards and a window that will not close, which is the confusion this whole
+          // handshake exists to remove. It reveals nothing counter-pickable.
+          ...(this.physics === '3d' && reportsPhysicsReady(o.caps) ? { ready3d: !!o.ready3d } : {}),
           spec: DEFAULT_SPEC,
           assists: DEFAULT_ASSISTS,
           slot,
@@ -3299,6 +3583,23 @@ export class Room {
   /** TEST SEAM: fire the strategy deadline synchronously (no real timer). */
   forceStrategyDeadlineForTest(): void {
     this.onStrategyDeadline();
+  }
+
+  /**
+   * TEST SEAM: expire the 3D READINESS window synchronously, then re-ask whichever start is
+   * holding on it. The real one is `READY3D_DEADLINE_MS` away, which no test can wait out.
+   *
+   * It moves the CLOCK rather than calling a start path directly, so what runs afterwards is
+   * the same code the live timer runs into — a seam that reached past `seatWaiting3d` would
+   * prove the timer fires and nothing about the gate it is supposed to release.
+   */
+  forceReady3dDeadlineForTest(): void {
+    this.ready3dDeadline = Date.now() - 1;
+    this.clearReady3d();
+    if (this.phase === 'strategy') {
+      if (this.pendingMatch) this.maybeBeginRanked();
+      else if (this.customStart) this.beginCustomStart();
+    }
   }
 
   /** TEST SEAM: fire the ranked JOIN GRACE synchronously — the no-show path, which is

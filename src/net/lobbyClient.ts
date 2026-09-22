@@ -83,7 +83,15 @@ type Handlers = {
   matchAssigned: (room: string, hostRegion: string, mode: QueueMode) => void;
   /** ranked pre-match strategy window opened: switch to the strategy screen. Live
    * changes ride the existing `update`/`roster`; a `matchStart` follows on ready. */
-  strategyStart: (deadline: number, yourRobotId: number, mode: QueueMode, intros: PlayerIntro[]) => void;
+  strategyStart: (
+    deadline: number,
+    yourRobotId: number,
+    mode: QueueMode,
+    intros: PlayerIntro[],
+    /** false ⇒ a CUSTOM room's 3D-readiness window: no ratings, nothing to ready up. Absent
+     *  from an older server ⇒ true, which is what every `strategyStart` used to be. */
+    ranked: boolean,
+  ) => void;
   /** `code` is present only for the reasons a client can ACT on (today: `region_full`).
    *  Absent for everything else, and absent entirely from older servers, so a handler
    *  must stay correct reading `message` alone. */
@@ -165,6 +173,7 @@ export class LobbyClient {
      * `{}`, so it changes nothing about us and the server answers with a `roster` anyway.
      */
     this.transport.send(encodeMsg({ t: 'update', patch: {} }));
+    this.sendPhysicsReady(); // the socket is already open and already seated
     this.transport.onReopen(() => {
       void (async () => {
         const authToken = (await getAuthToken()) ?? undefined;
@@ -202,6 +211,39 @@ export class LobbyClient {
   /** host only: begin the match */
   start(): void {
     this.transport.send(encodeMsg({ t: 'start' }));
+  }
+
+  /**
+   * TELL THE ROOM THIS CLIENT'S 3D PHYSICS CHUNK IS LOADED (`READY3D_CAP`).
+   *
+   * `announcePhysicsReady` (`roomPhysics.ts`) is the only caller — it is what knows whether
+   * this room's game has a 3D solve at all. Fire-and-forget and idempotent: an older server
+   * ignores the message and starts the match as it always did, so there is no `serverCaps()`
+   * gate and no reply to wait for.
+   *
+   * ⚠️ **IT LATCHES RATHER THAN HOOKING `onOpen`/`onReopen`, AND IT HAS TO.** Those are
+   * SINGLE-SLOT on both transports (`transport.ts`, `lanPeer.ts`) — a second registration
+   * REPLACES the first — so a second subscriber here would silently unhook the re-`join` that
+   * a reconnect depends on, and the symptom would be a returning client with no seat.
+   *
+   * The latch is flushed from `welcome` instead (and from `resume`, whose socket is already
+   * seated), which is both the right ORDER and the right EVENT — see the note there.
+   */
+  physicsReady(): void {
+    if (this.ready3d) return;
+    this.ready3d = true;
+    if (this.seated) this.sendPhysicsReady();
+  }
+
+  /** the latch `physicsReady()` sets, and whether the server has confirmed a seat on this
+   *  socket yet (`welcome`, or a `resume` onto one it already holds) */
+  private ready3d = false;
+  private seated = false;
+
+  /** announce readiness now that there is a seat to announce it to — see `physicsReady` */
+  private sendPhysicsReady(): void {
+    this.seated = true;
+    if (this.ready3d) this.transport.send(encodeMsg({ t: 'physicsReady' }));
   }
 
   /**
@@ -282,6 +324,15 @@ export class LobbyClient {
     if (!m || typeof (m as { t?: unknown }).t !== 'string') return;
     if (m.t === 'welcome') {
       this.clientId = m.clientId;
+      /* ⚠️ **THE SEAT EXISTS NOW, AND NOT ONE FRAME EARLIER.** `physicsReady` is routed
+         through the socket's ROOM (`server/index.ts`), and a `join` is handled ASYNCHRONOUSLY
+         — token verification, a suspension read, sometimes a staged-match lookup — so a frame
+         sent straight after the join arrives while that socket still has no room and is
+         DROPPED, with nothing to retry it. The room would then wait out its whole 45-second
+         deadline for a client that loaded on time. `welcome` is the server saying the seat is
+         taken, and it is re-sent on every reattach, which is exactly the two moments this has
+         to fire. */
+      this.sendPhysicsReady();
     } else if (m.t === 'lobby') {
       // a recycle that landed on a lobby rather than a session (the host recycled while
       // we were still coming back). The id is ours either way — take it.
@@ -297,7 +348,7 @@ export class LobbyClient {
     } else if (m.t === 'matchAssigned') {
       this.handlers.matchAssigned?.(m.room, m.hostRegion, m.mode);
     } else if (m.t === 'strategyStart') {
-      this.handlers.strategyStart?.(m.deadline, m.yourRobotId, m.mode, m.intros);
+      this.handlers.strategyStart?.(m.deadline, m.yourRobotId, m.mode, m.intros, m.ranked !== false);
     } else if (m.t === 'error') {
       this.handlers.error?.(m.message, m.code);
     } else if (m.t === 'dodgeVerdict') {

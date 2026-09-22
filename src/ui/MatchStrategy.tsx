@@ -36,6 +36,20 @@ interface Props {
   settings: GameSettings;
   onSettingsChange: (s: GameSettings) => void;
   onLeave: () => void;
+  /**
+   * IS THERE A RATING ON THIS — the difference between the two windows that open this screen.
+   *
+   * `true` (the default, and every use of this screen before 2026-09-22) is the RANKED
+   * pre-match window: paired strangers, ELO on every card, a re-pick, and a strict ready gate
+   * whose clock cancels the match.
+   *
+   * `false` is a CUSTOM room's 3D-readiness window (`Room.enterCustomStart`). The host has
+   * already pressed START and everyone had already readied, so there is nothing to decide
+   * here — it is the alliances and what they are waiting for, and no more. The ELO column is
+   * gone because there is no ELO, not because it is hidden: a custom room has never rated
+   * anything, and a chip reading "ELO Unranked" beside every name would be four lies.
+   */
+  ranked?: boolean;
 }
 
 /**
@@ -61,6 +75,7 @@ export function MatchStrategy({
   settings,
   onSettingsChange,
   onLeave,
+  ranked = true,
 }: Props) {
   const [now, setNow] = useState(() => Date.now());
   const [building, setBuilding] = useState(false);
@@ -88,6 +103,15 @@ export function MatchStrategy({
 
   const secsLeft = Math.max(0, Math.ceil((deadline - now) / 1000));
 
+  /**
+   * WHO IS STILL LOADING THE 3D PHYSICS (`LobbyPlayer.ready3d`, server-authored).
+   *
+   * ABSENT means there is nothing to wait for — a 2D season, a seat on an older build, a
+   * server that predates the handshake — so only an explicit `false` counts. Treating absent
+   * as "not loaded" would put a permanent loading chip on every DECODE lobby.
+   */
+  const loading3d = players.filter((p) => p.ready3d === false);
+
   // countdown SFX: tick down over the final seconds before the deadline. Own audio
   // instance (the game controller isn't up yet here), gated by the Sounds toggle.
   const audioRef = useRef<MatchAudio | null>(null);
@@ -104,12 +128,14 @@ export function MatchStrategy({
   useEffect(() => {
     const a = audioRef.current;
     // fire once per new second in the danger zone (poll runs at 4 Hz, so guard on a
-    // strict decrease so we don't re-beep within the same second)
-    if (a && secsLeft >= 1 && secsLeft <= STRAT_TICK_FROM && secsLeft < lastTickRef.current) {
+    // strict decrease so we don't re-beep within the same second). NOT in a custom room's
+    // readiness window — its deadline starts the match rather than cancelling it, so a
+    // countdown cue would be an alarm about nothing.
+    if (ranked && a && secsLeft >= 1 && secsLeft <= STRAT_TICK_FROM && secsLeft < lastTickRef.current) {
       a.beep(700 + (STRAT_TICK_FROM - secsLeft) * 90, secsLeft === 1 ? 0.24 : 0.1, 0.4);
     }
     lastTickRef.current = secsLeft;
-  }, [secsLeft]);
+  }, [secsLeft, ranked]);
 
   const readyCount = players.filter((p) => p.ready).length;
   const allReady = players.length > 0 && players.every((p) => p.ready);
@@ -212,19 +238,33 @@ export function MatchStrategy({
         </div>
         <div className="ds-title">
           <h1>
-            Match <span className="accent">Strategy</span>
+            {ranked ? (
+              <>
+                Match <span className="accent">Strategy</span>
+              </>
+            ) : (
+              <>
+                Starting the <span className="accent">match</span>
+              </>
+            )}
           </h1>
         </div>
         {/* the negative margin cancelling `.ds-console-in`'s gap is gone: two spacing
             systems fighting over one axis. The countdown chip's tooltip is gone too —
-            the `.ds-hint` at the foot of this screen states the same rule at length. */}
+            the `.ds-hint` at the foot of this screen states the same rule at length.
+
+            NO CLOCK IN A CUSTOM ROOM'S WINDOW: its deadline starts the match instead of
+            cancelling it, so a ticking chip would promise a consequence that never comes. */}
         <p className="ds-sub ds-sub-row">
           <span>
-            {mode.toUpperCase()} · {readyCount}/{players.length} ready
+            {mode.toUpperCase()} ·{' '}
+            {ranked ? `${readyCount}/${players.length} ready` : `${players.length} drivers`}
           </span>
-          <span className={`ds-chip ${secsLeft <= STRAT_TICK_FROM ? 'off' : 'on'}`}>
-            ⏱ {secsLeft}s
-          </span>
+          {ranked && (
+            <span className={`ds-chip ${secsLeft <= STRAT_TICK_FROM ? 'off' : 'on'}`}>
+              ⏱ {secsLeft}s
+            </span>
+          )}
         </p>
 
         {/* opponents — minimal (server redacts their builds) */}
@@ -245,7 +285,8 @@ export function MatchStrategy({
                   </span>
                   <span className="ptm">Team {p.teamNumber || '-'}</span>
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
-                  <span className="ds-chip">ELO {eloOf(p)}</span>
+                  {ranked && <span className="ds-chip">ELO {eloOf(p)}</span>}
+                  {p.ready3d === false && <span className="ds-chip off">LOADING 3D</span>}
                   <span className={`ds-chip ${p.ready ? 'on' : 'off'}`}>
                     {p.ready ? 'READY' : '…'}
                   </span>
@@ -287,6 +328,7 @@ export function MatchStrategy({
                     {buildRow(spec)}
                     <div className="ds-strat-chips">
                       <span className={`ds-chip ${pl.alliance}`}>{pl.alliance.toUpperCase()}</span>
+                      {pl.ready3d === false && <span className="ds-chip off">LOADING 3D</span>}
                       <span className="ds-chip">
                         {pl.startPose
                           ? 'CUSTOM'
@@ -296,7 +338,7 @@ export function MatchStrategy({
                               START_POSES[pl.startIndex]?.label ??
                               '-')}
                       </span>
-                      <span className="ds-chip">ELO {eloOf(pl)}</span>
+                      {ranked && <span className="ds-chip">ELO {eloOf(pl)}</span>}
                       <span className={`ds-chip ${pl.ready ? 'on' : 'off'}`}>
                         {pl.ready ? 'READY' : 'NOT READY'}
                       </span>
@@ -308,8 +350,10 @@ export function MatchStrategy({
           </div>
         </section>
 
-        {/* start position — drag to place, constrained to a legal G304 setup */}
-        {me && (
+        {/* start position — drag to place, constrained to a legal G304 setup.
+            RANKED ONLY: a custom room's window opens AFTER its host pressed START, so a
+            re-pick offered here would be a control that changes a match already committed. */}
+        {ranked && me && (
           <section className="ds-sec">
             <h2>Start position</h2>
             {rs.canSwap && (
@@ -373,7 +417,9 @@ export function MatchStrategy({
           </section>
         )}
 
-        {/* re-pick: quick-swap a saved robot, or open the full builder */}
+        {/* re-pick: quick-swap a saved robot, or open the full builder (ranked only — see
+            the start-position section above) */}
+        {ranked && (
         <section className="ds-sec">
           <h2>Your robot</h2>
           <div className="ds-opts">
@@ -404,22 +450,33 @@ export function MatchStrategy({
             </button>
           </div>
         </section>
+        )}
 
-        <div className="ds-actions">
-          <button
-            className={`ds-cta ${me?.ready ? 'ghost' : ''}`}
-            disabled={!startLegal && !me?.ready}
-            onClick={toggleReady}
-          >
-            {me?.ready ? '✓ READY' : 'READY UP'}
-          </button>
-        </div>
-        <p className="ds-hint">
-          {!startLegal
-            ? '⚠ Your start position isn’t legal for this chassis. Fix it above, or pick a preset, to ready up.'
-            : allReady
+        {ranked && (
+          <div className="ds-actions">
+            <button
+              className={`ds-cta ${me?.ready ? 'ghost' : ''}`}
+              disabled={!startLegal && !me?.ready}
+              onClick={toggleReady}
+            >
+              {me?.ready ? '✓ READY' : 'READY UP'}
+            </button>
+          </div>
+        )}
+        {/* ⚠️ THE WAIT OUTRANKS "Everyone ready. Starting…", which is the line this screen used
+            to sit on for as long as a chunk took to arrive — a sentence that says the match is
+            starting while nothing happens is the report this window was built for. A seat that
+            is still loading is named above and said here. */}
+        <p className={loading3d.length ? 'ds-loading' : 'ds-hint'}>
+          {loading3d.length
+            ? 'Loading 3D physics… The match starts as soon as every driver’s field is ready.'
+            : !ranked
               ? 'Everyone ready. Starting…'
-              : `The match starts when all ${players.length} drivers are ready. It CANCELS if anyone isn’t ready in ${secsLeft}s.`}
+              : !startLegal
+                ? '⚠ Your start position isn’t legal for this chassis. Fix it above, or pick a preset, to ready up.'
+                : allReady
+                  ? 'Everyone ready. Starting…'
+                  : `The match starts when all ${players.length} drivers are ready. It CANCELS if anyone isn’t ready in ${secsLeft}s.`}
         </p>
       </div>
     </div>

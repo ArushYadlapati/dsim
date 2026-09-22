@@ -23,7 +23,7 @@ import type { ResumedRoom } from './roomReturn';
 import { WebSocketTransport, type Transport } from '../net/transport';
 import { LobbyClient, type MatchStart } from '../net/lobbyClient';
 import { ServerSession } from '../net/serverSession';
-import { roomCapacity, type LobbyPlayer, type RoomConfig, type ErrorCode } from '../net/protocol';
+import { roomCapacity, type LobbyPlayer, type QueueMode, type RoomConfig, type ErrorCode } from '../net/protocol';
 import type { NetSession } from '../net/session';
 import { useServerNotice } from '../net/notice';
 import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
@@ -32,6 +32,8 @@ import { Logo } from './Logo';
 import { useEscape } from './useEscape';
 import { DISCORD_REGION } from '../net/discordActivity';
 import { serverCaps } from '../net/api';
+import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
+import { MatchStrategy } from './MatchStrategy';
 import { botLabel } from './MatchSetup';
 import type { RoomInvite } from '../net/api';
 import { FriendsPanel, type RoomInviteTarget } from './FriendsPanel';
@@ -184,6 +186,15 @@ export function Lobby({
    */
   const roomGame = config.game ?? settings.game;
   const physicsOffered = serverPhysics(moduleFor(roomGame)) === '3d';
+  /**
+   * THE ROOM IS STARTING AND A SEAT IS STILL LOADING ITS 3D PHYSICS (`strategyStart` with
+   * `ranked: false` — `Room.enterCustomStart`).
+   *
+   * Its own state rather than a `Phase`: the phase machine is about getting INTO a room and
+   * this is about leaving one for a match, and every `phase === 'room'` branch below would
+   * have had to learn about it.
+   */
+  const [starting, setStarting] = useState<{ deadline: number; mode: QueueMode } | null>(null);
   const [copied, setCopied] = useState(false);
   // One app, several regions: a shared room code only lands two people on the same machine
   // if they connect to the same one. JOINING an invite, that is not a choice — it is
@@ -263,6 +274,18 @@ export function Lobby({
       autoJoinedRef.current = null;
     };
   }, []);
+
+  /**
+   * FETCH THE 3D PHYSICS WHILE THE PLAYER IS STILL TYPING A ROOM CODE.
+   *
+   * Every server room of a 3D season holds its start until each seat's chunks have landed
+   * (`READY3D_CAP`), so the only thing that keeps that wait at zero is asking for them before
+   * the room exists — a code entry screen is one of the few places in this app where a player
+   * spends seconds doing nothing else. A no-op for DECODE and Chain Reaction.
+   */
+  useEffect(() => {
+    void preloadRoomPhysics(roomGame);
+  }, [roomGame]);
 
   useEscape(onCancel); // Esc leaves the lobby, same as ← Back
 
@@ -451,6 +474,17 @@ export function Lobby({
       setPhase((p) => (p === 'connecting' ? 'room' : p));
     });
     lobby.on('matchStart', (m) => handleStart(m, roomCode));
+    /**
+     * THE ROOM IS STARTING BUT A SEAT IS STILL LOADING (owner request, 2026-09-22).
+     *
+     * A custom room only ever sends this with `ranked: false` — it opened its own window
+     * after the host pressed START. The ranked branch is not reachable from this screen, and
+     * ignoring an unexpected one is the right failure: `matchStart` still follows and the
+     * lobby is what the player is looking at meanwhile.
+     */
+    lobby.on('strategyStart', (deadline, _slot, m, _intros, isRanked) => {
+      if (!isRanked) setStarting({ deadline, mode: m });
+    });
     lobby.on('error', (msg, code) => {
       refusedRef.current = true;
       setError(msg);
@@ -476,6 +510,10 @@ export function Lobby({
       }
     });
 
+    // SAY WHEN THIS SEAT'S 3D CHUNKS LAND. Latched inside the client and re-sent behind every
+    // reconnect's join frame, so once here is enough — and it is here rather than beside each
+    // `join`/`resume` because `wire` is the one place both of them pass through.
+    announcePhysicsReady(lobby, roomGame);
     return lobby;
   }
 
@@ -640,6 +678,34 @@ export function Lobby({
     if (activeCat !== startRole) applyStart(switchCategory(sCat, startRole));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startRole, me?.startIndex, me?.startPose, settings.startCat]);
+
+  /**
+   * THE ROOM IS STARTING AND SOMEBODY IS STILL LOADING — take over the screen with the same
+   * alliance view ranked uses, minus the ratings a custom room has never had.
+   *
+   * Above the phase branches, because it outranks all of them: the seat is committed, the
+   * host has pressed START, and the lobby's own controls (ready, start, add a bot, leave to
+   * entry) would all be acting on a room that is no longer taking instructions.
+   *
+   * `onLeave` is the ordinary `onCancel` — leaving here is leaving the room, exactly as the
+   * ← Back beside it has always been, and unlike ranked it forfeits nothing.
+   */
+  if (starting && lobbyRef.current) {
+    return (
+      <MatchStrategy
+        lobby={lobbyRef.current}
+        players={players}
+        myClientId={myId}
+        deadline={starting.deadline}
+        mode={starting.mode}
+        intros={[]}
+        settings={settings}
+        onSettingsChange={onSettingsChange}
+        onLeave={onCancel}
+        ranked={false}
+      />
+    );
+  }
 
   if (phase === 'entry' || phase === 'connecting' || phase === 'error') {
     return (

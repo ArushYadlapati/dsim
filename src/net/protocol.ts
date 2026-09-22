@@ -265,6 +265,20 @@ export interface LobbyPlayer {
    * BOTH alliance members set it, each flips its own role and clears the flag. */
   swapReq?: boolean;
   ready: boolean;
+  /**
+   * HAS THIS SEAT'S 3D PHYSICS CHUNK LOADED — server-authored, and only meaningful in a
+   * `'3d'` room (`READY3D_CAP`).
+   *
+   * `ready` is a decision the driver makes; this is a fact about their machine, so the two
+   * are separate chips and separate fields. It is on the roster because the screen that has
+   * to wait has to say WHO it is waiting for — "Everyone ready. Starting…" sitting there for
+   * eight seconds with nothing else on it is the state this whole handshake exists to remove.
+   *
+   * ABSENT means "nothing to wait for": a 2D room, a client that never advertised the
+   * capability, a bot, or an older server that does not set it. Additive and optional both
+   * ways, so no `caps` gate — an older client ignores the key and renders no chip.
+   */
+  ready3d?: boolean;
   spec: RobotSpec;
   assists: AssistConfig;
   // NOTE: no `autoPath` here. Autonomous does not run in a server-authoritative
@@ -406,7 +420,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d'];
 
 /**
  * THE ONE CAPABILITY THAT IS A HARD GATE RATHER THAN A FEATURE FLAG.
@@ -432,6 +446,49 @@ export const BB3D_REFUSAL = 'Update DSIM to play this room.';
  *  is written around. Absent caps (an old client that sends none) ⇒ no capabilities. */
 export function physicsAllowed(physics: Physics | undefined, caps: readonly string[] | undefined): boolean {
   return (physics ?? '2d') !== '3d' || !!caps?.includes(BB3D_CAP);
+}
+
+/**
+ * `'ready3d'` — THIS CLIENT WILL SAY WHEN ITS 3D PHYSICS CHUNK HAS LOADED.
+ *
+ * `'bb3d'` says the build CAN step a 3D world. It says nothing about WHEN: the Rapier 3D
+ * wasm and the `sim3d/` barrel are two lazy chunks (`initPhysics3d`), so a client that is
+ * fully capable is still unable to step anything for as long as they are in flight. The
+ * server used to start the match the instant everyone readied, and a driver whose chunks
+ * were still downloading watched the first seconds of their own match from the loading
+ * panel — in a RANKED match, seconds they are accounted away for.
+ *
+ * So a client that advertises this sends `{ t: 'physicsReady' }` once `initPhysics3d()` has
+ * resolved, and a `'3d'` room holds its start until every seat that advertised it has.
+ *
+ * ⚠️ IT DEGRADES, unlike `'bb3d'`. A client WITHOUT it counts as ready the moment it sits
+ * down — it is an older build that never sends the message, and a room that waited on one
+ * would wait for `READY3D_DEADLINE_MS` and then start anyway, i.e. hold everyone else up
+ * for 45 seconds for nothing. A bot seat is ready for the same reason: the server's own
+ * physics is up before any room ticks (`physicsReadyForRoom`).
+ */
+export const READY3D_CAP = 'ready3d';
+
+/**
+ * How long a `'3d'` room will hold its start waiting for seats to report in.
+ *
+ * ⚠️ **IT STARTS THE MATCH, IT NEVER CANCELS ONE.** The wait exists to spare a driver the
+ * first seconds of their own match, and that is worth 45 seconds and not one second more —
+ * a chunk that has not arrived by then is not arriving, and the other three people in the
+ * room have done nothing wrong. Cancelling instead would also hand every client a free
+ * dodge: `physicsReady` is a message a client chooses to send, so "never send it" would be
+ * a way to kill a staged ranked match at no cost to the person who killed it.
+ *
+ * Generous because the measure is a cold cache on a bad connection, not a warm one: the
+ * client kicks the load off the moment a server match is in prospect (entering the queue,
+ * joining a room, opening the record page), so the usual wait is zero.
+ */
+export const READY3D_DEADLINE_MS = 45000;
+
+/** does a client advertising `caps` report 3D readiness? A client without the capability
+ *  counts as ready at once — see `READY3D_CAP`. */
+export function reportsPhysicsReady(caps: readonly string[] | undefined): boolean {
+  return !!caps?.includes(READY3D_CAP);
 }
 
 /**
@@ -491,6 +548,16 @@ export const SERVER_CAPS: string[] = [
    * the same remedy: the control is not offered until the server says it can honour it.
    */
   'bots',
+  /**
+   * `'ready3d'` — THIS DEPLOY HOLDS A 3D ROOM'S START UNTIL THE SEATS HAVE LOADED.
+   *
+   * The mirror of the client capability of the same name. Nothing is gated on it: a client
+   * sends `physicsReady` regardless, an older server falls through its `onMessage` switch and
+   * ignores it, and the match starts the way it always did. It is here so a screen can say
+   * whether the wait it is showing is real — and so an operator can tell a fleet mid-rollout
+   * apart from one that is done.
+   */
+  'ready3d',
 ];
 
 /** the formats a "play a friend" challenge can be issued in. Shared so the API's
@@ -604,6 +671,19 @@ export type ClientMsg =
   /** HOST ONLY: remove the bot seat with this roster `clientId` (the synthetic id the server
    *  minted for it and put in the roster). */
   | { t: 'removeBot'; seat: string }
+  /**
+   * MY 3D PHYSICS CHUNK HAS LOADED — sent once `initPhysics3d()` resolves, by any client
+   * that advertised `READY3D_CAP`, and re-sent on a reconnect because a new socket is a new
+   * client record on the server and its readiness went with the old one.
+   *
+   * It carries nothing. It is not a claim the server acts on beyond "stop waiting for this
+   * seat": the room's own physics was up before it ticked anything, and a client that lies
+   * here only hurts itself, since it is its own first tick that throws.
+   *
+   * Idempotent, unconditional and safe against an older server, which ignores an unknown
+   * message rather than refusing it — so there is no `SERVER_CAPS` gate on sending it.
+   */
+  | { t: 'physicsReady' }
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
   /**
@@ -900,7 +980,22 @@ export type ServerMsg =
   // player readies, or the room CANCELS (an `error`) if not everyone readies by
   // `deadline` (epoch ms). `yourRobotId` = this client's roster slot; `intros`
   // carry per-slot ELO for the opponent/teammate cards.
-  | { t: 'strategyStart'; deadline: number; yourRobotId: number; mode: QueueMode; intros: PlayerIntro[]; game?: GameId }
+  //
+  // A CUSTOM ROOM OPENS THE SAME WINDOW, with `ranked: false` (2026-09-22). Its job there is
+  // narrower: the drivers have already readied and the host has already pressed START, so it
+  // is purely the waiting room for the 3D chunks (`READY3D_CAP`) and it closes the moment the
+  // last seat reports in. No ELO travels — there is none — so the screen hides that column,
+  // and the roster is NOT redacted (a custom lobby shows every build, and did before START).
+  // ABSENT ⇒ ranked, which is what every `strategyStart` before this one was.
+  | {
+      t: 'strategyStart';
+      deadline: number;
+      yourRobotId: number;
+      mode: QueueMode;
+      intros: PlayerIntro[];
+      game?: GameId;
+      ranked?: boolean;
+    }
   // a robot left: the server runs it on ZERO from `tick`; snapshots already
   // reflect this, so it is informational (drives the HUD)
   | { t: 'drop'; robotId: number; tick: number }

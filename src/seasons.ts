@@ -137,7 +137,10 @@ export const SEASONS: readonly Season[] = [
 /** a season's brand file as a fetchable URL, under the Vite base (the Electron build serves
  * from `./`, where a bare `/brand/...` resolves at the filesystem root and 404s silently). */
 export function brandUrl(path: string): string {
-  const base = (import.meta.env?.BASE_URL ?? '/').replace(/\/+$/, '');
+  // typed by hand: this file is also compiled by tsconfig.server.json, which has no Vite
+  // client types, and the server never calls this
+  const env = (import.meta as { env?: { BASE_URL?: string } }).env;
+  const base = (env?.BASE_URL ?? '/').replace(/\/+$/, '');
   return `${base}/${path.replace(/^\/+/, '')}`.replace(/\/{2,}/g, '/');
 }
 

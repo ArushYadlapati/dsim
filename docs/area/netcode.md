@@ -84,6 +84,69 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   included. Checks: `scripts/smoke-biobuzz/net3d.ts` §13–14, which assert the INTERPOLATED
   baseline is still far off as well as the fixed number — a bound on one number alone passes just
   as well when the scene stops moving.
+- ⚠️ **A 3D ROOM DOES NOT START UNTIL EVERY SEAT HAS LOADED ITS PHYSICS** (owner request,
+  2026-09-22: "only start any server-required game once 3D physics loads"). ⚠️ **A SERVER
+  CHANGE — it needs a deploy.**
+  `'bb3d'` says a client CAN step a 3D world. It says nothing about WHEN: the Rapier 3D wasm
+  and the `sim3d/` barrel are two LAZY chunks (`initPhysics3d`), and until they land the client
+  cannot be given a controller at all (`game.ts` asserts it). The server started the match the
+  instant everybody readied, so a driver on a cold cache watched the first seconds of their own
+  match from behind the "Loading 3D physics…" panel — in RANKED, seconds their own standing was
+  being accounted against.
+  **THE HANDSHAKE, all additive** (one Fly app serves every client version): a new cap
+  `'ready3d'` on `join`/`queue`, a new `ClientMsg` `{ t: 'physicsReady' }` sent once
+  `initPhysics3d()` resolves, and `LobbyPlayer.ready3d` on the roster so the waiting screen can
+  name WHO it is waiting for. `Room.seatWaiting3d` is the gate and it is asked by all three
+  paths that build a world (`startMatch`, `startRankedImmediate`, `beginRanked`), beside
+  `physicsReadyForRoom` — which is the same question about the SERVER's own copy.
+  - **A CLIENT WITHOUT THE CAP COUNTS AS READY AT ONCE**, and so does a dropped one and a bot.
+    An older build will never send the message, so waiting on one holds a whole room for the
+    full deadline and then starts anyway, which is the worst of both.
+  - ⚠️ **THE DEADLINE STARTS THE MATCH; IT NEVER CANCELS ONE** (`READY3D_DEADLINE_MS`, 45 s
+    from the first moment the room wanted to start). A chunk that has not arrived by then is
+    not arriving and the other three people did nothing wrong — and a cancel would hand every
+    client a FREE DODGE, because `physicsReady` is a message a client chooses to send. That is
+    also why the clock is armed once, inside `seatWaiting3d`, rather than re-stamped by each of
+    the three start paths and the 200 ms polls inside two of them: a deadline every caller
+    re-arms never expires.
+  - ⚠️ **AND THE RANKED STRATEGY COUNTDOWN IS EXTENDED RATHER THAN ENFORCED.**
+    `onStrategyDeadline` is STRICT and CANCELS, billing `unready` to whoever did not press the
+    button — which for a driver who pressed it on time and is still fetching 1.1 MB is a charge
+    for a download. `extendStrategyForReady3d` pushes the window out to the readiness deadline
+    (once, bounded) and re-sends `strategyStart` with the new number, because the clock on that
+    screen is a promise about when the match cancels and one that keeps ticking past a deadline
+    nobody will enforce is a lie the driver can read.
+  - **THE STRATEGY SCREEN IS THE WAITING ROOM, and a CUSTOM room now opens one too** —
+    `Room.enterCustomStart`, `strategyStart` with `ranked: false` and no `intros`, which
+    `MatchStrategy` renders with the ELO column, the re-pick, the ready button and the
+    countdown all gone. Three things differ from the ranked window and each is deliberate:
+    nobody readies a second time (they already did, or the host could not have pressed START),
+    the roster is **NOT redacted** (a custom lobby has shown every build all along, so hiding
+    them for the last two seconds would be the pre-match reveal running backwards — hence the
+    redaction is keyed on `pendingMatch`, not on the phase alone), and leaving forfeits nothing.
+    It opens **only when EVERY member advertises BOTH `'strategy'` and `'ready3d'`**; with a
+    mixed roster the old immediate start stands, because a client that cannot render the window
+    would see a lobby that silently stopped answering START.
+  - ⚠️ **THE CLIENT ANNOUNCES ON `welcome`, NOT BEHIND THE JOIN FRAME.** A `join` is handled
+    ASYNCHRONOUSLY (token verification, a suspension read, a staged-match lookup), so a frame
+    sent straight after it arrives while that socket still has no `room` and `server/index.ts`
+    DROPS it — after which the room waits out its whole 45 s for a client that loaded on time.
+    `welcome` is the server saying the seat is taken and it is re-sent on every reattach, which
+    is exactly the two moments this has to fire. It also may NOT subscribe to
+    `transport.onOpen`/`onReopen`: those are SINGLE-SLOT on both transports, so a second
+    subscriber silently unhooks the re-`join` a reconnect depends on.
+  - **THE PRELOAD IS THE HALF THAT MAKES THE WAIT INVISIBLE** (`src/net/roomPhysics.ts`).
+    Holding the start is only tolerable if it is normally zero, and it is zero exactly when the
+    fetch happened while the player was doing something else: entering the ranked queue
+    (`Matchmaking.find`), sitting on the room-code screen (`Lobby`), opening the record page
+    (`RecordRun`, which already preflighted and REFUSES rather than falling back). That module
+    reaches the game through `simModuleFor` — the SERVER-SAFE registry — because the client one
+    drags in canvas renderers for a question that is one boolean.
+  - Checks: `scripts/smoke-biobuzz/net3d.ts` §2b, driving real `Room`s headlessly. Every
+    negative is paired with the positive one message later (a room that never starts for an
+    unrelated reason would pass "it did not start"), plus the old-client, mixed-roster, 2D-game
+    and deadline cases, and the ranked window's extension end to end.
+
 - **DELTA SNAPSHOTS**: `slimWorld`/`unslimWorld` strip static robot `spec` (client re-injects
   from setups) + delta the balls (send the id ORDER every frame — determinism — but only
   CHANGED ball data); reconnect re-primes with a keyframe.

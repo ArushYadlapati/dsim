@@ -13,6 +13,7 @@ import { DODGE_REASON, type DodgeVerdict } from '../dodge';
 import { STANDING_MAX, WINDOW_HOURS, lockRemaining, tierOf } from '../standing';
 import { BB3D_CAP, RANKED_JOIN_GRACE_MS, STRATEGY_DURATION_MS } from '../net/protocol';
 import { serverCaps } from '../net/api';
+import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
 import { moduleFor } from '../games';
 import { widenHint, queuesFor } from './queueDepth';
 import {
@@ -655,6 +656,10 @@ export function Matchmaking({
     const lobby = new LobbyClient(transport);
     wireRoomLobby(lobby, room, live);
     lobby.join(room, playerInfoRef.current());
+    // THE SEAT IS TAKEN HERE, so this is where it reports its physics in. The chunks were
+    // already asked for when the queue was joined (`find`), so this normally resolves at once
+    // and the room never waits at all.
+    announcePhysicsReady(lobby, challengeRef.current?.game ?? gameRef.current);
     return lobby;
   };
 
@@ -812,6 +817,16 @@ export function Matchmaking({
         return;
       }
     }
+    /**
+     * START THE DOWNLOAD THE MOMENT THE QUEUE IS JOINED, not when the match is found.
+     *
+     * The room holds its start until every seat's 3D chunks have landed (`READY3D_CAP`), and
+     * that wait is only invisible if it happened while the player was watching the search
+     * spinner — a queue can sit for a minute and the fetch is ~1.1 MB. Unawaited on purpose:
+     * nothing on this screen depends on it, and a failure is answered by the room's own
+     * deadline rather than by refusing to queue.
+     */
+    void preloadRoomPhysics(queueGame);
     setError('');
     setElapsed(0);
     setBumps(0);
@@ -879,6 +894,11 @@ export function Matchmaking({
           }
         : undefined,
     );
+    // THE DEV / SINGLE-REGION PATH plays the match on this same socket (`wireStrategy` above),
+    // so it is a seat and owes the same announcement. On the multi-region path the mm socket
+    // is thrown away at `matchAssigned` and `openAssignedRoom` makes it on the real one; the
+    // latch is per `LobbyClient`, so saying it twice on two sockets is correct, not double.
+    announcePhysicsReady(lobby, challengeRef.current?.game ?? settings.game);
   };
 
   /** a ranked match was assigned: drop the matchmaker socket and open a fresh one to

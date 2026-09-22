@@ -5,7 +5,10 @@ import {
   BB3D_CAP,
   BB3D_REFUSAL,
   CLIENT_CAPS,
+  READY3D_CAP,
+  READY3D_DEADLINE_MS,
   SERVER_CAPS,
+  reportsPhysicsReady,
   applyBallDelta,
   decodeServerMsg,
   encodeBallDelta,
@@ -28,6 +31,7 @@ import type { BotDriver } from '../../src/games/types';
 import { DEFAULT_ASSISTS, type RobotSetup } from '../../src/sim/spawn';
 import { ReplayPlayer, maxMatchTicks, runRecordMatch, type Replay } from '../../src/sim/replay';
 import { Room, type Client } from '../../server/room';
+import type { PendingMatch } from '../../server/matchTypes';
 import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { BB_POLLEN_R } from '../../src/games/biobuzz/config';
 import { readFileSync } from 'node:fs';
@@ -120,6 +124,23 @@ function mkClient(
 }
 
 /**
+ * START A ROOM THE WAY A REAL CLIENT DOES — report every seat's 3D physics in, then press
+ * START (owner request, 2026-09-22, `READY3D_CAP`).
+ *
+ * ⚠️ WITHOUT THE FIRST HALF A 3D ROOM DOES NOT START AT ALL, which is the point of the gate:
+ * `mkClient` advertises `CLIENT_CAPS`, so every seat here promises to say when its chunks have
+ * landed, and the room holds `startMatch` for exactly as long as one has not. A test that
+ * presses START alone is testing a room full of clients that are still loading.
+ */
+const startRoom = (room: Room, ids: readonly string[], host = ids[0]): void => {
+  for (const id of ids) room.onMessage(id, { t: 'physicsReady' });
+  room.onMessage(host, { t: 'start' });
+};
+
+/** every seat of the standard 2v2 roster */
+const ALL_SEATS = ROSTER.map((s) => s.id);
+
+/**
  * A BUSY DRIVER, as a pure function of tick and seat.
  *
  * Deterministic and fully scripted, because a check that depends on when a key was pressed is
@@ -165,7 +186,7 @@ export function net3dChecks(check: Check): void {
     for (const s of ROSTER) {
       room.add(mkClient(s, s.id === 'n3-b1' ? (m) => msgs.push(wireCopy(m)) : () => {}));
     }
-    room.onMessage('n3-b1', { t: 'start' });
+    startRoom(room, ALL_SEATS);
     // FOUR TICKS, because `beginMatch` broadcasts `matchStart` and then hands the room to its
     // own 60 Hz timer — the first snapshot is a tick or two away, and `SNAPSHOT_INTERVAL` is 2.
     // `advanceForTest` also drops that timer, which is what stops a lane leaving live rooms
@@ -233,6 +254,223 @@ export function net3dChecks(check: Check): void {
     check('room: ...and a current client is admitted to it', physicsAllowed(bare.physics, CLIENT_CAPS));
   }
 
+  // ═══ 2b. A 3D ROOM DOES NOT START UNTIL EVERY SEAT HAS LOADED ══════════════
+  //
+  // Owner request, 2026-09-22: "only start any server-required game once 3D physics loads".
+  // `'bb3d'` says a client CAN step a 3D world; `'ready3d'` + `{ t: 'physicsReady' }` say WHEN,
+  // and the gap between them is the driver who watched the first seconds of their own ranked
+  // match from behind a loading panel.
+  //
+  // ⚠️ EVERY CHECK HERE IS ABOUT A MATCH NOT HAPPENING, which is the one kind that goes
+  // vacuous silently: a room that never starts for some unrelated reason passes the first
+  // three of them. So each negative is paired with the positive that follows it — the same
+  // room, one message later, DOES start.
+  {
+    const seen: ServerMsg[] = [];
+    const room = new Room('n3-r3d-hold', () => {}, { kind: 'versus', game: 'biobuzz' });
+    for (const s of ROSTER) room.add(mkClient(s, s.id === 'n3-b1' ? (m) => seen.push(wireCopy(m)) : () => {}));
+    room.onMessage('n3-b1', { t: 'start' });
+    const started = (): boolean => seen.some((m) => m.t === 'matchStart');
+    check('ready3d: START is held while every seat is still loading', !started());
+    // ...and the screen is told what it is waiting for, per seat, off the roster
+    const ros = (): Extract<ServerMsg, { t: 'roster' }> | undefined =>
+      [...seen].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+    check(
+      'ready3d: the roster says WHICH seats have not loaded',
+      ros()?.players.every((p) => p.ready3d === false) === true,
+      ros()?.players.map((p) => `${p.clientId}:${String(p.ready3d)}`).join(' '),
+    );
+    // the waiting screen itself: a custom room's window, with no ratings on it
+    const ss = seen.find((m) => m.t === 'strategyStart') as Extract<ServerMsg, { t: 'strategyStart' }> | undefined;
+    check('ready3d: a custom room opens the strategy window to wait in', !!ss);
+    check('ready3d: ...with ranked FALSE, so the screen hides the ELO column', ss?.ranked === false, String(ss?.ranked));
+    check('ready3d: ...and no intros, because a custom room rates nothing', ss?.intros.length === 0);
+    check(
+      'ready3d: ...and the roster is NOT redacted in it (a custom lobby has shown every build all along)',
+      ros()?.players.every((p) => !p.hidden) === true,
+    );
+    // three of four report in: still not enough, and that is the check that makes the last one
+    // mean something (a room that starts on the FIRST message would pass "it started" too)
+    for (const s of ROSTER.slice(0, 3)) room.onMessage(s.id, { t: 'physicsReady' });
+    check('ready3d: three of four seats loaded is still not four', !started());
+    room.onMessage(ROSTER[3].id, { t: 'physicsReady' });
+    check('ready3d: the last seat reporting in starts the match', started());
+    room.advanceForTest(1); // drop the live timer this lane must not leave running
+  }
+
+  // AN OLD CLIENT IS NEVER WAITED FOR. It cannot send the message, so waiting on one would
+  // hold a whole room for the full deadline and then start anyway — the worst of both.
+  {
+    const seen: ServerMsg[] = [];
+    const room = new Room('n3-r3d-old', () => {}, { kind: 'versus', game: 'biobuzz' });
+    const old = CLIENT_CAPS.filter((c) => c !== 'ready3d');
+    for (const s of ROSTER) room.add(mkClient(s, s.id === 'n3-b1' ? (m) => seen.push(wireCopy(m)) : () => {}, old));
+    room.onMessage('n3-b1', { t: 'start' });
+    check(
+      'ready3d: a roster with no `ready3d` cap starts at once, exactly as it did before',
+      seen.some((m) => m.t === 'matchStart'),
+    );
+    const ros = [...seen].reverse().find((m) => m.t === 'roster') as Extract<ServerMsg, { t: 'roster' }> | undefined;
+    check(
+      'ready3d: ...and no seat carries a load state, because there is nothing to wait for',
+      ros?.players.every((p) => p.ready3d === undefined) === true,
+    );
+    room.advanceForTest(1);
+  }
+
+  // A MIXED ROSTER TAKES THE OLD PATH WHOLE. One client that cannot render the waiting screen
+  // (no `'strategy'`) is enough: the alternative is a lobby that silently stops answering
+  // START for whoever is on the older build.
+  {
+    const seen: ServerMsg[] = [];
+    const room = new Room('n3-r3d-mixed', () => {}, { kind: 'versus', game: 'biobuzz' });
+    room.add(mkClient(ROSTER[0], (m) => seen.push(wireCopy(m))));
+    room.add(mkClient(ROSTER[1], () => {}, ['bb3d', 'ready3d'])); // no 'strategy'
+    room.onMessage(ROSTER[0].id, { t: 'start' });
+    check(
+      'ready3d: a mixed room starts immediately rather than opening a window one member cannot show',
+      seen.some((m) => m.t === 'matchStart'),
+    );
+    check('ready3d: ...and opens no window at all', !seen.some((m) => m.t === 'strategyStart'));
+    room.advanceForTest(1);
+  }
+
+  // THE DEADLINE STARTS THE MATCH, IT NEVER CANCELS ONE. A chunk that has not arrived in 45 s
+  // is not arriving, and the other three people in the room did nothing wrong — and a cancel
+  // here would hand every client a free dodge, since `physicsReady` is a message a client
+  // chooses to send.
+  {
+    const seen: ServerMsg[] = [];
+    const room = new Room('n3-r3d-deadline', () => {}, { kind: 'versus', game: 'biobuzz' });
+    for (const s of ROSTER) room.add(mkClient(s, s.id === 'n3-b1' ? (m) => seen.push(wireCopy(m)) : () => {}));
+    room.onMessage('n3-b1', { t: 'start' });
+    check('ready3d: (the deadline case is held first, so its start is the deadline’s)', !seen.some((m) => m.t === 'matchStart'));
+    room.forceReady3dDeadlineForTest();
+    check('ready3d: the deadline starts the match with a seat still loading', seen.some((m) => m.t === 'matchStart'));
+    check(
+      'ready3d: ...and nobody is told the match was cancelled',
+      !seen.some((m) => m.t === 'error'),
+      seen.filter((m) => m.t === 'error').map((m) => (m.t === 'error' ? m.message : '')).join(' | '),
+    );
+    room.advanceForTest(1);
+  }
+
+  // A 2D GAME NEVER WAITS, whatever its clients advertise — there is no chunk to load.
+  {
+    const seen: ServerMsg[] = [];
+    const room = new Room('n3-r3d-2d', () => {}, { kind: 'versus', game: 'decode' });
+    for (const s of ROSTER) room.add(mkClient(s, s.id === 'n3-b1' ? (m) => seen.push(wireCopy(m)) : () => {}));
+    room.onMessage('n3-b1', { t: 'start' });
+    check('ready3d: a DECODE room starts on START, with nobody having reported anything', seen.some((m) => m.t === 'matchStart'));
+    room.advanceForTest(1);
+  }
+
+  // RANKED IS WHERE THE WAIT WAS WORTH BUILDING — the strategy screen (alliances + ELO) IS
+  // the waiting room, and its clock must not run out on a download. `onStrategyDeadline` is
+  // STRICT and CANCELS, so without the extension a driver who readied on time and was still
+  // fetching 1.1 MB lost the match AND was billed a `unready` dodge for it.
+  {
+    const rec: ServerMsg[] = [];
+    const mkRanked = (
+      seat: { id: string; alliance: Alliance; startIndex: number },
+      userId: string,
+      onMsg: (m: ServerMsg) => void,
+    ): Client => {
+      const c = mkClient(seat, onMsg);
+      c.userId = userId;
+      c.player.ready = false; // a staged room resets ready anyway; be explicit
+      return c;
+    };
+    const room = new Room('n3-rank3d', () => {}, { kind: 'versus', game: 'biobuzz' });
+    const pending: PendingMatch = {
+      code: 'iad-n3rank',
+      hostRegion: 'iad',
+      mode: '1v1',
+      seed: 7,
+      ranked: true,
+      game: 'biobuzz',
+      roster: [
+        { userId: 'u-n3-red', name: 'red', teamName: 'T', teamNumber: 1, spec: { ...BB_DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'red', introElo: 1200 },
+        { userId: 'u-n3-blue', name: 'blue', teamName: 'T', teamNumber: 2, spec: { ...BB_DEFAULT_SPEC }, assists: { ...DEFAULT_ASSISTS }, startIndex: 0, alliance: 'blue', introElo: 1300 },
+      ],
+    };
+    room.applyPending(pending);
+    room.add(mkRanked({ id: 'n3-rk-r', alliance: 'red', startIndex: 0 }, 'u-n3-red', (m) => rec.push(wireCopy(m))));
+    room.add(mkRanked({ id: 'n3-rk-b', alliance: 'blue', startIndex: 0 }, 'u-n3-blue', () => {}));
+    room.maybeStartRanked();
+    const ss0 = rec.find((m) => m.t === 'strategyStart') as Extract<ServerMsg, { t: 'strategyStart' }> | undefined;
+    check('ready3d ranked: the strategy window opened (else nothing below proves anything)', !!ss0);
+    check('ready3d ranked: ...and it is RANKED, so the screen keeps its ELO column', ss0?.ranked !== false);
+    room.onMessage('n3-rk-r', { t: 'update', patch: { ready: true } });
+    room.onMessage('n3-rk-b', { t: 'update', patch: { ready: true } });
+    const started = (): boolean => rec.some((m) => m.t === 'matchStart');
+    check('ready3d ranked: both drivers ready is NOT enough while a seat is still loading', !started());
+    const deadlines = (): number[] =>
+      rec.filter((m): m is Extract<ServerMsg, { t: 'strategyStart' }> => m.t === 'strategyStart').map((m) => m.deadline);
+    check(
+      'ready3d ranked: the window is EXTENDED and the screen is re-told the new deadline',
+      deadlines().length > 1 && deadlines()[deadlines().length - 1] > deadlines()[0],
+      deadlines().join(' → '),
+    );
+    // the strict deadline firing now must NOT cancel: everyone did what was asked of them
+    room.forceStrategyDeadlineForTest();
+    check(
+      'ready3d ranked: the strategy deadline does not cancel a match everyone readied for',
+      !rec.some((m) => m.t === 'error'),
+      rec.filter((m) => m.t === 'error').map((m) => (m.t === 'error' ? m.message : '')).join(' | '),
+    );
+    check('ready3d ranked: ...and still has not started it', !started());
+    room.onMessage('n3-rk-r', { t: 'physicsReady' });
+    check('ready3d ranked: one of two seats loaded is not both', !started());
+    room.onMessage('n3-rk-b', { t: 'physicsReady' });
+    check('ready3d ranked: the last seat reporting in starts the ranked match', started());
+    room.advanceForTest(1);
+  }
+
+  // THE CLIENT SIDE OF THE HANDSHAKE, as a source pin: the capability is advertised, the
+  // announcement is latched rather than hooked onto `onOpen` (which is single-slot on both
+  // transports — a second subscriber silently unhooks the re-`join` a reconnect needs), and
+  // every screen that can lead into a server room starts the fetch early.
+  {
+    check('ready3d: this build advertises the capability', CLIENT_CAPS.includes(READY3D_CAP));
+    check('ready3d: the server advertises the mirror of it', SERVER_CAPS.includes(READY3D_CAP));
+    check('ready3d: the deadline is the one both halves read', READY3D_DEADLINE_MS >= 30000 && READY3D_DEADLINE_MS <= 120000, `${READY3D_DEADLINE_MS}ms`);
+    check('ready3d: a client without the cap reports nothing', !reportsPhysicsReady(['bb3d', 'strategy']));
+    const lc = readFileSync('src/net/lobbyClient.ts', 'utf8');
+    const announce = /\n {2}physicsReady\(\): void \{[\s\S]*?\n {2}\}/.exec(lc)?.[0] ?? '';
+    check(
+      'ready3d: `physicsReady` LATCHES — it does not subscribe to `onOpen`, which is single-slot',
+      /this\.ready3d = true/.test(announce) && !/onOpen|onReopen/.test(announce),
+      announce.replace(/\s+/g, ' ').slice(0, 120),
+    );
+    check(
+      'ready3d: ...and the latch is flushed on `welcome`, not behind the join frame',
+      // a join is handled ASYNCHRONOUSLY server-side, so a frame sent straight after it lands
+      // on a socket with no room yet and is dropped with nothing to retry it
+      /m\.t === 'welcome'\)? \{[\s\S]{0,900}?this\.sendPhysicsReady\(\);/.test(lc),
+    );
+    const rp = readFileSync('src/net/roomPhysics.ts', 'utf8');
+    check(
+      'ready3d: the helper reaches the game through the SERVER-SAFE registry, not the canvas one',
+      /from '\.\.\/games\/sim'/.test(rp) && !/from '\.\.\/games'/.test(rp),
+    );
+    for (const [file, what] of [
+      ['src/ui/Matchmaking.tsx', 'the ranked queue'],
+      ['src/ui/Lobby.tsx', 'the custom room'],
+    ] as const) {
+      const src = readFileSync(file, 'utf8');
+      check(`ready3d: ${what} fetches the chunk before a match is in prospect`, src.includes('preloadRoomPhysics('));
+      check(`ready3d: ...and ${what} announces it on the room socket`, src.includes('announcePhysicsReady('));
+    }
+    const rr = readFileSync('src/ui/RecordRun.tsx', 'utf8');
+    check('ready3d: the record page announces readiness on its own room too', rr.includes('announcePhysicsReady('));
+    check('ready3d: ...and shows a loading state rather than a bare status line', rr.includes('ds-loading'));
+    const ms = readFileSync('src/ui/MatchStrategy.tsx', 'utf8');
+    check('ready3d: the strategy screen names the seats that are still loading', ms.includes('LOADING 3D'));
+    check('ready3d: ...and says so instead of “Everyone ready. Starting…”', /loading3d\.length[\s\S]{0,160}Loading 3D physics/.test(ms));
+    check('ready3d: ...and hides the ELO column when the window is not ranked', /ranked && <span className="ds-chip">ELO/.test(ms));
+  }
+
   // ═══ 3. THE OLD-CLIENT PROOF: a 2D GAME's wire is what it always was ═══════
   //
   // This used to be a BIOBUZZ room with no `physics` in its config. That room is 3D now (section
@@ -246,7 +484,7 @@ export function net3dChecks(check: Check): void {
     for (const s of ROSTER) {
       room.add(mkClient(s, s.id === 'n3-b1' ? (m) => msgs.push(wireCopy(m)) : () => {}));
     }
-    room.onMessage('n3-b1', { t: 'start' });
+    startRoom(room, ALL_SEATS);
     room.advanceForTest(4); // see the note in the 3D room above
     const start = msgs.find((m) => m.t === 'matchStart') as
       | Extract<ServerMsg, { t: 'matchStart' }>
@@ -487,7 +725,7 @@ export function net3dChecks(check: Check): void {
       },
     );
     for (const seat of ROSTER) room.add(mkClient(seat, seat.id === 'n3-b1' ? sink : () => {}));
-    room.onMessage('n3-b1', { t: 'start' });
+    startRoom(room, ALL_SEATS);
 
     /**
      * Fed a tick at a time, because that is how a driver feeds one. `advanceForTest(n)` pumps
@@ -775,7 +1013,7 @@ export function net3dChecks(check: Check): void {
         };
       };
       for (const s of ROSTER) room.add(mkClient(s, s.id === 'n3-b1' ? sink : () => {}));
-      room.onMessage('n3-b1', { t: 'start' });
+      startRoom(room, ALL_SEATS);
       room.advanceForTest(1); // matchStart + the first snapshot, so `setups` is in hand
 
       let predictor: Predictor | null = null;
@@ -930,7 +1168,7 @@ export function net3dChecks(check: Check): void {
         check('bots: ...filling BOTH alliances rather than stacking one', sides.size === 2,
           (ros?.players ?? []).map((p) => `${p.name}:${p.alliance}`).join(' '));
 
-        room.onMessage(ROSTER[0].id, { t: 'start' });
+        startRoom(room, [ROSTER[0].id]);
         room.advanceForTest(4);
         check('bots: the match started with four robots', room.tick > 0);
       }
@@ -947,7 +1185,7 @@ export function net3dChecks(check: Check): void {
         });
         room.add(mkClient(ROSTER[0], () => {}));
         room.addBot(drv.tiers[drv.tiers.length - 1]);
-        room.onMessage(ROSTER[0].id, { t: 'start' });
+        startRoom(room, [ROSTER[0].id]);
         for (let t = 0; t < 700; t++) {
           const tick = room.tick + 1;
           room.onMessage(ROSTER[0].id, { t: 'input', tick, q: quantizeCommand(drive(tick, 0)) });
@@ -973,7 +1211,7 @@ export function net3dChecks(check: Check): void {
           }),
         );
         room2.addBot(drv.tiers[drv.tiers.length - 1]);
-        room2.onMessage(ROSTER[0].id, { t: 'start' });
+        startRoom(room2, [ROSTER[0].id]);
         room2.advanceForTest(700);
         const a = first as World | null;
         const b = last as World | null;
@@ -1310,7 +1548,7 @@ function elementDrawProbe(
     c.player.assists = { ...DEFAULT_ASSISTS, fieldCentric: false, aimAssist: false };
     room.add(c);
   }
-  room.onMessage('n3-b1', { t: 'start' });
+  startRoom(room, ALL_SEATS);
   room.advanceForTest(1);
 
   // STAGE one element on the tiles, dead ahead of the local robot, and drive straight at it.

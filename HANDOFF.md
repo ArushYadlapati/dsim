@@ -72,6 +72,30 @@ the same body type; it is a `ToggleRow` (Private / Anyone can watch), and the ot
 labels (title picker, consent, your-data, admin) take `--ds-t-md` 600 ink. Client-only; no Fly
 redeploy needed.
 
+**Follow-up, same day: no server match starts before the 3D chunk is loaded** (owner). A
+`'ready3d'` cap + `{t:'physicsReady'}` ClientMsg; a 3D room's `beginMatch` waits for every seated
+client that advertised the cap (old clients, bots and disconnected seats count as ready), bounded
+by `READY3D_DEADLINE_MS` 45 s. ⚠️ **The deadline STARTS the match, never cancels it**: a client
+chooses whether to send `physicsReady`, so a cancel would be a free dodge. Ranked: the strategy
+window is extended to the deadline (`extendStrategyForReady3d`, re-broadcast) so a driver still
+fetching the chunk is not billed an `unready` dodge; the strategy screen shows `LOADING 3D` per
+seat. Custom rooms open the same window with `strategyStart.ranked: false` (no ELO, no countdown)
+when every member has both `'strategy'` and `'ready3d'`; otherwise the old immediate start.
+Record runs show `.ds-loading` while the chunk loads. Client preloads on queue entry / room mount /
+record page (`src/net/roomPhysics.ts`); `LobbyClient.physicsReady()` LATCHES and flushes on
+`welcome` (a frame sent behind the join races the async join handler and is dropped). 50 checks in
+`net3d.ts` §2b. **SERVER CHANGE — deployed to dsim-alpha.** Details: docs/area/netcode.md.
+
+**Also:** the in-match top-right HUD is main's again (game card alone; SPEC / DESYNC / server chips
+in the restored bottom-right `.net-corner`, which carries no `data-hud-band`, so the 3D camera no
+longer re-frames when a spectator chip lands). Alpha's later removal of the NECTAR dot column is
+kept. The app bar names the loaded season (`.ds-bar-season`, "DSIM · BIOBUZZ"). The home game
+picker is a WORDMARK TAB STRIP (`.ds-wordmarks`): the seasons' bare words cut from the brand packs
+(the FIRST files' "presented by" sublines removed so the three share a baseline), black cut on
+light / white cut on dark, one height, accent rule under the selected one; the poster tiles are
+gone. `brandUrl` types `import.meta` by hand because `seasons.ts` is also compiled by
+`tsconfig.server.json`.
+
 **Follow-up, same day: season artwork.** `public/brand/<game>/` holds the publisher files (README
 there has the sources and the trademark note): FIRST's DECODE and BIOBUZZ brand packs
 (`FIRST_AGE-FTC-logos.zip`, `first-biobuzz-logos.zip`), and the owner's Chain Reaction mark and

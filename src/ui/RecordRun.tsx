@@ -10,6 +10,7 @@ import { loadActiveGame } from '../net/activeGame';
 import { moduleFor } from '../games';
 import { serverPhysics } from '../games/types';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
+import { announcePhysicsReady } from '../net/roomPhysics';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
@@ -39,6 +40,15 @@ export function RecordRun({
   onRejoinActive?: () => void;
 }) {
   const [status, setStatus] = useState('Connecting to the record server…');
+  /**
+   * WAITING ON THE 3D PHYSICS CHUNK, as a state and not as a reading of `status`.
+   *
+   * It decides which BODY the card shows — the loading line, or the cold-boot note — and the
+   * two are different situations with different waits. Deriving it by comparing `status`
+   * against its own sentence would make the copy load-bearing, which is how a wording change
+   * becomes a behaviour change.
+   */
+  const [loading3d, setLoading3d] = useState(false);
   const [error, setError] = useState('');
   /** the server's machine-readable reason, when it gave one (older servers give none —
    *  see the message fallback where this is set) */
@@ -83,6 +93,7 @@ export function RecordRun({
 
     const connect = (): void => {
       if (cancelled) return;
+      setLoading3d(false);
       setStatus('Connecting to the record server…');
       const room = 'rec-' + Math.random().toString(36).slice(2, 9); // private, ephemeral
       // route to the picked region (one-app multi-region); solo, so no cross-region concern
@@ -154,6 +165,11 @@ export function RecordRun({
         },
         { kind: 'record', record: mode, game: settings.game },
       );
+      // the server holds a 3D room's start until every seat reports in (`READY3D_CAP`). This
+      // page only dials once the chunk has resolved, so the announcement goes out behind the
+      // join frame and the room starts with no wait — but the SERVER-SIDE gate is what makes
+      // that a guarantee rather than an ordering the client happens to keep.
+      announcePhysicsReady(lobby, settings.game);
 
       close = () => {
         if (timer) window.clearTimeout(timer);
@@ -162,9 +178,11 @@ export function RecordRun({
     };
 
     if (serverPhysics(moduleFor(settings.game)) === '3d' && !physics3dReady()) {
+      setLoading3d(true);
       setStatus('Loading 3D physics…');
       void initPhysics3d().then(connect, (err: unknown) => {
         if (cancelled) return;
+        setLoading3d(false);
         // eslint-disable-next-line no-console
         console.warn('BIOBUZZ 3D physics failed to load; refusing to start a record run.', err);
         setError(
@@ -272,9 +290,17 @@ export function RecordRun({
     </>,
     `${kind} · ${status}`,
     <>
-      <p className="ds-hint">
-        First run after a quiet spell waits a few seconds for the server to wake.
-      </p>
+      {/* TWO WAITS, TWO SENTENCES. The 3D chunk is this machine downloading ~1.1 MB and the
+          run cannot be requested until it lands (a record run never falls back to 2D); the
+          cold boot is the server waking. Saying "the server is waking" while the hold-up is
+          local sends somebody to check a connection that is fine. */}
+      {loading3d ? (
+        <p className="ds-loading">Loading 3D physics…</p>
+      ) : (
+        <p className="ds-hint">
+          First run after a quiet spell waits a few seconds for the server to wake.
+        </p>
+      )}
       <div className="ds-actions">
         <button className="ds-cta ghost" onClick={onCancel}>
           BACK TO HOME
