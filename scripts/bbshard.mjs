@@ -44,7 +44,7 @@ const QUIET = arg('quiet', 'false') === 'true';
  *  stale number costs a slightly worse pack and nothing else. Re-read them off the footer of
  *  `npm run test:bb` when a lane's weight changes a lot. */
 const COST = {
-  sim3d: 13.8, net3d: 12.7, ai: 11.3, field: 8.1, hive3d: 6.1, server: 4.7, flower3d: 4.2,
+  sim3d: 13.8, net3d: 12.7, ai: 11.3, aiplay: 10.7, field: 8.1, hive3d: 6.1, server: 4.7, flower3d: 4.2,
   tutorial: 2.9, robot: 2.6, rules: 1.5, render: 0.9, predict: 0.3, core: 0.1, sponsor: 0.1,
 };
 

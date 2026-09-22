@@ -27,6 +27,7 @@
     "test:bb:robot": "tsx scripts/smoke-biobuzz/index.ts --lane robot",
     "test:mm": "tsx scripts/mmsmoke.ts",
     "test:ai": "tsx scripts/aismoke.ts",
+    "bench:ai": "tsx scripts/aibench.ts",
     "contrast": "node scripts/contrast.mjs",
     "shiftaudit": "electron scripts/shiftaudit.cjs",
     "shots": "electron scripts/shots.cjs",

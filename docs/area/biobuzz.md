@@ -1511,52 +1511,87 @@ penalties." Both per-robot latches are gone from `penalties.ts`.
 
 ---
 
-# AI DRIVERS (`src/games/biobuzz/ai/`) — Day 3, plan §6
+# AI DRIVERS (`src/games/biobuzz/ai/`) — Day 3, plan §6; rewritten 2026-09-22
 
 `GameSimModule.bot` is filled for BIOBUZZ and absent for DECODE and Chain Reaction. Three tiers
 (`easy` / `medium` / `hard`), ONE policy: `tiers.ts` is a table of numbers the single state machine
 in `policy.ts` multiplies or branches on, so "Easy is a worse driver" never becomes "Easy is a
 different program". **No tier may read anything a lower tier cannot** — difficulty is execution
-(speed, hesitation, patience, how strict it is about taking a shot), never information.
+(speed, reaction delay, where it shoots from, how it picks targets), never information. **And no tier
+is allowed to be broken**: the stuck test, the reachability test and the foul guards are the same
+for every tier.
+
+**Measured, 3D, 20 seeds a cell (`npm run bench:ai`).** Solo = one bot against an idle robot; 2v2 =
+four bots of one tier, points per alliance.
+
+| | solo easy / medium / hard | 2v2 easy / medium / hard | max stuck run | fouls / alliance |
+|---|---|---|---|---|
+| before (every bot on the default chassis) | 25.8 / 48.0 / 62.4 | 55.1 / 88.9 / 90.3 | 24–76 s | 1–14.5 pts |
+| after (roster builds) | 95.5 / 181.4 / 247.6 | 137.0 / 230.3 / 260.2 | ≤ 4 s | 0–2 pts |
+
+The old HARD bot was stuck for 63 s of every match on average (a 12-s corner press in almost every
+one) and EASY stood idle for 113 s of 150. Head to head now: HARD beats EASY 12–0 (margin 144) and
+MEDIUM 11–1 (margin 45) over 12 seeded 2v2s.
 
 - **The memory is the CALLER's.** `bot.create(world, robotId, tier, seed)` returns a `BotSeat`; the
   caller (the controller in practice, `Room` on the server, the LAN host worker) calls
   `seat.step(world)` ONCE per tick before `biobuzzStep`, puts the result in the command map, and
   **records it exactly like a driver's** — so a replay of a match with a bot in it re-simulates with
   no bot at all. Nothing about the bot is written to the `World`. There is deliberately **no
-  memoryless `drive`**: a policy with hysteresis cannot answer one honestly, and a server calling it
-  while a client predicted with `create` would disagree about what the bot did.
+  memoryless `drive`**.
+- **The robot is the driver's too** (`BotDriver.build`, `ai/builds.ts`). Six roster builds — every
+  launcher, five drivetrains, sweepers and side rollers on three mounts, two Box Tube builds — each
+  a coercer FIXED POINT, legal at every anchor, ≤ 18 in tall so it drives under the HIVE. The pick
+  is a pure function of `(seed, robotId)` (the tier does not pick the robot), so the bots of one
+  match are always different robots. `game.ts` calls it with the practice seed; `Room.startMatch`
+  draws the match seed BEFORE laying out the seats so it can do the same, and a rematch keeps the
+  robots it had (it reuses `matchSetups`).
 - ⚠️ **`ai/` IS SIM CODE AND IT IS IN THE MAIN CHUNK.** No DOM, no clock, no `Math.random`, no
-  `process` (a `process.env` debug hook threw on the first decision in a browser and took the render
-  loop down — green in Node, fatal on the page), no `import.meta`, and nothing from `sim3d/` but
-  `tilt`. The AI lane greps for all of it.
-- ⚠️ **It never reads `world.rngState`.** Its randomness is its own mulberry32 chain seeded
-  `(matchSeed, seat)`. The world's chain is CONSUMED, so a bot drawing from it would move every
-  later draw in the match and a client predicting a tick without the bot would diverge. The lane
-  proves the absence with a `Proxy` that records any access.
-- Commands leave through `localizeCommand` (the wire round-trip), so what is recorded and what is
-  simulated are the same bytes. The bot re-decides every `BB_AI_DECIDE_TICKS` (6) and holds in
-  between, which is what keeps a recorded bot track hold-last friendly.
-- **Tuning lives in `config.ts` under `BB_AI_*`**, all `APPROX`, and each constant's header carries
-  the measurement that fixed it. Four of them are bugs that shipped in a morning's tuning and are
-  worth knowing before touching the policy: a bot that drives at full stick right up to its goal
-  OVERSHOOTS it every decision window (`BB_AI_SLOW_RADIUS`); a purely radial obstacle push parks the
-  robot at the balance point instead of going round (the tangential term in `route`); patience
-  counted against an element ID never fires, because two elements in a corner take turns being the
-  nearest one (`BbBotMemory.noProgress` counts against the HOPPER); and giving up on one unreachable
-  element without its neighbours is giving up on nothing (`BB_AI_GIVEUP_RADIUS`).
-- **Fouls are the tier table's real constraint.** A faster bot that drives through an opponent
-  collects G421 PINNING majors and hands them 20 points each; the first tuning that made HARD
-  genuinely faster also made it LOSE to EASY. `BB_AI_PIN_DECISIONS` backs a bot off an opponent it
-  has been leaning on, and `BB_AI_ROBOT_CLEAR` keeps it out of contact it does not need.
-  `BB_AI_HIVE_CREEP` slows it under the HIVE — it used to be there so a legal drive-under was not
-  a G417 ram; G417 is REMOVED (owner ruling, 2026-09-19) and the creep is kept as measured tuning
-  pending a `test:ai` re-measure, not because the rule still needs it.
-- **Verification:** the `AI` lane in `npm test` (the seam, determinism over 3,600 ticks under BOTH
-  physics, the read list, quantization, R102's stow/deploy, `step3d` perf with bots driving, and
-  that a bot can actually score) and `npm run test:ai` (`scripts/aismoke.ts`, ~9 min, OUTSIDE
-  `npm test`) for the statistical claim. The head-to-head win rate is a **RATCHET**, currently
-  under plan §6's 90% target — read the comment on `BB_AI_WIN_RATE_FLOOR` before changing it.
+  `process`, no `import.meta`, and nothing from `sim3d/` but `tilt`. The AI lane greps for all of
+  it. **It never reads `world.rngState`** (the lane's `Proxy`); its randomness is its own mulberry32
+  chain seeded `(matchSeed, seat)`. Commands leave through `localizeCommand`, and the bot re-decides
+  every `BB_AI_DECIDE_TICKS` (6) and holds in between.
+- ⚠️ **SHOOT FROM WHERE IT GOES IN, NOT WHERE THE VERDICT SAYS YES.** `bbFlightEnters` is the 2D
+  ballistic model; under the 3D solve a shot from inside 24 in or from the side clips the cell and
+  the frame. Measured over 247 match shots of the old policy: 56 % in, 5 of 79 from inside 24 in.
+  Off a grid of stands the turret is 100 % at 30–48 in within 30° of the mouth normal, the dumper
+  at 30–42 in within 45° (`BB_AI_TURRET_D` / `BB_AI_DUMP_D`, `ai/tuning.ts`). A turret also shoots
+  on the move, but never CLOSING on the cell: tangential and receding shots are 24/24 at every
+  speed, closing ones 0/6 at 40 in/s (`BB_AI_MAX_CLOSING`).
+- **Count to the TIP** (`tipSense`): fire what the cell needs and keep the rest, never fire into a
+  tray that has tipped but not released, and walk to the far cell while the tray swings.
+- **A goal is CHECKED and a route is PLANNED** (`ai/geom.ts`): an element whose only mouth-on pose
+  puts the chassis in a wall is approached another way or not at all (`poseClear`), and routes go
+  round the foot bars (`nextWaypoint`). A TANK arrives along a line through a staging point — it
+  cannot slide onto a pose beside it, and chasing one from close range shuttles over it.
+- **Stuck is measured at any speed** (commanded motion, no displacement, 0.6 s) and the escape picks
+  the clearest of twelve directions, statics included. A **stall** (no motion, no turn, no pickup, no
+  shot for 2 s while collecting or scoring) replans too — the logic can deadlock where the field
+  does not.
+- **The foul guards, each from a measured case:** G402 — in AUTO nothing steers toward the centre
+  line near it, including an escape; G421 — back off an opponent after `BB_AI_PIN_DECISIONS` of
+  contact; G410 — FLOWERS are a keep-out zone and a NECTAR lying against one is not collected before
+  the cue (a tank spinning next to F2 knocked its own NECTAR in, 20 points); G407 — a full hopper
+  steers round loose elements and sheds anything on its bumper, and a pile the hopper cannot take
+  costs extra, because the hold clock LEAKS (0.1/s) and elements shoved aside keep counting.
+- **The clock:** park in the LOADING ZONE at the end of AUTO (LEAVE + PARK) and of the MATCH, leaving
+  when the drive takes as long as the time left — unless the hopper holds a TIP it can fire first.
+- **The FLOWER plan** (a Box Tube build that carries NECTAR, `places` tiers): empty the hopper into
+  the HIVE before the cue, collect only own NECTAR, press the human player's button at the zone, and
+  place one NECTAR per FLOWER in value order from 1:00. One NECTAR on four POLLEN is 15 points; the
+  two tube builds score ~50 FLOWER points a solo match.
+- **2v2:** leave elements the partner is clearly nearer, take the other side of the envelope, park
+  at the other end of the zone, and a partner nearer a FLOWER with NECTAR aboard takes it.
+- Tuning the rewrite added lives in `ai/tuning.ts`; `config.ts`'s `BB_AI_*` block still carries the
+  cadence, arrival radii, wall band, pin clock and give-up radius it reads.
+- **Verification:** the `AI` lane (the seam, determinism over 3,600 ticks under BOTH physics, the
+  read list, quantization, R102, `step3d` perf with bots) and the **`AIPLAY` lane** (the roster:
+  fixed points, not the default, legal, varied, deterministic; both seating sites call `build`; and
+  three fixed-seed matches — a HARD solo over 150 with the FLOWER plan paying and both parks, a HARD
+  2v2 through a minute of TELEOP with zero fouls, an EASY 2D solo that still scores — none stuck over
+  5 s), run through `smoke-biobuzz/botmatch.ts`, the bench's own measurement. `npm run bench:ai` is the
+  measurement (`--vs hard:easy`, `--builds <key>`, `--physics 2d`); `npm run test:ai` is the
+  statistical tier ordering, a RATCHET — read `BB_AI_WIN_RATE_FLOOR`'s comment before changing it.
 
 **R102, the STOW HEIGHT and the DEPLOY LATCH** (plan §3.3). R105.A's 29 in is the EXPANDED height
 (`BB3_HEIGHT_MAX`); R102 limits the STARTING CONFIGURATION to an 18-in cube (`BB3_STOW_MAX`). A

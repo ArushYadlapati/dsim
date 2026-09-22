@@ -9,6 +9,7 @@ import { hive3dChecks } from './hive3d';
 import { flower3dChecks } from './flower3d';
 import { predictChecks } from './predict';
 import { aiChecks } from './ai';
+import { aiPlayChecks } from './aiplay';
 import { sponsorChecks } from './sponsor';
 import { renderChecks } from './render';
 import { tutorialChecks } from './tutorial';
@@ -72,6 +73,9 @@ const LANES: { name: string; fn: (c: Check) => void }[] = [
   // read list, the quantized command, R102's stow/deploy, and that a bot can actually score.
   // The STATISTICAL tier-ordering claim is `npm run test:ai`, outside `npm test` (see ai.ts).
   { name: 'AI', fn: aiChecks },
+  // the bots PLAY: their roster of robots, and three fixed-seed matches held to a points floor,
+  // zero fouls and no stuck run. The statistics are `npm run bench:ai` (see aiplay.ts).
+  { name: 'AIPLAY', fn: aiPlayChecks },
   { name: 'FIELD', fn: fieldChecks },
   // Table 10-2 scoring, the Section 11 fouls, the 1:00 cue, the HUD slice. Its own lane
   // because a RULES failure and a PHYSICS failure are different mornings, and because two

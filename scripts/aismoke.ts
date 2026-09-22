@@ -243,31 +243,19 @@ console.log('');
 /**
  * ── THE ASSERTIONS ──────────────────────────────────────────────────────────
  *
- * ⚠️ **THE HEAD-TO-HEAD WIN RATE IS A RATCHET, NOT THE SPEC'S NUMBER — READ THIS BEFORE MOVING
- * IT.** `docs/biobuzz/plan-3d.md` §6 asks for HARD over EASY in 90 of 100 seeded 1v1s. The policy
- * as it stands does not reach that, and the reason is worth writing down rather than papering
- * over: a BIOBUZZ 1v1 is decided in 20-point lumps (a HIVE TIP) on totals that come out around 30
- * to 70, so ONE TIP either way flips a match — and the two bots take their elements from the SAME
- * 40, so the stronger one's advantage is capped by what it can physically reach before the other
- * does. Measured over the full 100 at the tuning that ships: HARD scores 102.4 mean against an
- * idle opponent where EASY scores 53.1 (1.93x, and the two ranges barely overlap — HARD's worst
- * match is 60, EASY's best is 66), and that 1.93x converts to 59 wins, 40 losses and a draw, at a
- * mean margin of +7.5 points.
+ * ⚠️ **THE HEAD-TO-HEAD WIN RATE IS A RATCHET — READ THIS BEFORE MOVING IT.** `docs/biobuzz/plan-3d.md`
+ * §6 asks for HARD over EASY in 90 of 100 seeded 1v1s, and the floor only ever goes UP, the same
+ * ratchet `uiaudit` and `docaudit` use: raise it when the policy improves, never lower it to make
+ * a red run green.
  *
- * So the ORDERING is asserted where it is real and quiet — the SOLO control — and the head-to-head
- * carries a FLOOR that only ever goes UP, the same ratchet `uiaudit` and `docaudit` use. Raise it
- * when the policy improves; never lower it to make a red run green. 0.90 is the target it is
- * ratcheting toward and the number the plan will be satisfied by.
- *
- * ⚠️ **WHAT WOULD ACTUALLY MOVE IT** (the things measured to matter, in the order they were
- * found): the bots still hand each other ~6 points a match in fouls, so tighter G421/G417
- * avoidance is worth more than any driving change; the two tiers converge because BOTH spend most
- * of a shared field's elements, so a HARD policy that denied elements (collect the contested
- * middle first, leave its own corner for later) would widen the gap where speed cannot; and the
- * tip cycle forces a 99-inch drive to the other cell every time the HIVE flips, which is the
- * single biggest sink in the trace.
+ * It sat at 0.55 for the first policy, which measured 59 wins, 40 losses and a draw at a mean
+ * margin of +7.5 — a 1v1 decided in 20-point lumps on totals of 30 to 70, HARD 102.4 against an
+ * idle opponent to EASY's 53.1. The 2026-09-22 rewrite (`ai/policy.ts`'s header; `npm run
+ * bench:ai` is the measurement) measured, on this file's own seeds and build: HARD 216.1 / MEDIUM
+ * 183.4 / EASY 109.0 against an idle opponent, and HARD over EASY **100 of 100, mean margin +90.3**.
+ * So the plan's 90 % is now the floor.
  */
-const BB_AI_WIN_RATE_FLOOR = 0.55;
+const BB_AI_WIN_RATE_FLOOR = 0.9;
 const BB_AI_WIN_RATE_TARGET = 0.9;
 
 const rate = hardEasy.wins / hardEasy.played;
