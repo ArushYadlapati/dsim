@@ -1,3 +1,62 @@
+# HANDOFF — 2026-09-21l (alpha: mobile, the overhead cross, real tile mats, the OAuth bounce)
+
+**READ FIRST.** Gates on alpha at `d4d0b70`: `npm test` ALL PASS (4,735 biobuzz + shared),
+`build`, `server:check`, `dbtest` ALL PASS, `uiaudit` at baseline, `contrast` **247**,
+`docaudit`, `bundleaudit`. `dsim-alpha` deployed and `/health` ok; one machine, iad,
+shared-cpu-2x.
+
+**FIVE THINGS SHIPPED**, all owner-asked:
+
+1. **Mobile.** Per-game action sets (`src/games/*/mobile.ts` behind `src/ui/mobileActions.ts`)
+   instead of the shell guessing three buttons for every game. The pad-navigation CSS
+   (`data-padnav`, `.ds-padhint`, `.ds-osk*`) was referenced by five class names and defined
+   in ZERO stylesheets — it exists now.
+2. **The cross over the top-down view**, which was a regression of mine: the venue's lighting
+   truss hangs under the ceiling and the overhead camera sits at z=800, so it looked straight
+   through a 5×5 beam grid. Truss and fittings are on `VENUE_OVERHEAD_LAYER`; the side cameras
+   see them, the overhead and PiP cameras do not (`scratch/crosslayer.ts` checks all five
+   enclosed venues).
+3. **Real field tiles** at higher mesh detail — `src/games/biobuzz/scene/renderTiles.ts`.
+4. **The mat colour**, below.
+5. **Minimap off** on all four presets.
+
+⚠️ **THE MAT COLOUR RULE CHANGED, AND THE OLD ONE IS WRITTEN DOWN IN PLACES THAT NO LONGER
+GOVERN.** The 3D mat used to be pinned to `COLORS.tile`'s luminance because `contrast.mjs`
+measured the driver label's FILL against the lightest ground it crosses — which made the field
+itself the ceiling on that pair. `LABEL_STROKE` is OPAQUE now, so the governing pair is
+fill-against-its-own-stroke and it does not move when the field does. A SECOND ceiling was
+underneath it and is the one that sets the value: canvas on-field TEXT. Measured against
+`--ds-on-field-dim` at AA, `#585858` reads 3.77 and was backed out; `#454545` is the lightest
+neutral that holds. The seam LIP is the tighter cap of the two (`#565656` read 3.89, so it is
+`#4c4c4c`) — it is ground a glyph sits on just as much as the mat is, and the first pass
+missed it. Both are pinned in `contrast.mjs`. **`COLORS.mat`/`COLORS.tile` are UNTOUCHED** —
+those are the 2D board for all three games and repainting DECODE's was never the ask.
+
+⚠️ **THE REWARDS SECRETS ARE NOT SET YET, AND ONE COMMAND IS WAITING ON THE OWNER.** The
+values are in `D:\Projectsddecodesim\.env` (owner put them there 2026-09-21); writing them
+to Fly was refused by this session's tool policy, so it is in the owner's hands. The exact
+command is in the message that ends this session and in `.env.example`, which now documents
+the whole set. Two things about it that are not obvious:
+
+- **The provider callback is registered on the GAME SERVER, not the site.** Vercel serves the
+  SPA and proxies nothing to Fly, so it is `https://dsim-alpha.fly.dev/api/link/<p>/callback`.
+  A GitHub OAuth App accepts exactly ONE callback URL, so **alpha and production need separate
+  GitHub apps**; a Discord application takes several redirect URIs and can serve both.
+- **`APP_ORIGIN` is new and the flow is broken without it on any real deploy.** Found while
+  wiring the credentials: the callback 302'd to a relative `/account`, and the game server does
+  not serve the app (only a LAN self-host does, via `SERVE_CLIENT`), so every link ended in a
+  404 on `dsim-alpha.fly.dev`. It is an env var rather than something the client hands to
+  `/start`, because a server that redirects wherever it is told is an open redirect whatever
+  else is signed around it. Unset is correct for `npm run dev` and LAN, where the two origins
+  are the same one.
+
+**NOT DONE / NOT CHECKED.** Nothing in the link flow has been exercised end to end against a
+real provider — it cannot be until the secrets land. Alpha's entry chunk is still ~20.7 KB over
+its own baseline, from the results-redesign commits rather than the Discord PR (+2.18 KB), and
+that is still unexplained.
+
+---
+
 # HANDOFF — 2026-09-21k (alpha: rewards A, B and C are BUILT — only owner setup is left)
 
 **READ FIRST.** Gates on alpha at `951ac33`: `npm test` ALL PASS (2,202 shared + 4,702
