@@ -1160,6 +1160,26 @@ export async function liveLinks(provider: LinkProvider): Promise<{ providerUserI
 
 /** the ledger id the GitHub star reward grants. */
 export const STARGAZER_TITLE = 'title:stargazer';
+/**
+ * …AND THE COSMETIC IT GRANTS WITH IT (owner, 2026-09-21: the star should carry something,
+ * not just a decal on a name).
+ *
+ * ⚠️ **IT IS AN `earned`-TIER KEY, NOT ONE OF THE SUPPORTER FILLS**, and that was the whole
+ * judgement: a star is one click, so gifting a premium chassis colour for it would price a
+ * Ko-fi membership at one click. `decal:star` is absent from both tier sets in
+ * `src/cosmetics.ts`, so `cosmeticTier` falls through to `'earned'` — the slot that file's
+ * header has been holding open for the rewards ledger since the palette shipped. It costs the
+ * supporter tier nothing and is worth more for being exclusive.
+ *
+ * ⚠️ BOTH IDS MOVE TOGETHER, in the same direction, on the same set difference. Granting one
+ * and not the other, or revoking one and not the other, is a state no sweep can repair later:
+ * the ledger is what "why does this account have this?" is answered from, and half a reward
+ * has no story. `STARGAZER_GRANTS` is therefore iterated rather than the two being written out
+ * at each of the four sites that touch them.
+ */
+export const STARGAZER_DECAL = 'decal:star';
+/** everything the GitHub star is worth, in the order a person would read it. */
+export const STARGAZER_GRANTS = [STARGAZER_TITLE, STARGAZER_DECAL] as const;
 
 /** every account holding one ledger id — ONE query, so a sweep does not ask per account. */
 export async function cosmeticHolders(id: string): Promise<Set<string>> {
@@ -1214,6 +1234,11 @@ export async function sweepStargazers(
    * failure the boost floor's own note warns about. So the set difference decides, and
    * `grantCosmetic` is only called for an account that does not already hold it.
    */
+  /* ⚠️ THE TITLE IS THE WITNESS FOR BOTH IDS. One holder set is read, not two, and the
+     reward moves as a unit — see `STARGAZER_GRANTS`. Reading a set per id would let the two
+     drift apart (an account holding the decal and not the title, which nothing would ever
+     reconcile), and it would also cost a second full-table query every sweep to learn
+     something the first one already implies. */
   const holders = await cosmeticHolders(STARGAZER_TITLE);
   const granted: string[] = [];
   const revoked: string[] = [];
@@ -1221,9 +1246,23 @@ export async function sweepStargazers(
     const has = holders.has(l.userId);
     if (stars.has(l.providerUserId)) {
       if (has) continue;
-      if (await grantCosmetic(l.userId, STARGAZER_TITLE, 'rewards', 'github star')) granted.push(l.userId);
+      let any = false;
+      for (const id of STARGAZER_GRANTS) {
+        if (await grantCosmetic(l.userId, id, 'rewards', 'github star')) any = true;
+      }
+      if (any) granted.push(l.userId);
     } else if (has) {
-      if (await revokeCosmetic(l.userId, STARGAZER_TITLE, 'rewards', 'github star withdrawn')) {
+      let any = false;
+      for (const id of STARGAZER_GRANTS) {
+        if (await revokeCosmetic(l.userId, id, 'rewards', 'github star withdrawn')) any = true;
+      }
+      if (any) {
+        /* ⚠️ AND THE EQUIPPED TITLE IS CLEARED, BUT THE EQUIPPED DECAL IS NOT — they are
+           different kinds of state. `profiles.title` is a reference TO the ledger, so a
+           revoked id leaves it dangling. A saved robot's `decal` is a plain key on a spec,
+           and `stripUnentitledCosmetics` already downgrades it at the server's live ingress
+           on the next match; rewriting every saved spec here would be this function reaching
+           into the builder's data to fix something that fixes itself. */
         await clearTitleIfEquipped(l.userId, STARGAZER_TITLE);
         revoked.push(l.userId);
       }

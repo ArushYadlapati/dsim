@@ -21,8 +21,8 @@ import { setPoolForTests, type DbPool } from '../server/db/pool';
 import { monthsFor, whyNoMonths, DEFAULT_POLICY, policyFromEnv } from '../server/kofi';
 // a LEAF module (no imports, no env read at module scope — see its own header), so unlike
 // `server/db/repo` this is safe to import up front rather than after the pool swap.
-import { stripUnentitledCosmetics } from '../src/cosmetics';
-
+import { stripUnentitledCosmetics, cosmeticTier, type CosmeticId } from '../src/cosmetics';
+
 /**
  * MODERATION, STUBBED AT THE TRANSPORT — so `saveReplay`'s name scrub can be exercised
  * without a network call or an API key.
@@ -3491,6 +3491,24 @@ async function main(): Promise<void> {
     let r = await repo.sweepStargazers(['1001'], true);
     check('star sweep: a linked stargazer is granted', r.applied && r.granted.includes('gh-1'), JSON.stringify(r));
     check('star sweep: ...and holds the title', (await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    /**
+     * ⚠️ **THE STAR GRANTS TWO IDS AND THEY MUST MOVE TOGETHER** (owner, 2026-09-21: the
+     * star should carry a cosmetic, not only a name decal). Half a reward is a state no
+     * later sweep repairs — the holder set is read off the TITLE, so an account holding the
+     * decal without the title would never be reconciled by anything. Every one of the four
+     * sites that touches the pair iterates `STARGAZER_GRANTS`; these checks are what stops a
+     * fifth being written out by hand.
+     */
+    const cosmOf = async (u: string): Promise<string[]> => {
+      const rows = await db.query<{ cosmetics: unknown }>(`select cosmetics from profiles where user_id = $1`, [u]);
+      const c = rows.rows[0]?.cosmetics;
+      return Array.isArray(c) ? (c as string[]) : Object.keys((c as Record<string, unknown>) ?? {});
+    };
+    const held = await cosmOf('gh-1');
+    check('⚠️ star sweep: ...and the COSMETIC too — both ids, or the reward is half granted',
+      repo.STARGAZER_GRANTS.every((id) => held.includes(id)), JSON.stringify(held));
+    check('...and the cosmetic it grants is `earned` tier, NOT a supporter fill given away free',
+      cosmeticTier(repo.STARGAZER_DECAL as CosmeticId) === 'earned', repo.STARGAZER_DECAL);
     r = await repo.sweepStargazers(['1001'], true);
     check('star sweep: a second identical sweep grants nothing new (grantCosmetic is idempotent)', r.granted.length === 0 && r.revoked.length === 0);
 
@@ -3511,6 +3529,13 @@ async function main(): Promise<void> {
     r = await repo.sweepStargazers([], true);
     check('⚠️ star sweep: unstarring REVOKES (owner, 2026-09-21)', r.applied && r.revoked.includes('gh-1'), JSON.stringify(r));
     check('star sweep: ...the ledger no longer has it', !(await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    /* ⚠️ BOTH ids, the other way. The grant side is checked above; an asymmetry here is the
+       one that LASTS — a revoke that took the title and left the decal leaves an account
+       wearing a reward it no longer qualifies for, and the holder set is read off the title,
+       so no later sweep would ever look at it again. */
+    const leftOver = await cosmOf('gh-1');
+    check('⚠️ star sweep: ...and the COSMETIC went with it — a half-revoke is permanent',
+      repo.STARGAZER_GRANTS.every((id) => !leftOver.includes(id)), JSON.stringify(leftOver));
     const after = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'gh-1'`);
     check(
       '⚠️ star sweep: ...and the EQUIPPED title was cleared, not left dangling',

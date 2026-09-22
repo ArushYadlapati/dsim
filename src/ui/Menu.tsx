@@ -77,6 +77,7 @@ import { moduleFor } from '../games';
 import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
 import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
+import { starPoints } from '../render/drawRobot';
 
 const INTAKE_LABELS: Record<IntakeStyle, string> = {
   sloped: 'Sloped',
@@ -238,6 +239,19 @@ function decalShape(decal: Decal, accentHex: string): ReactNode {
           <rect x="16" y="16" width="8" height="8" fill={accentHex} />
         </>
       );
+    case 'star': {
+      // The one swatch that is NOT parametric off a footprint — this is a fixed 24x24 preview
+      // icon, not a robot, so a literal radius is fine here and nowhere else. Still built off
+      // the shared `starPoints` (`render/drawRobot.ts`) so this icon is genuinely the same
+      // shape the two live renderers draw, not a hand-tuned lookalike. −90° puts the first
+      // point at the TOP (r=9 lands its tip at y=3, the same tip height `chevron`'s "L12 3"
+      // uses above), matching this file's convention that a decal's forward point reads "up".
+      const d =
+        starPoints(12, 12, 9, -Math.PI / 2)
+          .map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(2)} ${y.toFixed(2)}`)
+          .join(' ') + ' Z';
+      return <path d={d} fill={accentHex} />;
+    }
   }
 }
 

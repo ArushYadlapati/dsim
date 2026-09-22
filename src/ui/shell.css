@@ -7039,3 +7039,39 @@ button.ds-key:active {
   padding: 0;
   list-style: none;
 }
+
+/* ── A LEDGER TITLE BESIDE A NAME (`ui/TitleChip.tsx`) ──────────────────────────────────────
+   The sibling of `.award-badge`, and it takes the same `--ds-award` hue on purpose: the two
+   are the same KIND of claim (earned, as against paid for), and one hue is ONE measured
+   `contrast.mjs` pair rather than a new one per reward.
+   ⚠️ IT CARRIES ITS NAME AS TEXT, not a glyph. An award badge can be a bare hexagon because
+   the RANK is the whole message; a ledger title's message is its NAME, so there is nothing
+   for a silhouette to say. It also must not wear a ★ — that glyph beside a name already
+   means OWNER (`.sup-badge`), and a stargazer chip would read as staff at a glance. */
+.title-chip {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  /* decoration BESIDE a name, never part of it — the same two reasons `.award-badge` gives:
+     it must not be swept into a selection, and `vertical-align` is ignored on a flex item so
+     it centres on the line instead of dropping to the baseline. */
+  user-select: none;
+  align-self: center;
+  vertical-align: middle;
+  padding: 0 6px;
+  border-radius: var(--ds-round-sm);
+  font-family: var(--ds-font-mono);
+  /* 11px, one step under `.lb-at`: a title is quieter than the @handle, which is quieter
+     than the name. Set as a length rather than an `em` because this chip appears in rows at
+     two different name sizes and an em would make it two different chips. */
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  color: var(--ds-award-ink);
+  background: var(--ds-award);
+}
+/* ...in a flex name row that already spaces its children with `gap`; the same exception
+   `.award-badge` needs, kept here so the two stay in step. */
+.title-pick > li > .title-chip {
+  margin-right: 2px;
+}

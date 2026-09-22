@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { fetchTitle, saveTitle } from '../net/api';
 import { awardShortText, parseAwardTitleId } from '../awards';
+import { titleLabel } from '../cosmetics';
 import { AwardBadge } from './AwardBadge';
+import { TitleChip } from './TitleChip';
 
 /**
  * THE TITLE PICKER — equip one of the titles you have earned, or wear none.
@@ -77,11 +79,23 @@ export function TitlePicker() {
                 <label className="ds-checkline">
                   <input type="radio" name="title" checked={title === id} onChange={() => pick(id)} />
                   {award && <AwardBadge award={award} />}
-                  {/* a parsed award reads through `awardShortText`, never `awardTitleText`:
-                      the id does not carry the act or the season number, so the full
-                      sentence would render "Act 0 Season 0". A `title:` grant parses to
-                      null and falls back to its own id, which is what it is. */}
-                  <span>{award ? awardShortText(award) : id.replace(/^title:/, '')}</span>
+                  {/* AN AWARD gets badge + words, because the badge is a RANK NUMERAL and the
+                      words are the board it was won on — two different facts. A LEDGER TITLE
+                      gets the chip ALONE: the chip IS the words, so rendering both printed
+                      "Stargazer Stargazer" (caught in a harness against the real stylesheet).
+                      Showing the chip rather than plain text also means the row previews
+                      exactly what will appear beside the name.
+                      ⚠️ The `?? id` is still the last resort, for a `title:` key from a NEWER
+                      build that this one has no label for — the raw slug is ugly but it is
+                      better than a radio button with no text at all. `npm test` asserts every
+                      key this build knows has a label, so it is unreachable here. */}
+                  {award ? (
+                    <span>{awardShortText(award)}</span>
+                  ) : titleLabel(id) ? (
+                    <TitleChip id={id} />
+                  ) : (
+                    <span>{id}</span>
+                  )}
                 </label>
               </li>
             );

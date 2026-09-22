@@ -81,8 +81,21 @@ export function accentFill(accent: string | undefined, chassisColor: string | un
   return CHASSIS_COLORS[accent as ChassisColor];
 }
 
-/** DECALS — drawn shapes, parametric in the footprint, never images. */
-export const DECAL_KEYS = ['none', 'stripe', 'chevron', 'racing', 'hazard', 'checker'] as const;
+/**
+ * DECALS — drawn shapes, parametric in the footprint, never images.
+ *
+ * ⚠️ **`star` IS THE FIRST `earned` KEY THIS FILE HAS EVER HAD**, and it is earned by being
+ * absent from BOTH tier sets below rather than by being listed in a third one — `cosmeticTier`
+ * already falls through to `'earned'`, and the header has promised since the palette shipped
+ * that "the slot is here so the rewards ledger can fill it without a schema change to this
+ * file". This is the ledger filling it.
+ *
+ * It is NOT a supporter key handed out for free, and that was a deliberate call (owner asked for
+ * a cosmetic on the GitHub star, 2026-09-21): a star is one click, so gifting one of the six
+ * premium fills would price a Ko-fi membership at one click. An exclusive key costs the
+ * supporter tier nothing and is worth more as a reward for being exclusive.
+ */
+export const DECAL_KEYS = ['none', 'stripe', 'chevron', 'racing', 'hazard', 'checker', 'star'] as const;
 export type Decal = (typeof DECAL_KEYS)[number];
 
 /** PLATE frames round the sign placard. `classic` is no frame. */
@@ -170,6 +183,31 @@ export type TitleId = `title:${string}`;
 /** is `id` a ledger title this build knows? `title:` ids not in the set are refused. */
 export function isTitleId(id: string): boolean {
   return id.startsWith('title:') && (TITLE_KEYS as readonly string[]).includes(id.slice('title:'.length));
+}
+
+/**
+ * WHAT A LEDGER TITLE IS CALLED ON SCREEN.
+ *
+ * ⚠️ **THE KEY IS NOT A LABEL, AND FOR A WHILE IT WAS USED AS ONE.** `TitlePicker` fell back
+ * to `id.replace(/^title:/, '')` for anything that was not a parseable award, so the only
+ * earnable title in the build rendered as the lowercase slug `stargazer` — next to season
+ * awards that read as proper sentences. A key goes over the wire and into a ledger row; it is
+ * chosen to be stable, not to be read.
+ *
+ * Every member of `TITLE_KEYS` must appear here, and `npm test` checks that rather than
+ * trusting it: a new key with no label would fall back to the slug again, which is exactly the
+ * bug this map closes.
+ */
+export const TITLE_LABELS: Record<(typeof TITLE_KEYS)[number], string> = {
+  stargazer: 'Stargazer',
+};
+
+/** the display label for a `title:` id, or null when it is not a ledger title this build knows
+ *  (a season award, or a key from a newer build — both render through their own path). */
+export function titleLabel(id: string): string | null {
+  if (!id.startsWith('title:')) return null;
+  const key = id.slice('title:'.length) as (typeof TITLE_KEYS)[number];
+  return TITLE_LABELS[key] ?? null;
 }
 
 /** SHAPE: fold every axis onto its closed set, unknown ⇒ the default. Pure; no entitlement. */

@@ -1727,8 +1727,100 @@ function cosmeticsChecks(check: Check): void {
     drawDecal(ctx, 8, 6, 'stripe', '#ff0000');
     check('a "stripe" decal issues at least one fill', fillCount > 0, String(fillCount));
 
+    fillCount = 0;
+    drawDecal(ctx, 8, 6, 'star', '#ff0000');
+    check('a "star" decal issues at least one fill (the earned key draws too, not just the shipped tier ones)', fillCount > 0, String(fillCount));
+
     void strokeCount;
     void strokeStyle;
+  }
+
+  // ---- star decal: PARAMETRIC in the footprint, sized off the SMALLER half-dimension ---------
+  // (`docs/cosmetics-plan.md` §4's named risk — a decal must scale to any legal chassis).
+  // Traces the actual vertices `drawDecal`'s `'star'` case emits on two very different
+  // footprints: a near-square one and a long, narrow one this sim's legal chassis range
+  // actually spans. A per-axis scale (hl one way, hw the other — fine for `chevron`, an
+  // arrow with no rotational symmetry to protect) would squash a 5-fold-symmetric star into
+  // an ellipse on the narrow chassis; sizing off `Math.min(hl, hw)` is what a REAL star, not
+  // a lookalike, requires.
+  {
+    const trace = (hl: number, hw: number): { xs: number[]; ys: number[] } => {
+      const xs: number[] = [];
+      const ys: number[] = [];
+      const ctx = {
+        save() {}, restore() {}, beginPath() {}, closePath() {}, clip() {}, rect() {},
+        moveTo(x: number, y: number) { xs.push(x); ys.push(y); },
+        lineTo(x: number, y: number) { xs.push(x); ys.push(y); },
+        arc() {}, arcTo() {}, fillRect() {}, strokeRect() {}, fill() {}, stroke() {},
+        set strokeStyle(_v: string) {}, get strokeStyle() { return ''; },
+        set fillStyle(_v: string) {}, set lineWidth(_v: number) {},
+      } as unknown as CanvasRenderingContext2D;
+      drawDecal(ctx, hl, hw, 'star', '#ff0000');
+      return { xs, ys };
+    };
+    // `starPoints` alternates outer/inner starting on an outer vertex, and `drawDecal` traces
+    // it in that order untouched — so the recorded points do too: even index = outer, odd = inner.
+    const radii = (t: { xs: number[]; ys: number[] }) => t.xs.map((x, i) => Math.hypot(x, t.ys[i]));
+    const outerRadii = (t: { xs: number[]; ys: number[] }) => radii(t).filter((_, i) => i % 2 === 0);
+    const spread = (ns: number[]) => Math.max(...ns) - Math.min(...ns);
+
+    const square = trace(8, 8); // hl === hw: min-dimension and either dimension agree
+    const narrow = trace(20, 3); // a long, narrow chassis: hw is the binding dimension
+
+    check(
+      'star decal: outer radius is 0.8× the SMALLER half-dimension, on both a square and a long/narrow footprint',
+      Math.abs(Math.max(...outerRadii(square)) - 8 * 0.8) < 0.01 && Math.abs(Math.max(...outerRadii(narrow)) - 3 * 0.8) < 0.01,
+      `square r=${Math.max(...outerRadii(square)).toFixed(3)} (want ${(8 * 0.8).toFixed(3)}), narrow r=${Math.max(...outerRadii(narrow)).toFixed(3)} (want ${(3 * 0.8).toFixed(3)})`,
+    );
+    check(
+      'star decal: two very different footprints scale PROPORTIONALLY (not the same absolute size)',
+      Math.abs(Math.max(...outerRadii(square)) - Math.max(...outerRadii(narrow))) > 1,
+      `square r=${Math.max(...outerRadii(square)).toFixed(3)}, narrow r=${Math.max(...outerRadii(narrow)).toFixed(3)}`,
+    );
+    // A per-axis (x one scale, y another) distortion would spread the five OUTER vertices'
+    // radii apart from each other, because they sit at five different angles (0/72/144/216/288)
+    // and an anisotropic scale moves each by a different amount. `Math.hypot` on each recorded
+    // vertex, on the LONG/NARROW footprint where a bug would show up worst, is what a bounding-
+    // box aspect ratio can't tell you: a regular 5-point star's bbox is legitimately not square
+    // (~0.951 pointing on-axis, arithmetic in the header of `starPoints`) even when the star
+    // itself is perfectly regular, which is what tripped this check up on the first pass.
+    check(
+      'star decal: all five OUTER vertices sit at the SAME radius on the long/narrow footprint — a real star, not an ellipse',
+      spread(outerRadii(narrow)) < 1e-9,
+      `outer radii spread=${spread(outerRadii(narrow)).toExponential(2)}`,
+    );
+  }
+
+  // ---- the OTHER two draw sites must handle "star" too — a silent fallthrough (nothing drawn,
+  // nothing thrown) is exactly how this would ship broken, so these are read off the SOURCE:
+  // `getDecalTexture` needs a DOM canvas this DOM-free lane deliberately does not stub (see this
+  // function's own comment above `buildRobotGroup`), and `decalShape` returns a React element
+  // this lane has no renderer for — grepping the switch body is what the sign/plate checks in
+  // this file already do for the same reason (`buildDumper`, `buildTurret`'s no-accent contract).
+  {
+    const robotsSrc = readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderRobots.ts'), 'utf8');
+    const from = robotsSrc.indexOf('function getDecalTexture(');
+    const to = robotsSrc.indexOf('\nconst PLATE_SILVER', from);
+    const body = from > 0 ? robotsSrc.slice(from, to > from ? to : undefined) : '';
+    check(
+      '3D decal texture: getDecalTexture HANDLES "star" (a real case, not a silent fallthrough)',
+      from > 0 && to > from && /case 'star':/.test(body) && /starPoints\(/.test(body) && /ctx\.fill\(\)/.test(body),
+      `${body.length} chars scanned`,
+    );
+    check(
+      '3D decal texture: the star case sizes off Math.min(hw, hh) — this canvas’s own isotropic half-extents — matching the 2D 0.8× radius exactly',
+      /Math\.min\(hw,\s*hh\)\s*\*\s*0\.8/.test(body),
+    );
+
+    const menuSrc = readFileSync(join(root, 'src', 'ui', 'Menu.tsx'), 'utf8');
+    const mFrom = menuSrc.indexOf('function decalShape(');
+    const mTo = menuSrc.indexOf('\nfunction plateShape(', mFrom);
+    const mBody = mFrom > 0 ? menuSrc.slice(mFrom, mTo > mFrom ? mTo : undefined) : '';
+    check(
+      'builder swatch: decalShape HANDLES "star" (else the swatch silently renders nothing, and nobody notices)',
+      mFrom > 0 && mTo > mFrom && /case 'star':/.test(mBody) && /starPoints\(/.test(mBody) && /<path/.test(mBody),
+      `${mBody.length} chars scanned`,
+    );
   }
 
   // ---- NO SPRITE STROKES IN AN ALLIANCE COLOUR (owner, 2026-09-21: "Remove the red/blue alliance

@@ -3,7 +3,7 @@ import { fetchLinks, startLink, unlinkProvider, type LinkProvider } from '../net
 
 const LABEL: Record<LinkProvider, string> = { github: 'GitHub', discord: 'Discord' };
 const WHY: Record<LinkProvider, string> = {
-  github: 'Star the repo and you keep a title for it.',
+  github: 'Star the repo for the Stargazer title and a star decal for your robot.',
   discord: 'Boost the Discord server and you get supporter perks while the boost is up.',
 };
 
@@ -97,11 +97,14 @@ export function LinkedAccounts() {
             </div>
           );
         })}
-        {/* ⚠️ Disconnecting GitHub takes the star title with it — otherwise the decal
+        {/* ⚠️ Disconnecting GitHub takes BOTH ids the star granted — otherwise the reward
             outlives the proof, and unlink-keep-relink is a farm. Said here because it is a
-            consequence of a button, not a setting somebody would go looking for. */}
+            consequence of a button, not a setting somebody would go looking for, and it names
+            both because a person who reads "the title" will not expect to lose the decal. */}
         {state.linked.includes('github') && (
-          <p className="ds-hint">Disconnecting GitHub also removes the title you earned for starring.</p>
+          <p className="ds-hint">
+            Disconnecting GitHub also removes the title and the decal you earned for starring.
+          </p>
         )}
         {error && <p className="ds-hint warn">{error}</p>}
       </div>

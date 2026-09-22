@@ -20,6 +20,7 @@ import { PeriodPicker } from './PeriodPicker';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
 import { AwardBadge } from './AwardBadge';
 import { parseAwardTitleId } from '../awards';
+import { TitleChip } from './TitleChip';
 import { PLACEMENT_GAMES } from '../config';
 import {
   CHAIN_MODE_LABELS,
@@ -83,8 +84,11 @@ function DriverName({
 }) {
   const label = handle ?? (username ? `@${username}` : 'Player');
   /* THE AWARD CHIP. `title` is an id that encodes its own award, so a board prints one
-     without reading `season_awards` at all. A `title:` grant from the cosmetics ledger
-     parses to null and simply renders nothing here — it is a registry key, not an award. */
+     without reading `season_awards` at all.
+     ⚠️ A `title:` grant from the cosmetics ledger parses to NULL here, and for a while that
+     meant it drew nothing — so the GitHub star's title was granted, equippable, and invisible
+     on the one surface the title picker promises it shows up on. `TitleChip` is that other
+     path; exactly one of the two renders, because a title is one id. */
   const award = title ? parseAwardTitleId(title) : null;
   if (username && onOpenProfile) {
     return (
@@ -102,7 +106,7 @@ function DriverName({
             part of it. */}
         <span className="lb-name-h">{label}</span>
         <SupporterBadge supporter={supporter} role={role} />
-        {award && <AwardBadge award={award} />}
+        {award ? <AwardBadge award={award} /> : title ? <TitleChip id={title} /> : null}
         <span className="lb-at">@{username}</span>
       </button>
     );
@@ -111,7 +115,9 @@ function DriverName({
     <>
       <span className="lb-name-h">{label}</span>
       <SupporterBadge supporter={supporter} role={role} />
-      {award && <AwardBadge award={award} />}
+      {/* the same one-of-two as the linked path above — a row without a username (an
+          anonymous or unclaimed run) still shows whatever title it is wearing */}
+      {award ? <AwardBadge award={award} /> : title ? <TitleChip id={title} /> : null}
     </>
   );
 }

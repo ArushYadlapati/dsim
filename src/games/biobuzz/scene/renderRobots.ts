@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js
 import type { Alliance, RobotSpec, RobotState, World } from '../../../types';
 import { chassisFill, INTAKE_RAIL_T } from '../../../config';
 import { accentFill, clampCosmetics } from '../../../cosmetics';
+import { starPoints } from '../../../render/drawRobot';
 import { robotsEnabled } from '../../../sim/match';
 // TYPES ONLY, and the direction matters: `graphics/` may not import `scene/` or `three` (the
 // RENDER lane asserts it), but the scene reading the settings MODEL is how every other quality
@@ -1583,6 +1584,23 @@ function getDecalTexture(decal: string, accent: string, aspect: number): THREE.C
           if ((i + j) % 2 === 0) ctx.fillRect(i * cw, hh - bandH / 2 + j * rh, cw, rh);
         }
       }
+      break;
+    }
+    case 'star': {
+      // Same call as 2D `drawDecal`'s `star` case (`render/drawRobot.ts`), not a
+      // re-derivation: `starPoints` needs one radius meaning the same physical distance on
+      // both axes, and it gets one here too because this canvas's per-pixel scale is already
+      // isotropic — `h` above is `w / aspect`, chosen so canvas px map to the same inches in
+      // U and V — so `Math.min(hw, hh)`, the canvas's own half-extents, IS that shared
+      // physical half-dimension, with no `aspect` division needed a second time. 0.8x
+      // matches the 2D case exactly, so both renderers draw the identical shape at the
+      // identical size.
+      const r = Math.min(hw, hh) * 0.8;
+      const pts = starPoints(hw, hh, r, 0); // angle 0 ⇒ +x from centre, i.e. forward (high U)
+      ctx.beginPath();
+      pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+      ctx.closePath();
+      ctx.fill();
       break;
     }
   }

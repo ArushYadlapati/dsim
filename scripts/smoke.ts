@@ -171,7 +171,10 @@ import {
   PRE_COUNTDOWN,
   COLORS,
 } from '../src/config';
-import { CHASSIS_COLOR_KEYS, ACCENT_KEYS, DECAL_KEYS, PLATE_KEYS, COSMETIC_DEFAULTS } from '../src/cosmetics';
+import {
+  CHASSIS_COLOR_KEYS, ACCENT_KEYS, DECAL_KEYS, PLATE_KEYS, COSMETIC_DEFAULTS,
+  TITLE_KEYS, TITLE_LABELS, titleLabel, cosmeticTier, stripUnentitledCosmetics,
+} from '../src/cosmetics';
 import {
   pointDepthInRobot,
   robotCorners,
@@ -722,6 +725,48 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
       );
     })(),
   );
+}
+
+// ---- LEDGER TITLES: every key is NAMED, and the reward's cosmetic is EXCLUSIVE -----------
+{
+  /**
+   * ⚠️ **A TITLE KEY IS NOT A LABEL, AND IT SHIPPED BEING USED AS ONE.** `TitlePicker` fell
+   * back to `id.replace(/^title:/, '')` for any title that was not a parseable season award,
+   * so `title:stargazer` — the only earnable title in the build — rendered as the lowercase
+   * slug `stargazer`, beside awards that read as proper sentences. `TITLE_LABELS` is the map
+   * that fixes it, and this is what stops the next key being added without one: the fallback
+   * still exists (a key from a newer build has to render as SOMETHING), so a missing label is
+   * silent, and silent is how the first one lasted.
+   */
+  check(
+    '⚠️ titles: EVERY TITLE_KEYS member has a display label — the fallback is a raw slug',
+    TITLE_KEYS.every((k) => (TITLE_LABELS[k] ?? '').length > 0),
+    TITLE_KEYS.filter((k) => !TITLE_LABELS[k]).join(',') || 'all labelled',
+  );
+  check(
+    '...and a label is not just the key with a capital — it is written for a person',
+    TITLE_KEYS.every((k) => TITLE_LABELS[k] !== k),
+  );
+  check('titles: titleLabel answers null for a season award, which renders through its own path',
+    titleLabel('title:s3:decode:elo1v1:1') === null && titleLabel('decal:star') === null);
+  check('titles: ...and for a key this build does not know', titleLabel('title:nope') === null);
+
+  /**
+   * ⚠️ **THE GITHUB STAR'S COSMETIC IS `earned`, NOT A SUPPORTER FILL GIVEN AWAY.** A star
+   * is one click; granting one of the six premium chassis colours for it would price a Ko-fi
+   * membership at one click. `decal:star` earns its tier by being absent from BOTH sets in
+   * `cosmetics.ts` — which is exactly the kind of thing a later edit adds "for completeness"
+   * without noticing it is the whole reward. `npm run dbtest` checks the sweep grants it;
+   * this checks it is still worth granting.
+   */
+  check('cosmetics: decal:star is `earned` tier — the reward is exclusive, not a free supporter key',
+    cosmeticTier('decal:star') === 'earned');
+  check('...and it is a real member of the closed axis, so coerceSpec keeps it',
+    DECAL_KEYS.includes('star') && coerceSpec({ decal: 'star' }).decal === 'star');
+  check('...while an account with no entitlement is stripped back to the default',
+    stripUnentitledCosmetics({ ...DEFAULT_SPEC, decal: 'star' }, false, []).decal === COSMETIC_DEFAULTS.decal);
+  check('...and one that EARNED it keeps it, with no membership at all',
+    stripUnentitledCosmetics({ ...DEFAULT_SPEC, decal: 'star' }, false, ['decal:star']).decal === 'star');
 }
 
 // ---- worldHash INVARIANCE across cosmetics (split from the block above; already

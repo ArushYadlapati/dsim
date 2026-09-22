@@ -59,6 +59,7 @@ import {
   providerLinks,
   revokeCosmetic,
   STARGAZER_TITLE,
+  STARGAZER_GRANTS,
   unlinkProvider,
   type LinkProvider,
   getTitle,
@@ -786,7 +787,14 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
            to prevent, one level up — and it is also the farm: unlink, keep the decal, relink
            elsewhere. The 0047 row survives, so the PAIR still cannot earn again. */
         if (ok && provider === 'github') {
-          await revokeCosmetic(user.userId, STARGAZER_TITLE, 'rewards', 'github unlinked');
+          /* ⚠️ EVERY id the star granted, not just the title. `STARGAZER_GRANTS` is iterated
+             here for the same reason `sweepStargazers` iterates it: half a reward is a state
+             no later sweep repairs — an account that unlinked would have kept the decal
+             forever, because the sweep only ever looks at accounts that still have a LIVE
+             link and this one no longer does. */
+          for (const id of STARGAZER_GRANTS) {
+            await revokeCosmetic(user.userId, id, 'rewards', 'github unlinked');
+          }
           await clearTitleIfEquipped(user.userId, STARGAZER_TITLE);
         }
         return json(200, { unlinked: ok }), true;
