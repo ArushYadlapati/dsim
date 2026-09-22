@@ -170,8 +170,9 @@ export function warnNoToken(): void {
   warnedNoToken = true;
   console.warn(
     '[rewards] THE GITHUB STAR REWARD IS OFF: no GITHUB_TOKEN. The stargazers endpoint answers ' +
-      '401 without one even for a public repo, so no star can ever be seen. Set a token with NO ' +
-      'scopes (it reads public data): fly secrets set GITHUB_TOKEN=... -a <app>',
+      '401 without one even for a public repo, so no star can ever be seen. It needs the ' +
+      '`public_repo` scope — an unscoped token gets a 404 here, which reads like a typo: ' +
+      'fly secrets set GITHUB_TOKEN=... -a <app>',
   );
 }
 /** test seam — the warning is once-per-process, and a suite runs many processes' worth. */

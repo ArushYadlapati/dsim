@@ -46,7 +46,28 @@ is not:
 | the browser round trip | **UNVERIFIED** — it needs a person to sign in and click through |
 | the star sweep | **OFF.** See below. |
 
-⚠️ **`GITHUB_TOKEN` IS REQUIRED AND IS NOT SET.** Found by calling the API once the rest was
+⚠️ **`GITHUB_TOKEN` NEEDS THE `public_repo` SCOPE, AND THE TOKEN ON ALPHA HAS NO SCOPES.**
+The owner created one on my advice, and my advice was wrong twice — first that the token was
+optional, then that it needed no scopes. MEASURED 2026-09-21 with an unscoped classic PAT that
+authenticates perfectly (5,000/hr, `/user` 200):
+
+    /repos/genius0412/dsim                200  ("private": false)   /contributors  200
+    /repos/genius0412/dsim/stargazers     404                       /followers     200
+    /repos/octocat/Hello-World/stargazers 404                       /forks         200
+
+Not the repo, not privacy, not the budget: starring and watching are gated where every
+neighbouring list endpoint is not. **GitHub answers 404 rather than 403 there**, so a caller
+cannot use the status to learn a repo exists — which means the one status that reads as "you
+typed the name wrong" is also the one that means "your token is too weak". GraphQL is worse,
+not a way round: the same token reads `stargazerCount: 7` and gets ZERO nodes. A token with
+`repo` returns all seven; `public_repo` is its read-only subset.
+
+**TO FIX: regenerate at github.com/settings/tokens with `public_repo` ticked, then
+`flyctl secrets set GITHUB_TOKEN=... -a dsim-alpha`.** Nothing else is outstanding for it —
+401, 403-rate-limited, 403-forbidden and 404 each say what they mean now, `dbtest` pins all
+four sentences, and the boot guard confirms the token is present on the live machine.
+
+⚠️ **AND IT WAS REQUIRED AT ALL, WHICH IS THE FIRST HALF OF THE SAME MISTAKE.** Found by calling the API once the rest was
 in place. MEASURED anonymously from a clean rate-limit budget on a repo that is genuinely
 public (`GET /repos/genius0412/dsim` → 200, `"private": false`): the stargazers endpoint answers
 **401 Requires authentication**, and 200 with any credential. `stargazers.ts` had said the
