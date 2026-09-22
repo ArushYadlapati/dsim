@@ -45,6 +45,7 @@ import { biobuzzColliders, BB_WALL_COUNT } from '../colliders';
 import { INTAKE_RAIL_T, PHYS_FRICTION } from '../../../config';
 import {
   BB3_CHASSIS_TOP_Z,
+  BB3_LIFT_EDGE_R,
   BB3_INTAKE_CORNER_CLAMP,
   BB3_INTAKE_CORNER_R,
   BB3_MOUTH_SLOT_Z,
@@ -867,7 +868,19 @@ export interface Chassis3dShape {
    * rails, so `reachColliderDesc` composes the fixed Y→Z rotation with `rot` rather than folding
    * it in here.
    */
-  shape?: 'box' | 'cylinder';
+  shape?: 'box' | 'cylinder' | 'round';
+}
+
+/** the collider desc for a chassis MECHANISM shape: a cylinder (a turret's swept disc), a
+ * ROUNDED box (a Box Tube tower — `BbMechEnvelope.narrow`), or the edge-broken box everything
+ * else is. The authority and the FULL predictor both build through this. */
+export function chassisMechDesc(RAPIER: Rapier3d, s: Chassis3dShape): InstanceType<Rapier3d['ColliderDesc']> {
+  if (s.shape === 'cylinder') return RAPIER.ColliderDesc.cylinder(s.hz, s.hx).setRotation(CYL_AXIS_Z);
+  if (s.shape === 'round') {
+    const r = Math.min(BB3_LIFT_EDGE_R, s.hx / 2, s.hy / 2, s.hz / 2);
+    return RAPIER.ColliderDesc.roundCuboid(s.hx - r, s.hy - r, s.hz - r, r);
+  }
+  return chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz);
 }
 
 /**
@@ -926,7 +939,10 @@ export function chassis3dMechShapes(
   const half = heightIn / 2;
   const out: Chassis3dShape[] = [];
   for (const e of bbMechEnvelopes(spec, heightIn)) {
-    const lo = Math.min(BB_DECK_Z, e.top - 0.1);
+    // a mechanism stands on the deck unless it says otherwise (the Box Tube's column stands on
+    // its own base box); a solid a low declared height has capped away entirely builds nothing
+    if (e.bottom !== undefined && e.top <= e.bottom + 1e-6) continue;
+    const lo = e.bottom ?? Math.min(BB_DECK_Z, e.top - 0.1);
     const hz = Math.max(1e-3, (e.top - lo) / 2);
     const cz = -half + lo + hz;
     if (e.r !== undefined) {
@@ -937,7 +953,9 @@ export function chassis3dMechShapes(
       const x1 = Math.min(e.cx + (e.hx ?? 0), ex.front);
       const y0 = Math.max(e.cy - (e.hy ?? 0), -ex.right);
       const y1 = Math.min(e.cy + (e.hy ?? 0), ex.left);
-      out.push({ cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, cz, hx: Math.max(1e-3, (x1 - x0) / 2), hy: Math.max(1e-3, (y1 - y0) / 2), hz });
+      const box: Chassis3dShape = { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, cz, hx: Math.max(1e-3, (x1 - x0) / 2), hy: Math.max(1e-3, (y1 - y0) / 2), hz };
+      if (e.narrow) box.shape = 'round';
+      out.push(box);
     }
   }
   return out;
@@ -1448,10 +1466,7 @@ export function addChassis3dColliders(
     // a MECHANISM shape may be a CYLINDER (a turret sweeps a disc — `bbMechEnvelopes`); every
     // other box keeps the edge break exactly as it was. Groups/friction/restitution unchanged,
     // so a mechanism is solid to the same set the prism it replaces was.
-    const desc =
-      s.shape === 'cylinder'
-        ? RAPIER.ColliderDesc.cylinder(s.hz, s.hx).setRotation(CYL_AXIS_Z)
-        : chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz);
+    const desc = chassisMechDesc(RAPIER, s);
     world3d.createCollider(
       desc.setTranslation(s.cx, s.cy, s.cz).setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0),
       body,

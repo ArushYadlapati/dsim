@@ -23,9 +23,9 @@ import {
   buildHiveTray3d,
   buildStatics3d,
   chassisBoxDesc,
+  chassisMechDesc,
   chassis3dMechShapes,
   chassis3dReachShapes,
-  CYL_AXIS_Z,
   clearChassis3dColliders,
   swapChassis3dReachColliders,
   elementMass,
@@ -631,10 +631,7 @@ function fitChassis(
   );
   for (const s of chassis3dMechShapes(r.spec, heightIn, { front: fe.front, back: fe.rear, left: fe.half, right: fe.half })) {
     world3d.createCollider(
-      (s.shape === 'cylinder'
-        ? RAPIER.ColliderDesc.cylinder(s.hz, s.hx).setRotation(CYL_AXIS_Z)
-        : chassisBoxDesc(RAPIER, s.hx, s.hy, s.hz)
-      )
+      chassisMechDesc(RAPIER, s)
         .setTranslation(s.cx, s.cy, s.cz)
         .setDensity(0)
         .setFriction(PHYS_FRICTION)

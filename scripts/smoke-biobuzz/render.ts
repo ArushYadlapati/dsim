@@ -101,25 +101,38 @@ import {
   BB_FRONT_INK,
   BB_REAR_INK,
   bbBoxTubeGlyph,
+  bbEndBarSegments,
   bbFrontMarks,
 } from '../../src/games/biobuzz/parts';
 import { BB_INTAKE_KINDS, bbIntakeKindOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
 import { drawBiobuzzIntakeReach } from '../../src/games/biobuzz/drawRobot';
 import {
+  BB_BOX_TUBE_ARM_T,
+  BB_BOX_TUBE_ARM_W,
+  BB_BOX_TUBE_BASE_BELOW,
+  BB_BOX_TUBE_CLAW_REACH,
   BB_BOX_TUBE_EXTEND_S,
+  BB_BOX_TUBE_FLOWER_GAP,
+  BB_BOX_TUBE_JAW_H,
+  BB_BOX_TUBE_JAW_L,
+  BB_BOX_TUBE_PALM_BACK,
   BB_BOX_TUBE_RETRACT_F,
   BB_BOX_TUBE_SECTIONS,
-  BB_BOX_TUBE_STAGE_OVERLAP,
   BB_BOX_TUBE_TIP_CLEAR,
   BB_BOX_TUBE_WALL,
+  BB_BOX_TUBE_WRIST_E,
+  BB_BOX_TUBE_WRIST_H,
+  BB_BOX_TUBE_WRIST_HALF,
+  BB_BOX_TUBE_WRIST_TOP,
+  BB_BOX_TUBE_YOKE_OUT,
+  BB_BOX_TUBE_CLAW_HALF,
   BB_BOX_TUBE_Z,
-  BB_BOX_TUBE_FLOWER_GAP,
-  BB_BOX_TUBE_HALF_W,
-  bbBoxTubeAim,
-  bbBoxTubeDeployExt,
-  bbBoxTubeStages,
-  bbBoxTubeStandoff,
-  bbBoxTubeSwivelFrac,
+  bbBoxTubeJoints,
+  bbBoxTubePhases,
+  bbBoxTubePose,
+  bbLiftPlaceLocal,
+  bbMechEnvelopes,
+  bbTowerBoxRobot,
   BB_BRACE_PROUD,
   BB_DECK_Z,
   BB_FLOWERS,
@@ -203,6 +216,7 @@ import {
   bbRobotSignOrientation,
   bbRobotSignText,
   bbWheelDetail,
+  buildBoxTube,
   buildDriveWheel,
   buildEndPlates,
   buildFrame,
@@ -214,6 +228,7 @@ import {
   buildWheels,
   disposeRobotGroup,
   endWheelSpanY,
+  poseBoxTubeRig,
   wheelKindOf,
 } from '../../src/games/biobuzz/scene/renderRobots';
 import { lengthLimits } from '../../src/sim/drivetrain';
@@ -6717,202 +6732,237 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         check('2D: the ramp kind draws its rest-pose outline', reachOps('ramp').length > 0);
       }
 
-      // ── 2026-09-19 OWNER PLAYTEST: "THE BOX TUBE MUST RENDER PROPERLY" ───────────────────
-      // It was ONE solid `BoxGeometry(3, 1.4, 1.4)` at `turretLocal(...)`: the turret ring's
-      // inboard pull rather than the tube's own mount, 3 in along LOCAL X whatever direction the
-      // mount faced, ending 2.10 in INSIDE the frame rail on the default build while the sim
-      // placed at x 12.88 — and never touched by `sync` at all.
+      // ── THE BOX TUBE (owner, 2026-09-22: "Offset boxtube still looks extremely weird") ────────
+      //
+      // `config.ts`'s "THE BOX TUBE" block has the design and the five things the telescoping arm
+      // got wrong. The one this lane has to answer for is the first: the old sweep checked the
+      // tip of an UNCAPPED solve while the renderer drew a capped one, so a robot flush on a
+      // FLOWER — the pose every placement is made from — showed a stub at 19% and the lane stayed
+      // green. Everything below is measured off the BUILT tube (`buildBoxTube`, no DOM), posed
+      // through the renderer's own `poseBoxTubeRig`, and never off a second derivation of it.
       {
         check(
-          'the 3D tube is built from the SHARED glyph and the sim’s own placement point',
-          robotsCode.includes('bbBoxTubeGlyph(spec, mount, place)') &&
-            robotsCode.includes('const place = bbPlacePointLocal(spec);') &&
-            !/BoxGeometry\(3, 1\.4, 1\.4\)/.test(robotsCode),
+          'box tube: the 3D tower is built from the SHARED frame and the sim’s own placement point',
+          robotsCode.includes('const place = bbPlacePointLocal(spec);') &&
+            robotsCode.includes('const frame = bbBoxTubeFrame(spec, mount, place);') &&
+            robotsCode.includes('node.rotation.z = Math.atan2(frame.uy, frame.ux);'),
         );
         check(
-          '...and AIMED, which is the one line that fixes a side or corner mount',
-          robotsCode.includes('node.rotation.z = Math.atan2(glyph.uy, glyph.ux);'),
-        );
-        check(
-          '...and it names no box-tube constant of its own (they are hardware, so they live in config.ts)',
+          'box tube: the renderer names no box-tube constant of its own (they are hardware, in config.ts)',
           !/const BB_BOX_TUBE_[A-Z_]+ =/.test(robotsCode) && robotsCode.includes('BB_BOX_TUBE_SECTIONS'),
         );
+        check('box tube: the tubes are HOLLOW — a tube, not a bar', /const wall = BB_BOX_TUBE_WALL;/.test(robotsCode));
         check(
-          '...and it is HOLLOW — hollowness is what says "tube" rather than "bar"',
-          robotsCode.includes('BB_BOX_TUBE_WALL') && /const wall = BB_BOX_TUBE_WALL;/.test(robotsCode),
-        );
-        check(
-          'the sections nest exactly: each bore is the next section’s outside',
-          BB_BOX_TUBE_SECTIONS.every(
-            (w, i) => i === 0 || Math.abs(BB_BOX_TUBE_SECTIONS[i - 1] - 2 * BB_BOX_TUBE_WALL - w) < 1e-9,
-          ),
+          'box tube: THREE nested tubes, the OFFSET™ kit’s "2-stage" slide — not a five-piece antenna',
+          BB_BOX_TUBE_SECTIONS.length === 3 &&
+            BB_BOX_TUBE_SECTIONS.every((w, i) => i === 0 || Math.abs(BB_BOX_TUBE_SECTIONS[i - 1] - 2 * BB_BOX_TUBE_WALL - w) < 1e-9),
           BB_BOX_TUBE_SECTIONS.join(' / '),
         );
-        // ARITHMETIC over every mount the builder can produce: the fully extended TIP is the
-        // sim's placement point, exactly. This is the check that would have caught all of
-        // items 1–3 at once.
-        const mk = (over: Partial<RobotSpec>): RobotSpec => bbCoerceSpec({ ...BB_DEFAULT_SPEC, ...over } as RobotSpec);
-        const mounts = ['front', 'back', 'left', 'right', 'frontleft', 'frontright', 'backleft', 'backright'] as const;
-        for (const mount of mounts) {
-          for (const intakeMount of ['front', 'side'] as const) {
-            const spec = mk({ bbMech: { lift: { kind: 'boxtube', mount } }, intakeMount } as Partial<RobotSpec>);
-            const lift = bbLiftOf(spec);
-            const place = bbPlacePointLocal(spec);
-            if (!lift || !place) {
-              check(`box tube ${mount}/${intakeMount}: the build carries a tube at all`, false, 'no lift on the coerced spec');
-              continue;
-            }
-            const glyph = bbBoxTubeGlyph(spec, lift.mount, place);
-            const reach = Math.hypot(place.x - glyph.outer.x, place.y - glyph.outer.y);
-            const tipX = glyph.outer.x + glyph.ux * reach;
-            const tipY = glyph.outer.y + glyph.uy * reach;
-            check(
-              `box tube ${mount}/${intakeMount}: the arm's own AIM LINE runs through the sim's placement point`,
-              Math.abs(tipX - place.x) < 1e-9 && Math.abs(tipY - place.y) < 1e-9,
-              `(${tipX.toFixed(3)}, ${tipY.toFixed(3)}) vs (${place.x.toFixed(3)}, ${place.y.toFixed(3)})`,
-            );
-            // ...and it CLEARS THE FRAME, which is the "built inside the chassis" bug recurring
-            // on the one mechanism the 2026-09-18 pass did not reach
-            const fx = bbFootprint(spec);
-            const beyond = Math.max(Math.abs(tipX) - (Math.abs(place.x) > 1e-9 ? spec.length / 2 : 0), Math.abs(tipY) - (Math.abs(place.y) > 1e-9 ? spec.width / 2 : 0));
-            check(
-              `box tube ${mount}/${intakeMount}: the tip reaches PAST the frame`,
-              beyond > 0.5,
-              `${beyond.toFixed(2)} in past the rail (footprint front ${fx.front.toFixed(2)})`,
-            );
-            // and the stage table is physical: n equal travels, each stage keeping one overlap
-            // captured inside the one outboard of it, and nothing poking out when retracted
-            const st = bbBoxTubeStages(reach);
-            check(
-              `box tube ${mount}/${intakeMount}: the stages nest, and n travels sum to the full arm`,
-              st.moving === BB_BOX_TUBE_SECTIONS.length - 1 &&
-                Math.abs(st.moving * st.travel - st.full) < 1e-9 &&
-                st.sectionLen - st.travel >= BB_BOX_TUBE_STAGE_OVERLAP - 1e-9 &&
-                st.travel > 0,
-              `${st.moving} × ${st.travel.toFixed(2)} = ${st.full.toFixed(2)}, section ${st.sectionLen.toFixed(2)}`,
-            );
-          }
-        }
         check(
-          'the tube EXTENDS off the sim’s own reach predicate, and eases on the WORLD clock',
+          'box tube: the WHOLE slide leans — every tube hangs off the pitch node, each nested in the one outboard of it',
+          robotsCode.includes('(i === 0 ? pitch : stages[i - 1]).add(mesh);') && !robotsCode.includes('(i === 0 ? node : pitch)'),
+        );
+        check(
+          'box tube: it deploys off the sim’s reach predicate, on the WORLD clock, and writes nothing back',
           robotsCode.includes('const flower = bbFlowerInReach(world, r);') &&
             robotsCode.includes('dt / BB_BOX_TUBE_EXTEND_S') &&
-            robotsCode.includes('const dt = Math.max(0, Math.min(0.2, world.time - lastTime));'),
+            robotsCode.includes('const dt = Math.max(0, Math.min(0.2, world.time - lastTime));') &&
+            !/r\.(bbTube|tubeEase)/.test(robotsCode),
         );
         check(
-          '...and the ease is on the ENTRY, so a specKey rebuild resets it rather than easing from a stale reach',
-          /tubeEase: number;/.test(robotsCode) && /entry = \{ group: g, key, tubeEase: 0[,}]/.test(robotsCode),
+          'box tube: the deploy takes 0.35–0.5 s and the retraction a fraction of it — neither the 0.12 "violent" nor a crawl',
+          BB_BOX_TUBE_EXTEND_S >= 0.35 && BB_BOX_TUBE_EXTEND_S <= 0.5 && BB_BOX_TUBE_RETRACT_F >= 0.5 && BB_BOX_TUBE_RETRACT_F <= 1 &&
+            robotsCode.includes('step / BB_BOX_TUBE_RETRACT_F'),
+          `${BB_BOX_TUBE_EXTEND_S} s out, ${(BB_BOX_TUBE_EXTEND_S * BB_BOX_TUBE_RETRACT_F).toFixed(2)} s back`,
         );
         check(
-          '...and NOTHING about it is written back to the world (placement has no sim travel)',
-          !/r\.(bbTube|tubeEase)/.test(robotsCode),
+          'box tube: a change of target SLEWS once the arm is out, and a stowed arm takes its first target whole',
+          /entry\.tubeLean \+= clampAbs\(pose\.lean - entry\.tubeLean, slew\);/.test(robotsCode) &&
+            /entry\.tubePsi \+= clampAbs\(wrapPi\(pose\.psi - entry\.tubePsi\), slew\);/.test(robotsCode) &&
+            /if \(entry\.tubeEase <= 0\) \{/.test(robotsCode),
         );
-      }
+        // THE SEQUENCE: each joint starts and stops at zero rate, and the claw moves only once the
+        // slide is out and only turns over the bore once it is level — the order the sweep below
+        // found is the only one that clears the flower
+        {
+          let order = true;
+          let ends = true;
+          for (let i = 0; i <= 1000; i++) {
+            const q = bbBoxTubePhases(i / 1000);
+            if (q.swing > 0 && q.extend < 1) order = false;
+            if (q.reach > 0 && q.swing < 1) order = false;
+          }
+          const q0 = bbBoxTubePhases(0);
+          const q1 = bbBoxTubePhases(1);
+          for (const k of ['lean', 'turn', 'extend', 'swing', 'reach'] as const) {
+            if (q0[k] !== 0 || q1[k] !== 1) ends = false;
+            const d0 = bbBoxTubePhases(1e-4)[k] - q0[k];
+            const d1 = q1[k] - bbBoxTubePhases(1 - 1e-4)[k];
+            if (d0 > 1e-3 || d1 > 1e-3) ends = false;
+          }
+          check('box tube: every phase runs 0 → 1 and leaves and arrives at zero rate', ends);
+          check('box tube: the claw swings only once the slide is fully out, and turns in only once it is level', order);
+        }
 
-      // ── 2026-09-20 OWNER: "REACHING TOWARDS THE OPENING IN THE FLOWER, NOT EXTENDING
-      //    HORIZONTALLY. IT SHOULD ALSO BE A LOT FASTER." ────────────────────────────────────
-      //
-      // The arm used to slide flat along the mount direction to `bbPlacePointLocal` — a point on
-      // the TILES — while the thing it places into is a hole 21.404 in up. The pose is solved per
-      // frame now (`bbBoxTubeAim` against the flower `bbFlowerInReach` returned), so this block
-      // sweeps every in-reach pose of every legal build and asserts the DRAWN tip lands on the
-      // opening, that no stage leaves its parent doing it, and that the retracted arm is still
-      // the segment the old drawing occupied.
-      {
-        // ⚠️ **THE DEPLOY RATE HAS NOW BEEN COMPLAINED ABOUT IN BOTH DIRECTIONS, AND THE SECOND
-        // REPORT IS NOT A REVERSAL OF THE FIRST.** 0.35 s linear was "it should also be a lot
-        // faster" (2026-09-20); the 0.12 s that answered it was "it also moves way too quickly in
-        // animation and in a violent way" (2026-09-22). What changed with the duration is the
-        // SHAPE — a `smoothstep` leaves and arrives at zero rate — so this asserts the pair, not
-        // the number on its own. A linear 0.40 would pass a bare duration check and be exactly
-        // the animation the first report rejected.
-        check(
-          `the deploy is ${BB_BOX_TUBE_EXTEND_S} s — not the 0.12 the owner called violent, not the 0.35 called slow`,
-          BB_BOX_TUBE_EXTEND_S >= 0.35 && BB_BOX_TUBE_EXTEND_S <= 0.45,
-          `${BB_BOX_TUBE_EXTEND_S}`,
-        );
-        check(
-          '...and the ease is a SMOOTHSTEP of it, so the start and the stop are at zero rate',
-          /const e = smoothstep01\(entry\.tubeEase\);/.test(robotsCode),
-        );
-        check(
-          '...and the retraction is a fraction of the deploy, never a snap home',
-          robotsCode.includes('step / BB_BOX_TUBE_RETRACT_F') &&
-            BB_BOX_TUBE_RETRACT_F >= 0.5 && BB_BOX_TUBE_RETRACT_F <= 1,
-          `retract ${(BB_BOX_TUBE_EXTEND_S * BB_BOX_TUBE_RETRACT_F).toFixed(2)} s`,
-        );
-        // the OTHER half of "violent": `bbFlowerInReach` names ONE flower and the name can change
-        // in a tick, which used to assign a new yaw/pitch/extension onto a FULLY EXTENDED arm.
-        check(
-          '...and a change of target flower SLEWS the pose rather than assigning it',
-          /entry\.tubeYaw \+= clampAbs\(wrapPi\(yaw - entry\.tubeYaw\), slew\);/.test(robotsCode) &&
-            /entry\.tubePitch \+= clampAbs\(aim\.pitch - entry\.tubePitch, slew\);/.test(robotsCode) &&
-            /entry\.tubeExt \+= clampAbs\(aim\.ext - entry\.tubeExt, BB_BOX_TUBE_EXT_SLEW \* dt\);/.test(robotsCode),
-        );
-        check(
-          '...but a STOWED arm still takes its first target whole, so the first deploy does not lag its own ease',
-          /if \(entry\.tubeEase <= 0\) \{/.test(robotsCode),
-        );
-        check(
-          '...and the slew goes the SHORT way round the wrap (a bearing difference is folded first)',
-          /function wrapPi\(a: number\): number \{/.test(robotsCode) &&
-            robotsCode.includes('const yaw = wrapPi(aim.yaw - rig.baseYaw);'),
-        );
-        check(
-          'the arm is posed from the SIM’s flower, not a canned angle — one solver, two drawings',
-          robotsCode.includes('const aim = bbBoxTubeAim(') &&
-            robotsCode.includes('const f = BB_FLOWERS[flower];') &&
-            robotsCode.includes('BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR'),
-        );
-        check(
-          '...at the PLATE’s outer edge in the approach direction, not at the bore — the one argument that keeps the arm out of the flower',
-          robotsCode.includes('const stand = bbBoxTubeStandoff(theta);') &&
-            robotsCode.includes('const n = FLOWER_MOUTH[f.wall];') &&
-            !robotsCode.includes('BB_FLOWER_OPEN_R'),
-        );
-        check(
-          '...pitching about a SHOULDER at the frame rail, with a drawn bracket on it',
-          /node\.position\.set\(glyph\.outer\.x, glyph\.outer\.y, BB_BOX_TUBE_Z\);/.test(robotsCode) &&
-            robotsCode.includes('`robot:${id}:tube:pivot`') &&
-            robotsCode.includes('`robot:${id}:tube:pitch`') &&
-            robotsCode.includes('`robot:${id}:tube:swivel`'),
-        );
-        check(
-          '...and the CRADLE (section 0) hangs off the base node, so no pose can move it',
-          robotsCode.includes('(i === 0 ? node : pitch).add(mesh);'),
-        );
-        check(
-          '...and ONE ease drives the whole pose — but pitch and swivel follow the CAPPED extension',
-          /const ext = bbBoxTubeDeployExt\(/.test(robotsCode) &&
-            /const q = entry\.tubeExt > 1e-6 \? ext \/ entry\.tubeExt : e;/.test(robotsCode) &&
-            /rig\.swivel\.rotation\.z = bbBoxTubeSwivelFrac\(q\) \* entry\.tubeYaw;/.test(robotsCode) &&
-            /rig\.pitch\.rotation\.y = -q \* entry\.tubePitch;/.test(robotsCode) &&
-            /stages\[i\]\.position\.x = ext \* \(i \+ 1\);/.test(robotsCode),
-        );
+        const mounts = ['front', 'back', 'left', 'right', 'frontleft', 'frontright', 'backleft', 'backright'] as const;
+        const sizes = [[13.5, 13.5], [18, 18], [17.5, 13.5], [15, 17]] as const;
+        const mkLift = (L: number, W: number, mount: string, intakeMount: string, turret = 'center'): RobotSpec =>
+          bbCoerceSpec({
+            ...BB_DEFAULT_SPEC,
+            length: L,
+            width: W,
+            bbMech: { launcher: { kind: 'turret', mount: turret, hoodDeg: 75 }, lift: { kind: 'vslide', mount }, intake: { kind: 'sweeper' } },
+            intakeMount,
+          } as unknown as RobotSpec);
+        /** every vertex of every mesh under `root`, in `root`'s parent frame */
+        const verts = (root: THREE.Object3D, pick: (m: THREE.Mesh) => boolean = () => true): THREE.Vector3[] => {
+          root.updateMatrixWorld(true);
+          const out: THREE.Vector3[] = [];
+          root.traverse((o) => {
+            const m = o as THREE.Mesh;
+            if (!m.isMesh || !pick(m)) return;
+            const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+            for (let i = 0; i < pos.count; i++) out.push(new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld));
+          });
+          return out;
+        };
 
-        // ARITHMETIC, over the whole legal build space and a grid of in-reach poses.
+        // ---- THE STOWED TOWER, per build: in the frame, on the deck, inside its collider, out of
+        // the centre turret's way, and under the shortest legal robot
+        {
+          let placeBad = '';
+          let outFrame = '';
+          let belowDeck = '';
+          let outCollider = '';
+          let topBad = '';
+          let turretWorst = Infinity;
+          let detached = '';
+          let stowTop = 0;
+          let builds = 0;
+          for (const mount of mounts) {
+            for (const intakeMount of ['front', 'side', 'frontback', 'back'] as const) {
+              for (const [L, W] of sizes) {
+                const spec = mkLift(L, W, mount, intakeMount);
+                const lift = bbLiftOf(spec);
+                const place = bbPlacePointLocal(spec);
+                if (!lift || !place) continue;
+                builds++;
+                const copy = bbLiftPlaceLocal(spec);
+                if (!copy || Math.abs(copy.x - place.x) > 1e-12 || Math.abs(copy.y - place.y) > 1e-12) placeBad ||= `${mount}/${intakeMount}/${L}x${W}`;
+                const tube = buildBoxTube(spec, lift.mount, 9);
+                const vs = verts(tube.node);
+                const edgeMount = ['front', 'back', 'left', 'right'].includes(lift.mount);
+                // the COERCED chassis, not the asked-for one: a lift and a turret can widen it
+                const hl = spec.length / 2;
+                const hw = spec.width / 2;
+                const shapes = chassis3dShapes(spec, BB3_HEIGHT_MIN);
+                const inShape = (v: THREE.Vector3): boolean =>
+                  shapes.some((s) => {
+                    const z = v.z - BB3_HEIGHT_MIN / 2;
+                    if (Math.abs(z - s.cz) > s.hz + 1e-6) return false;
+                    if (s.shape === 'cylinder') return Math.hypot(v.x - s.cx, v.y - s.cy) <= s.hx + 1e-6;
+                    return Math.abs(v.x - s.cx) <= s.hx + 1e-6 && Math.abs(v.y - s.cy) <= s.hy + 1e-6;
+                  });
+                let top = 0;
+                for (const v of vs) {
+                  top = Math.max(top, v.z);
+                  if (Math.abs(v.x) > hl + 1e-6 || Math.abs(v.y) > hw + 1e-6) outFrame ||= `${mount}/${intakeMount}/${L}x${W} (${v.x.toFixed(2)}, ${v.y.toFixed(2)})`;
+                  // the pivot belt alone runs 0.05 in down into its slot in the deck
+                  if (v.z < BB_DECK_Z - 0.051) belowDeck ||= `${mount}/${intakeMount} z ${v.z.toFixed(3)}`;
+                  if (!inShape(v)) outCollider ||= `${mount}/${intakeMount}/${L}x${W} (${v.x.toFixed(2)}, ${v.y.toFixed(2)}, ${v.z.toFixed(2)})`;
+                  // the centre turret's head sweeps a disc above its ring; an EDGE-mounted tower, the
+                  // one that shares the rail's middle with it, stays out of that disc
+                  if (edgeMount && v.z > BB_DECK_Z + 0.55) turretWorst = Math.min(turretWorst, Math.hypot(v.x, v.y) - BB3_TURRET_R);
+                }
+                stowTop = Math.max(stowTop, top);
+                // ATTACHED: the pivot plates stand ON the deck, and the axle they carry runs through
+                // the base tube's own foot — the tower is bolted to the robot, not floating over it
+                {
+                  const pivot = tube.node.getObjectByName('robot:9:tube:pivot') as THREE.Mesh;
+                  const s0 = tube.stages[0] as THREE.Mesh;
+                  const pb = new THREE.Box3().setFromBufferAttribute(pivot.geometry.getAttribute('position') as THREE.BufferAttribute).applyMatrix4(pivot.matrixWorld);
+                  s0.geometry.computeBoundingBox();
+                  const sb = s0.geometry.boundingBox!.clone().applyMatrix4(s0.matrixWorld);
+                  if (Math.abs(pb.min.z - BB_DECK_Z) > 1e-6 || !(sb.min.z < BB_BOX_TUBE_Z && sb.max.z > BB_BOX_TUBE_Z) || sb.min.z <= BB_DECK_Z) {
+                    detached ||= `${mount}/${intakeMount}/${L}x${W}: plates from z ${pb.min.z.toFixed(3)}, base tube ${sb.min.z.toFixed(3)}…${sb.max.z.toFixed(3)}, axle ${BB_BOX_TUBE_Z}`;
+                  }
+                }
+                const liftTop = Math.max(...bbMechEnvelopes(spec, 29).filter((e) => e.what === 'liftColumn').map((e) => e.top));
+                if (Math.abs(liftTop - top) > 1e-6 || top > BB3_HEIGHT_MIN) topBad ||= `${mount}/${intakeMount}/${L}x${W}: drawn ${top.toFixed(3)} collider ${liftTop.toFixed(3)}`;
+                disposeRobotGroup(tube.node);
+              }
+            }
+          }
+          check('box tube: the renderer’s placement point and the collider’s are one number on every build', placeBad === '' && builds > 100, placeBad || `${builds} builds`);
+          check('box tube: STOWED, every part is inside the frame rail — R101’s starting cube', outFrame === '', outFrame);
+          check('box tube: nothing hangs below the deck (only the pivot belt, into its slot)', belowDeck === '', belowDeck);
+          check('box tube: the tower is ATTACHED — its pivot plates stand on the deck and their axle runs through the base tube’s foot', detached === '', detached);
+          check('box tube: every drawn vertex of the stowed tower is inside the chassis compound — no part of it is a ghost', outCollider === '', outCollider);
+          check(
+            'box tube: the tower’s collider stops at its drawn top, and that top fits under the shortest legal robot',
+            topBad === '',
+            topBad || `drawn top ≤ ${stowTop.toFixed(3)} in vs ${BB3_HEIGHT_MIN}`,
+          );
+          check(
+            'box tube: the stowed tower stays out of a centre turret’s swept disc — the old cradle ran 2.3 in into its ring',
+            turretWorst > 0,
+            `nearest ${turretWorst.toFixed(3)} in outside ${BB3_TURRET_R}`,
+          );
+        }
+
+        // ---- 2D = 3D: the sprite and the builder schematic fill the boxes the 3D base is built from
+        {
+          const drawSrc = codeLines(join(BIOBUZZ_DIR, 'drawRobot.ts')).join('\n');
+          const previewSrc = codeLines(join(BIOBUZZ_DIR, 'RobotPreview.tsx')).join('\n');
+          check(
+            'box tube 2D: the sprite and the builder draw the stowed tower from the shared boxes, and pose it with the shared solve',
+            /for \(const b of g\.boxes\)/.test(drawSrc) && /bbBoxTubePose\(/.test(drawSrc) && /g\.boxes/.test(previewSrc),
+          );
+          let worst = 0;
+          for (const mount of mounts) {
+            const spec = mkLift(15, 17, mount, 'front');
+            const lift = bbLiftOf(spec)!;
+            const place = bbPlacePointLocal(spec);
+            const g = bbBoxTubeGlyph(spec, lift.mount, place);
+            const tube = buildBoxTube(spec, lift.mount, 9);
+            tube.node.updateMatrixWorld(true);
+            const s0 = tube.stages[0] as THREE.Mesh;
+            s0.geometry.computeBoundingBox();
+            const bb = s0.geometry.boundingBox!.clone().applyMatrix4(s0.matrixWorld);
+            const h0 = BB_BOX_TUBE_SECTIONS[0] / 2;
+            const mast = bbTowerBoxRobot(g.frame, { what: 'mast', u0: -h0, u1: h0, v0: -h0, v1: h0, z0: 0, z1: 0 });
+            worst = Math.max(worst, Math.abs(bb.min.x - mast.x0), Math.abs(bb.max.x - mast.x1), Math.abs(bb.min.y - mast.y0), Math.abs(bb.max.y - mast.y1));
+            disposeRobotGroup(tube.node);
+          }
+          check('box tube 2D = 3D: the base tube the sprite fills is the base tube the scene builds', worst < 1e-6, `worst ${worst.toExponential(2)} in`);
+        }
+
+        // ---- THE END BAR GIVES WAY for a tube on its rail, rather than burying the pivot
+        {
+          const spec = mkLift(15, 17, 'back', 'front');
+          const m = bbFrontMarks(spec);
+          const bars = buildFrontMarks(spec, 9).find((n) => n.name === 'robot:9:rear:bar')!;
+          const g = bbBoxTubeGlyph(spec, 'back', bbPlacePointLocal(spec));
+          const base = g.boxes.filter((b) => b.what !== 'claw').map((b) => bbTowerBoxRobot(g.frame, b));
+          const overlap = verts(bars).some((v) => base.some((b) => v.x > b.x0 + 1e-6 && v.x < b.x1 - 1e-6 && v.y > b.y0 + 1e-6 && v.y < b.y1 - 1e-6 && v.z < b.z1));
+          check(
+            'box tube: a back-mounted tube splits the rear rail round its pivot, and no bar passes through it',
+            !!m.rear.gap && bbEndBarSegments(m.rear).length === 2 && !overlap && !bbFrontMarks({ ...spec, bbMech: { ...spec.bbMech!, lift: null } }).rear.gap,
+            JSON.stringify(m.rear.gap),
+          );
+        }
+
+        // ---- THE DEPLOY, against the FLOWER'S REAL SOLID ------------------------------------------
         //
-        // ⚠️ **IT MEASURES THE SWEPT ARM AGAINST THE FLOWER'S REAL SOLID, AND IT MEASURES THE OLD
-        // AIM THE SAME WAY** (owner, 2026-09-22: "the offset boxtube still meshes with the
-        // flower"). Two things were wrong with the check this replaces, and each on its own was
-        // enough to pass a drawing that visibly cuts the plate:
-        //   1. it tested the flower as a CYLINDER AT THE BORE RADIUS (2.086). The bore is the hole
-        //      an element falls through; the ring PLATE around it reaches 2.392 straight out of
-        //      the wall and 3.113 at its corners, so an arm that stopped on the bore rim was
-        //      already 0.31…1.03 in inside the solid.
-        //   2. it tested the AXIS. The arm is a 1.25-in box, so a centre line clearing by 0.06 in
-        //      is half an inch of aluminium through the plate.
-        // The envelope below is re-measured off the shipped `field.glb` every run, so this is the
-        // drawn flower rather than a belief about it, and `BB_FLOWER_OUTER_R` is pinned against it.
-        const TIP_Z = BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR;
-        const tubeMounts = ['front', 'back', 'left', 'right', 'frontleft', 'frontright', 'backleft', 'backright'] as const;
-
-        // ---- THE FLOWER'S OWN ENVELOPE, off the asset: max radius per (z slab, azimuth bin) in
-        // the flower's own frame (azimuth 0 = straight out of the wall). `flower_0` is F1 on the
-        // left wall, so its inward normal is +x and its local frame is the world one.
+        // The envelope is re-measured off the shipped `field.glb` every run (`flower_0` is F1, whose
+        // inward normal is +x, so its local frame is the world one), and it is a HOLLOW column: a ray
+        // at (z, azimuth) crosses solid between an inner and an outer radius, and the middle is the
+        // bore an element is placed INTO. `clearOf` is the radial distance to that shell, negative
+        // inside it; both take the max/min over the neighbouring bins, because a vertex grid
+        // under-reads a surface between its own vertices.
         const ENV_DZ = 0.05;
         const ENV_NZ = Math.ceil(24 / ENV_DZ);
-        const ENV_NA = 72; // 5 degrees
+        const ENV_NA = 72;
         const env = new Float64Array(ENV_NZ * ENV_NA);
         const envIn = new Float64Array(ENV_NZ * ENV_NA).fill(Infinity);
         let envMax = 0;
@@ -6949,13 +6999,6 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           envVerts > 4000 && envMax > 4,
           `${envVerts} vertices, widest ${envMax.toFixed(3)} in`,
         );
-        // ⚠️ THE FLOWER IS A HOLLOW COLUMN, AND A SOLID-DISC MODEL OF IT IS WORSE THAN USELESS.
-        // A ray at (z, azimuth) crosses solid between an INNER and an OUTER radius and the middle
-        // is the bore an element is placed INTO; treating everything inside the outer radius as
-        // solid called a tube passing cleanly through the hole a 4.9-in penetration. `envAt` is
-        // the outer radius, `clearOf` the radial distance to the SHELL, negative inside it. Both
-        // take the max/min over the neighbouring z slab and azimuth bin, because a vertex grid
-        // under-reads a surface between its own vertices.
         const envAt = (z: number, th: number): number => {
           if (z < 0 || z >= ENV_NZ * ENV_DZ) return 0;
           const zi = Math.floor(z / ENV_DZ);
@@ -6967,8 +7010,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             const zz = zi + dz;
             if (zz < 0 || zz >= ENV_NZ) continue;
             for (let da = -1; da <= 1; da++) {
-              const aa = (ai + da + ENV_NA) % ENV_NA;
-              const e = env[zz * ENV_NA + aa];
+              const e = env[zz * ENV_NA + ((ai + da + ENV_NA) % ENV_NA)];
               if (e > m) m = e;
             }
           }
@@ -6986,8 +7028,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             const zz = zi + dz;
             if (zz < 0 || zz >= ENV_NZ) continue;
             for (let da = -1; da <= 1; da++) {
-              const aa = (ai + da + ENV_NA) % ENV_NA;
-              const k = zz * ENV_NA + aa;
+              const k = zz * ENV_NA + ((ai + da + ENV_NA) % ENV_NA);
               if (env[k] > out) out = env[k];
               if (envIn[k] < inn) inn = envIn[k];
             }
@@ -6997,7 +7038,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           if (rad <= inn) return inn - rad;
           return -Math.min(out - rad, rad - inn);
         };
-        // ...and the CONSTANT the aim reads has to be at least that, in the field half
+        // the constant the claw reach is sized from has to cover the asset, in the field half
         {
           let worstUnder = 0;
           let atDeg = 0;
@@ -7005,10 +7046,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             const th = (d * Math.PI) / 180;
             let measured = 0;
             for (const sign of [1, -1] as const) {
-              for (let z = 0; z < BB_FLOWER_TOP_Z; z += ENV_DZ) {
-                const e = envAt(z, sign * th);
-                if (e > measured) measured = e;
-              }
+              for (let z = 0; z < BB_FLOWER_TOP_Z; z += ENV_DZ) measured = Math.max(measured, envAt(z, sign * th));
             }
             const under = measured - bbFlowerOuterR(th);
             if (under > worstUnder) {
@@ -7016,21 +7054,19 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
               atDeg = d;
             }
           }
-          // the table is a MEASUREMENT rounded to three decimals, so it may sit a thousandth under
-          // the raw vertex it came from; `BB_BOX_TUBE_FLOWER_GAP` is 0.35, three hundred times that
           check(
             'box tube: BB_FLOWER_OUTER_R covers the asset it was measured from, at every approach angle',
             worstUnder <= 0.001,
             `worst shortfall ${worstUnder.toFixed(4)} in at ${atDeg}°; table ${BB_FLOWER_OUTER_MIN}…${BB_FLOWER_OUTER_MAX}, bore ${BB_FLOWER_OPEN_R.toFixed(3)}`,
           );
+          const topHalf = BB_BOX_TUBE_SECTIONS[BB_BOX_TUBE_SECTIONS.length - 1] / 2;
+          check(
+            'box tube: the claw reaches far enough that the mast stands clear of the widest top plate',
+            BB_BOX_TUBE_CLAW_REACH >= BB_FLOWER_OUTER_MAX + topHalf + BB_BOX_TUBE_FLOWER_GAP,
+            `${BB_BOX_TUBE_CLAW_REACH} vs ${BB_FLOWER_OUTER_MAX} + ${topHalf} + ${BB_BOX_TUBE_FLOWER_GAP}`,
+          );
         }
 
-        // the stage table the BORE aim shipped with, kept here because this block measures against it
-        const boreStages = (reach: number) => {
-          const n = BB_BOX_TUBE_SECTIONS.length - 1;
-          const travel = Math.hypot(Math.max(0, reach + BB_PLACE_TOL - BB_FLOWER_OPEN_R), TIP_Z - BB_BOX_TUBE_Z) / n;
-          return { sectionLen: travel + BB_BOX_TUBE_STAGE_OVERLAP, travel, moving: n, full: n * travel };
-        };
         const footRect = (f: (typeof BB_FLOWERS)[number]) => {
           const n = FLOWER_MOUTH[f.wall];
           const wx = f.x - n.x * BB_FLOWER_D;
@@ -7057,56 +7093,39 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           }
           return true;
         };
+
         let poses = 0;
-        let skipped = 0;
-        let shoulderInBore = 0;
-        let shoulderMin = Infinity;
-        let worstTip = 0;
-        let worstOverlap = Infinity;
-        let pitchLo = Infinity;
-        let pitchHi = -Infinity;
-        let swivelHi = 0;
+        let skippedFoot = 0;
+        let clawErr = 0;
         let short = 0;
-        let restOff = 0;
-        let lowTail = Infinity;
-        let newPen = 0;
-        let newBad = 0;
-        let newGap = Infinity;
-        let borePen = 0;
-        let boreBad = 0;
-        let standLo = Infinity;
-        let standHi = 0;
-        for (const mount of tubeMounts) {
+        let bad = 0;
+        let worstPen = 0;
+        let worstGap = Infinity;
+        let worstWhat = '';
+        let gapWhat = '';
+        let nearCount = 0;
+        let lowest = Infinity;
+        let leanLo = Infinity;
+        let leanHi = -Infinity;
+        const EASES = 20;
+        const TUBE_LINES = [[1, 1], [1, -1], [-1, 1], [-1, -1], [1, 0], [-1, 0], [0, 1], [0, -1]] as const;
+        const p = new THREE.Vector3();
+        for (const mount of mounts) {
           for (const intakeMount of ['front', 'side', 'frontback'] as const) {
-            // SIZE EXTREMES too (2026-09-22): the shoulder's reach, and therefore the whole stage
-            // table, is a function of the chassis, and a square 18 and a square 13.5 are the two
-            // ends of what the builder allows.
             for (const [L, W] of [[13.5, 13.5], [18, 18], [17.5, 13.5]] as const) {
-              const spec = bbCoerceSpec({
-                ...BB_DEFAULT_SPEC,
-                length: L,
-                width: W,
-                bbMech: { lift: { kind: 'boxtube', mount } },
-                intakeMount,
-              } as unknown as RobotSpec);
+              const spec = mkLift(L, W, mount, intakeMount);
               const lift = bbLiftOf(spec);
               const place = bbPlacePointLocal(spec);
               if (!lift || !place) continue;
-              const glyph = bbBoxTubeGlyph(spec, lift.mount, place);
-              const reach = Math.hypot(place.x - glyph.outer.x, place.y - glyph.outer.y);
-              const st = bbBoxTubeStages(reach);
-              const stBore = boreStages(reach);
-              // THE RETRACTED ARM IS THE OLD REST POSE: every section spans [−sectionLen, 0] from
-              // `glyph.outer` along the glyph's own unit vector, which is where the pre-2026-09-20
-              // stack sat. Nothing pokes past the rail and nothing leaves the frame.
-              const tail = { x: glyph.outer.x - glyph.ux * st.sectionLen, y: glyph.outer.y - glyph.uy * st.sectionLen };
-              if (Math.abs(tail.x) > spec.length / 2 + 1e-9 || Math.abs(tail.y) > spec.width / 2 + 1e-9) restOff++;
-
+              const tube = buildBoxTube(spec, lift.mount, 9);
+              const holder = new THREE.Group();
+              holder.add(tube.node);
+              const rig = tube.rig;
+              const topHalf = BB_BOX_TUBE_SECTIONS[BB_BOX_TUBE_SECTIONS.length - 1] / 2;
+              const armLen = BB_BOX_TUBE_CLAW_REACH - BB_BOX_TUBE_WRIST_E - BB_BOX_TUBE_PALM_BACK;
               const world = mkWorld('match', 11, spec);
               const r = world.robots[0];
               const fx = bbFootprint(spec);
-              const pivot = { x: glyph.outer.x, y: glyph.outer.y, z: BB_BOX_TUBE_Z };
-              const baseYaw = Math.atan2(glyph.uy, glyph.ux);
               for (let fi = 0; fi < BB_FLOWERS.length; fi++) {
                 const f = BB_FLOWERS[fi];
                 const rect = footRect(f);
@@ -7124,199 +7143,147 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                       r.pos.x = f.x + Math.cos(th) * off - px;
                       r.pos.y = f.y + Math.sin(th) * off - py;
                       if (bbFlowerInReach(world, r) !== fi) continue;
-                      // the opening in the ROBOT's frame — the frame the drawn nodes live in
-                      const dx = f.x - r.pos.x;
-                      const dy = f.y - r.pos.y;
-                      const ci = Math.cos(-heading);
-                      const si = Math.sin(-heading);
-                      const target = { x: dx * ci - dy * si, y: dx * si + dy * ci, z: TIP_Z - (r.z ?? 0) };
-                      const flat = Math.hypot(target.x - pivot.x, target.y - pivot.y);
+                      // a pose the FLOWER FOOT or the PERIMETER WALL forbids is not a pose
                       if (onFoot(r.pos.x, r.pos.y, heading, fx, rect)) {
-                        skipped++;
-                        if (flat < BB_FLOWER_OPEN_R) shoulderInBore++;
+                        skippedFoot++;
                         continue;
                       }
-                      // ...and the PERIMETER WALL is a collider as much as the foot is. Without
-                      // this the sweep teleports a robot half way into the wall BESIDE a flower and
-                      // asks the arm to reach it from behind, which is an approach angle past 90°
-                      // — a place no robot can stand and the one place the column's own HIPS pipes
-                      // are. Filtered, the approach angle never leaves ±78.5°.
                       {
                         const hl2 = (fx.front + fx.rear) / 2;
                         const cx2 = r.pos.x + (c * (fx.front - fx.rear)) / 2;
                         const cy2 = r.pos.y + (s * (fx.front - fx.rear)) / 2;
                         const ex = Math.abs(c) * hl2 + Math.abs(s) * fx.half;
                         const ey = Math.abs(s) * hl2 + Math.abs(c) * fx.half;
-                        if (Math.abs(cx2) + ex > BB_HALF_X || Math.abs(cy2) + ey > BB_HALF_Y) {
-                          skipped++;
-                          continue;
-                        }
+                        if (Math.abs(cx2) + ex > BB_HALF_X || Math.abs(cy2) + ey > BB_HALF_Y) continue;
                       }
                       poses++;
-                      shoulderMin = Math.min(shoulderMin, flat);
-                      // the SHOULDER in world, and the approach angle off the flower's own normal
-                      const wx = r.pos.x + pivot.x * c - pivot.y * s - f.x;
-                      const wy = r.pos.y + pivot.x * s + pivot.y * c - f.y;
-                      const theta = Math.atan2(wx * nrm.y - wy * nrm.x, wx * nrm.x + wy * nrm.y);
-                      const stand = bbBoxTubeStandoff(theta);
-                      standLo = Math.min(standLo, stand);
-                      standHi = Math.max(standHi, stand);
-                      const aim = bbBoxTubeAim(pivot, target, st, stand);
-                      const need = Math.hypot(flat - stand, target.z - pivot.z);
-                      if (aim.len < need - 1e-9) short++;
-                      pitchLo = Math.min(pitchLo, aim.pitch);
-                      pitchHi = Math.max(pitchHi, aim.pitch);
-                      swivelHi = Math.max(swivelHi, Math.abs(((aim.yaw - baseYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI));
-                      // the DRAWN tip at full ease: the last stage's front face, `moving · ext` out
-                      const L2 = st.moving * aim.ext;
-                      const tip = {
-                        x: pivot.x + Math.cos(aim.pitch) * Math.cos(aim.yaw) * L2,
-                        y: pivot.y + Math.cos(aim.pitch) * Math.sin(aim.yaw) * L2,
-                        z: pivot.z + Math.sin(aim.pitch) * L2,
-                      };
-                      // ...JUST OUTSIDE THE PLATE'S EDGE and JUST ABOVE IT — the whole fix
-                      worstTip = Math.max(
-                        worstTip,
-                        Math.abs(Math.hypot(tip.x - target.x, tip.y - target.y) - stand) + Math.abs(tip.z - target.z),
+                      holder.position.set(r.pos.x, r.pos.y, 0);
+                      holder.rotation.set(0, 0, heading);
+                      const dx = f.x - r.pos.x;
+                      const dy = f.y - r.pos.y;
+                      const pose = bbBoxTubePose(
+                        rig.frame,
+                        rig.stages,
+                        { x: dx * c + dy * s, y: -dx * s + dy * c },
+                        { x: nrm.x * c + nrm.y * s, y: -nrm.x * s + nrm.y * c },
                       );
-
-                      // ---- THE SWEPT ARM vs THE FLOWER, for the shipped aim and for the BORE aim
-                      // that shipped before it. Every MOVING stage, at its own half-width, over its
-                      // own span, through the deploy.
-                      for (const [which, stg, rim] of [['new', st, stand], ['bore', stBore, BB_FLOWER_OPEN_R]] as const) {
-                        const am = bbBoxTubeAim(pivot, target, stg, rim);
-                        const ox = r.pos.x + pivot.x * c - pivot.y * s;
-                        const oy = r.pos.y + pivot.x * s + pivot.y * c;
-                        const oz = pivot.z + (r.z ?? 0);
-                        let pen = 0;
-                        let gap = Infinity;
-                        // ⚠️ THE POSE AT EASE `e` IS DRAWN FROM THE **CAPPED** EXTENSION, and pitch
-                        // and swivel follow that, not the raw ease. Sampling the raw ease would be
-                        // sampling poses the renderer never draws. The BORE variant is the one that
-                        // shipped before this pass: rim at the bore, and a deploy with no cap at
-                        // all, where pitch and extension ran together off the ease.
-                        for (let ei = 0; ei <= 10; ei++) {
-                          const e = ei / 10;
-                          const extE = which === 'new'
-                            ? bbBoxTubeDeployExt(e, am.pitch, am.ext, stg.moving, wx, wy, heading + baseYaw, am.yaw - baseYaw, nrm.x, nrm.y, oz, rim)
-                            : e * am.ext;
-                          const q = which === 'new' && am.ext > 1e-6 ? extE / am.ext : e;
-                          const swiv = which === 'new' ? bbBoxTubeSwivelFrac(q) : e;
-                          const yawW = heading + baseYaw + swiv * (am.yaw - baseYaw);
-                          const pit = q * am.pitch;
-                          const ux = Math.cos(pit) * Math.cos(yawW);
-                          const uy = Math.cos(pit) * Math.sin(yawW);
-                          const uz = Math.sin(pit);
-                          for (let i = 1; i < BB_BOX_TUBE_SECTIONS.length; i++) {
-                            const halfW = BB_BOX_TUBE_SECTIONS[i] / 2;
-                            const front = extE * i;
-                            for (let k = 0; k <= 10; k++) {
-                              const d = front - (k / 10) * stg.sectionLen;
-                              const qx = ox + ux * d;
-                              const qy = oy + uy * d;
-                              const qz = oz + uz * d;
-                              // ⚠️ ABOVE THE MID PLATE ONLY, and that is a STATEMENT not a dodge:
-                              // the shoulder sits at 5.55 and the mid plate's top face at 5.254, so
-                              // everything this check skips is the retracted stack lying in its own
-                              // cradle INSIDE the chassis. It grazes the mid plate by 0.124 in on
-                              // the poses where the chassis itself does — the drawn plate reaches
-                              // 2.415 in from the wall and the FOOT COLLIDER that stops a robot
-                              // stops it at 2.384 — which is a field asset/collider difference, not
-                              // something the arm can be aimed out of.
-                              if (qz <= FLOWER_RING_Z.mid[1] || qz > BB_FLOWER_TOP_Z) continue;
-                              const rad = Math.hypot(qx - f.x, qy - f.y);
-                              if (rad - halfW > envMax) continue;
-                              const ax2 = qx - f.x;
-                              const ay2 = qy - f.y;
-                              const thq = Math.atan2(ax2 * nrm.y - ay2 * nrm.x, ax2 * nrm.x + ay2 * nrm.y);
-                              const clear = clearOf(qz, thq, rad) - halfW;
-                              if (!isFinite(clear)) continue;
-                              if (clear < 0) pen = Math.max(pen, -clear);
-                              else if (clear < gap) gap = clear;
+                      leanLo = Math.min(leanLo, pose.lean);
+                      leanHi = Math.max(leanHi, pose.lean);
+                      // the sizing covered it: no pose asks for more slide than the stages have
+                      const want = (Math.hypot(pose.s, BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR - BB_BOX_TUBE_Z) - rig.stages.retracted) / rig.stages.moving;
+                      if (want > rig.stages.travel + 1e-9) short++;
+                      let poseWorst = Infinity;
+                      let poseWhat = '';
+                      let curE = 0;
+                      const test = (what: string, half: number): void => {
+                        if (p.z < 0) return;
+                        const ax2 = p.x - f.x;
+                        const ay2 = p.y - f.y;
+                        const rad = Math.hypot(ax2, ay2);
+                        if (rad - half > envMax) return;
+                        const thq = Math.atan2(ax2 * nrm.y - ay2 * nrm.x, ax2 * nrm.x + ay2 * nrm.y);
+                        const cl = clearOf(p.z, thq, rad) - half;
+                        if (cl < poseWorst) {
+                          poseWorst = cl;
+                          poseWhat = `${what} at e ${curE.toFixed(2)}, z ${p.z.toFixed(2)}, r ${rad.toFixed(2)}, ${((thq * 180) / Math.PI).toFixed(0)}°`;
+                        }
+                      };
+                      for (let ei = 0; ei <= EASES; ei++) {
+                        const e = ei / EASES;
+                        curE = e;
+                        poseBoxTubeRig(rig, tube.stages, bbBoxTubeJoints(rig.frame, pose, e));
+                        holder.updateMatrixWorld(true);
+                        // every TUBE, along its four edges and the middles of its four faces — the
+                        // drawn box itself, not an axis with a radius round it
+                        for (let i = 0; i < tube.stages.length; i++) {
+                          const m = tube.stages[i].matrixWorld;
+                          const hw2 = BB_BOX_TUBE_SECTIONS[i] / 2;
+                          for (const [ex, ey] of TUBE_LINES) {
+                            for (let k = 0; k <= 12; k++) {
+                              p.set(ex * hw2, ey * hw2, -BB_BOX_TUBE_BASE_BELOW + (k / 12) * rig.stages.sectionLen).applyMatrix4(m);
+                              if (k === 0) lowest = Math.min(lowest, p.z);
+                              test(`s${i}`, 0);
                             }
                           }
                         }
-                        if (which === 'new') {
-                          newPen = Math.max(newPen, pen);
-                          if (pen > 0) newBad++;
-                          else if (gap < newGap) newGap = gap;
-                        } else {
-                          borePen = Math.max(borePen, pen);
-                          if (pen > 0) boreBad++;
+                        // the wrist block and the yoke, at the 27 points of each box's own grid
+                        const box3 = (m: THREE.Matrix4, x0: number, x1: number, y0: number, y1: number, z0: number, z1: number, what: string): void => {
+                          for (const fx2 of [0, 0.5, 1]) {
+                            for (const fy of [0, 0.5, 1]) {
+                              for (const fz of [0, 0.5, 1]) {
+                                p.set(x0 + (x1 - x0) * fx2, y0 + (y1 - y0) * fy, z0 + (z1 - z0) * fz).applyMatrix4(m);
+                                test(what, 0);
+                              }
+                            }
+                          }
+                        };
+                        const wh = BB_BOX_TUBE_WRIST_HALF;
+                        box3(rig.level.matrixWorld, -wh, wh, -wh * 0.8, wh * 0.8, 0, BB_BOX_TUBE_WRIST_TOP, 'wrist');
+                        box3(rig.yaw.matrixWorld, wh - 0.25, BB_BOX_TUBE_YOKE_OUT, -BB_BOX_TUBE_CLAW_HALF, BB_BOX_TUBE_CLAW_HALF, BB_BOX_TUBE_WRIST_H - 0.15, BB_BOX_TUBE_WRIST_TOP, 'yoke');
+                        for (let k = 0; k <= 8; k++) {
+                          p.set(0, 0, -(k / 8) * armLen).applyMatrix4(rig.swing.matrixWorld);
+                          test('arm', (Math.hypot(BB_BOX_TUBE_ARM_T, BB_BOX_TUBE_ARM_W)) / 2);
+                        }
+                        for (const jw of rig.jaws) {
+                          for (let k = 0; k <= 6; k++) {
+                            p.set(0, 0, -(k / 6) * BB_BOX_TUBE_JAW_L).applyMatrix4(jw.matrixWorld);
+                            test('jaw', BB_BOX_TUBE_JAW_H / 2);
+                          }
+                        }
+                        void topHalf;
+                        // FULLY OUT, the claw is over the bore — measured on the drawn marker
+                        if (ei === EASES) {
+                          const claw = tube.node.getObjectByName('robot:9:tube:claw')!;
+                          claw.getWorldPosition(p);
+                          clawErr = Math.max(clawErr, Math.hypot(p.x - f.x, p.y - f.y), Math.abs(p.z - (BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR + BB_BOX_TUBE_WRIST_H)));
                         }
                       }
-
-                      // NO STAGE LEAVES ITS PARENT, at any ease: consecutive stages are one `ext`
-                      // apart and each is `sectionLen` long, so the capture is `sectionLen − ext`.
-                      // The same walk measures the TAIL DIP — stage 1's back end is behind the
-                      // shoulder while it is still retracted, so it swings down toward the deck.
-                      for (let e = 0; e <= 1.0001; e += 0.05) {
-                        worstOverlap = Math.min(worstOverlap, st.sectionLen - e * aim.ext);
-                        lowTail = Math.min(lowTail, BB_BOX_TUBE_Z + (e * aim.ext - st.sectionLen) * Math.sin(e * aim.pitch));
+                      if (poseWorst < 0) {
+                        bad++;
+                        if (-poseWorst > worstPen) {
+                          worstPen = -poseWorst;
+                          worstWhat = `${mount}/${intakeMount}/${L}x${W} F${fi + 1}: ${poseWhat}`;
+                        }
+                      } else if (poseWorst < BB_BOX_TUBE_FLOWER_GAP && ++nearCount && poseWorst < worstGap) {
+                        worstGap = poseWorst;
+                        gapWhat = `${mount}/${intakeMount}/${L}x${W} F${fi + 1}: ${poseWhat}`;
                       }
                     }
                   }
                 }
               }
+              disposeRobotGroup(tube.node);
             }
           }
         }
-        check('box tube pose sweep: it found in-reach poses to measure at all', poses > 2000, `${poses} poses`);
+        check('box tube deploy sweep: it found in-reach, collision-legal poses to measure at all', poses > 2000 && skippedFoot > 0, `${poses} poses, ${skippedFoot} dropped on a flower foot`);
         check(
-          'box tube pose sweep: the poses it DROPPED are the ones a flower foot or the perimeter wall forbids',
-          shoulderInBore > 0 && shoulderMin > BB_FLOWER_OPEN_R,
-          `${skipped} on the foot (${shoulderInBore} with the shoulder inside the bore); nearest legal shoulder ${shoulderMin.toFixed(3)} in vs bore ${BB_FLOWER_OPEN_R.toFixed(3)}`,
+          'box tube: FULLY OUT, the drawn claw is over the FLOWER’s bore on every pose — the flush pose included',
+          clawErr < 1e-6,
+          `worst ${clawErr.toExponential(2)} in over ${poses} poses`,
         );
-        // ⚠️ **THE CHECK THE BORE AIM PASSED AND THE OWNER STILL SAW FAIL.** Run against that aim
-        // it fails on nearly every pose — the numbers in the second argument come off this sweep.
+        check('box tube: ...and no pose asks for more slide than the stages have', short === 0, `${short} poses short`);
         check(
-          'box tube: the SWEPT arm clears the flower’s real solid at every ease, every stage, every in-reach pose',
-          newBad === 0,
-          `plate aim ${newBad}/${poses} meshing (worst ${newPen.toFixed(3)} in); the BORE aim was ${boreBad}/${poses}, worst ${borePen.toFixed(3)} in`,
+          'box tube: the drawn tower, wrist and claw clear the flower’s real solid at every ease of every pose',
+          bad === 0,
+          bad ? `${bad}/${poses} meshing, worst ${worstPen.toFixed(3)} in (${worstWhat})` : `0/${poses}`,
         );
+        // the tightest pose is a CORNER tube reaching along the wall, whose yoke passes the end of
+        // the flower's wall-side backstop (z 22.0–22.65); the mast itself keeps the plate margin
         check(
           '...with clear air, not a tangency that rounds the right way',
-          newGap > 0.02,
-          `tightest gap ${newGap === Infinity ? 'n/a' : newGap.toFixed(4)} in (arm half-width ${BB_BOX_TUBE_HALF_W}, gap target ${BB_BOX_TUBE_FLOWER_GAP})`,
+          worstGap > 0.02,
+          `tightest ${worstGap === Infinity ? 'n/a' : worstGap.toFixed(3)} in (${gapWhat}); ${nearCount} of ${poses} poses under ${BB_BOX_TUBE_FLOWER_GAP}`,
         );
         check(
-          'box tube: at full ease the TIP parks just outside the plate’s edge and just above it',
-          worstTip < 1e-6,
-          `worst ${worstTip.toExponential(2)} in over ${poses} poses; standoff ${standLo.toFixed(3)}…${standHi.toFixed(3)} in from the bore centre`,
+          'box tube: the slide stands UP — it leans a few degrees, never lies down',
+          leanLo > (70 * Math.PI) / 180 && leanHi < (100 * Math.PI) / 180,
+          `${((leanLo * 180) / Math.PI).toFixed(1)}° … ${((leanHi * 180) / Math.PI).toFixed(1)}°`,
         );
         check(
-          '...and the arm is never asked for more length than the stages have',
-          short === 0,
-          `${short} poses short`,
-        );
-        check(
-          '...and no stage ever leaves its parent (capture never drops below one overlap)',
-          worstOverlap >= BB_BOX_TUBE_STAGE_OVERLAP - 1e-9,
-          `worst capture ${worstOverlap.toFixed(3)} vs overlap ${BB_BOX_TUBE_STAGE_OVERLAP}`,
-        );
-        check(
-          '...and the retracted arm still sits inside the frame, where the old rest pose was',
-          restOff === 0,
-          `${restOff} builds stow outside the chassis`,
-        );
-        check(
-          'box tube: the arm REACHES UP — every in-reach pose asks for a steep pitch, never a flat one',
-          pitchLo > Math.PI / 4,
-          `${((pitchLo * 180) / Math.PI).toFixed(1)}° … ${((pitchHi * 180) / Math.PI).toFixed(1)}° (past 90° is the arm leaning BACK so its tip stands outside the plate)`,
-        );
-        check(
-          '...and the base SWIVEL stays small — the ring is at most BB_PLACE_TOL off the mount line',
-          swivelHi < Math.PI / 4,
-          `worst ${((swivelHi * 180) / Math.PI).toFixed(2)}° (tol ${BB_PLACE_TOL}, opening r ${BB_FLOWER_OPEN_R.toFixed(2)})`,
-        );
-        // ⚠️ THE ONE COST OF PIVOTING AT THE RAIL: stage 1's tail is still behind the shoulder
-        // while the arm is mostly retracted, so mid-deploy it swings DOWN. It is bounded, it is
-        // inside the frame behind the rail, and it never reaches the belly pan (0.85) — a RATCHET,
-        // so a change that makes the arm dig deeper has to move this number on purpose.
-        check(
-          'box tube: the mid-deploy TAIL DIP is bounded and stays inside the frame',
-          lowTail > 3.0,
-          `lowest tail z ${lowTail.toFixed(3)} (deck top ${BB_DECK_Z}, belly pan 0.96)`,
+          'box tube: no tube dips into the deck at any ease (the old arm’s tails swung 1.6 in into it)',
+          lowest > BB_DECK_Z,
+          `lowest tube corner z ${lowest.toFixed(3)} vs deck ${BB_DECK_Z}`,
         );
       }
 

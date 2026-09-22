@@ -22,8 +22,18 @@
 import type { RobotSpec, RobotState } from '../../types';
 import * as C from '../../config';
 import { roundRect, strokeInside, tintColor } from '../../render/drawRobot';
-import { hyp } from '../../math';
-import { MOUNT_DIR, mountOrigin, type BbMountPos } from './mounts';
+import { type BbMountPos } from './mounts';
+import { bbLiftOf } from './mechs';
+import {
+  BB_DECK_Z,
+  bbBoxTubeFrame,
+  bbBoxTubeStages,
+  bbBoxTubeStowedBoxes,
+  bbLiftPlaceLocal,
+  bbTowerBoxRobot,
+  type BbBoxTubeFrame,
+  type BbTowerBox,
+} from './config';
 
 /**
  * The CHASSIS — an FTC frame seen from above. Deliberately PLAIN: extruded aluminium rails
@@ -269,67 +279,95 @@ export function drawWheels(ctx: CanvasRenderingContext2D, r: RobotState, color: 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BOX TUBE — the static glyph both renderers draw at the tube's mount
+// BOX TUBE — the stowed tower's plan, which both 2D renderers draw
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** the drawn tube's section width and length along its mount direction (in). DRAWING sizes,
- * not hardware: the Box Tube has no raise and no modelled length (`bbPlacePointLocal`,
- * `robot.ts`, is the only geometry the sim reads), so these only have to read as "a length of
- * box tube bolted to this edge" and stay clear of a turret ring at the neighbouring cell. */
-export const BB_BOX_TUBE_W = 1.1;
-export const BB_BOX_TUBE_LEN = 2.2;
-/** how far inside the frame rail the tube's outer end sits, per axis the mount touches (in) */
-const BB_BOX_TUBE_INSET = 0.7;
-/** how far back over the glyph the REACH section (glyph outer end → placement ring) starts (in),
- * so the two draw as one continuous tube across the frame rail — both renderers */
-export const BB_BOX_TUBE_OVERLAP = 0.3;
 /** the placement-point marker's ring radius (in) — both renderers */
 export const BB_PLACE_MARK_R = 1.0;
 
 /**
- * THE BOX TUBE GLYPH, in the robot frame: a short tube lying along the mount's outward
- * direction (`MOUNT_DIR`), its OUTER end just inside the frame rail at the mount cell.
+ * THE BOX TUBE AS SEEN FROM ABOVE — the stowed tower (`config.ts`'s "THE BOX TUBE" block), as the
+ * boxes the 3D meshes and the collider are built from, plus its plan bounding rectangle.
  *
- * `outer` is where the reach line to the placement point starts; `ux`/`uy` is the outward unit
- * vector (a corner mount lies along the 45° diagonal, as every corner mechanism does). Pulled
- * inboard PER AXIS the mount touches, the same rule `turretLocal` uses, so a corner tube never
- * hangs off either rail. `center` is not a tube mount; it reads as the front edge.
- *
- * `toward` is the placement point (`bbPlacePointLocal`). When given, the tube is AIMED at it, so
- * the stub inside the frame and the reach out to the ring are one straight length. On an edge
- * mount that is `MOUNT_DIR` anyway; on a corner the footprint can grow unevenly (a sweeper on one
- * axis only) and the point sits off the 45° line, which drew the tube with a bend at the rail.
+ * `outer` is the mast axis, `ux`/`uy` the tower's outward axis (aimed at `toward`, the placement
+ * point), and `cx`/`cy`/`len`/`w` the rectangle that holds every stowed part, `len` along u —
+ * which is what the held-element layout keeps its discs off. `center` is not a tube mount; it
+ * reads as the front edge.
  */
 export function bbBoxTubeGlyph(
   spec: Pick<RobotSpec, 'length' | 'width'>,
   mount: BbMountPos,
   toward?: { x: number; y: number } | null,
-): { cx: number; cy: number; ux: number; uy: number; len: number; w: number; outer: { x: number; y: number } } {
-  const pos: BbMountPos = mount === 'center' ? 'front' : mount;
-  const o = mountOrigin(spec, pos);
-  const d = MOUNT_DIR[pos];
-  const outer = { x: o.x - Math.sign(d.x) * BB_BOX_TUBE_INSET, y: o.y - Math.sign(d.y) * BB_BOX_TUBE_INSET };
-  let ux = d.x;
-  let uy = d.y;
-  if (toward) {
-    // `hyp`, not `Math.hypot`: this runs in sim code, and `Math.hypot` is one of the calls
-    // whose result is engine-defined, so a host and a guest on different browsers can
-    // disagree in the last bit and desync. `hyp` was already imported here.
-    const k = hyp(toward.x - outer.x, toward.y - outer.y);
-    if (k > 1e-6) {
-      ux = (toward.x - outer.x) / k;
-      uy = (toward.y - outer.y) / k;
-    }
-  }
+): {
+  cx: number;
+  cy: number;
+  ux: number;
+  uy: number;
+  len: number;
+  w: number;
+  outer: { x: number; y: number };
+  frame: BbBoxTubeFrame;
+  boxes: BbTowerBox[];
+} {
+  const frame = bbBoxTubeFrame(spec, mount, toward ?? null);
+  const stages = bbBoxTubeStages(frame.placeDist);
+  const boxes = bbBoxTubeStowedBoxes(frame, stages);
+  const u0 = Math.min(...boxes.map((b) => b.u0));
+  const u1 = Math.max(...boxes.map((b) => b.u1));
+  const v0 = Math.min(...boxes.map((b) => b.v0));
+  const v1 = Math.max(...boxes.map((b) => b.v1));
+  const um = (u0 + u1) / 2;
+  const vm = (v0 + v1) / 2;
   return {
-    cx: outer.x - (ux * BB_BOX_TUBE_LEN) / 2,
-    cy: outer.y - (uy * BB_BOX_TUBE_LEN) / 2,
-    ux,
-    uy,
-    len: BB_BOX_TUBE_LEN,
-    w: BB_BOX_TUBE_W,
-    outer,
+    cx: frame.outer.x + um * frame.ux + vm * frame.vx,
+    cy: frame.outer.y + um * frame.uy + vm * frame.vy,
+    ux: frame.ux,
+    uy: frame.uy,
+    len: u1 - u0,
+    w: v1 - v0,
+    outer: frame.outer,
+    frame,
+    boxes,
   };
+}
+
+/**
+ * WHERE AN END BAR HAS TO STOP for a Box Tube standing on the same rail: the y-span, in the robot
+ * frame, of every stowed tower part that shares the bar's x-band and height band, padded 0.1.
+ * `null` when the tube is not on this end. The bar is structure the tube's pivot plates bolt
+ * through, so it gives way there rather than burying the pivot.
+ */
+function endBarGap(
+  spec: Pick<RobotSpec, 'length' | 'width'> & Partial<RobotSpec>,
+  x0: number,
+  x1: number,
+): { y0: number; y1: number } | null {
+  if (!spec.bbMech?.lift || spec.intake === undefined) return null;
+  const full = spec as RobotSpec;
+  const lift = bbLiftOf(full);
+  if (!lift) return null;
+  const g = bbBoxTubeGlyph(spec, lift.mount, bbLiftPlaceLocal(full));
+  const barTop = BB_DECK_Z + BB_END_BAR_H;
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  for (const b of g.boxes) {
+    const r = bbTowerBoxRobot(g.frame, b);
+    if (r.z0 >= barTop || r.x1 <= x0 || r.x0 >= x1) continue;
+    y0 = Math.min(y0, r.y0);
+    y1 = Math.max(y1, r.y1);
+  }
+  return y0 <= y1 ? { y0: y0 - 0.1, y1: y1 + 0.1 } : null;
+}
+
+/** an end bar's drawn pieces along y — the whole bar, or the two sides of its gap. */
+export function bbEndBarSegments(bar: { halfY: number; gap?: { y0: number; y1: number } | null }): { y0: number; y1: number }[] {
+  const lo = -bar.halfY;
+  const hi = bar.halfY;
+  if (!bar.gap) return [{ y0: lo, y1: hi }];
+  const out: { y0: number; y1: number }[] = [];
+  if (bar.gap.y0 > lo + 0.2) out.push({ y0: lo, y1: Math.min(hi, bar.gap.y0) });
+  if (bar.gap.y1 < hi - 0.2) out.push({ y0: Math.max(lo, bar.gap.y1), y1: hi });
+  return out;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -412,17 +450,17 @@ export const BB_FRONT_ARROW_T = 0.12;
  *
  * `front`/`rear` are bars `[x0, x1] × [−halfY, halfY]`; `arrow` is the chevron's three points.
  */
-export function bbFrontMarks(spec: Pick<RobotSpec, 'length' | 'width'>): {
-  front: { x0: number; x1: number; halfY: number };
-  rear: { x0: number; x1: number; halfY: number };
+export function bbFrontMarks(spec: Pick<RobotSpec, 'length' | 'width'> & Partial<RobotSpec>): {
+  front: { x0: number; x1: number; halfY: number; gap: { y0: number; y1: number } | null };
+  rear: { x0: number; x1: number; halfY: number; gap: { y0: number; y1: number } | null };
   arrow: { apex: number; base: number; half: number };
 } {
   const hl = spec.length / 2;
   const halfY = Math.max(0.5, spec.width / 2 - BB_END_BAR_INSET);
   const base = -hl + BB_END_BAR_T + BB_FRONT_ARROW_GAP;
   return {
-    front: { x0: hl - BB_END_BAR_T, x1: hl, halfY },
-    rear: { x0: -hl, x1: -hl + BB_END_BAR_T, halfY },
+    front: { x0: hl - BB_END_BAR_T, x1: hl, halfY, gap: endBarGap(spec, hl - BB_END_BAR_T, hl) },
+    rear: { x0: -hl, x1: -hl + BB_END_BAR_T, halfY, gap: endBarGap(spec, -hl, -hl + BB_END_BAR_T) },
     arrow: { apex: base + BB_FRONT_ARROW_LEN, base, half: Math.min(BB_FRONT_ARROW_HALF, halfY) },
   };
 }

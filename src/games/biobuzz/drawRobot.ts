@@ -5,11 +5,11 @@ import { robotsEnabled } from '../../sim/match';
 import { drawDecal, ROBOT_TRIM, roundRect, tintColor } from '../../render/drawRobot';
 import { accentFill, clampCosmetics } from '../../cosmetics';
 import {
-  BB_BOX_TUBE_OVERLAP,
   BB_FRONT_INK,
   BB_PLACE_MARK_R,
   BB_REAR_INK,
   bbBoxTubeGlyph,
+  bbEndBarSegments,
   bbFrontMarks,
   drawChassisBody,
   drawChassisOutline,
@@ -35,6 +35,21 @@ import {
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
   bbHopperCap,
+  BB_BOX_TUBE_ARM_W,
+  BB_BOX_TUBE_CLAW_REACH,
+  BB_BOX_TUBE_JAW_L,
+  BB_BOX_TUBE_JAW_OPEN,
+  BB_BOX_TUBE_JAW_ROOT,
+  BB_BOX_TUBE_PALM_BACK,
+  BB_BOX_TUBE_SECTIONS,
+  BB_BOX_TUBE_WALL,
+  BB_BOX_TUBE_WRIST_E,
+  BB_BOX_TUBE_WRIST_HALF,
+  BB_FLOWERS,
+  FLOWER_MOUTH,
+  bbBoxTubePose,
+  bbBoxTubeStages,
+  type BbBoxTubeFrame,
 } from './config';
 import { type BbLauncherSpec, type BbLiftSpec, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 import {
@@ -217,8 +232,10 @@ export function drawBiobuzzRobot(
     ctx.restore();
   }
 
-  // The BOX TUBE — bolted flat to the frame at its mount, no independent heading and no raise.
-  if (lift) drawBoxTube(ctx, r.spec, lift);
+  // The BOX TUBE's BASE — its pivot plates, pulley and spool, bolted to the deck at its mount.
+  // The tower above them is drawn after the clip (`drawBoxTubeTower`): leaning out over a
+  // FLOWER it passes the footprint, and it stands above everything on the deck.
+  if (lift) drawBoxTubeBase(ctx, r.spec, lift);
 
   // WHICH END IS THE FRONT — light bar, deck arrow, hazard bar. Drawn LAST inside the clip, over
   // every mechanism, because a cue that a sweeper can cover is not a cue. `bbFrontMarks`'
@@ -236,10 +253,12 @@ export function drawBiobuzzRobot(
   // WHAT IT IS HOLDING, at fixed slots on the deck — before the turrets, which sit on top.
   drawHeldElements(ctx, r, launcher, lift);
 
-  // THE PLACEMENT MARKER — outside the clip (see above), lit while a FLOWER ring is in reach.
+  // THE PLACEMENT MARKER — outside the clip (see above), lit while a FLOWER ring is in reach —
+  // and the Box Tube's tower: folded, or deployed with its claw over that FLOWER's bore.
   if (lift) {
-    const lit = world !== undefined && bbFlowerInReach(world, r) !== null;
-    drawPlaceMarker(ctx, r.spec, lift, lit);
+    const flower = world !== undefined ? bbFlowerInReach(world, r) : null;
+    drawPlaceMarker(ctx, r.spec, flower !== null);
+    drawBoxTubeTower(ctx, r, lift, flower);
   }
 
   ctx.restore();
@@ -280,15 +299,17 @@ export function drawBiobuzzRobot(
 function drawFrontBack(ctx: CanvasRenderingContext2D, spec: RobotSpec): void {
   const m = bbFrontMarks(spec);
 
-  // 1. THE LIGHT BAR, full width at the front edge
-  ctx.fillStyle = BB_FRONT_INK;
-  ctx.fillRect(m.front.x0, -m.front.halfY, m.front.x1 - m.front.x0, m.front.halfY * 2);
-  ctx.fillStyle = 'rgba(17,21,27,0.55)';
-  ctx.fillRect(m.front.x0, -m.front.halfY, 0.18, m.front.halfY * 2);
+  // 1. THE LIGHT BAR, full width at the front edge — less the gap a Box Tube's pivot stands in
+  for (const sg of bbEndBarSegments(m.front)) {
+    ctx.fillStyle = BB_FRONT_INK;
+    ctx.fillRect(m.front.x0, sg.y0, m.front.x1 - m.front.x0, sg.y1 - sg.y0);
+    ctx.fillStyle = 'rgba(17,21,27,0.55)';
+    ctx.fillRect(m.front.x0, sg.y0, 0.18, sg.y1 - sg.y0);
+  }
 
   // 2. THE REAR RAIL, full width — the chassis' own dark, no stripes (see `bbFrontMarks`)
   ctx.fillStyle = BB_REAR_INK;
-  ctx.fillRect(m.rear.x0, -m.rear.halfY, m.rear.x1 - m.rear.x0, m.rear.halfY * 2);
+  for (const sg of bbEndBarSegments(m.rear)) ctx.fillRect(m.rear.x0, sg.y0, m.rear.x1 - m.rear.x0, sg.y1 - sg.y0);
 
   // 3. THE DECK ARROW, pointing at the light bar and away from the plain end
   ctx.fillStyle = BB_FRONT_INK;
@@ -710,81 +731,139 @@ function drawTurret(
   ctx.restore();
 }
 
-/**
- * The BOX TUBE, seen from above: a short length of square tube lying along its mount direction,
- * its outer end just inside the frame rail (`bbBoxTubeGlyph`, `parts.ts` — the builder preview
- * draws the same rectangle). A box tube from above is its WALLS: a hollow rectangle with a bolt at
- * each end. It has no raise, so there is no state to show on it; the state lives on the marker.
- */
-function drawBoxTube(ctx: CanvasRenderingContext2D, spec: RobotSpec, lift: BbLiftSpec): void {
-  const g = bbBoxTubeGlyph(spec, lift.mount, bbPlacePointLocal(spec));
+/** fill one tower-frame rectangle [u0,u1] × [v0,v1], drawn in the robot frame — and outline it
+ * in the machined-edge light when `edge` is set, the same stroke the rest of the sprite's
+ * aluminium takes, so a part on the dark deck reads from the match camera */
+function towerRect(ctx: CanvasRenderingContext2D, f: BbBoxTubeFrame, u0: number, u1: number, v0: number, v1: number, edge = false): void {
   ctx.save();
-  ctx.translate(g.cx, g.cy);
-  ctx.rotate(Math.atan2(g.uy, g.ux));
+  ctx.translate(f.outer.x, f.outer.y);
+  ctx.rotate(Math.atan2(f.uy, f.ux));
+  ctx.fillRect(u0, v0, u1 - u0, v1 - v0);
+  if (edge) {
+    ctx.strokeStyle = 'rgba(210,224,240,0.6)';
+    ctx.lineWidth = 0.16;
+    ctx.strokeRect(u0, v0, u1 - u0, v1 - v0);
+  }
+  ctx.restore();
+}
+
+/** the Box Tube's drive parts — the pivot pulley, the string spool, the wrist servo */
+const TUBE_DRIVE = '#2b313a';
+
+/**
+ * The BOX TUBE's BASE, from above: the two pivot plates and the pulley and spool outside them —
+ * the same boxes (`bbBoxTubeStowedBoxes`, `config.ts`) the 3D base and its collider are built
+ * from.
+ */
+function drawBoxTubeBase(ctx: CanvasRenderingContext2D, spec: RobotSpec, lift: BbLiftSpec): void {
+  const g = bbBoxTubeGlyph(spec, lift.mount, bbPlacePointLocal(spec));
+  for (const b of g.boxes) {
+    if (b.what !== 'plate' && b.what !== 'drum') continue;
+    ctx.fillStyle = b.what === 'plate' ? ALU_DK : TUBE_DRIVE;
+    towerRect(ctx, g.frame, b.u0, b.u1, b.v0, b.v1);
+  }
+}
+
+/**
+ * The BOX TUBE's TOWER, from above. FOLDED it is the mast (a hollow square: a box tube from above
+ * is its walls), the wrist servo on top and the end of the folded claw beside it. DEPLOYED —
+ * while `bbFlowerInReach` names a FLOWER, the predicate the 3D tower and the marker read — it is
+ * the pose `bbBoxTubePose` solves: the mast drawn out to its leaning tip, and the claw arm from
+ * the tip to that FLOWER's bore with the jaws open over it. 2D has no ease, so it shows the two
+ * end poses the 3D tower runs between.
+ */
+function drawBoxTubeTower(ctx: CanvasRenderingContext2D, r: RobotState, lift: BbLiftSpec, flower: number | null): void {
+  const spec = r.spec;
+  const g = bbBoxTubeGlyph(spec, lift.mount, bbPlacePointLocal(spec));
+  const f = g.frame;
+  const w0 = BB_BOX_TUBE_SECTIONS[0];
+  const wTop = BB_BOX_TUBE_SECTIONS[BB_BOX_TUBE_SECTIONS.length - 1];
+  let s = 0;
+  let psi = Math.atan2(f.sy, f.sx);
+  let deployed = false;
+  if (flower !== null) {
+    const fl = BB_FLOWERS[flower];
+    const n = FLOWER_MOUTH[fl.wall];
+    const c = Math.cos(-r.heading);
+    const sn = Math.sin(-r.heading);
+    const dx = fl.x - r.pos.x;
+    const dy = fl.y - r.pos.y;
+    const pose = bbBoxTubePose(
+      f,
+      bbBoxTubeStages(f.placeDist),
+      { x: dx * c - dy * sn, y: dx * sn + dy * c },
+      { x: n.x * c - n.y * sn, y: n.x * sn + n.y * c },
+      r.z ?? 0,
+    );
+    s = pose.s;
+    psi = pose.psi;
+    deployed = true;
+  }
+  // the mast: the base tube's section, drawn out to the tip when it leans
+  const m0 = Math.min(0, s) - w0 / 2;
+  const m1 = Math.max(0, s) + w0 / 2;
+  ctx.fillStyle = 'rgba(6,9,13,0.55)';
+  towerRect(ctx, f, m0 - 0.12, m1 + 0.12, -w0 / 2 - 0.12, w0 / 2 + 0.12);
   ctx.fillStyle = ALU_MID;
-  ctx.strokeStyle = 'rgba(210,224,240,0.55)';
-  ctx.lineWidth = 0.18;
-  ctx.fillRect(-g.len / 2, -g.w / 2, g.len, g.w);
-  ctx.strokeRect(-g.len / 2, -g.w / 2, g.len, g.w);
-  // the hollow — what makes it a TUBE rather than a bar
-  ctx.fillStyle = ALU_DK;
-  ctx.fillRect(-g.len / 2 + 0.28, -g.w / 2 + 0.28, g.len - 0.56, g.w - 0.56);
+  towerRect(ctx, f, m0, m1, -w0 / 2, w0 / 2, true);
+  // the top stage's mouth, at the tip
   ctx.fillStyle = ALU;
-  for (const x of [-g.len / 2 + 0.55, g.len / 2 - 0.55]) {
-    ctx.beginPath();
-    ctx.arc(x, 0, 0.17, 0, TAU);
-    ctx.fill();
+  towerRect(ctx, f, s - wTop / 2, s + wTop / 2, -wTop / 2, wTop / 2);
+  ctx.fillStyle = ALU_DK;
+  const bore = wTop / 2 - BB_BOX_TUBE_WALL;
+  towerRect(ctx, f, s - bore, s + bore, -bore, bore);
+  // the wrist and the claw it carries, turned to the claw's bearing at the tip
+  const tx = f.outer.x + s * f.ux;
+  const ty = f.outer.y + s * f.uy;
+  const halfW = BB_BOX_TUBE_ARM_W / 2;
+  ctx.save();
+  ctx.translate(tx, ty);
+  ctx.rotate(psi);
+  ctx.fillStyle = TUBE_DRIVE;
+  ctx.fillRect(-BB_BOX_TUBE_WRIST_HALF, -BB_BOX_TUBE_WRIST_HALF * 0.8, BB_BOX_TUBE_WRIST_HALF * 2, BB_BOX_TUBE_WRIST_HALF * 1.6);
+  ctx.strokeStyle = 'rgba(210,224,240,0.45)';
+  ctx.lineWidth = 0.12;
+  ctx.strokeRect(-BB_BOX_TUBE_WRIST_HALF, -BB_BOX_TUBE_WRIST_HALF * 0.8, BB_BOX_TUBE_WRIST_HALF * 2, BB_BOX_TUBE_WRIST_HALF * 1.6);
+  if (!deployed) {
+    // folded: the claw hangs beside the mast, so from above it is the yoke's end
+    ctx.fillStyle = ALU_DK;
+    ctx.fillRect(BB_BOX_TUBE_WRIST_HALF - 0.25, -halfW - 0.06, BB_BOX_TUBE_WRIST_E + 0.4 - BB_BOX_TUBE_WRIST_HALF, halfW * 2 + 0.12);
+  } else {
+    // deployed: the arm out to the palm, and the two jaws open round the bore
+    const palm = BB_BOX_TUBE_CLAW_REACH - BB_BOX_TUBE_PALM_BACK;
+    ctx.fillStyle = 'rgba(6,9,13,0.75)';
+    ctx.fillRect(BB_BOX_TUBE_WRIST_HALF - 0.4, -halfW - 0.15, palm - BB_BOX_TUBE_WRIST_HALF + 0.55, halfW * 2 + 0.3);
+    ctx.fillStyle = ALU_DK;
+    ctx.fillRect(BB_BOX_TUBE_WRIST_HALF - 0.25, -halfW, palm - BB_BOX_TUBE_WRIST_HALF + 0.25, halfW * 2);
+    const tipU = palm + BB_BOX_TUBE_JAW_L * Math.cos(BB_BOX_TUBE_JAW_OPEN);
+    const tipV = BB_BOX_TUBE_JAW_ROOT + BB_BOX_TUBE_JAW_L * Math.sin(BB_BOX_TUBE_JAW_OPEN);
+    ctx.lineCap = 'round';
+    for (const [style, width] of [['rgba(6,9,13,0.75)', 0.34], ['rgba(210,224,240,0.85)', 0.16]] as const) {
+      ctx.strokeStyle = style;
+      ctx.lineWidth = width;
+      for (const sg of [1, -1] as const) {
+        ctx.beginPath();
+        ctx.moveTo(palm, sg * BB_BOX_TUBE_JAW_ROOT);
+        ctx.lineTo(tipU, sg * tipV);
+        ctx.stroke();
+      }
+    }
+    ctx.lineCap = 'butt';
   }
   ctx.restore();
 }
 
 /**
  * THE PLACEMENT POINT — a plain ring at `bbPlacePointLocal`, the ONE point the sim tests FLOWER
- * reach from, and the box tube carried out past the frame to meet it. HOLLOW normally; FILLED and
- * green while `bbFlowerInReach` says a FLOWER ring is within tolerance, which is exactly the state
- * in which the place buttons do something.
- *
- * The reach is the SAME section as the glyph inside the clip (`drawBoxTube`) — walls, hollow and
- * all — starting a little inboard of the glyph's outer end so the two read as one length of tube
- * crossing the frame rail. It stops at the ring, so the ring stays open over whatever FLOWER is
- * under it. Both get a dark under-stroke, because they sit on the mat outside the robot and have
- * to read against the mat, a FLOWER foot and the perimeter alike.
+ * reach from. HOLLOW normally; FILLED and green while `bbFlowerInReach` says a FLOWER ring is
+ * within tolerance, which is exactly the state in which the place buttons do something. It is a
+ * cue, not hardware: nothing of the robot reaches out to it until the tower deploys.
  */
-function drawPlaceMarker(ctx: CanvasRenderingContext2D, spec: RobotSpec, lift: BbLiftSpec, lit: boolean): void {
+function drawPlaceMarker(ctx: CanvasRenderingContext2D, spec: RobotSpec, lit: boolean): void {
   const p = bbPlacePointLocal(spec);
   if (!p) return;
-  const g = bbBoxTubeGlyph(spec, lift.mount, p);
   const R = BB_PLACE_MARK_R;
   const ink = lit ? GREEN : 'rgba(226,234,242,0.92)';
-
-  const dx = p.x - g.outer.x;
-  const dy = p.y - g.outer.y;
-  const d = Math.hypot(dx, dy);
-  const x0 = -BB_BOX_TUBE_OVERLAP;
-  const x1 = d - R + 0.1; // tucked just under the ring's stroke
-  if (d > 0 && x1 > x0) {
-    ctx.save();
-    ctx.translate(g.outer.x, g.outer.y);
-    ctx.rotate(Math.atan2(dy, dx));
-    const hw = g.w / 2;
-    ctx.fillStyle = 'rgba(6,9,13,0.75)';
-    ctx.fillRect(0, -hw - 0.17, x1, g.w + 0.34);
-    ctx.fillStyle = ALU_MID;
-    ctx.fillRect(x0, -hw, x1 - x0, g.w);
-    ctx.fillStyle = ALU_DK;
-    ctx.fillRect(x0, -hw + 0.28, x1 - x0, g.w - 0.56);
-    // the two long walls only: the tube's end is under the ring, and its inner end merges into the glyph
-    ctx.strokeStyle = 'rgba(210,224,240,0.55)';
-    ctx.lineWidth = 0.18;
-    ctx.beginPath();
-    ctx.moveTo(x0, -hw);
-    ctx.lineTo(x1, -hw);
-    ctx.moveTo(x0, hw);
-    ctx.lineTo(x1, hw);
-    ctx.stroke();
-    ctx.restore();
-  }
-
   ctx.strokeStyle = 'rgba(6,9,13,0.75)';
   ctx.lineWidth = 0.62;
   ctx.beginPath();

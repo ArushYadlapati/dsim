@@ -1204,7 +1204,10 @@ export function groundRoll3d(world: World, engine: Engine3d, dt: number): void {
         // of either is resting on something that is not drawn there, which is exactly the class
         // of report the narrow-hull vibration exists for. A robot's DECK is a `Cuboid` and stays
         // BROAD: a flat deck really can carry a ball.
-        if (other.shapeType() === RAPIER.ShapeType.ConvexPolyhedron || other.shapeType() === RAPIER.ShapeType.Cylinder) {
+        // ...and a ROUNDED box is narrow too: the one kind built is a Box Tube tower
+        // (`BbMechEnvelope.narrow`), whose 1.3-in top carried a balanced POLLEN indefinitely
+        const st = other.shapeType();
+        if (st === RAPIER.ShapeType.ConvexPolyhedron || st === RAPIER.ShapeType.Cylinder || st === RAPIER.ShapeType.RoundCuboid) {
           touchingNarrow = true;
         } else {
           touchingBroad = true;

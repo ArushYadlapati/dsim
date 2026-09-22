@@ -45,12 +45,14 @@ import { lengthLimits, widthLimits } from '../../sim/drivetrain';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
   type BbIntakeMount,
+  type BbMountPos,
   type BbScoreMode,
   EDGE_ANGLE,
   MOUNT_DIR,
   bbIntakeMountOf,
   bbShooterEdgeOf,
   edgeGeom,
+  mountOrigin,
   turretLocal,
 } from './mounts';
 // `mechs.ts` is a LEAF over `types` + `mounts`, so this import adds no cycle — the same reason
@@ -1543,281 +1545,420 @@ export function bbArchetypeWallExtra(kind: BbIntakeKind): number {
 }
 
 /**
- * NEW. THE BOX TUBE'S OWN HARDWARE GEOMETRY — named here, not in the renderer, because the
- * RENDER lane forbids `renderRobots.ts` naming a mechanism constant of its own (the same rule
- * that keeps the intake's geometry here rather than in the file that draws it).
+ * THE BOX TUBE — a vertical two-stage box-tube slide at the frame rail, on a small pivot, with a
+ * wrist and a claw on top (owner, 2026-09-22: "Offset boxtube still looks extremely weird").
  *
- * `BB_BOX_TUBE_SECTIONS` (in, outer to inner): a real FTC box tube is 1.5×1.5 outer with a
- * 0.125-in wall, giving a 1.25-in clear bore, and every nested stage repeats the same subtraction
- * — 1.5 → 1.25 → 1.0 → 0.75 → 0.5. Measured hardware rather than APPROX. `BB_BOX_TUBE_WALL` is
- * the wall thickness that makes the nest close exactly: 1.5 − 2×0.125 = 1.25 is the next
- * section's outer dimension, and it is also how much each stage must be hollowed by in the mesh
- * to read as a tube rather than a bar.
+ * WHAT THE REAL PART IS. The OFFSET™ Box Tube Slide Kit is a "2-stage" slide: THREE nested
+ * aluminium tubes of about the same length (300 mm outer stage, 885 mm extended — published),
+ * running on bearing blocks at each stage's mouth and pulled out by a string (or belt) spool at
+ * the base. On an FTC robot that has to put an element into a goal 21 in up, it stands at the
+ * robot's edge, rises, and a wrist-mounted claw at the top swings the element over the goal.
  *
- * ⚠️ **FIVE SECTIONS, NOT THREE, AND THE COUNT IS A MEASUREMENT** (owner, 2026-09-20: "the
- * boxtube extension should be reaching towards the opening in the flower, not extending
- * horizontally"). The tip has to arrive at a FLOWER's top plate, `BB_FLOWER_TOP_Z` 21.404 in up,
- * from a shoulder at `BB_BOX_TUBE_Z` 5.55 — 16.854 in of rise against 1.08…8.08 in of horizontal
- * run, so the arm needs **17.1…17.9 in of length** (it was 17.6…18.7 until the 2026-09-22 rim
- * change below took one opening radius off every horizontal run; the cradle came down with it,
- * 5.65…5.92 → 5.53…5.72, so four moving stages is still the first count that fits the shortest
- * legal chassis and nothing about the paragraph below moved), where three sections gave it
- * `bbTubeReach` (3.08…6.08) and pointed it flat at the wall. The section LENGTH is also how far back into the
- * frame the stowed stack runs, and that is what fixes the count: over the 128 legal (mount ×
- * intake × size-extreme) builds, 2 moving stages want an **8.8…9.3-in** cradle, 3 want 5.9…6.2,
- * and **4 want 5.65…5.92**, which is the first count that fits inside the shortest legal chassis
- * (13.5 in) with the shoulder 0.7 in inside the rail. A sixth section would be 0.25 in outer over
- * a 0.125 wall, i.e. no bore at all, so five is also the last honest one.
+ * WHAT IT REPLACED, AND WHY EACH PIECE WAS WRONG (measured off the shipped build, Pollinator):
+ *  1. The arm did not deploy where drivers use it. A robot flush on a FLOWER foot got 19% of its
+ *     extension at 17° of pitch and stayed there: the deploy cap's bisection assumed its safe set
+ *     was an interval and the parked pose itself failed the radius test by rounding. 3,550 of
+ *     28,928 in-reach poses stalled; the RENDER lane's tip check read the uncapped solve, so it
+ *     never saw the drawn arm.
+ *  2. The outer tube (a flat "cradle") stayed on the deck while the four inner stages rotated
+ *     out of its mouth — telescoping tubes that bend 90° at a joint. Their tails swung below the
+ *     pivot, into the deck.
+ *  3. Five sections tapering 1.5 → 0.5 in read as a car antenna, with nothing at the tip.
+ *  4. Stowed, the cradle ran 2.3 in into a centre turret's ring bearing and base plate, and its
+ *     pivot sat inside the end bar the front/back marks added, so from behind it was invisible.
+ *  5. Nothing drove the pivot or the stages, and the tip parked BESIDE the flower, not over it.
+ *
+ * THE MECHANISM NOW, in the TOWER FRAME (`bbBoxTubeFrame`: u outward toward the placement point,
+ * v = u turned +90°, z up, origin on the pivot axle under the mast):
+ *  · two PIVOT PLATES flank the base tube and carry the axle; outside one plate is the pivot
+ *    PULLEY (its belt runs down through the deck to a motor under it), outside the other the
+ *    string SPOOL. The whole slide leans about the axle — only a few degrees, `bbBoxTubePose`;
+ *  · three tubes `BB_BOX_TUBE_SECTIONS`, nested, each `sectionLen` long, sliding along the axis;
+ *  · on top of the last stage a WRIST (a servo block, kept level) and a CLAW on a short arm: it
+ *    hangs folded beside the mast when stowed and swings out level over the FLOWER's top bore
+ *    when deployed, with the claw centre on the bore to 1e-9.
+ * The pose is solved per frame against the flower `bbFlowerInReach` names, and the sim is not
+ * involved: placement is still a proximity action. The stowed tower IS a collider
+ * (`bbBoxTubeEnvelopes`), like a turret head, because it stands 7 in above the deck.
  */
-export const BB_BOX_TUBE_SECTIONS = [1.5, 1.25, 1.0, 0.75, 0.5] as const;
+export const BB_BOX_TUBE_SECTIONS = [1.2, 0.95, 0.7] as const;
+/** wall (in): 1.2 − 2 × 0.125 = 0.95 is the next section's outside, so the nest closes. */
 export const BB_BOX_TUBE_WALL = 0.125;
-/** how much of each telescoping stage stays captured inside the one outboard of it at full
- * extension (in). APPROX — sized as one section width so a fully extended tube never draws as
- * two boxes with a visible gap between them; it is the difference between a section's LENGTH and
- * its per-stage TRAVEL, which is what `bbBoxTubeStages` solves for. */
-export const BB_BOX_TUBE_STAGE_OVERLAP = 1.25;
-/** seconds for the Box Tube to fully extend, in the RENDERER only. APPROX — a RENDER rate with
- * NO sim consequence: the Box Tube has no sim travel (placement is a proximity action, not a
- * raise — see `BB_PLACE_REACH`'s header), so this can never change what scores.
- *
- * ⚠️ **0.12 s WAS TOO FAST, AND THE OWNER SAID SO ABOUT THE SAME MECHANISM TWICE** — "it should
- * also be a lot faster" (2026-09-20, against the 0.35 this started at) and then "it also moves
- * way too quickly in animation and in a violent way" (2026-09-22). 0.12 s is SEVEN FRAMES at
- * 60 Hz for a pose that sweeps 64–86° of pitch and 17–19 in of arm: the tube was not seen
- * moving, it teleported. 0.40 is the middle of the band the second report asks for and back
- * inside the first one's complaint only because the EASE changed with it — the ramp is a
- * `smoothstep`, so it leaves and arrives at zero rate and the fast part is the middle, which is
- * what "not violent" actually means. A linear 0.40 reads slower than a smoothstepped 0.40. */
-export const BB_BOX_TUBE_EXTEND_S = 0.4;
-/** retraction as a FRACTION of the deploy time. APPROX. Coming home is the uninteresting half —
- * nothing is being aimed at any more — so it is a touch quicker, 0.32 s. It is not much quicker:
- * a snap-back is the same complaint as a snap-out. */
+/** how much of each moving stage stays inside the one outboard of it at full extension (in):
+ * one bearing block. APPROX. */
+export const BB_BOX_TUBE_STAGE_OVERLAP = 0.9;
+/** how far the base tube runs below the pivot axle (in) — the axle goes through its foot. */
+export const BB_BOX_TUBE_BASE_BELOW = 0.45;
+/** the mast axis inside the frame rail, per axis the mount touches (in): an EDGE mount's 0.7
+ * leaves the 1.2 base tube 0.1 inside the rail; a CORNER mount's tower is turned 45° and needs
+ * 1.25 for its plates and spool to stay inside both rails. */
+export const BB_BOX_TUBE_INSET = 0.7;
+export const BB_BOX_TUBE_CORNER_INSET = 1.25;
+/** the pivot bracket (in): plate thickness, the gap between the base tube and a plate, the
+ * plates' extent along u, and how far above the axle they stop. APPROX, sized as FTC plate. */
+export const BB_BOX_TUBE_PLATE_T = 0.125;
+export const BB_BOX_TUBE_PLATE_GAP = 0.06;
+export const BB_BOX_TUBE_PLATE_U0 = -0.85;
+export const BB_BOX_TUBE_PLATE_U1 = 0.55;
+export const BB_BOX_TUBE_PLATE_ABOVE = 0.55;
+/** the pivot pulley and the string spool, one outside each plate (in). */
+export const BB_BOX_TUBE_DRUM_R = 0.5;
+export const BB_BOX_TUBE_DRUM_T = 0.25;
+/** the last stage's top face stops this far above the FLOWER's top plate (in). */
+export const BB_BOX_TUBE_TIP_CLEAR = 0.6;
+/** the wrist (in): hinge height above the tip, the servo block's top above the tip, and the
+ * hinge's offset from the mast axis — which is what lets the folded claw hang BESIDE the mast. */
+export const BB_BOX_TUBE_WRIST_H = 0.3;
+export const BB_BOX_TUBE_WRIST_TOP = 0.45;
+export const BB_BOX_TUBE_WRIST_E = 0.85;
+/** the servo block's half-width on the mast axis, how far out the yoke that carries the hinge
+ * reaches, and the folded claw's half-width across its own hanging direction (in) */
+export const BB_BOX_TUBE_WRIST_HALF = 0.45;
+export const BB_BOX_TUBE_YOKE_OUT = 1.0;
+export const BB_BOX_TUBE_CLAW_HALF = 0.4;
+/** how far a bearing block stands proud of the tube it caps (in) */
+export const BB_BOX_TUBE_COLLAR = 0.05;
+/** mast axis → claw centre, horizontal, when deployed (in). It has to be at least the flower's
+ * widest top-plate radius (`BB_FLOWER_OUTER_MAX` 3.113) plus half the top stage plus air, or the
+ * mast itself passes through the plate: 3.113 + 0.35 + 0.34. */
+export const BB_BOX_TUBE_CLAW_REACH = 3.8;
+/** the claw arm's section (thickness in the swing plane, width along the hinge axis), where
+ * the palm sits short of the claw centre, and the two jaws (in, rad). The jaws open to ±1.39 —
+ * a POLLEN at its equator — so they stay inside the 2.086-in bore radius over the flower. */
+export const BB_BOX_TUBE_ARM_T = 0.25;
+export const BB_BOX_TUBE_ARM_W = 0.5;
+export const BB_BOX_TUBE_PALM_BACK = 1.0;
+export const BB_BOX_TUBE_JAW_L = 1.7;
+export const BB_BOX_TUBE_JAW_ROOT = 0.3;
+export const BB_BOX_TUBE_JAW_T = 0.12;
+export const BB_BOX_TUBE_JAW_H = 0.3;
+export const BB_BOX_TUBE_JAW_OPEN = (40 * Math.PI) / 180;
+/** clear air the drawn mechanism keeps from the flower's real solid over the whole deploy, as
+ * the RENDER lane binds it (in). Measured 0.394 at the shipped constants. */
+export const BB_BOX_TUBE_FLOWER_GAP = 0.25;
+
+/** seconds for the whole deploy, RENDERER only (no sim travel). APPROX. It was 0.12 (owner:
+ * "way too quickly … in a violent way"), then 0.40 for a pitch-and-extend; the sequence now also
+ * swings and turns a claw, so 0.45. Every phase is a smoothstep (`bbBoxTubePhases`). */
+export const BB_BOX_TUBE_EXTEND_S = 0.45;
+/** retraction as a fraction of the deploy time. APPROX. */
 export const BB_BOX_TUBE_RETRACT_F = 0.8;
-/** how fast the AIM the ease is steering toward may itself move (rad/s, and in/s for the per-stage
- * extension). RENDER-only, APPROX.
- *
- * ⚠️ **WITHOUT THESE THE POSE SNAPPED WHILE THE ARM WAS FULLY OUT.** `bbFlowerInReach` names ONE
- * flower, and a robot sitting between two of them (or crossing the `BB_PLACE_TOL` boundary as it
- * drives) changes which one it names in a single tick. The old code assigned the new yaw/pitch/
- * extension straight onto the entry, so an 18-in arm jumped to a new bearing in one frame with
- * `tubeEase` already at 1 — the other half of the owner's "violent". The targets SLEW now, so a
- * change of flower sweeps. 3 rad/s covers the full 86° of pitch in 0.50 s, which is the deploy's
- * own order; 60 in/s covers the whole 4.7-in per-stage travel in 0.08 s, so a pure reach change
- * (same bearing, nearer ring) still feels instant. */
+/** how fast the pose TARGET may move once the arm is out (rad/s, in/s), so a change of target
+ * flower sweeps instead of snapping. RENDER-only, APPROX. */
 export const BB_BOX_TUBE_SLEW = 3.0;
 export const BB_BOX_TUBE_EXT_SLEW = 60;
-/** how far above a FLOWER's TOP PLATE (`BB_FLOWER_TOP_Z`) the extended tip parks (in). APPROX —
- * a tube that stops level with the plate reads as resting ON it; `flower3d.ts` drops a placed
- * element at the top ring, so the tip belongs just clear of the hole it drops through. */
-export const BB_BOX_TUBE_TIP_CLEAR = 1.0;
-/**
- * the SWEPT half-width of the moving arm (in) — half the widest section that ever leaves the
- * cradle. Section 0 (1.5) is the cradle and never moves, so the thing that can meet a FLOWER is
- * section 1 at 1.25.
- *
- * ⚠️ THE AXIS IS NOT THE ARM. The 2026-09-22 report ("the offset boxtube still meshes with the
- * flower") is half about the flower being wider than its bore and half about this: the aim, the
- * sizing and the old check all reasoned about the CENTRE LINE, and a centre line that clears a
- * plate by 0.06 in is a 1.25-in box cutting it by half an inch.
- */
-export const BB_BOX_TUBE_HALF_W = BB_BOX_TUBE_SECTIONS[1] / 2;
-/** how much clear air the arm's OUTER SURFACE keeps from the flower's own solid (in). APPROX.
- *  0.35 is the square-corner excess a round swept radius misses — (√2 − 1)·`BB_BOX_TUBE_HALF_W`
- *  = 0.26 — plus slack, so the drawn box clears even at the 45° roll where its corner leads. */
-export const BB_BOX_TUBE_FLOWER_GAP = 0.35;
-/** where the TIP parks, as a radius from the flower's bore centre, for one approach angle. This
- *  is the whole of the 2026-09-22 fix: the tube stops just OUTSIDE the plate's own edge and just
- *  ABOVE it, rather than on the bore rim, which was inside the plate. */
-export function bbBoxTubeStandoff(theta: number): number {
-  return bbFlowerOuterR(theta) + BB_BOX_TUBE_HALF_W + BB_BOX_TUBE_FLOWER_GAP;
+
+/** the tower's frame in the robot frame. `s` is where the folded claw hangs (a unit vector along
+ * a rail, so it stays inside the frame at a corner too). */
+export interface BbBoxTubeFrame {
+  outer: { x: number; y: number };
+  ux: number;
+  uy: number;
+  vx: number;
+  vy: number;
+  sx: number;
+  sy: number;
+  corner: boolean;
+  /** horizontal distance from the mast axis to the placement point */
+  placeDist: number;
 }
 
 /**
- * ⚠️ **THE DEPLOY PATH, AND THE OTHER HALF OF "IT STILL MESHES WITH THE FLOWER".** Fixing where
- * the arm ENDS fixes one frame in twenty-four. One ease driving pitch and extension together
- * means that half way through, the arm is already HALF ITS LENGTH at HALF ITS PITCH — long and
- * flat — and a 17.5-in arm at 50° from a shoulder 3.1 in off the flower reaches 6.5 in
- * horizontally, which is straight through the column and out into the HIPS pipes on the far
- * side. MEASURED over the RENDER lane's own sweep: the tip crossed the axis on 10,035 of 13,104
- * poses and the drawn box met a pipe at radius 3.29, azimuth −135°, z 11.8.
- *
- * The fix is a CAP on how far out the arm may be for the pitch it is at — not a second ease.
- * The rule: **the arm never crosses to the WALL SIDE of the flower.** The length is cut where the
- * axis would pass the plane through the bore centre normal to `FLOWER_MOUTH`. That is the right
- * keep-out rather than a cylinder about the column, because the column is HOLLOW — the pipes live
- * at radius 1.9…4.7 on the wall side and there is nothing at all on the field side between the
- * plates, so "stay out of a cylinder" both failed to stop the sweep and forced the stage TAILS
- * down into the mid plate. The PARKED pose is on the ray from the bore centre out through the
- * shoulder, so its tip is on the field side by construction and the cap never binds at full ease.
- *
- * It has to be solved against the EASED heading, not the final one: the swivel eases too, so half
- * way through the deploy the arm is pointing between its mount's own aim and the flower, and a cap
- * that assumed a radial line missed the sideways sweep entirely (measured: it changed nothing).
- *
- * At full ease the cap never binds — the final pose is `bbBoxTubeStandoff`'s and nothing about it
- * changes — so this only reshapes the middle of the deploy, which is exactly what was wrong.
+ * THE TOWER'S FRAME for a mount. The mast axis is inset from the rail per axis the mount
+ * touches; `u` aims at the placement point `place` (`bbPlacePointLocal`), which is `MOUNT_DIR`
+ * on an edge and close to the diagonal at a corner.
  */
-/**
- * how much of the deploy the base SWIVEL takes, as a fraction. APPROX.
- *
- * ⚠️ **AN EASED SWIVEL IS WHY A "RADIAL" CAP KEPT MISSING.** The arm's bearing eases from its
- * mount's own aim to the flower, so half way through the deploy it is pointing at NEITHER, and
- * every argument of the form "the tip runs along the ray from the bore centre" is false there —
- * measured, the tip's radius dipped to 2.25 at z 20.23 and cut the top plate's ring on a pose
- * whose radial path never goes inside 4.088. Finishing the swivel in the first quarter, while the
- * arm is still short and low, makes the rest of the climb genuinely radial.
- */
-export const BB_BOX_TUBE_SWIVEL_LEAD = 1;
-export function bbBoxTubeDeployExt(
-  e: number,
-  pitchFull: number,
-  extFull: number,
-  moving: number,
-  /** the SHOULDER, relative to the flower's bore centre, in world x/y */
-  ax: number,
-  ay: number,
-  /** the arm's world bearing when fully STOWED (the mount's own aim), and the swivel it takes on
-   *  top of that when fully deployed */
-  yawBase: number,
-  yawDelta: number,
-  /** the flower's own INWARD wall normal (`FLOWER_MOUTH`) */
-  nx: number,
-  ny: number,
-  /** the SHOULDER's height, and the radius the tip has to keep while it is level with the TOP
-   *  PLATE — the parked standoff, which is where it ends up anyway */
-  zPivot: number,
-  standR: number,
-): number {
-  // ⚠️ A BISECTION ON THE DRAWN POSE, not an algebraic cap. Pitch, swivel and length are all
-  // functions of ONE fraction, so "how long may the arm be" and "how steep is it" are the same
-  // question asked twice; solving one for the other is a fixed point that is easy to write
-  // subtly wrong and impossible to read. This asks the only thing that matters — does the TIP of
-  // the pose we would draw at `q` sit on the field side of the flower — and keeps the largest
-  // `q ≤ e` that answers yes. Twelve steps resolve `e` to 1/4096, far finer than a frame.
-  const safeAt = (q: number): boolean => {
-    const len = moving * q * extFull;
-    const p = q * pitchFull;
-    const yaw = yawBase + bbBoxTubeSwivelFrac(q) * yawDelta;
-    const h = len * dcos(p);
-    const rx = ax + h * dcos(yaw);
-    const ry = ay + h * dsin(yaw);
-    // 1. NEVER ROUND THE BACK. The column is hollow and its HIPS pipes are all on the wall side,
-    //    so the one thing the tip must not do is cross the flower's own centre plane.
-    if (rx * nx + ry * ny < 0) return false;
-    // 2. AND NEVER LEVEL WITH THE TOP PLATE AT A RADIUS INSIDE IT. Half way out the arm is long
-    //    and flat, so its tip can rise into the ring's own annulus on its way up — measured at
-    //    radius 2.27 against a 3.05 plate — even though the parked pose stands well outside.
-    const z = zPivot + len * dsin(p);
-    if (z > FLOWER_RING_Z.top[0] - BB_BOX_TUBE_HALF_W) {
-      if (hyp(rx, ry) < standR) return false;
+export function bbBoxTubeFrame(
+  spec: Pick<RobotSpec, 'length' | 'width'>,
+  mount: BbMountPos,
+  place: { x: number; y: number } | null,
+): BbBoxTubeFrame {
+  const pos: BbMountPos = mount === 'center' ? 'front' : mount;
+  const o = mountOrigin(spec, pos);
+  const d = MOUNT_DIR[pos];
+  const corner = Math.abs(d.x) > 1e-9 && Math.abs(d.y) > 1e-9;
+  const ins = corner ? BB_BOX_TUBE_CORNER_INSET : BB_BOX_TUBE_INSET;
+  const outer = { x: o.x - Math.sign(d.x) * ins, y: o.y - Math.sign(d.y) * ins };
+  let ux = d.x;
+  let uy = d.y;
+  let placeDist = 0;
+  if (place) {
+    placeDist = hyp(place.x - outer.x, place.y - outer.y);
+    if (placeDist > 1e-6) {
+      ux = (place.x - outer.x) / placeDist;
+      uy = (place.y - outer.y) / placeDist;
     }
-    return true;
-  };
-  if (safeAt(e)) return e * extFull;
-  let lo = 0;
-  let hi = e;
-  for (let it = 0; it < 12; it++) {
-    const mid = (lo + hi) / 2;
-    if (safeAt(mid)) lo = mid;
-    else hi = mid;
   }
-  return lo * extFull;
-}
-
-/** how much of the base SWIVEL is in, for an arm that is `q` of the way out. */
-export function bbBoxTubeSwivelFrac(q: number): number {
-  return Math.min(1, q / BB_BOX_TUBE_SWIVEL_LEAD);
+  // the folded claw hangs along +v on an edge; at a corner, along the front/back rail toward the
+  // robot's centre line (either v would leave the frame within an inch)
+  const sx = corner ? 0 : -uy;
+  const sy = corner ? -Math.sign(d.y) : ux;
+  return { outer, ux, uy, vx: -uy, vy: ux, sx, sy, corner, placeDist };
 }
 
 /**
- * THE STAGE TABLE — a CRADLE of `sectionLen` lying flat in the frame, `moving` stages nested in
- * it, each with `travel`, and a SHOULDER at the cradle's OUTBOARD end (`glyph.outer`).
- *
- * ⚠️ **THE SHOULDER IS AT THE FRAME RAIL AND THAT IS WHAT KEEPS THE ARM OUT OF THE TURRET.** The
- * first pass pivoted the whole mast about its INBOARD end, which lands 4.9…5.3 in inside the rail
- * — i.e. under a `center` turret's ring on every chassis — so the mast rose straight through the
- * head: MEASURED, its axis came within **0.000 in** of the drawn turret belt and 0.001 of the
- * feed throat, at ease 0.92 and 0.33. Anchoring the rotation at `outer` instead leaves the cradle
- * FIXED and flat (unchanged from the drawing that shipped) and sweeps only the stages, which slide
- * out along an axis that pitches up over the robot's own bumper, where nothing is built. The price
- * is that stage 1's tail sits behind the shoulder while it is still mostly retracted and dips
- * toward the deck; that is bounded and measured in `renderRobots.ts`.
- *
- * Sizing is the WORST pose `bbFlowerInReach` calls in reach: the ring sits `reach ± BB_PLACE_TOL`
- * out from the shoulder horizontally and `BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR −
- * BB_BOX_TUBE_Z` up, and `moving · travel` has to cover the far end of that. So the drawn tip
- * meets the opening BY CONSTRUCTION at every legal build rather than by a tolerance — the same
- * bargain the tip already made with the placement point when it only had to reach horizontally.
- *
- * ⚠️ **THE TARGET IS THE PLATE'S OUTER EDGE, AND THE RUN CAN BE NEGATIVE** (owner, 2026-09-22:
- * "the offset boxtube still meshes with the flower"). The tip parks at `bbBoxTubeStandoff(θ)`
- * from the bore centre — 3.37 in straight out of the wall, 4.09 at the plate's corners — so the
- * worst case is no longer "the ring as far out as it gets". It is whichever of the two ENDS is
- * further from that standoff: a ring at `reach + BB_PLACE_TOL` with the SMALLEST standoff (the
- * arm reaches out), or a ring at `reach − BB_PLACE_TOL` with the LARGEST (the arm leans BACK over
- * its own robot, because the tip has to stand further from the flower than the shoulder does).
- * Both are a horizontal run the stages must cover, and `hyp` does not care about the sign.
+ * THE STAGE TABLE. The tip's height is fixed (`BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR`); how far
+ * it sits along `u` from the pivot is `bbBoxTubePose`'s `s`, and over the in-reach disc (the ring
+ * within `BB_PLACE_TOL` of the placement point, `reach` out along `u`) that is between
+ * `reach − TOL − CLAW_REACH` and `reach + TOL − √(CLAW_REACH² − TOL²)`. The longest arm those ask
+ * for sizes three equal tubes: tip = n·len − BASE_BELOW − (n − 1)·overlap.
  */
-export function bbBoxTubeStages(reach: number): { sectionLen: number; travel: number; moving: number; full: number } {
-  const n = BB_BOX_TUBE_SECTIONS.length - 1;
-  const k = BB_BOX_TUBE_STAGE_OVERLAP;
+export function bbBoxTubeStages(reach: number): {
+  sectionLen: number;
+  travel: number;
+  moving: number;
+  full: number;
+  /** the retracted tip's distance from the pivot, and the stowed tower's top above the tiles */
+  retracted: number;
+  stowTop: number;
+} {
+  const n = BB_BOX_TUBE_SECTIONS.length;
+  const tol = BB_PLACE_TOL;
+  const lw = BB_BOX_TUBE_CLAW_REACH;
+  const sHi = reach + tol - Math.sqrt(lw * lw - tol * tol);
+  const sLo = reach - tol - lw;
   const dz = BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR - BB_BOX_TUBE_Z;
-  const gap = BB_BOX_TUBE_HALF_W + BB_BOX_TUBE_FLOWER_GAP;
-  const out = Math.abs(reach + BB_PLACE_TOL - (BB_FLOWER_OUTER_MIN + gap));
-  const back = Math.abs(reach - BB_PLACE_TOL - (BB_FLOWER_OUTER_MAX + gap));
-  const travel = hyp(Math.max(out, back), dz) / n;
-  return { sectionLen: travel + k, travel, moving: n, full: n * travel };
+  const lenMax = hyp(Math.max(Math.abs(sHi), Math.abs(sLo)), dz);
+  const sectionLen = (lenMax + BB_BOX_TUBE_BASE_BELOW + (n - 1) * BB_BOX_TUBE_STAGE_OVERLAP) / n;
+  const travel = sectionLen - BB_BOX_TUBE_STAGE_OVERLAP;
+  const retracted = sectionLen - BB_BOX_TUBE_BASE_BELOW;
+  return {
+    sectionLen,
+    travel,
+    moving: n - 1,
+    full: (n - 1) * travel,
+    retracted,
+    stowTop: BB_BOX_TUBE_Z + retracted + BB_BOX_TUBE_WRIST_TOP,
+  };
 }
 
 /**
- * WHERE THE ARM POINTS AND HOW FAR IT IS OUT, for one shoulder and one target — the ONE solve the
- * 3D pose and the RENDER lane's tip check both run, so a check that says the tip is on the
- * opening is measuring the drawn arm and not a second derivation of it.
+ * THE DEPLOYED POSE for one target — the ONE solve the 3D arm, the 2D sprite and the RENDER lane
+ * all read. Everything is in the ROBOT frame: `bore` is the flower's top-bore centre, `nrm` its
+ * inward wall normal, `zOff` the chassis' own height off the tiles.
  *
- * `yaw` is absolute in the robot frame (the caller subtracts the mount's own aim to get the base
- * SWIVEL), `pitch` is above horizontal, `ext` is per stage and the TIP sits `moving · ext` from
- * the shoulder. The length is CLAMPED to what the stages can give, so no stage can ever leave its
- * parent even for a pose the sizing did not anticipate (an airborne robot, say) — it falls short
- * instead of coming apart.
- *
- * ⚠️ **`rim` IS WHY THE ARM NO LONGER GOES THROUGH THE FLOWER, AND IT IS THE PLATE'S EDGE, NOT
- * THE BORE'S** (owner, 2026-09-22, twice). `target` is the ring CENTRE at tip height. Aiming a
- * straight telescoping tube at it drove the mast down the column: MEASURED, **13,104 of 13,104**
- * collision-legal in-reach poses put the drawn axis inside the bore below the top plate, by up to
- * 1.900 in of a 2.086-in radius. Backing off by the BORE radius fixed the axis-vs-bore number and
- * nothing the owner could see — "the offset boxtube still meshes with the flower" — because the
- * plate, its hardware and the column's supports stand 0.31…1.03 in further out than the hole
- * (`BB_FLOWER_OUTER_R`) and the arm is a 1.25-in BOX, not a line.
- *
- * `rim` is `bbBoxTubeStandoff(θ)` now: the flower's own outer radius in the direction the arm
- * comes from, plus the arm's swept half-width, plus a gap. The tip parks on the ray from the bore
- * centre through the shoulder, at that radius and `BB_BOX_TUBE_TIP_CLEAR` above the top plate —
- * just outside the plate's edge and just above it.
- *
- * ⚠️ **AND THE RUN IS NOT CLAMPED AT ZERO.** It was, which meant that whenever the shoulder was
- * already nearer the flower than the standoff — every FLUSH pose, since the foot stops a chassis
- * at 2.384 and the plate corners reach 3.113 — the arm went dead vertical and the box still cut
- * the plate. A negative run is a real pose: the arm leans a few degrees BACK over its own robot so
- * the tip stands further out than the shoulder. `datan2(dz, run)` returns the obtuse pitch for it
- * and `hyp` the same length either way, so nothing else in the chain changes.
+ * The claw centre has to land on the bore at `CLAW_REACH` from the mast axis, so the tip sits at
+ * `s = a − √(CLAW_REACH² − b²)` along `u` (a, b: the bore in the tower frame) and the mast leans
+ * to put it there — back over its own robot when the robot is flush, out when it is not.
+ * `psi` is the claw's bearing; `psiSwing` is the plane it swings up in, 90° off the bore line on
+ * the FIELD side (`nrm`), so the last move is a level turn in from the field side — never a
+ * swing down through the top plate, and never past the flower's wall-side backstop.
  */
-export function bbBoxTubeAim(
-  pivot: { x: number; y: number; z: number },
-  target: { x: number; y: number; z: number },
-  stages: { travel: number; moving: number },
-  rim = 0,
-): { yaw: number; pitch: number; ext: number; len: number } {
-  const dx = target.x - pivot.x;
-  const dy = target.y - pivot.y;
-  const dz = target.z - pivot.z;
-  // `hyp`/`datan2`, not `Math.hypot`/`Math.atan2`: this file is under `src/games/`, which the
-  // determinism source guard greps, and the rule is "don't write the engine-defined call here".
-  const flat = hyp(dx, dy);
-  const run = flat - rim;
-  const len = Math.min(stages.moving * stages.travel, hyp(run, dz));
-  return { yaw: datan2(dy, dx), pitch: datan2(dz, run), ext: len / stages.moving, len };
+export function bbBoxTubePose(
+  frame: BbBoxTubeFrame,
+  stages: { sectionLen: number; travel: number; moving: number; retracted: number },
+  bore: { x: number; y: number },
+  nrm: { x: number; y: number },
+  zOff = 0,
+): { a: number; b: number; s: number; lean: number; ext: number; psi: number; psiSwing: number; claw: { x: number; y: number } } {
+  const dx = bore.x - frame.outer.x;
+  const dy = bore.y - frame.outer.y;
+  const a = dx * frame.ux + dy * frame.uy;
+  const b = dx * frame.vx + dy * frame.vy;
+  const lw = BB_BOX_TUBE_CLAW_REACH;
+  const sWant = a - Math.sqrt(Math.max(0, lw * lw - b * b));
+  const dz = BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR - (BB_BOX_TUBE_Z + zOff);
+  const lean = datan2(dz, sWant);
+  // CLAMPED to what the stages have, so no stage ever leaves its parent — a pose the sizing did
+  // not anticipate falls short instead of coming apart
+  const ext = clamp((hyp(sWant, dz) - stages.retracted) / stages.moving, 0, stages.travel);
+  const s = (stages.retracted + stages.moving * ext) * dcos(lean);
+  const tx = frame.outer.x + s * frame.ux;
+  const ty = frame.outer.y + s * frame.uy;
+  const psi = datan2(bore.y - ty, bore.x - tx);
+  const side = -dsin(psi) * nrm.x + dcos(psi) * nrm.y >= 0 ? 1 : -1;
+  return {
+    a,
+    b,
+    s,
+    lean,
+    ext,
+    psi,
+    psiSwing: psi + side * (Math.PI / 2),
+    claw: { x: tx + lw * dcos(psi), y: ty + lw * dsin(psi) },
+  };
 }
 
+/**
+ * THE DEPLOY SEQUENCE, as one ease `e` in [0, 1] (the renderer's, 0.45 s). Retraction runs the
+ * same map backwards. Each phase is a smoothstep, so every joint starts and stops at zero rate:
+ *   lean     0.00–0.30   the slide tilts off vertical to its pose
+ *   turn     0.05–0.25   the folded claw turns, still hanging, to its swing plane
+ *   extend   0.10–0.65   both stages run out
+ *   swing    0.65–0.82   the claw swings up level, and the jaws open
+ *   reach    0.82–1.00   a level turn over the bore
+ * The order is MEASURED against the flower solid: swinging toward the bore dips the arm into the
+ * top plate on every pose, and turning a hanging claw while it passes the plate clips its corner.
+ */
+export function bbBoxTubePhases(e: number): { lean: number; turn: number; extend: number; swing: number; reach: number } {
+  const sm = (x: number): number => {
+    const t = x <= 0 ? 0 : x >= 1 ? 1 : x;
+    return t * t * (3 - 2 * t);
+  };
+  return {
+    lean: sm(e / 0.3),
+    turn: sm((e - 0.05) / 0.2),
+    extend: sm((e - 0.1) / 0.55),
+    swing: sm((e - 0.65) / 0.17),
+    reach: sm((e - 0.82) / 0.18),
+  };
+}
+
+/** the joint values at ease `e` for a solved pose: lean (from horizontal along u), per-stage
+ * extension, claw bearing (robot frame), swing (0 hanging, π/2 level) and jaw opening. */
+export function bbBoxTubeJoints(
+  frame: BbBoxTubeFrame,
+  pose: { lean: number; ext: number; psi: number; psiSwing: number },
+  e: number,
+): { lean: number; ext: number; psi: number; swing: number; jaw: number } {
+  const q = bbBoxTubePhases(e);
+  const stow = datan2(frame.sy, frame.sx);
+  const toSwing = wrapAngle(pose.psiSwing - stow);
+  const inward = wrapAngle(pose.psi - pose.psiSwing);
+  return {
+    lean: Math.PI / 2 + q.lean * (pose.lean - Math.PI / 2),
+    ext: q.extend * pose.ext,
+    psi: stow + q.turn * toSwing + q.reach * inward,
+    swing: q.swing * (Math.PI / 2),
+    jaw: q.swing * BB_BOX_TUBE_JAW_OPEN,
+  };
+}
+
+/** a rectangle in the TOWER frame: [u0, u1] × [v0, v1] × [z0, z1], z relative to the axle. */
+export interface BbTowerBox {
+  what: 'mast' | 'plate' | 'drum' | 'claw';
+  u0: number;
+  u1: number;
+  v0: number;
+  v1: number;
+  z0: number;
+  z1: number;
+}
+
+/**
+ * THE STOWED TOWER, as boxes in its own frame — what the 2D sprite fills, what the 3D meshes are
+ * built to, and what the collider is the bounding box of. The claw box is the folded claw
+ * hanging along `s`, which the caller turns into the tower frame (it is along a RAIL, not
+ * necessarily along v).
+ */
+export function bbBoxTubeStowedBoxes(frame: BbBoxTubeFrame, stages: { retracted: number }): BbTowerBox[] {
+  const h0 = BB_BOX_TUBE_SECTIONS[0] / 2;
+  const deck = BB_DECK_Z - BB_BOX_TUBE_Z;
+  const pIn = h0 + BB_BOX_TUBE_PLATE_GAP;
+  const pOut = pIn + BB_BOX_TUBE_PLATE_T;
+  const top = BB_BOX_TUBE_PLATE_ABOVE;
+  const out: BbTowerBox[] = [
+    // the base tube and the bearing block round its mouth
+    {
+      what: 'mast',
+      u0: -h0 - BB_BOX_TUBE_COLLAR,
+      u1: h0 + BB_BOX_TUBE_COLLAR,
+      v0: -h0 - BB_BOX_TUBE_COLLAR,
+      v1: h0 + BB_BOX_TUBE_COLLAR,
+      z0: -BB_BOX_TUBE_BASE_BELOW,
+      z1: stages.retracted + BB_BOX_TUBE_WRIST_TOP,
+    },
+  ];
+  for (const sg of [1, -1] as const) {
+    const a = sg * pIn;
+    const b = sg * pOut;
+    out.push({ what: 'plate', u0: BB_BOX_TUBE_PLATE_U0, u1: BB_BOX_TUBE_PLATE_U1, v0: Math.min(a, b), v1: Math.max(a, b), z0: deck, z1: top });
+    const c = sg * (pOut + BB_BOX_TUBE_DRUM_T);
+    out.push({ what: 'drum', u0: -BB_BOX_TUBE_DRUM_R, u1: BB_BOX_TUBE_DRUM_R, v0: Math.min(b, c), v1: Math.max(b, c), z0: -BB_BOX_TUBE_DRUM_R, z1: BB_BOX_TUBE_DRUM_R });
+  }
+  // the folded claw: arm + closed jaws hanging from the hinge, `WRIST_E` out along s
+  const hinge = stages.retracted + BB_BOX_TUBE_WRIST_H;
+  const hangLen = BB_BOX_TUBE_CLAW_REACH - BB_BOX_TUBE_WRIST_E - BB_BOX_TUBE_PALM_BACK + BB_BOX_TUBE_JAW_L;
+  const su = frame.sx * frame.ux + frame.sy * frame.uy;
+  const sv = frame.sx * frame.vx + frame.sy * frame.vy;
+  // in the hanging claw's own frame: along s from the servo block out past the arm and the jaws,
+  // across it the yoke's cheeks and the closed jaws
+  const tb = BB_BOX_TUBE_CLAW_HALF;
+  const out1 = Math.max(BB_BOX_TUBE_YOKE_OUT, BB_BOX_TUBE_WRIST_E + Math.max(BB_BOX_TUBE_ARM_T, BB_BOX_TUBE_JAW_H) / 2);
+  const corners: [number, number][] = [];
+  for (const da of [BB_BOX_TUBE_WRIST_HALF, out1]) for (const db of [-tb, tb]) corners.push([da * su - db * sv, da * sv + db * su]);
+  out.push({
+    what: 'claw',
+    u0: Math.min(...corners.map((c) => c[0])),
+    u1: Math.max(...corners.map((c) => c[0])),
+    v0: Math.min(...corners.map((c) => c[1])),
+    v1: Math.max(...corners.map((c) => c[1])),
+    z0: hinge - hangLen,
+    z1: stages.retracted + BB_BOX_TUBE_WRIST_TOP,
+  });
+  return out;
+}
+
+/** a tower box turned into the ROBOT frame, as its axis-aligned bounding rectangle, with z on
+ * the tiles. */
+export function bbTowerBoxRobot(frame: BbBoxTubeFrame, b: BbTowerBox): { x0: number; x1: number; y0: number; y1: number; z0: number; z1: number } {
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (const u of [b.u0, b.u1]) {
+    for (const v of [b.v0, b.v1]) {
+      xs.push(frame.outer.x + u * frame.ux + v * frame.vx);
+      ys.push(frame.outer.y + u * frame.uy + v * frame.vy);
+    }
+  }
+  return {
+    x0: Math.min(...xs),
+    x1: Math.max(...xs),
+    y0: Math.min(...ys),
+    y1: Math.max(...ys),
+    z0: BB_BOX_TUBE_Z + b.z0,
+    z1: BB_BOX_TUBE_Z + b.z1,
+  };
+}
+
+/** the placement point, the same arithmetic as `bbPlacePointLocal` (`robot.ts`), which this file
+ * cannot import (it imports this one). The ROBOT lane pins the two equal on every build. */
+export function bbLiftPlaceLocal(spec: RobotSpec): { x: number; y: number } | null {
+  const lift = bbLiftOf(spec);
+  if (!lift) return null;
+  const d = MOUNT_DIR[lift.mount];
+  const reach = bbIntakeReach(spec);
+  const im = bbIntakeMountOf(spec);
+  const front = spec.length / 2 + (im === 'front' || im === 'frontback' ? reach : 0);
+  const rear = spec.length / 2 + (im === 'back' || im === 'frontback' ? reach : 0);
+  const half = spec.width / 2 + (im === 'side' ? reach : 0);
+  const o = mountOrigin(spec, lift.mount);
+  const x = d.x > 0 ? front : d.x < 0 ? -rear : o.x;
+  const y = d.y > 0 ? half : d.y < 0 ? -half : o.y;
+  return { x: x + d.x * BB_PLACE_REACH, y: y + d.y * BB_PLACE_REACH };
+}
+
+/**
+ * THE STOWED TOWER AS COLLIDERS — two boxes, like a dumper's: the BASE (plates, pulley, spool,
+ * the foot of the mast) from the deck to the plate tops, and the COLUMN (the mast and the folded
+ * claw beside it) from there to the wrist. Each is the robot-frame bounding box of the drawn
+ * boxes it covers; at a corner the tower is turned 45° and the box is generous by the difference.
+ * The DEPLOYED part above the stowed top is a drawn part outside the collider — it only exists
+ * while the robot is parked on a flower, the dumper mid-throw's bargain.
+ */
+export function bbBoxTubeEnvelopes(spec: RobotSpec, heightIn: number): BbMechEnvelope[] {
+  const lift = bbLiftOf(spec);
+  if (!lift) return [];
+  const frame = bbBoxTubeFrame(spec, lift.mount, bbLiftPlaceLocal(spec));
+  const stages = bbBoxTubeStages(frame.placeDist);
+  const boxes = bbBoxTubeStowedBoxes(frame, stages).map((b) => bbTowerBoxRobot(frame, b));
+  const plateTop = BB_BOX_TUBE_Z + BB_BOX_TUBE_PLATE_ABOVE;
+  const union = (list: typeof boxes): { cx: number; cy: number; hx: number; hy: number } => {
+    const x0 = Math.min(...list.map((b) => b.x0));
+    const x1 = Math.max(...list.map((b) => b.x1));
+    const y0 = Math.min(...list.map((b) => b.y0));
+    const y1 = Math.max(...list.map((b) => b.y1));
+    return { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, hx: (x1 - x0) / 2, hy: (y1 - y0) / 2 };
+  };
+  const base = boxes.filter((b) => b.z0 < plateTop - 1e-9);
+  const column = boxes.filter((b) => b.z1 > plateTop + 1e-9);
+  const top = Math.min(heightIn, Math.max(...column.map((b) => b.z1)));
+  // ⚠️ BOTH ARE `narrow`: a POLLEN dropped on the stowed tower BALANCED on its 1.3-in top at
+  // z 11.68 for as long as a match lasts, as a square box it is a shelf to `groundRoll3d`
+  return [
+    { what: 'liftBase', ...union(base), top: Math.min(heightIn, plateTop), narrow: true },
+    { what: 'liftColumn', ...union(column), bottom: plateTop, top, narrow: true },
+  ];
+}
 /**
  * A DUMPER'S RANGE (owner, 2026-09-13) — how far from the cell it is dumping into a dumper can
  * throw from, measured horizontally from each element's release point on the dumper's edge to
@@ -2089,11 +2230,11 @@ export const BB_FEED_WALL_T = 0.25;
  */
 export const BB_DECK_Z = 4.6;
 
-/** the Box Tube's own AXIS height (in) — one bracket's worth above the deck. It was a bare
- * `BB_DECK_Z + 0.95` literal inside `renderRobots.ts`; `bbBoxTubeStages` has to size the mast
- * against the FLOWER's 21.404-in top plate from exactly this height, so it is a named number
- * both the solver and the drawing read rather than two copies of one offset. */
-export const BB_BOX_TUBE_Z = BB_DECK_Z + 0.95;
+/** the Box Tube's PIVOT AXLE height (in) — the tower leans about it, and `bbBoxTubeStages`
+ * sizes the slide against the FLOWER's 21.404-in top plate from it. 0.7 over the deck puts the
+ * base tube's foot 0.25 clear of the deck and keeps the stowed tower under `BB3_HEIGHT_MIN` on
+ * every build (the RENDER lane measures it). */
+export const BB_BOX_TUBE_Z = BB_DECK_Z + 0.7;
 
 /** the slew ring the turret stands on, and the turret plate on top of it (in). A real turret is a
  * toothed ring bearing with a plate bolted to its inner race; APPROX both, sized as ordinary FTC
@@ -2739,8 +2880,8 @@ export const BB_MASS_TURRET2 = 3.5;
  * no aiming hardware, so it is well under a turret — which is the archetype's real tradeoff.
  * APPROX. */
 export const BB_MASS_DUMPER = 2.5;
-/** a BOX TUBE (lb): the five nested sections (`BB_BOX_TUBE_SECTIONS`), the cradle, the spool
- * and its motor. APPROX. */
+/** a BOX TUBE (lb): the three nested tubes (`BB_BOX_TUBE_SECTIONS`), the pivot plates and its
+ * motor, the spool, the wrist servo and the claw. APPROX. */
 export const BB_MASS_BOX_TUBE = 2.5;
 /** lb of flywheel added at `flywheelInertia` 1 — the shared `INERTIA_MASS_FLOOR`, kept rather
  * than re-spelled, because it describes the same part in both games. BIOBUZZ has no inertia
@@ -3445,7 +3586,7 @@ export const BB3_DUMPER_WALL_T = 0.14;
  */
 export interface BbMechEnvelope {
   /** the mechanism's own name, for the smoke lanes' own reporting */
-  what: 'turret' | 'nectarTurret' | 'dumper';
+  what: 'turret' | 'nectarTurret' | 'dumper' | 'liftBase' | 'liftColumn';
   cx: number;
   cy: number;
   /** a cylinder of this radius about `(cx, cy)`, or `undefined` for the box below */
@@ -3454,7 +3595,17 @@ export interface BbMechEnvelope {
   hy?: number;
   /** the drawn top above the tiles */
   top: number;
+  /** where the solid STARTS above the tiles, when it is not the deck — the Box Tube's column
+   * stands on its own base box (`bbBoxTubeEnvelopes`) */
+  bottom?: number;
+  /** a box too small on top to carry a ball: built ROUNDED (`BB3_LIFT_EDGE_R`), which
+   * `groundRoll3d` counts as a NARROW part, so an element that lands on it rolls off rather than
+   * balancing on a tube top — the rule a turret's cylinder already follows */
+  narrow?: boolean;
 }
+
+/** the rounding of a Box Tube tower's collider boxes (in) — see `BbMechEnvelope.narrow` */
+export const BB3_LIFT_EDGE_R = 0.2;
 
 /**
  * EVERY STANDING MECHANISM THIS BUILD DRAWS, with its own footprint and its own drawn top.
@@ -3503,6 +3654,7 @@ export function bbMechEnvelopes(spec: RobotSpec, heightIn: number): BbMechEnvelo
       hy: end ? vHalf : uHalf,
       top: cap(BB3_DUMPER_TOP_Z),
     });
+    out.push(...bbBoxTubeEnvelopes(spec, heightIn));
     return out;
   }
   const t0 = turretLocal(spec, launcher.mount);
@@ -3512,6 +3664,7 @@ export function bbMechEnvelopes(spec: RobotSpec, heightIn: number): BbMechEnvelo
     const t1 = turretLocal(spec, m2);
     out.push({ what: 'nectarTurret', cx: t1.x, cy: t1.y, r: BB3_NECTAR_TURRET_R, top: cap(BB3_NECTAR_TURRET_TOP_Z) });
   }
+  out.push(...bbBoxTubeEnvelopes(spec, heightIn));
   return out;
 }
 

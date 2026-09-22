@@ -11,22 +11,40 @@ import { robotsEnabled } from '../../../sim/match';
 import type { GraphicsSettings, GraphicsTier } from '../graphics/settings';
 import {
   BB3_MOUTH_SLOT_Z,
+  BB_BOX_TUBE_ARM_T,
+  BB_BOX_TUBE_ARM_W,
+  BB_BOX_TUBE_COLLAR,
+  BB_BOX_TUBE_BASE_BELOW,
+  BB_BOX_TUBE_CLAW_REACH,
+  BB_BOX_TUBE_DRUM_R,
+  BB_BOX_TUBE_DRUM_T,
   BB_BOX_TUBE_EXTEND_S,
   BB_BOX_TUBE_EXT_SLEW,
+  BB_BOX_TUBE_JAW_H,
+  BB_BOX_TUBE_JAW_L,
+  BB_BOX_TUBE_JAW_ROOT,
+  BB_BOX_TUBE_JAW_T,
+  BB_BOX_TUBE_PALM_BACK,
+  BB_BOX_TUBE_PLATE_GAP,
+  BB_BOX_TUBE_PLATE_T,
   BB_BOX_TUBE_RETRACT_F,
   BB_BOX_TUBE_SECTIONS,
   BB_BOX_TUBE_SLEW,
-  BB_BOX_TUBE_TIP_CLEAR,
   BB_BOX_TUBE_WALL,
+  BB_BOX_TUBE_WRIST_E,
+  BB_BOX_TUBE_WRIST_H,
+  BB_BOX_TUBE_WRIST_HALF,
+  BB_BOX_TUBE_WRIST_TOP,
+  BB_BOX_TUBE_YOKE_OUT,
   BB_BOX_TUBE_Z,
-  bbBoxTubeAim,
-  bbBoxTubeDeployExt,
+  bbBoxTubeFrame,
+  bbBoxTubeJoints,
+  bbBoxTubePose,
   bbBoxTubeStages,
-  bbBoxTubeStandoff,
-  bbBoxTubeSwivelFrac,
+  bbBoxTubeStowedBoxes,
+  type BbBoxTubeFrame,
   BB_DECK_Z,
   BB_FLOWERS,
-  BB_FLOWER_TOP_Z,
   FLOWER_MOUTH,
   BB_DUMP_RELOAD_S,
   BB_DUMP_SEAT_PITCH,
@@ -80,7 +98,7 @@ import {
   BB_FRONT_ARROW_T,
   BB_FRONT_INK,
   BB_REAR_INK,
-  bbBoxTubeGlyph,
+  bbEndBarSegments,
   bbFrontMarks,
 } from '../parts';
 import { bbFlowerInReach, bbMouths, bbMuzzleLocal, bbPlacePointLocal } from '../robot';
@@ -3180,11 +3198,14 @@ export function buildFrontMarks(spec: RobotSpec, id: number): THREE.Object3D[] {
   const out: THREE.Object3D[] = [];
   const barZ = BB_DECK_Z + BB_END_BAR_H / 2;
 
+  // an end bar gives way where a Box Tube's pivot stands on the same rail (`bbFrontMarks`)
+  const barKey = (b: { gap: { y0: number; y1: number } | null }): string =>
+    b.gap ? `|gap${b.gap.y0.toFixed(3)}:${b.gap.y1.toFixed(3)}` : '';
+  const barParts = (b: typeof m.front): THREE.BufferGeometry[] =>
+    bbEndBarSegments(b).map((sg) => boxAt(b.x1 - b.x0, sg.y1 - sg.y0, BB_END_BAR_H, (b.x0 + b.x1) / 2, (sg.y0 + sg.y1) / 2, 0));
   const front = cast(
     new THREE.Mesh(
-      framePart(`front:bar|${m.front.x0.toFixed(3)}|${m.front.halfY.toFixed(3)}`, () => [
-        boxAt(m.front.x1 - m.front.x0, m.front.halfY * 2, BB_END_BAR_H, (m.front.x0 + m.front.x1) / 2, 0, 0),
-      ]),
+      framePart(`front:bar|${m.front.x0.toFixed(3)}|${m.front.halfY.toFixed(3)}${barKey(m.front)}`, () => barParts(m.front)),
       frontBarMat(),
     ),
   );
@@ -3211,9 +3232,7 @@ export function buildFrontMarks(spec: RobotSpec, id: number): THREE.Object3D[] {
 
   const rear = cast(
     new THREE.Mesh(
-      framePart(`rear:bar|${m.rear.x1.toFixed(3)}|${m.rear.halfY.toFixed(3)}`, () => [
-        boxAt(m.rear.x1 - m.rear.x0, m.rear.halfY * 2, BB_END_BAR_H, (m.rear.x0 + m.rear.x1) / 2, 0, 0),
-      ]),
+      framePart(`rear:bar|${m.rear.x1.toFixed(3)}|${m.rear.halfY.toFixed(3)}${barKey(m.rear)}`, () => barParts(m.rear)),
       solidMat(BB_REAR_INK, 0.75, 0.05),
     ),
   );
@@ -3225,151 +3244,297 @@ export function buildFrontMarks(spec: RobotSpec, id: number): THREE.Object3D[] {
 }
 
 /**
- * THE BOX TUBE — A TELESCOPING EXTRUSION THAT REACHES WHAT THE SIM REACHES.
+ * THE BOX TUBE — a vertical two-stage box-tube slide on a pivot at the frame rail, with a wrist
+ * and a claw on top. `config.ts`'s "THE BOX TUBE" block is the design and the list of what the
+ * old telescoping arm got wrong; this builds its boxes (`bbBoxTubeStowedBoxes`) and nothing the
+ * block does not name, so the 2D sprite, this mesh and the collider are one geometry.
  *
- * ⚠️ IT USED TO BE ONE SOLID `BoxGeometry(3, 1.4, 1.4)` AT `turretLocal(...)`, AND EVERY ONE OF
- * THOSE FOUR NUMBERS WAS WRONG (owner, 2026-09-19).
- *  1. WRONG ORIGIN — `turretLocal` is the TURRET RING's inboard pull, not the tube's mount.
- *     `bbBoxTubeGlyph` is the shared geometry for exactly this and the 3D path never called it.
- *  2. WRONG DIRECTION — a `BoxGeometry` is 3 in along LOCAL X always, so a `left` mount was
- *     drawn crosswise to the direction it works in and a corner mount was 45° off.
- *  3. IT DID NOT REACH WHAT THE SIM REACHES — the sim places at `bbPlacePointLocal`; on the
- *     default build that is x 12.88 and the drawn tube ended at 5.40, which is 2.10 in INSIDE
- *     the frame rail. The 2026-09-18 "built inside the chassis" fix landed on the turret and
- *     never reached the tube.
- *  4. IT NEVER MOVED — one solid bar, not hollow, no stages, and no handle in `userData` at all.
- *
- * The fix makes the drawn tip and the sim's placement point the SAME NUMBER by construction: the
- * assembly is aimed at `bbPlacePointLocal` and its full extension IS the distance to it, so the
- * picture cannot lie about reach — the same bargain the turret muzzle makes with `BB_LAUNCH_Z0`.
- *
- * ⚠️ AND THE EXTENSION IS RENDERER-OWNED, NOT A SIM FIELD. Placement is a PROXIMITY action
- * (`mechs.ts`): the Box Tube has no carriage, no height dial and no raise travel, so there is
- * nothing in the world to read but the reach PREDICATE. The stages ease toward
- * `bbFlowerInReach(world, r) !== null` over `BB_BOX_TUBE_EXTEND_S`, off the WORLD clock, and
- * nothing about it is written back.
- *
- * ⚠️ **IT REACHES THE OPENING, WHICH IS 16.854 IN UP AND 1.08…8.08 IN OUT** (owner, 2026-09-20:
- * "the boxtube extension should be reaching towards the opening in the flower, not extending
- * horizontally"). The arm therefore PITCHES, and takes a small base SWIVEL because the ring may
- * sit `BB_PLACE_TOL` off the mount's own aim line. Both come out of `bbBoxTubeAim` against the
- * flower `bbFlowerInReach` actually returned, per frame; the ranges are measured in the RENDER
- * lane, which sweeps every in-reach pose of every legal build and asserts the tip lands on the
- * opening rather than assuming it.
- *
- * ⚠️ **AND IT REACHES THE NEAR LIP, NOT THE CENTRE** (owner, 2026-09-22: "make the boxtube
- * in-game not go through the flower when it extends. It should be extending towards the top lip
- * instead of through it"). Aiming a straight tube at the ring CENTRE put the drawn axis inside
- * the column on EVERY in-reach pose the lane sweeps — 48,048 of 48,048, up to 2.014 in inside a
- * 2.086-in bore. The `rim` argument is the fix and `bbBoxTubeAim`'s header is the derivation;
- * the lane measures the segment against the cylinder now rather than only measuring the tip.
- *
- * ⚠️ **THE SHOULDER IS AT THE FRAME RAIL, AND THAT IS WHAT KEEPS THE ARM OUT OF THE TURRET.** The
- * first pass at this rotated the WHOLE stack about its inboard end, which lands 4.9…5.3 in inside
- * the rail — under a `center` turret's ring on every legal chassis — and the mast then rose
- * straight through the head: measured, its axis passed within **0.000 in** of the drawn turret
- * belt and 0.001 of the feed throat. So the node stays exactly where it was, at `glyph.outer`;
- * **section 0 is a CRADLE that never moves**, and only the four stages pitch, sliding out along an
- * axis anchored at the rail and sweeping over the robot's own bumper, where nothing is built.
- * A stage's tail sits behind the shoulder while it is still retracted and therefore dips toward
- * the deck — bounded by `(sectionLen − ext)·sin(pitch)` and measured in the RENDER lane.
+ * NODES (all in the tower frame: x = u outward, y = v, z up, origin on the pivot axle):
+ *   tube            the base, fixed: pivot plates, axle, pivot pulley + belt, string spool
+ *   tube:pitch      the lean, about the axle (y); carries the three tubes
+ *   tube:s0…s2      the tubes; s1 and s2 slide along z by one stage extension each
+ *   tube:level      on top of s2, un-leans, so the wrist stays level whatever the lean
+ *   tube:yaw        the claw's bearing about the mast axis
+ *   tube:swing      the wrist hinge; the claw hangs down (0) or swings level (π/2)
+ *   tube:jaw:l/r    the two jaws, opening about the palm
+ *   tube:claw       an empty marker at the claw centre — what the RENDER lane measures
  */
-function buildBoxTube(
+export function buildBoxTube(
   spec: RobotSpec,
   mount: BbMountPos,
   id: number,
 ): { node: THREE.Group; stages: THREE.Object3D[]; rig: BbTubeRig } {
   const place = bbPlacePointLocal(spec);
-  const glyph = bbBoxTubeGlyph(spec, mount, place);
-  const reach = place ? Math.hypot(place.x - glyph.outer.x, place.y - glyph.outer.y) : 0;
-  const stageTable = bbBoxTubeStages(reach);
-  const sectionLen = stageTable.sectionLen;
+  const frame = bbBoxTubeFrame(spec, mount, place);
+  const stageTable = bbBoxTubeStages(frame.placeDist);
+  const L = stageTable.sectionLen;
   const node = new THREE.Group();
   node.name = `robot:${id}:tube`;
-  node.position.set(glyph.outer.x, glyph.outer.y, BB_BOX_TUBE_Z);
-  // THE ONE LINE THAT FIXES THE SIDE AND CORNER MOUNTS: the assembly is aimed along the glyph's
-  // own outward unit vector, which `bbBoxTubeGlyph` has already turned toward the placement point.
-  node.rotation.z = Math.atan2(glyph.uy, glyph.ux);
+  node.position.set(frame.outer.x, frame.outer.y, BB_BOX_TUBE_Z);
+  node.rotation.z = Math.atan2(frame.uy, frame.ux);
+  const baseYaw = node.rotation.z;
 
-  // THE SHOULDER BRACKET, on the base node so it never moves: a clevis straddling the cradle with
-  // a pin on its axis, standing on the deck. Without it the arm reads as a stick floating off
-  // nothing, and it is also the one part of the rig a camera outside the robot can see.
-  const w0 = BB_BOX_TUBE_SECTIONS[0];
-  const bracket = cast(
+  // ── THE BASE: the boxes `bbBoxTubeStowedBoxes` names, plus the round parts inside them ──────
+  const boxes = bbBoxTubeStowedBoxes(frame, stageTable);
+  const plateMat = solidMat(ALU_DK, 0.55, 0.35);
+  const darkMat = solidMat(MOTOR, 0.6, 0.2);
+  const base = cast(
     new THREE.Mesh(
-      framePart(`tube:pivot|${w0}`, () => {
-        const t = 0.15;
-        const deck = BB_DECK_Z - BB_BOX_TUBE_Z; // the deck, in this node's own frame
-        const h = w0 / 2 + 0.25 - deck;
+      framePart(`tube:base|${L.toFixed(3)}`, () => {
         const parts: THREE.BufferGeometry[] = [];
-        for (const s of [1, -1] as const) {
-          // one clevis cheek per side, standing on the deck and rising just past the tube
-          parts.push(boxAt(w0 + 0.3, t, h, -w0 / 2, (s * (w0 + t)) / 2, deck + h / 2));
-          parts.push(boxAt(w0 + 0.9, 0.5, 0.2, -w0 / 2, s * (w0 / 2 + 0.25), deck + 0.1)); // its foot
+        for (const b of boxes) {
+          if (b.what !== 'plate') continue;
+          parts.push(boxAt(b.u1 - b.u0, b.v1 - b.v0, b.z1 - b.z0, (b.u0 + b.u1) / 2, (b.v0 + b.v1) / 2, (b.z0 + b.z1) / 2));
         }
-        parts.push(boxAt(0.3, w0 + t * 2, 0.3, 0, 0, 0)); // the PIN, on the tube's own axis
+        // the axle, through both plates and the base tube's foot
+        const vOut = BB_BOX_TUBE_SECTIONS[0] / 2 + BB_BOX_TUBE_PLATE_GAP + BB_BOX_TUBE_PLATE_T + BB_BOX_TUBE_DRUM_T;
+        const axle = new THREE.CylinderGeometry(0.16, 0.16, vOut * 2, 12);
+        parts.push(axle);
         return parts;
       }),
-      solidMat(ALU_DK, 0.55, 0.35),
+      plateMat,
     ),
   );
-  bracket.name = `robot:${id}:tube:pivot`;
-  node.add(bracket);
+  base.name = `robot:${id}:tube:pivot`;
+  node.add(base);
+  const drums = cast(
+    new THREE.Mesh(
+      framePart(`tube:drums`, () => {
+        const parts: THREE.BufferGeometry[] = [];
+        const v0 = BB_BOX_TUBE_SECTIONS[0] / 2 + BB_BOX_TUBE_PLATE_GAP + BB_BOX_TUBE_PLATE_T;
+        const t = BB_BOX_TUBE_DRUM_T;
+        const r = BB_BOX_TUBE_DRUM_R;
+        // +v: the PIVOT PULLEY, and its belt running down into the deck to the motor under it
+        const pulley = new THREE.CylinderGeometry(r, r, t, 20);
+        pulley.translate(0, v0 + t / 2, 0);
+        parts.push(pulley);
+        const deck = BB_DECK_Z - BB_BOX_TUBE_Z;
+        for (const su of [1, -1] as const) {
+          const len = -deck + 0.05;
+          parts.push(boxAt(0.06, t * 0.8, len, su * (r - 0.03), v0 + t / 2, deck + len / 2 - 0.05));
+        }
+        // −v: the STRING SPOOL — a drum between two flanges
+        const drum = new THREE.CylinderGeometry(r * 0.6, r * 0.6, t, 16);
+        drum.translate(0, -(v0 + t / 2), 0);
+        parts.push(drum);
+        for (const dv of [0.02, t - 0.02]) {
+          const flange = new THREE.CylinderGeometry(r, r, 0.04, 20);
+          flange.translate(0, -(v0 + dv), 0);
+          parts.push(flange);
+        }
+        return parts;
+      }),
+      darkMat,
+    ),
+  );
+  drums.name = `robot:${id}:tube:drive`;
+  node.add(drums);
 
-  // PITCH hangs off the shoulder and carries the four MOVING stages; the base SWIVEL is its
-  // parent, so a yaw correction turns the arm about the bracket rather than bending it.
-  const swivel = new THREE.Group();
-  swivel.name = `robot:${id}:tube:swivel`;
-  node.add(swivel);
+  // ── THE LEAN, AND THE THREE TUBES ON IT ──────────────────────────────────────────────────────
   const pitch = new THREE.Group();
   pitch.name = `robot:${id}:tube:pitch`;
-  swivel.add(pitch);
-
-  const mat = solidMat(ALU, 0.4, 0.4);
+  node.add(pitch);
+  const tubeMat = solidMat(ALU, 0.4, 0.45);
+  const collarMat = solidMat(MOTOR, 0.7, 0.05);
   const stages: THREE.Object3D[] = [];
+  let top: THREE.Object3D = pitch;
   for (let i = 0; i < BB_BOX_TUBE_SECTIONS.length; i++) {
     const w = BB_BOX_TUBE_SECTIONS[i];
-    // each section spans [−sectionLen, 0] in its OWN frame, so a stage at offset d has its front
-    // face at d — which is what makes the last stage's front face the tip, `moving · ext` out
-    const geo = framePart(`tube:${w}|${sectionLen.toFixed(3)}`, () => {
+    // each tube spans [−BASE_BELOW, L − BASE_BELOW] along its own z, so a stage offset by `d` has
+    // its top face at `L − BASE_BELOW + d`
+    const geo = framePart(`tube:${w}|${L.toFixed(3)}`, () => {
       const wall = BB_BOX_TUBE_WALL;
+      const zc = L / 2 - BB_BOX_TUBE_BASE_BELOW;
       const parts: THREE.BufferGeometry[] = [];
-      // HOLLOW, as four walls: hollowness is what says "tube" rather than "bar", and the bore
-      // of each section is the next one's outside (1.5 − 2 × 0.125 = 1.25) so the nest closes.
+      // HOLLOW, as four walls, so the mouth reads as a tube and the next stage visibly slides in it
       for (const s of [1, -1] as const) {
-        parts.push(boxAt(sectionLen, w, wall, -sectionLen / 2, 0, (s * (w - wall)) / 2));
-        parts.push(boxAt(sectionLen, wall, w - wall * 2, -sectionLen / 2, (s * (w - wall)) / 2, 0));
+        parts.push(boxAt(w, wall, L, 0, (s * (w - wall)) / 2, zc));
+        parts.push(boxAt(wall, w - wall * 2, L, (s * (w - wall)) / 2, 0, zc));
       }
       return parts;
     });
-    const mesh = cast(new THREE.Mesh(geo, mat));
+    const mesh = cast(new THREE.Mesh(geo, tubeMat));
     mesh.name = `robot:${id}:tube:s${i}`;
-    // section 0 is the CRADLE, bolted flat across the frame rail and never posed; it hangs off
-    // the base node so no rotation the sync applies can reach it
-    (i === 0 ? node : pitch).add(mesh);
-    if (i > 0) stages.push(mesh);
+    // NESTED: each stage hangs off the one it slides in, so a stage's own `position.z` is its
+    // extension out of its parent and the tip rides on the last one
+    (i === 0 ? pitch : stages[i - 1]).add(mesh);
+    stages.push(mesh);
+    // the BEARING BLOCK at the mouth of every tube that another slides in (not the last)
+    if (i < BB_BOX_TUBE_SECTIONS.length - 1) {
+      const collar = cast(
+        new THREE.Mesh(
+          framePart(`tube:collar:${w}`, () => {
+            const h = 0.35;
+            const parts: THREE.BufferGeometry[] = [];
+            const o = w + 2 * BB_BOX_TUBE_COLLAR;
+            const inner = BB_BOX_TUBE_SECTIONS[i + 1];
+            const zc = L - BB_BOX_TUBE_BASE_BELOW - h / 2;
+            for (const s of [1, -1] as const) {
+              parts.push(boxAt(o, (o - inner) / 2, h, 0, (s * (o + inner)) / 4, zc));
+              parts.push(boxAt((o - inner) / 2, inner, h, (s * (o + inner)) / 4, 0, zc));
+            }
+            return parts;
+          }),
+          collarMat,
+        ),
+      );
+      collar.name = `robot:${id}:tube:s${i}:block`;
+      mesh.add(collar);
+    }
+    top = mesh;
   }
+
+  // ── THE WRIST AND THE CLAW, on top of the last stage ────────────────────────────────────────
+  const tip = new THREE.Group();
+  tip.name = `robot:${id}:tube:tip`;
+  tip.position.z = L - BB_BOX_TUBE_BASE_BELOW;
+  top.add(tip);
+  const level = new THREE.Group();
+  level.name = `robot:${id}:tube:level`;
+  tip.add(level);
+  const wrist = cast(
+    new THREE.Mesh(
+      framePart('tube:wrist', () => {
+        const w = BB_BOX_TUBE_WRIST_HALF * 2;
+        return [boxAt(w, w * 0.8, BB_BOX_TUBE_WRIST_TOP, 0, 0, BB_BOX_TUBE_WRIST_TOP / 2)];
+      }),
+      darkMat,
+    ),
+  );
+  wrist.name = `robot:${id}:tube:wrist`;
+  level.add(wrist);
+  const yaw = new THREE.Group();
+  yaw.name = `robot:${id}:tube:yaw`;
+  level.add(yaw);
+  // the YOKE the wrist servo turns: a top bar out to the hinge and two cheeks either side of it
+  const yoke = cast(
+    new THREE.Mesh(
+      framePart('tube:yoke', () => {
+        const half = BB_BOX_TUBE_ARM_W / 2 + 0.06;
+        const x0 = BB_BOX_TUBE_WRIST_HALF - 0.25;
+        const x1 = BB_BOX_TUBE_YOKE_OUT;
+        const parts = [boxAt(x1 - x0, half * 2 + 0.12, 0.1, (x0 + x1) / 2, 0, BB_BOX_TUBE_WRIST_TOP - 0.05)];
+        // (the whole yoke stays inside `BB_BOX_TUBE_CLAW_HALF` across, which the collider reads)
+        for (const sg of [1, -1] as const) {
+          parts.push(boxAt(0.3, 0.06, BB_BOX_TUBE_WRIST_TOP - BB_BOX_TUBE_WRIST_H + 0.12, BB_BOX_TUBE_WRIST_E, sg * (half + 0.03), (BB_BOX_TUBE_WRIST_TOP + BB_BOX_TUBE_WRIST_H - 0.12) / 2));
+        }
+        return parts;
+      }),
+      plateMat,
+    ),
+  );
+  yoke.name = `robot:${id}:tube:yoke`;
+  yaw.add(yoke);
+  const swing = new THREE.Group();
+  swing.name = `robot:${id}:tube:swing`;
+  swing.position.set(BB_BOX_TUBE_WRIST_E, 0, BB_BOX_TUBE_WRIST_H);
+  yaw.add(swing);
+  const ell = BB_BOX_TUBE_CLAW_REACH - BB_BOX_TUBE_WRIST_E;
+  const palmAt = ell - BB_BOX_TUBE_PALM_BACK;
+  const arm = cast(
+    new THREE.Mesh(
+      framePart('tube:arm', () => {
+        const t = BB_BOX_TUBE_ARM_T;
+        const w = BB_BOX_TUBE_ARM_W;
+        const parts: THREE.BufferGeometry[] = [];
+        // the arm, hanging along −z from the hinge; the hinge boss; the palm across its end
+        parts.push(boxAt(t, w, palmAt + t / 2, 0, 0, -(palmAt - t / 2) / 2));
+        const boss = new THREE.CylinderGeometry(0.1, 0.1, w + 0.24, 12);
+        parts.push(boss);
+        parts.push(boxAt(t, (BB_BOX_TUBE_JAW_ROOT + BB_BOX_TUBE_JAW_T) * 2, BB_BOX_TUBE_JAW_T * 1.5, 0, 0, -palmAt));
+        return parts;
+      }),
+      plateMat,
+    ),
+  );
+  arm.name = `robot:${id}:tube:arm`;
+  swing.add(arm);
+  const jaws: THREE.Group[] = [];
+  for (const [sg, tag] of [[1, 'l'], [-1, 'r']] as const) {
+    const g = new THREE.Group();
+    g.name = `robot:${id}:tube:jaw:${tag}`;
+    g.position.set(0, sg * BB_BOX_TUBE_JAW_ROOT, -palmAt);
+    const jaw = cast(
+      new THREE.Mesh(
+        framePart(`tube:jaw:${tag}`, () => {
+          // a finger with a short hook at its tip, turned INWARD on both jaws, so the pair reads as
+          // a claw (built per side rather than mirrored: a negative scale turns a mesh inside out)
+          const l = BB_BOX_TUBE_JAW_L;
+          return [
+            boxAt(BB_BOX_TUBE_JAW_H, BB_BOX_TUBE_JAW_T, l, 0, 0, -l / 2),
+            boxAt(BB_BOX_TUBE_JAW_H, 0.28, BB_BOX_TUBE_JAW_T, 0, -sg * 0.1, -l + BB_BOX_TUBE_JAW_T / 2),
+          ];
+        }),
+        darkMat,
+      ),
+    );
+    g.add(jaw);
+    swing.add(g);
+    jaws.push(g);
+  }
+  const claw = new THREE.Object3D();
+  claw.name = `robot:${id}:tube:claw`;
+  claw.position.set(0, 0, -ell);
+  swing.add(claw);
+  // STOWED as built: the claw hangs along the frame's stow side, which is what the builder preview
+  // shows (it never syncs) and what the first sync frame starts from
+  const stowPsi = Math.atan2(frame.sy, frame.sx);
+  yaw.rotation.z = stowPsi - baseYaw;
+
   return {
     node,
     stages,
     rig: {
-      swivel,
-      pitch,
-      baseYaw: node.rotation.z,
-      pivot: { x: glyph.outer.x, y: glyph.outer.y, z: BB_BOX_TUBE_Z },
+      frame,
       stages: stageTable,
+      baseYaw,
+      pitch,
+      level,
+      yaw,
+      swing,
+      jaws,
+      stowPsi,
     },
   };
 }
 
-/** what `sync` needs to pose one Box Tube: the two nodes it turns, the mount's own aim (so a
- * swivel is a DIFFERENCE), the shoulder in the robot frame, and the stage table. */
-interface BbTubeRig {
-  swivel: THREE.Group;
-  pitch: THREE.Group;
+/** what `sync` needs to pose one Box Tube. */
+export interface BbTubeRig {
+  frame: BbBoxTubeFrame;
+  stages: ReturnType<typeof bbBoxTubeStages>;
+  /** the tower frame's own yaw in the robot frame (the node's rotation) */
   baseYaw: number;
-  pivot: { x: number; y: number; z: number };
-  stages: { sectionLen: number; travel: number; moving: number; full: number };
+  pitch: THREE.Group;
+  level: THREE.Group;
+  yaw: THREE.Group;
+  swing: THREE.Group;
+  jaws: THREE.Group[];
+  /** the folded claw's bearing, robot frame */
+  stowPsi: number;
+}
+
+/** pose one Box Tube at joint values `j` (`bbBoxTubeJoints`). Exported for the RENDER lane, which
+ * measures the drawn claw against the flower through exactly this. */
+export function poseBoxTube(group: THREE.Group, j: { lean: number; ext: number; psi: number; swing: number; jaw: number }): void {
+  const rig = group.userData.tube as BbTubeRig | undefined;
+  const stages = group.userData.tubeStages as THREE.Object3D[] | undefined;
+  if (rig && stages) poseBoxTubeRig(rig, stages, j);
+}
+
+/** the same, for a tube built on its own (`buildBoxTube`) */
+export function poseBoxTubeRig(
+  rig: BbTubeRig,
+  stages: THREE.Object3D[],
+  j: { lean: number; ext: number; psi: number; swing: number; jaw: number },
+): void {
+  rig.pitch.rotation.y = Math.PI / 2 - j.lean;
+  rig.level.rotation.y = -(Math.PI / 2 - j.lean);
+  // nested stages: each one's own offset is one stage extension out of its parent
+  for (let i = 1; i < stages.length; i++) stages[i].position.z = j.ext;
+  rig.yaw.rotation.z = j.psi - rig.baseYaw;
+  rig.swing.rotation.y = -j.swing;
+  rig.jaws[0].rotation.x = j.jaw;
+  rig.jaws[1].rotation.x = -j.jaw;
 }
 
 /** THE VISUAL HEIGHT OF THE DRIVETRAIN — where the DECK is, for anything that has to reason
@@ -3387,24 +3552,17 @@ export const BB_DRIVETRAIN_H = BB_PLATE_H;
 interface RobotEntry {
   group: THREE.Group;
   key: string;
-  /** how far the Box Tube is out, 0..1. On the ENTRY and not on `userData`, so a `bbSpecKey`
-   *  rebuild (which changes the reach) resets it instead of easing from a stale fraction. */
+  /** how far the Box Tube's deploy has run, 0..1 — LINEAR in time; every joint's own smoothstep
+   *  is in `bbBoxTubePhases`. On the ENTRY and not on `userData`, so a `bbSpecKey` rebuild (which
+   *  changes the tower) resets it instead of easing from a stale fraction. */
   tubeEase: number;
-  /** the POSE `tubeEase` is easing toward — base swivel, pitch and per-stage extension, solved
-   *  against the flower `bbFlowerInReach` named and HELD while it names none, so a retraction
-   *  runs back down the path it came up. Same reason as `tubeEase`: it belongs to this build. */
-  tubeYaw: number;
-  tubePitch: number;
+  /** the POSE the deploy runs toward (`bbBoxTubePose`), solved against the flower
+   *  `bbFlowerInReach` names and HELD while it names none, so a retraction runs back down the
+   *  path it came up. */
+  tubeLean: number;
   tubeExt: number;
-  /** the SHOULDER relative to the flower's bore centre, in world x/y — what
-   *  `bbBoxTubeDeployExt` caps the mid-deploy sweep against. Held with the rest of the pose. */
-  tubeAx: number;
-  tubeAy: number;
-  /** the flower's own inward wall normal, held with the rest of the pose */
-  tubeNx: number;
-  tubeNy: number;
-  /** the parked standoff this pose was solved for */
-  tubeStand: number;
+  tubePsi: number;
+  tubeSwing: number;
 }
 
 export interface BbRobots {
@@ -3463,7 +3621,7 @@ export function buildBiobuzzRobots(): BbRobots {
           disposeRobotGroup(entry.group);
         }
         const g = buildRobotGroup(r.spec, r.id, r.alliance, wheelDetail);
-        entry = { group: g, key, tubeEase: 0, tubeYaw: 0, tubePitch: 0, tubeExt: 0, tubeAx: 0, tubeAy: 0, tubeNx: 1, tubeNy: 0, tubeStand: 0 };
+        entry = { group: g, key, tubeEase: 0, tubeLean: Math.PI / 2, tubeExt: 0, tubePsi: 0, tubeSwing: 0 };
         entries.set(r.id, entry);
         group.add(g);
       }
@@ -3566,117 +3724,60 @@ export function buildBiobuzzRobots(): BbRobots {
         }
       }
 
-      // THE BOX TUBE REACHES THE FLOWER'S OPENING WHEN ONE IS IN REACH. `bbFlowerInReach` is the
-      // SIM's own predicate — the same one the sprite's placement marker and the HUD chip read —
-      // so the three cues can never disagree about whether this robot can place, and the flower
-      // it NAMES is the one the arm is aimed at, per frame. The easing is the renderer's, because
-      // a rate is a function of frame history and no pure sim query can answer it; it runs off
-      // the same clamped WORLD clock the roller does, which is what keeps a replay scrub that
-      // jumps backwards from unwinding the tube.
-      const stages = entry.group.userData.tubeStages as THREE.Object3D[] | undefined;
+      // THE BOX TUBE DEPLOYS OVER THE FLOWER WHEN ONE IS IN REACH. `bbFlowerInReach` is the SIM's
+      // own predicate — the same one the sprite's placement marker and the HUD chip read — so the
+      // three cues cannot disagree about whether this robot can place, and the flower it NAMES is
+      // the one the claw goes over. The ease is the renderer's (a rate is a function of frame
+      // history) and runs off the same clamped WORLD clock the roller does, so a replay scrub that
+      // jumps backwards does not unwind it.
       const rig = entry.group.userData.tube as BbTubeRig | undefined;
-      if (stages && stages.length > 0 && rig) {
+      if (rig) {
         const flower = bbFlowerInReach(world, r);
         const want = flower !== null ? 1 : 0;
         if (flower !== null) {
-          // the opening, brought into the robot's own frame: the group already carries `heading`
-          // and `r.z`, so the pose below is solved in the frame the nodes actually live in
+          // the bore and the flower's own normal, brought into the robot's frame: the group already
+          // carries `heading` and `r.z`, so the pose is solved in the frame the nodes live in
           const f = BB_FLOWERS[flower];
-          const dx = f.x - r.pos.x;
-          const dy = f.y - r.pos.y;
+          const n = FLOWER_MOUTH[f.wall];
           const c = Math.cos(-r.heading);
           const s = Math.sin(-r.heading);
-          // ⚠️ THE STANDOFF IS THE PLATE'S EDGE IN THE DIRECTION THE ARM COMES FROM, not the bore
-          // (owner, 2026-09-22: "the offset boxtube still meshes with the flower"). `theta` is the
-          // angle between the flower's inward wall normal and the horizontal line out to the
-          // SHOULDER, solved in WORLD space because that is the frame the flower's own normal is
-          // in; `bbBoxTubeStandoff` then adds the arm's swept half-width and a gap, so what clears
-          // the solid is the drawn box's outer surface rather than its centre line.
-          const sh = Math.sin(r.heading);
-          const ch = Math.cos(r.heading);
-          const px = r.pos.x + rig.pivot.x * ch - rig.pivot.y * sh - f.x;
-          const py = r.pos.y + rig.pivot.x * sh + rig.pivot.y * ch - f.y;
-          const n = FLOWER_MOUTH[f.wall];
-          const theta = Math.atan2(px * n.y - py * n.x, px * n.x + py * n.y);
-          const stand = bbBoxTubeStandoff(theta);
-          const aim = bbBoxTubeAim(
-            rig.pivot,
-            { x: dx * c - dy * s, y: dx * s + dy * c, z: BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR - (r.z ?? 0) },
+          const dx = f.x - r.pos.x;
+          const dy = f.y - r.pos.y;
+          const pose = bbBoxTubePose(
+            rig.frame,
             rig.stages,
-            stand,
+            { x: dx * c - dy * s, y: dx * s + dy * c },
+            { x: n.x * c - n.y * s, y: n.x * s + n.y * c },
+            r.z ?? 0,
           );
-          // KEPT so the retraction runs back down the path it came up, rather than snapping to
-          // a rest bearing the moment the predicate goes false.
-          //
-          // ⚠️ AND SLEWED, NOT ASSIGNED, ONCE THE ARM IS OUT. `bbFlowerInReach` names ONE flower
-          // and the name can change in a single tick (a robot between two of them, or crossing
-          // the `BB_PLACE_TOL` boundary), which used to snap a fully extended 18-in arm onto a new
-          // bearing in one frame — the second half of the owner's "violent". While the arm is
-          // STOWED (`tubeEase` 0) the target is taken whole: nothing is drawn out of place yet, so
-          // a snap there is invisible, and seeding it is what keeps the first deploy from lagging
-          // its own ease.
-          const yaw = wrapPi(aim.yaw - rig.baseYaw);
+          // STOWED, the target is taken whole (nothing is drawn out of place yet); once the arm is
+          // out it SLEWS, so a change of target flower sweeps instead of snapping
           if (entry.tubeEase <= 0) {
-            entry.tubeYaw = yaw;
-            entry.tubePitch = aim.pitch;
-            entry.tubeExt = aim.ext;
-            entry.tubeAx = px;
-            entry.tubeAy = py;
-            entry.tubeNx = n.x;
-            entry.tubeNy = n.y;
-            entry.tubeStand = stand;
+            entry.tubeLean = pose.lean;
+            entry.tubeExt = pose.ext;
+            entry.tubePsi = pose.psi;
+            entry.tubeSwing = pose.psiSwing;
           } else {
             const slew = BB_BOX_TUBE_SLEW * dt;
-            entry.tubeYaw += clampAbs(wrapPi(yaw - entry.tubeYaw), slew);
-            entry.tubePitch += clampAbs(aim.pitch - entry.tubePitch, slew);
-            entry.tubeExt += clampAbs(aim.ext - entry.tubeExt, BB_BOX_TUBE_EXT_SLEW * dt);
-            entry.tubeAx += clampAbs(px - entry.tubeAx, BB_BOX_TUBE_EXT_SLEW * dt);
-            entry.tubeAy += clampAbs(py - entry.tubeAy, BB_BOX_TUBE_EXT_SLEW * dt);
-            entry.tubeNx = n.x;
-            entry.tubeNy = n.y;
-            entry.tubeStand = stand;
+            entry.tubeLean += clampAbs(pose.lean - entry.tubeLean, slew);
+            entry.tubeExt += clampAbs(pose.ext - entry.tubeExt, BB_BOX_TUBE_EXT_SLEW * dt);
+            entry.tubePsi += clampAbs(wrapPi(pose.psi - entry.tubePsi), slew);
+            entry.tubeSwing += clampAbs(wrapPi(pose.psiSwing - entry.tubeSwing), slew);
           }
         }
-        // ⚠️ THE RATE IS ON THE CLAMPED WORLD CLOCK, AND THE SHAPE IS A SMOOTHSTEP. Keeping the
-        // linear ramp and only lengthening it would have traded one complaint for the other: what
-        // reads as "violent" is the instantaneous start and stop, not the duration. `smoothstep01`
-        // leaves and arrives at zero rate, which is why 0.40 s here is calmer than 0.35 s was and
-        // still not the crawl the 2026-09-20 report rejected. Retraction is `RETRACT_F` of it.
         const step = BB_BOX_TUBE_EXTEND_S > 0 ? dt / BB_BOX_TUBE_EXTEND_S : 1;
         entry.tubeEase =
           want > entry.tubeEase
             ? Math.min(want, entry.tubeEase + step)
             : Math.max(want, entry.tubeEase - step / BB_BOX_TUBE_RETRACT_F);
-        // ONE ease drives the whole pose, so the tip travels a straight-ish line from the rest
-        // stack to the opening instead of pitching and extending on two schedules
-        const e = smoothstep01(entry.tubeEase);
-        // ...and the EXTENSION is capped for the pitch it is at, which is what keeps the arm
-        // from sweeping through the flower half way through the deploy. `bbBoxTubeDeployExt`'s
-        // header has the measurement; at full ease the cap never binds, so the parked pose is
-        // exactly `bbBoxTubeStandoff`'s.
-        const ext = bbBoxTubeDeployExt(
-          e,
-          entry.tubePitch,
-          entry.tubeExt,
-          rig.stages.moving,
-          entry.tubeAx,
-          entry.tubeAy,
-          r.heading + rig.baseYaw,
-          entry.tubeYaw,
-          entry.tubeNx,
-          entry.tubeNy,
-          BB_BOX_TUBE_Z + (r.z ?? 0),
-          entry.tubeStand,
+        poseBoxTube(
+          entry.group,
+          bbBoxTubeJoints(
+            rig.frame,
+            { lean: entry.tubeLean, ext: entry.tubeExt, psi: entry.tubePsi, psiSwing: entry.tubeSwing },
+            entry.tubeEase,
+          ),
         );
-        // ⚠️ AND PITCH AND SWIVEL FOLLOW THE EXTENSION, NOT THE RAW EASE. A stack that is still in
-        // its cradle has 5.5 in of TAIL behind the shoulder, so pitching or swivelling it while it
-        // is retracted sweeps that tail out of the chassis and down — measured, into the flower's
-        // MID plate (1.148 in at z 4.29). Tying both to how far the arm is actually OUT keeps the
-        // retracted stack lying in its own cradle, where it is drawn inside the robot.
-        const q = entry.tubeExt > 1e-6 ? ext / entry.tubeExt : e;
-        rig.swivel.rotation.z = bbBoxTubeSwivelFrac(q) * entry.tubeYaw;
-        rig.pitch.rotation.y = -q * entry.tubePitch;
-        for (let i = 0; i < stages.length; i++) stages[i].position.x = ext * (i + 1);
       }
 
       const heads = entry.group.userData.turretHeads as THREE.Group[] | undefined;

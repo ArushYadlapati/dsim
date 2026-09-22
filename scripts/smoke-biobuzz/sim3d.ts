@@ -3447,6 +3447,62 @@ export function sim3dChecks(check: Check): void {
         `z=${turret.z.toFixed(2)} kind=${turret.kind}`,
       );
     }
+
+    /**
+     * ── THE BOX TUBE TOWER IS SOLID, AND IT IS NOT A SHELF (2026-09-22) ─────────────────────
+     * The stowed tower stands 7 in above the deck, so it is two collider boxes
+     * (`bbBoxTubeEnvelopes`). As square boxes they were a SHELF: a POLLEN dropped on the 1.3-in
+     * top balanced at z 11.68 for the whole run. They are ROUNDED boxes now, which `groundRoll3d`
+     * counts as narrow, so the ball rolls off — and at no tick is it inside the column.
+     */
+    {
+      const LIFT = {
+        intakeMount: 'front',
+        bbMech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'back' }, intake: { kind: 'sweeper' } },
+      } as unknown as Partial<RobotSpec>;
+      let perched = 0;
+      let inside = 0;
+      let lost = 0;
+      let top = 0;
+      for (const [dx, dy] of [[0, 0], [0.3, 0.2], [-0.4, -0.3], [0, -0.7]] as const) {
+        const w = mkWorld3d('free', 94, LIFT);
+        w.balls.length = 0;
+        const r = w.robots[0];
+        r.fieldCentric = false;
+        r.pos = { x: 0, y: -30 };
+        r.heading = 0;
+        r.vel = { x: 0, y: 0 };
+        r.angVel = 0;
+        const col = bbMechEnvelopes(r.spec, bbHeightNow(w, r.spec)).find((e) => e.what === 'liftColumn')!;
+        top = col.top;
+        w.balls.push({
+          id: 9002,
+          pos: { x: r.pos.x + col.cx + dx, y: r.pos.y + col.cy + dy },
+          vel: { x: 0, y: 0 },
+          z: col.top + 1.5,
+          vz: 0,
+          r: BB_POLLEN_R,
+          color: 'yellow',
+          state: { kind: 'ground' },
+        } as unknown as Artifact);
+        const still = new Map([[0, cmd({})]]);
+        for (let t = 0; t < 420; t++) {
+          step3d(w, C.SIM_DT, still);
+          const b = w.balls[0];
+          const lx = b.pos.x - r.pos.x - col.cx;
+          const ly = b.pos.y - r.pos.y - col.cy;
+          if (b && Math.abs(lx) < (col.hx ?? 0) && Math.abs(ly) < (col.hy ?? 0) && b.z + BB_POLLEN_R < col.top - 0.3 && b.z > (col.bottom ?? 0)) inside++;
+        }
+        if (w.balls.length !== 1) lost++;
+        else if (w.balls[0].z > BB3_CHASSIS_TOP_Z + 0.5) perched++;
+        disposeEngineFor(w);
+      }
+      check(
+        'box tube 3d: a POLLEN dropped on the stowed tower never passes into it, and rolls off rather than balancing on its top',
+        inside === 0 && perched === 0 && lost === 0,
+        `${perched} of 4 still perched above the deck, ${inside} ticks inside the column, ${lost} lost (column top ${top.toFixed(2)})`,
+      );
+    }
   }
 
   // ---- the parts bolted to the TRAY tip with it in the physics too ---------------------------

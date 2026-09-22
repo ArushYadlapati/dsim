@@ -1,6 +1,8 @@
 import type { RobotSpec } from '../../types';
 import { WHEEL_INSET } from '../../config';
 import {
+  BB_BOX_TUBE_SECTIONS,
+  BB_BOX_TUBE_WALL,
   BB_HOOD_DEFAULT_DEG,
   BB_LAUNCH_LINE_FRAC,
   BB_LAUNCH_PLATE_GAP,
@@ -13,7 +15,7 @@ import {
 } from './config';
 import { bbIntakeKindOf, bbLauncherOf, bbLiftOf } from './mechs';
 import { BB_MODE_LABELS } from './labels';
-import { BB_BOX_TUBE_OVERLAP, BB_PLACE_MARK_R, bbBoxTubeGlyph } from './parts';
+import { BB_PLACE_MARK_R, bbBoxTubeGlyph } from './parts';
 import { EDGE_ANGLE, type BbMountPos, bbMouthFrame, bbShooterEdgeOf, edgeGeom, turretLocal, turretRadius } from './mounts';
 import { bbFootprint, bbMouths, bbPlacePointLocal } from './robot';
 
@@ -354,33 +356,29 @@ export function BiobuzzRobotPreview({
     );
 
   /**
-   * THE BOX TUBE — the same hollow rectangle the sprite draws (`bbBoxTubeGlyph`, `parts.ts`), in
-   * the robot frame, carried out as the same hollow section to a plain ring at
-   * `bbPlacePointLocal`, exactly as the sprite's `drawPlaceMarker` does. The ring is always hollow
-   * here: "in reach of a FLOWER" is a state of a match, and this preview has none.
+   * THE BOX TUBE — the stowed tower from above, the same boxes the sprite and the 3D tower are
+   * built from (`bbBoxTubeGlyph`): pivot plates, pulley and spool, the hollow mast and the folded
+   * claw's end — and a plain ring at `bbPlacePointLocal`. The ring is always hollow here: "in reach
+   * of a FLOWER" is a state of a match, and this preview has none, so nothing reaches out to it.
    */
   const liftEl = (() => {
     if (!lift || !place) return null;
     const g = bbBoxTubeGlyph(spec, lift.mount, place);
     const R = BB_PLACE_MARK_R;
-    const dx = place.x - g.outer.x;
-    const dy = place.y - g.outer.y;
-    const dist = Math.hypot(dx, dy);
-    const x0 = -BB_BOX_TUBE_OVERLAP;
-    const x1 = dist - R + 0.1;
-    const reach = dist > 0 && x1 > x0;
-    const glyphT = `translate(${g.cx},${g.cy}) rotate(${deg(Math.atan2(g.uy, g.ux))})`;
-    const reachT = `translate(${g.outer.x},${g.outer.y}) rotate(${deg(Math.atan2(dy, dx))})`;
+    const towerT = `translate(${g.frame.outer.x},${g.frame.outer.y}) rotate(${deg(Math.atan2(g.frame.uy, g.frame.ux))})`;
+    const w0 = BB_BOX_TUBE_SECTIONS[0];
+    const bore = w0 / 2 - BB_BOX_TUBE_WALL;
     return (
       <g transform={ROBOT_FRAME}>
-        {/* walls first, as ONE translucent group so the overlap where glyph and reach meet is
-            not painted twice; then both hollows on top */}
-        <g opacity={0.85}>
-          <rect x={-g.len / 2} y={-g.w / 2} width={g.len} height={g.w} fill={stroke} transform={glyphT} />
-          {reach && <rect x={x0} y={-g.w / 2} width={x1 - x0} height={g.w} fill={stroke} transform={reachT} />}
+        <g transform={towerT} opacity={0.9}>
+          {g.boxes
+            .filter((b) => b.what !== 'mast')
+            .map((b, i) => (
+              <rect key={i} x={b.u0} y={b.v0} width={b.u1 - b.u0} height={b.v1 - b.v0} fill={stroke} />
+            ))}
+          <rect x={-w0 / 2} y={-w0 / 2} width={w0} height={w0} fill={stroke} />
+          <rect x={-bore} y={-bore} width={bore * 2} height={bore * 2} fill="var(--ds-bg)" />
         </g>
-        <rect x={-g.len / 2 + 0.28} y={-g.w / 2 + 0.28} width={g.len - 0.56} height={g.w - 0.56} fill="var(--ds-bg)" transform={glyphT} />
-        {reach && <rect x={x0} y={-g.w / 2 + 0.28} width={x1 - x0} height={g.w - 0.56} fill="var(--ds-bg)" transform={reachT} />}
         <circle cx={place.x} cy={place.y} r={R} fill="none" stroke={accent} strokeWidth={0.3} />
       </g>
     );

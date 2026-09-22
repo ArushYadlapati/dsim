@@ -144,7 +144,7 @@ function BbMountGlyph({ mark }: { mark: BbCellMark }) {
           <line x1="12" y1="6" x2="12" y2="12" stroke={s} strokeWidth="1.4" strokeLinecap="round" />
         </>
       ) : mark === 'tube' ? (
-        // a telescoping mast: three nested sections, widest at the cradle, drawn as one stack
+        // the box-tube lift: three nested tubes, widest at the base, drawn as one stack
         <>
           <rect x="3" y="10.5" width="10" height="4.5" rx="0.8" fill="none" stroke={s} strokeWidth="1.5" />
           <rect x="5" y="6" width="6" height="4.5" fill="none" stroke={s} strokeWidth="1.4" />

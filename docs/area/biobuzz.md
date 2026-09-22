@@ -384,11 +384,11 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   class the narrow-hull vibration exists for. Checks in `scripts/smoke-biobuzz/sim3d.ts` under "THE
   INVISIBLE ROBOT": the RULE, the REPRO (with the prism failing it by 8.5 in, so it is not vacuous),
   and the two ELEMENT cases. Pictures: `scratch/shots/invisbox-{before,after}-{side,along}.png`.
-  KNOWN RESIDUALS, stated rather than widened away: the Box Tube's cradle is drawn to 6.55 and has
-  no tall shape (its band is met by the same vertical surfaces the low body already meets; it is
-  worth 0.37 in of plan against a sloping A-frame leg and nothing else), and a dumper MID-THROW
-  reaches ≈14.3 in for ~0.3 s — both are a drawn part outside the collider, the harmless direction,
-  and the second one was outside the old prism too.
+  KNOWN RESIDUAL, stated rather than widened away: a dumper MID-THROW reaches ≈14.3 in for ~0.3 s
+  — a drawn part outside the collider, the harmless direction, and it was outside the old prism
+  too. (The Box Tube's flat cradle, drawn to 6.55 with no tall shape, was the other residual; the
+  tube is a standing tower now and its stowed envelope is two collider boxes — see the Box Tube
+  bullet under the shot path.)
 - **Drive feel is the shared wrench.** Parity checks measure in OPEN FIELD: two solvers' wall
   contact legitimately differs; the drive model itself matches 2D to four decimals.
 - **Field geometry is CAD-derived** (owner decision 2026-09-17, licence risk accepted).
@@ -919,70 +919,41 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     lip; it does not swing about a flywheel axle. `bbLobThrow`, `bbDumpSolution` and `bbLaunch`'s
     dumper branch all still read it directly, and the ROBOT lane has a leak guard: a dumper's release
     stays flat at every pitch while a turret on the same chassis follows its hood down.
-  - ⚠️ **THE BOX TUBE REACHES THE FLOWER'S OPENING, AND IT PIVOTS AT THE FRAME RAIL** (owner,
-    2026-09-20: "the boxtube extension should be reaching towards the opening in the flower, not
-    extending horizontally. It should also be a lot faster"). Placement is still a PROXIMITY action
-    with no sim travel, so this is entirely `scene/renderRobots.ts` — but it was sliding flat to
-    `bbPlacePointLocal`, a point on the TILES, while the hole it places into is `BB_FLOWER_TOP_Z`
-    21.404 in up. The arm now solves its pose per frame against the flower `bbFlowerInReach`
-    returned (`bbBoxTubeAim`), which asks for **64.5°–86.2° of pitch**, a base swivel of at most
-    **39°** (the ring may sit `BB_PLACE_TOL` off the mount's aim line) and **16.9–18.7 in** of arm.
-    Two rules hold it up, and both are measured in the RENDER lane rather than assumed: the stage
-    table is DERIVED from the worst in-reach pose (`bbBoxTubeStages`, five nested sections 1.5 →
-    0.5 at one `BB_BOX_TUBE_WALL` per step, giving 17.6–18.7 in) so the tip lands on the opening to
-    4e-8 in and no stage ever leaves its parent; and the **SHOULDER IS AT `glyph.outer`**, the
-    frame rail. Pivoting the whole stack about its INBOARD end instead — the obvious reading of
-    "the arm pivots at its base" — puts the pivot 4.9–5.3 in inside the rail, under a `center`
-    turret's ring on every legal chassis, and the mast then rose straight through the head: its
-    axis came within **0.000 in** of the drawn turret belt. Section 0 is a CRADLE bolted to the base
-    node and never posed, so the retracted arm is byte-identical to the drawing that shipped.
-  - ⚠️ **AND IT AIMS AT THE PLATE'S OUTER EDGE, NOT AT THE BORE** (owner, 2026-09-22, twice: "make
-    the boxtube in-game not go through the flower when it extends", then "the offset boxtube still
-    meshes with the flower"). The 2026-09-20 pass checked the TIP and nothing else, and a check on
-    an endpoint says nothing about the segment: aiming at the ring CENTRE put the drawn axis inside
-    the bore below the top plate on **13,104 of 13,104** in-reach poses. Backing off by the BORE
-    radius fixed that number and nothing the owner could see, because **the bore is the hole, not
-    the part a tube hits**, and because a check on the AXIS says nothing about a 1.25-in box.
-    Three things are true now, each measured off the shipped `field.glb` rather than assumed:
-    - `BB_FLOWER_OUTER_R` is the flower's own OUTER radius about its top-bore centre, sampled every
-      5° from the wall normal over the field half and dilated ±15°: **2.392 straight out of the wall,
-      3.113 at the plate corners, 2.972 along it**, against a 2.086 bore — the solid is **0.31…1.03
-      in wider than the hole**. The RENDER lane re-measures it off the asset and pins the table.
-      The same pass found the column EMPTY on the field side between the plates (z 0.4…3.9 and
-      5.3…20.2): the four HIPS pipes are all on the WALL side, at azimuth 135°–215°.
-    - the tip parks at `bbBoxTubeStandoff(θ)` = that radius + the arm's swept half-width + a 0.35
-      gap, i.e. **3.367…4.088 in** from the bore centre and `BB_BOX_TUBE_TIP_CLEAR` above the plate.
-      A flower foot stops a chassis at 2.384, so the shoulder is often NEARER than that: the run is
-      signed now and the arm leans a couple of degrees BACK over its own robot (pitch
-      74.7°…92.3°) rather than clamping vertical.
-    - ⚠️ **AND THE DEPLOY PATH IS CAPPED, WHICH IS HALF THE REPORT.** Fixing where the arm ENDS
-      fixes one frame in twenty-four. One ease driving pitch and extension together means that half
-      way out the arm is long and FLAT, and a 17.5-in arm at 50° from a shoulder 3 in off the
-      flower reaches straight through the open column and out into the pipes on the far side.
-      `bbBoxTubeDeployExt` bisects for the largest fraction whose DRAWN tip stays on the field side
-      of the flower and out of the top ring's own annulus; pitch and swivel then follow that capped
-      extension rather than the raw ease. At full ease the cap never binds, so the parked pose is
-      untouched.
-    Measured over the same pose grid, swept at every stage's own half-width and every ease:
-    **plate aim 0 of 5,176 meshing; the BORE aim 3,736 of 5,176, worst 0.783 in.** The lane sweeps
-    only poses the flower FOOT and the PERIMETER WALL both permit — without the wall filter it
-    teleports a robot half into the wall beside a flower and asks the arm to reach it from behind,
-    an approach angle no robot can stand at and the one place the pipes are.
-    ⚠️ **Named residual:** the check covers the arm ABOVE the mid plate's top face (5.254). Below
-    that is the retracted stack lying in its own cradle inside the chassis, which grazes the drawn
-    mid plate by **0.124 in** on poses where the CHASSIS does — the drawn plate reaches 2.415 in
-    from the wall and the foot COLLIDER that stops a robot stops it at 2.384. That is a field
-    asset-vs-collider difference, not something the arm can be aimed out of.
-  - ⚠️ **AND 0.12 s WAS THE WRONG ANSWER TO "A LOT FASTER"** (same report: "way too quickly … in a
-    violent way"). Seven frames at 60 Hz for 64–86° of pitch and 18 in of arm is a teleport.
-    `BB_BOX_TUBE_EXTEND_S` is **0.40** and the ease is a `smoothstep`, which is the half that
-    matters — a LINEAR 0.40 is the animation the 2026-09-20 report rejected, and a smoothstepped
-    one leaves and arrives at zero rate. Retraction is `BB_BOX_TUBE_RETRACT_F` (0.8) of it.
-    The other half of "violent" was not the ramp at all: `bbFlowerInReach` names ONE flower and the
-    name changes in a single tick, and the pose was ASSIGNED, so a fully extended arm jumped to a
-    new bearing in one frame. The targets slew at `BB_BOX_TUBE_SLEW` / `BB_BOX_TUBE_EXT_SLEW` now;
-    a STOWED arm (`tubeEase` 0) still takes its first target whole, because a snap nothing is
-    drawn at is invisible and seeding it is what keeps the first deploy from lagging its own ease.
+  - ⚠️ **THE BOX TUBE IS A VERTICAL TWO-STAGE SLIDE WITH A CLAW, NOT A TELESCOPING ARM** (owner,
+    2026-09-22: "Offset boxtube still looks extremely weird"; four earlier reports on the same part:
+    "reaching towards the opening… not extending horizontally", "a lot faster", "way too quickly …
+    in a violent way", "still meshes with the flower"). `config.ts`'s "THE BOX TUBE" block is the
+    design. What the arm it replaced did, measured on the shipped build:
+    - **It never deployed where drivers place from.** A robot flush on a FLOWER foot got 19% of its
+      extension at 17° of pitch and stopped there: the deploy cap bisected a safe set that is not an
+      interval, and the parked pose failed its own radius test by rounding. 3,550 of 28,928 in-reach
+      poses stalled, 3,470 below half. The lane's tip check read the UNCAPPED solve, so it measured
+      a pose the renderer never drew and stayed green, and "0 of 5,176 meshing" meant the arm was
+      too short to reach anything.
+    - The outer tube stayed flat on the deck while four inner stages rotated out of its mouth about
+      the pivot, so the stack bent 90° at a joint and the stage tails swung 1.6 in into the deck;
+      five sections tapering 1.5 → 0.5 in read as an antenna with nothing at the tip; the stowed
+      cradle ran 2.3 in into a centre turret's ring and base plate; its pivot sat inside the new
+      end bar; nothing drove anything; and the parked tip stood BESIDE the flower.
+    **NOW**: three nested tubes (1.2 / 0.95 / 0.7 in — the OFFSET™ kit is a "2-stage" slide, three
+    tubes of near-equal length) standing at the rail on a pivot between two plates, a pulley (belt
+    to a motor under the deck) and a string spool outside them, a levelled wrist on top and a claw
+    that hangs folded beside the mast. The whole slide leans a few degrees (74°–92.5°) so the claw,
+    swung out level at `BB_BOX_TUBE_CLAW_REACH` from the mast, lands on the bore — **on every
+    in-reach pose, flush included, to 3e-8 in**, measured on the built marker. The deploy is one
+    linear 0.45-s ease run through `bbBoxTubePhases`: lean, turn the folded claw to the field side,
+    extend, swing up level, turn in over the bore. The ORDER is measured, not taste: swinging toward
+    the bore dips the arm through the top plate on every pose, and turning a hanging claw while it
+    passes the plate clips a corner. 0 of 5,176 poses touch the flower's GLB solid at any of 21
+    eases; the tightest is a corner tube reaching along the wall, whose yoke passes the end of the
+    wall-side backstop (z 22.0–22.65). The front/back end bar splits round the pivot. The 2D sprite
+    draws the same boxes (`bbBoxTubeStowedBoxes`) and snaps between the two end poses; the builder
+    schematic draws the folded tower and the ring.
+    ⚠️ **THE STOWED TOWER IS A COLLIDER** (`bbBoxTubeEnvelopes`, two boxes, like a dumper's): it
+    stands 7 in above the deck and every drawn vertex of it is inside the compound, top ≤ 11.90 ≤
+    `BB3_HEIGHT_MIN`. The deployed part above the stowed top exists only while the robot is parked
+    on a flower and is drawn outside the collider, the dumper mid-throw's bargain.
+    Placement is still a proximity action; nothing here is written to the world.
   - **The hood's own feed mouth rotates away from the feed at elevation**, which is why the wrap is
     0.556 rad and not the 1.05 it was: a FIXED feed shoe at `BB_FEED_SHOE_R` spans 146°–202° and
     takes over the entry. It bolts to both side plates, so it is also the rear tie.
