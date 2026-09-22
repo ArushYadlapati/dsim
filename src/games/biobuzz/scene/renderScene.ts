@@ -35,7 +35,7 @@ import { buildBiobuzzElements, setElementDetail, setElementShadows, updateBiobuz
 import { loadElementGeometries } from './renderElementsGlb';
 import { bbWheelDetail, buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
-import { bbVenueDetail, buildBiobuzzVenue } from './renderVenue';
+import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue } from './renderVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
 import { environmentDef } from '../graphics/environments';
@@ -443,6 +443,12 @@ class BiobuzzScene implements GameScene {
         disposeObject3D(this.venue);
       }
       this.venue = buildBiobuzzVenue(def.venue, detail);
+      /* ⚠️ THE TWO TOP-DOWN CAMERAS ARE LEFT OUT ON PURPOSE. Everything the venue hangs
+         over the field — the lighting grid, the ceiling fittings — sits on
+         `VENUE_OVERHEAD_LAYER`, and enabling it here for the side-on cameras only is what
+         keeps a 5×5 beam grid from being drawn as a giant cross across the overhead shot
+         and the PiP. Re-applied on every rebuild because the cameras outlive the venue. */
+      applyVenueLayers([this.cameras.driver, this.cameras.chase, this.cameras.orbit, this.cameras.free]);
       this.scene.add(this.venue);
       this.venueKey = key;
     }

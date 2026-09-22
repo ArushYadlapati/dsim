@@ -304,7 +304,34 @@ function buildFittings(spec: VenueSpec, d: (typeof LOD)['low']): THREE.Instanced
       specs.push({ x, y, z: spec.ceil - 5, w: span / d.lampCols * 0.52, d: 14, h: 3 });
     }
   }
-  return boxes('bb-venue:fittings', fitting(spec.lamp, spec.lampPower), specs);
+  const m = boxes('bb-venue:fittings', fitting(spec.lamp, spec.lampPower), specs);
+  m.layers.set(VENUE_OVERHEAD_LAYER);
+  return m;
+}
+
+/**
+ * ⚠️ THE LAYER FOR ANYTHING THAT HANGS OVER THE FIELD, AND WHY IT HAD TO EXIST.
+ *
+ * The overhead camera sits at z = 800 looking straight down, and the PiP minimap is a second
+ * camera doing the same. The lighting grid is a 5×5 array of beams a couple of feet under the
+ * ceiling — directly between those cameras and the field — so the first build of the venue
+ * put A MASSIVE CROSS ACROSS THE TOP-DOWN VIEW (owner, 2026-09-21). It is correct from every
+ * camera that looks at the field from beside or above-and-in-front, and ruinous from the two
+ * that look through it.
+ *
+ * Visibility cannot do this: the minimap is a SECOND PASS over the same scene in the same
+ * frame, so a `visible = false` set for it would also blank the main shot behind it. A LAYER
+ * is per-camera and costs nothing per frame.
+ *
+ * Everything on this layer is opt-IN for a camera: `applyVenueLayers` enables it on the
+ * cameras that should see it, and the two overhead ones simply never do.
+ */
+export const VENUE_OVERHEAD_LAYER = 1;
+
+/** enable the overhead-furniture layer on the cameras that look at the field from the SIDE.
+ *  Deliberately NOT the overhead camera and NOT the PiP — see `VENUE_OVERHEAD_LAYER`. */
+export function applyVenueLayers(cams: readonly THREE.Camera[]): void {
+  for (const c of cams) c.layers.enable(VENUE_OVERHEAD_LAYER);
 }
 
 /** beams under the ceiling, both ways — a lighting grid, which is what is actually over an FTC
@@ -318,7 +345,9 @@ function buildTruss(spec: VenueSpec): THREE.InstancedMesh {
     specs.push({ x: t, y: 0, z, w: 7, d: reach, h: 10 });
     specs.push({ x: 0, y: t, z: z - 11, w: reach, d: 7, h: 10 });
   }
-  return boxes('bb-venue:truss', surface(spec.trim), specs);
+  const m = boxes('bb-venue:truss', surface(spec.trim), specs);
+  m.layers.set(VENUE_OVERHEAD_LAYER); // see the constant: it is straight over the field
+  return m;
 }
 
 /** columns against the walls — the four corners and the four mid-spans. What they buy is

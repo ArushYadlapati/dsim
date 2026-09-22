@@ -82,37 +82,15 @@ export const BIOBUZZ_MODULE: GameModule = {
    */
   statTiles: bbStatTiles,
   /**
-   * THE HUMAN PLAYER BUTTON on a touch screen (G426) — this slot's first filler.
+   * THE TOUCH BUTTONS moved out of this module, to `src/games/biobuzz/mobile.ts`.
    *
-   * It was listed above as deliberately EMPTY, on the grounds that the shell's only actions
-   * were intake and fire. That stopped being true twice: the lift and the place button are
-   * held/edge mechanisms with their own keybinds, and NECTAR entry became a driver action
-   * rather than a timer. The note also said a new action needs a `GameSettings.mobileLayout`
-   * key and a protocol bit — it does, and `bbNectar` now has both (`MobileLayout.bbNectar`,
-   * `BTN_BBNECTAR`), which is what makes this a slot fill rather than a cross-lane request.
-   *
-   * NO `present` PREDICATE, and that is a statement rather than an oversight. Every other
-   * conditional button on this pad asks "does this BUILD have the mechanism" — a claw-only
-   * catalyst has nothing to throw. The human player is not hardware: every BIOBUZZ robot's
-   * alliance has one, so there is no build that should be missing the button. Whether a press
-   * would DO anything right now (stock left, an entry owed, the field live) changes several
-   * times a match and is answered in the HUD by `nectarWhy`, not by a button appearing and
-   * vanishing under the driver's thumb.
-   *
-   * ONE BUTTON FOR THE ALLIANCE, pressed through whichever robot this phone is driving: the
-   * rule is per-alliance and `play.ts` takes the first rising edge among the alliance's robots
-   * each tick.
+   * They were a `GameModule` slot, and this game filled it with ONE button (the human player's
+   * NECTAR entry) while `bbPlace`, `bbPlaceNectar`, `bbRamp` and `bbPass` all shipped with a
+   * keybind, a pad button and nothing at all on a phone — recorded as debt in three of this
+   * game's own handoffs and never paid, because an optional slot cannot fail a test. The pad
+   * derives its set from `ACTION_GAMES` now (`src/ui/mobileActions.ts`), and `npm test` asserts
+   * that every action this game uses is reachable on touch, so the next one cannot slip.
    */
-  mobileButtons: [
-    {
-      name: 'bbNectar',
-      label: 'NECTAR',
-      glyph: '⬗',
-      cls: 'bbnectar',
-      primary: false,
-      field: 'bbNectar',
-    },
-  ],
   /**
    * THE PRESET CARDS. Filling this slot is what makes `BB_PRESETS` reachable at all: the
    * builder's `Presets` section chose its list with `isDecode ? ROBOT_PRESETS : CHAIN_PRESETS`,

@@ -47,7 +47,7 @@ inline branches stay untouched:
 | `startEditor` | `MatchSetup.tsx` / `Lobby.tsx` / `MatchStrategy.tsx` |
 | `hudChips`, `scoreBar` | `GameView.tsx` (the `.robot-status` row / the whole bottom bar) |
 | `resultsRows` | `Results.tsx` — both the versus results and `RecordResults`. Rows are ALLIANCE-RELATIVE (`[label, mine, opp]`) |
-| `mobileButtons` | `MobileControls.tsx`. A new key needs a `GameSettings.mobileLayout` entry, and a genuinely new action needs a protocol bit |
+| ~~`mobileButtons`~~ | **no longer a slot** — a game's touch buttons are `src/games/<id>/mobile.ts`, merged with the shared set by `src/ui/mobileActions.ts`. The set is DERIVED from `ACTION_GAMES` and `npm test` asserts every action a game uses is reachable on touch, so a new season control fails the suite until it has a button or a written reason. A genuinely new action still needs a protocol bit |
 | `labels.configSummary` | `robotLabels.ts` + `Leaderboard.tsx` |
 | `devRoutes` | `App.tsx` routing — **alpha channel only** (`devRoutesEnabled()`) |
 | `offersAutoFire` | `Menu.tsx` Driver assists — `false` hides the Auto fire toggle (BIOBUZZ: Aim Assist gates the driver's fire instead) |

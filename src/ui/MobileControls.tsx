@@ -1,14 +1,15 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import type { InputManager } from '../input/input';
-import type { GameId, MobileLayout, MobilePos } from '../types';
-import type { MobileActionField } from '../games/module';
-import { moduleFor } from '../games';
+import type { GameId, MobileLayout, RobotSpec } from '../types';
+import {
+  TOUCH_JOY_MAX_RADIUS,
+  packTouchControls,
+  visibleTouchButtons,
+  type PlacedTouchButton,
+  type TouchButton,
+} from './mobileActions';
 import { getViewPref, subscribeViewPref } from '../games/biobuzz/graphics/store';
 import { installViewKey, toggleViewPref } from '../games/biobuzz/graphics/viewKey';
-
-// base radii (px, BEFORE the layout scale) — the visible ring + the handle travel.
-const JOY_R = 58;
-const MAX_RADIUS = 52;
 
 type Which = 'drive' | 'turn';
 interface StickRT {
@@ -21,7 +22,9 @@ interface StickRT {
 }
 const idleStick = (): StickRT => ({ active: false, touchId: null, bx: 0, by: 0, hx: 0, hy: 0 });
 
-/** viewport size, re-read on resize + orientation change (fractions → px). */
+/** viewport size, re-read on resize + orientation change. The pad arranges itself against it
+ *  (`packTouchControls`), so a rotation re-lays the whole thing out rather than reinterpreting
+ *  a fraction that was only ever right one way up. */
 function useViewport(): { w: number; h: number } {
   const [vp, setVp] = useState(() => ({
     w: typeof window !== 'undefined' ? window.innerWidth : 800,
@@ -39,13 +42,14 @@ function useViewport(): { w: number; h: number } {
   return vp;
 }
 
-/** one action button (fire / intake / catalyst). Hold-style in play; draggable in edit.
+/** one action button. Hold-style in play; draggable in edit if it has a stored slot.
  *
- * `auto` (the robot is handling this action itself) rides the ARIA label and the
- * `.auto` ghosting, never the drawn label: `label` renders INSIDE an 82px circle, so
- * "SHOOT (automatic)" wrapped and overflowed the button in the layout editor. */
+ * `auto` (the robot is handling this action itself) rides the ARIA label and the `.auto`
+ * ghosting, never the drawn label: `label` renders INSIDE the circle, so "SHOOT (automatic)"
+ * wrapped and overflowed the button in the layout editor. */
 function ActionButton({
   label,
+  aria,
   auto,
   glyph,
   cls,
@@ -53,12 +57,14 @@ function ActionButton({
   left,
   top,
   editing,
+  draggable,
   onDown,
   onUp,
   onDrag,
   onDragEnd,
 }: {
   label: string;
+  aria: string;
   auto?: boolean;
   glyph: string;
   cls: string;
@@ -66,6 +72,7 @@ function ActionButton({
   left: number;
   top: number;
   editing: boolean;
+  draggable: boolean;
   onDown: () => void;
   onUp: () => void;
   onDrag: (clientX: number, clientY: number) => void;
@@ -76,8 +83,21 @@ function ActionButton({
   // POSITION AND SIZE ONLY — the type scale is `.mobile-btn` / `.mobile-btn.shoot`
   // in the sheet, where the colours already live (`.mb-ico`/`.mb-lbl` size off it in em).
   const style: React.CSSProperties = { left, top, width: size, height: size };
-  const aria = auto ? `${label} (automatic)` : label;
+  const full = auto ? `${aria} (automatic)` : aria;
   if (editing) {
+    // A button with no `mobileLayout` key of its own arranges itself, so it is drawn but not
+    // grabbable: the solid edge against the draggable ones' dashed edge is what says which is
+    // which, and the ARIA label says it in words.
+    if (!draggable) {
+      return (
+        <div className={`mobile-btn ${cls} fixed`} style={style} role="img" aria-label={`${full} (fixed position)`}>
+          <span className="mb-ico" aria-hidden>
+            {glyph}
+          </span>
+          <span className="mb-lbl">{label}</span>
+        </div>
+      );
+    }
     return (
       <button
         type="button"
@@ -97,7 +117,7 @@ function ActionButton({
           (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
           onDragEnd();
         }}
-        aria-label={`${aria} (drag to move)`}
+        aria-label={`${full} (drag to move)`}
       >
         <span className="mb-ico" aria-hidden>
           {glyph}
@@ -124,7 +144,7 @@ function ActionButton({
       onTouchStart={down}
       onTouchEnd={up}
       onTouchCancel={up}
-      aria-label={aria}
+      aria-label={full}
     >
       <span className="mb-ico" aria-hidden>
         {glyph}
@@ -137,26 +157,27 @@ function ActionButton({
 export function MobileControls({
   inputManager,
   game,
+  spec,
   layout,
   editing = false,
   autoIntake = false,
   autoFire = false,
-  hasFling = false,
-  gameHud,
   onLayoutChange,
 }: {
   inputManager: InputManager;
-  /** the active game — the catalyst buttons only apply to Chain Reaction */
+  /** the active game — `ACTION_GAMES` decides the button set from it (`mobileActions.ts`) */
   game?: GameId;
-  /** the local robot's live assists: a button for an action the ROBOT is doing for you is
-   * dead weight on a screen this small, so it is not drawn while its assist is on. */
+  /**
+   * the local build. Every `present` predicate asks it — "does this robot have the
+   * mechanism" — so a claw-only Chain Reaction build gets no THROW and a single-turret
+   * BIOBUZZ build gets no place-NECTAR. It is the player's own spec rather than anything off
+   * the wire because that is what they spawned with in every mode this pad renders in.
+   */
+  spec: RobotSpec;
+  /** the local robot's live assists. An assisted action is GHOSTED, never removed — hiding
+   * them is what left a default DECODE phone with no action buttons at all. */
   autoIntake?: boolean;
   autoFire?: boolean;
-  /** Chain Reaction: this build's catalyst has a CATAPULT, so the THROW button applies */
-  hasFling?: boolean;
-  /** the active game's own HUD slice (`HudSnapshot.gameHud`) — what a module's
-   * `mobileButtons[].present` reads to decide whether this build has the mechanism */
-  gameHud?: unknown;
   /** editable touch-control layout (centres as viewport fractions) */
   layout: MobileLayout;
   /** edit mode: drag controls to reposition instead of driving */
@@ -198,13 +219,19 @@ export function MobileControls({
     setEdit(layout);
   }, [layout, editing]);
   const L = editing ? edit : layout;
-  const toPx = (p: MobilePos): { x: number; y: number } => ({ x: p.x * vp.w, y: p.y * vp.h });
 
   // joystick runtime lives in a ref (touch matching) + a force-render tick
   const sticks = useRef<{ drive: StickRT; turn: StickRT }>({ drive: idleStick(), turn: idleStick() });
   const [, force] = useReducer((n: number) => n + 1, 0);
 
-  const maxR = MAX_RADIUS * scale;
+  const maxR = TOUCH_JOY_MAX_RADIUS * scale;
+
+  // WHICH BUTTONS, AND WHERE. Both are derived — the set from `ACTION_GAMES` through the game's
+  // own table, the arrangement from the live viewport — so a season that adds an action cannot
+  // silently leave it unreachable on touch, and neither answer depends on the orientation the
+  // player's stored layout happened to be tuned in.
+  const buttons = visibleTouchButtons(game ?? 'decode', { spec, autoIntake, autoFire });
+  const packed = packTouchControls(buttons, L, vp);
 
   const onTouchStart = (e: React.TouchEvent): void => {
     if (editing) return;
@@ -259,21 +286,26 @@ export function MobileControls({
   };
 
   // drag a control's HOME position in edit mode (clamped on-screen, persisted on release)
-  const dragControl = (name: keyof MobileLayout, clientX: number, clientY: number): void => {
-    if (name === 'scale') return;
+  const dragControl = (name: Exclude<keyof MobileLayout, 'scale'>, clientX: number, clientY: number): void => {
     const x = Math.max(0.04, Math.min(0.96, clientX / vp.w));
     const y = Math.max(0.06, Math.min(0.94, clientY / vp.h));
     setEdit((prev) => ({ ...prev, [name]: { x, y } }));
   };
   const commit = (): void => onLayoutChange?.(edit);
 
-  // ---- joystick render (base always visible at home; floats to the finger) ----
-  const joystick = (which: Which, home: MobilePos): React.ReactNode => {
+  /** a press on one button — held bits go on the command, taps fire one edge */
+  const press = (b: TouchButton, down: boolean): void => {
+    if (b.hold) inputManager.setVirtualInput({ [b.hold]: down } as never);
+    else if (b.tap && down) inputManager.pressVirtual(b.tap);
+  };
+
+  // ---- joystick render (base at its packed home; floats to the finger while driving) ----
+  const joystick = (which: Which): React.ReactNode => {
     const st = sticks.current[which];
-    const h = toPx(home);
-    const cx = st.active ? st.bx : h.x;
-    const cy = st.active ? st.by : h.y;
-    const r = JOY_R * scale;
+    const home = packed[which];
+    const cx = st.active ? st.bx : home.x;
+    const cy = st.active ? st.by : home.y;
+    const r = home.size / 2;
     const dragHandlers = editing
       ? {
           onPointerDown: (e: React.PointerEvent) => {
@@ -310,51 +342,29 @@ export function MobileControls({
     );
   };
 
-  const btnSize = (primary: boolean): number => (primary ? 82 : 62) * scale;
-  const chain = game === 'chain';
-  /**
-   * The action buttons.
-   *
-   * `auto` marks one the ROBOT is currently handling itself. Those are HIDDEN in play —
-   * a button that does nothing is worse than no button on a screen this size, where the
-   * pad is competing with the field for room — but still drawn (ghosted) in EDIT mode, so
-   * the layout stays fully arrangeable whatever the assists happen to be set to right now.
-   *
-   * `absent` marks one this build simply does not have — a DECODE robot has no catalyst,
-   * a claw-only catalyst has nothing to throw — and those are never drawn at all.
-   */
-  interface ActionSpec {
-    name: keyof MobileLayout;
-    label: string;
-    glyph: string;
-    cls: string;
-    primary: boolean;
-    field: MobileActionField;
-    absent?: boolean;
-    auto?: boolean;
-  }
-  /**
-   * A game's OWN extra buttons, through the module slot. They are APPENDED to the
-   * two shared ones (intake + shoot) rather than replacing the list: those two
-   * exist in every game the sim has had, and the CR pair below stay as the inline
-   * entries they already were.
-   */
-  const modBtns: ActionSpec[] = (moduleFor(game).mobileButtons ?? []).map((b) => ({
-    name: b.name,
-    label: b.label,
-    glyph: b.glyph,
-    cls: b.cls,
-    primary: b.primary,
-    field: b.field,
-    absent: b.present ? !b.present(gameHud) : false,
-  }));
-  const buttons: ActionSpec[] = ([
-    { name: 'intake', label: 'INTAKE', glyph: '▼', cls: 'intake', primary: false, field: 'intake', auto: autoIntake },
-    { name: 'catalyst', label: 'CATALYST', glyph: '⬡', cls: 'catalyst', primary: false, field: 'catalyst', absent: !chain },
-    { name: 'fling', label: 'THROW', glyph: '⤴', cls: 'fling', primary: false, field: 'fling', absent: !chain || !hasFling },
-    { name: 'shoot', label: 'SHOOT', glyph: '◎', cls: 'shoot', primary: true, field: 'fire', auto: autoFire },
-    ...modBtns,
-  ] as ActionSpec[]).filter((b) => !b.absent && (editing || !b.auto));
+  const renderButton = (p: PlacedTouchButton): React.ReactNode => {
+    const b = p.button;
+    const auto = b.auto?.({ spec, autoIntake, autoFire }) ?? false;
+    return (
+      <ActionButton
+        key={b.action}
+        label={b.label}
+        aria={b.aria}
+        auto={auto}
+        glyph={b.glyph}
+        cls={`${b.cls}${auto ? ' auto' : ''}`}
+        size={p.size}
+        left={p.x}
+        top={p.y}
+        editing={editing}
+        draggable={b.slot !== undefined}
+        onDown={() => press(b, true)}
+        onUp={() => press(b, false)}
+        onDrag={(cx, cy) => b.slot && dragControl(b.slot, cx, cy)}
+        onDragEnd={commit}
+      />
+    );
+  };
 
   return (
     <>
@@ -369,7 +379,9 @@ export function MobileControls({
         onTouchCancel={onTouchEnd}
       />
       {/* HIGH-Z visuals + buttons (above the scorebar, so nothing occludes them).
-          pointer-events:none except the interactive children. */}
+          pointer-events:none except the interactive children — `.hud` is pointer-events:none
+          so the canvas keeps its drag, and anything in it that is meant to be pressed has to
+          re-enable them ON ITSELF (docs/area/ui.md). `.mobile-btn` does. */}
       <div className="mobile-overlay">
         {showView && (
           <button
@@ -381,29 +393,9 @@ export function MobileControls({
             {view === '3d' ? '3D' : '2D'}
           </button>
         )}
-        {joystick('drive', L.drive)}
-        {joystick('turn', L.turn)}
-        {buttons.map((b) => {
-          const p = toPx(L[b.name] as MobilePos);
-          const size = btnSize(b.primary);
-          return (
-            <ActionButton
-              key={b.name}
-              label={b.label}
-              auto={b.auto}
-              glyph={b.glyph}
-              cls={`${b.cls}${b.auto ? ' auto' : ''}`}
-              size={size}
-              left={p.x}
-              top={p.y}
-              editing={editing}
-              onDown={() => inputManager.setVirtualInput({ [b.field]: true } as never)}
-              onUp={() => inputManager.setVirtualInput({ [b.field]: false } as never)}
-              onDrag={(cx, cy) => dragControl(b.name, cx, cy)}
-              onDragEnd={commit}
-            />
-          );
-        })}
+        {joystick('drive')}
+        {joystick('turn')}
+        {packed.buttons.map(renderButton)}
       </div>
     </>
   );

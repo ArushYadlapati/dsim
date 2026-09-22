@@ -38,8 +38,24 @@ import {
   BB_NECTAR_R,
   BB_TAPE,
   BB_TAPE_W,
+  BB_TILE_SEAMS,
   BB_VIEW_MARGIN,
 } from '../../src/games/biobuzz/config';
+// THE FIELD MAT'S SURFACE (2026-09-21) — `scene/renderTiles.ts` is deliberately almost all pure
+// functions over numbers, so the seam the owner asked for is MEASURED here rather than grepped.
+import {
+  BB_TILE_TOOTH,
+  bbTileDetail,
+  buildTileGrain,
+  TILE_GRAIN_REPEAT,
+  TILE_GROOVE,
+  TILE_LINE,
+  TILE_MAT,
+  TILE_TEX_SIZE,
+  tileSeamPaths,
+  tileSeamPolyline,
+  tileTone,
+} from '../../src/games/biobuzz/scene/renderTiles';
 import { drawBiobuzzField, snapTapeGroup } from '../../src/games/biobuzz/drawField';
 // the CAD loader's own DOM-free exports — the AprilTag bitmap, the ID table the manual sets, and
 // the creased-normal pass. Importing a `scene/` module here is fine: this is a script, not the
@@ -846,6 +862,185 @@ export function renderChecks(check: Check): void {
       body.length > 0 && !originAnchored,
       body.length === 0 ? 'buildFloorTexture not found' : originAnchored ? 'toTex(0, 0) is back' : `${body.length} chars scanned`,
     );
+
+    // ═══ THE MAT READS AS THIRTY-SIX SOFT TILES (owner, 2026-09-21: "For higher graphics
+    //     settings, have proper texture and the proper pattern of the field tile (where two
+    //     tiles meet). More accurate colour would be good too") ═══════════════════════════════
+    //
+    // `scene/renderTiles.ts` carries the measurement: the part is `am-2499`, the field has 36 of
+    // them in three variants, and the interlock is a 50 %-duty SQUARE castellation at period
+    // 2.369 in, half-amplitude 0.405 in — all of it read off the same sha-pinned STEP
+    // `npm run field-cad` uses. Everything below is arithmetic on the real polyline, because a
+    // seam that misses its own tile corner is exactly the failure a source grep cannot see.
+
+    // (1) THE PITCH DIVIDES THE FIELD. A grid that does not land on the CAD's own seams looks
+    //     worse than no grid at all, and `BB_TILE_SEAMS` is the only place the answer lives.
+    check('the tile grid is 6 cells per axis over the CAD seam lines', BB_TILE_SEAMS.length === 7, `${BB_TILE_SEAMS.length} lines`);
+    {
+      const spans = BB_TILE_SEAMS.slice(1).map((s, i) => s - BB_TILE_SEAMS[i]);
+      const worst = Math.max(...spans.map((s) => Math.abs(s - 23.5283)));
+      check('...and every cell is within half an inch of TILE_PITCH (the CAD seams are NOT even)', worst < 0.5, `worst ${worst.toFixed(3)} in`);
+      const total = BB_TILE_SEAMS[6] - BB_TILE_SEAMS[0];
+      check('...and the six of them sum to the CAD tile footprint, 141.17 in', Math.abs(total - 141.1696) < 0.01, `${total.toFixed(4)}`);
+    }
+
+    // (2) THE SEAM IS THE CASTELLATION, ON ITS OWN SEAM LINE, AND IT CLOSES AT THE TILE CORNER.
+    {
+      const at = BB_TILE_SEAMS[3];
+      const a = BB_TILE_SEAMS[2];
+      const b = BB_TILE_SEAMS[3];
+      const pts = tileSeamPolyline(at, a, b, 'x');
+      const devs = pts.map((p) => p[0] - at);
+      const A = BB_TILE_TOOTH.amplitude;
+      check('a seam run deviates by exactly ±the measured tab projection, never in between',
+        devs.every((d) => Math.abs(Math.abs(d) - A) < 1e-9), `${devs.length} points, A=${A}`);
+      check('...and it is NOT a straight line (the check is not vacuous)', new Set(devs.map((d) => Math.sign(d))).size === 2);
+      check('...and it starts and ends on the tile corners it runs between',
+        Math.abs(pts[0][1] - a) < 1e-9 && Math.abs(pts[pts.length - 1][1] - b) < 1e-9,
+        `${pts[0][1]} .. ${pts[pts.length - 1][1]}`);
+      // TEN TEETH TO AN EDGE, at the measured period stretched to fit the cell — never truncated,
+      // because a part-tooth straddling a tile corner is the one thing that reads as a mistake.
+      const flips = pts.filter((p, i) => i > 0 && p[0] !== pts[i - 1][0]).length;
+      check('ten teeth to an edge, so no tooth straddles a corner', flips === 2 * BB_TILE_TOOTH.perEdge, `${flips} flips`);
+      const period = (b - a) / BB_TILE_TOOTH.perEdge;
+      check('...and the stretched period stays within 1.5 % of the CAD\'s 2.369 in',
+        Math.abs(period - BB_TILE_TOOTH.period) / BB_TILE_TOOTH.period < 0.015, `${period.toFixed(4)} in`);
+      // 50 % DUTY, and the CELL CENTRE sits in a GAP — where the CAD puts it (its own centre gap
+      // is measured at 11.377…12.156 of a 23.99-in edge).
+      let hi = 0;
+      let lo = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const run = pts[i][1] - pts[i - 1][1];
+        if (run <= 0) continue;
+        if (pts[i][0] > at) hi += run;
+        else lo += run;
+      }
+      check('the wave is 50 % duty — as much tab as notch along the seam', Math.abs(hi - lo) < 1e-6, `${hi.toFixed(4)} vs ${lo.toFixed(4)}`);
+      const mid = (a + b) / 2;
+      const seg = pts.findIndex((p, i) => i > 0 && pts[i - 1][1] <= mid && p[1] >= mid);
+      check('...and the cell centre falls in a NOTCH, the phase the CAD has', seg > 0 && pts[seg][0] < at, `centre dev ${seg > 0 ? (pts[seg][0] - at).toFixed(3) : 'n/a'}`);
+    }
+
+    // (3) THE PERIMETER OF THE MAT IS STRAIGHT, and that is CAD, not a simplification: the field
+    //     carries 16 `am-2499-Side` and 4 `am-2499-Corner` tiles whose outer edges are cut flat,
+    //     which is why the tiled floor measures exactly 6 × TILE_PITCH with nothing poking out.
+    {
+      const tiled = tileSeamPaths('tiles');
+      const flat = tileSeamPaths('flat');
+      const straight = tiled.filter((p) => !p.interior);
+      check('the mat\'s own perimeter edge is straight on all four sides', straight.length === 4 && straight.every((p) => p.points.length === 2), `${straight.length}`);
+      check('...and the five interior seams per axis are toothed, one run per cell',
+        tiled.filter((p) => p.interior).length === 2 * 5 * 6, `${tiled.filter((p) => p.interior).length}`);
+      // THE LOW COLUMN PAYS NOTHING. `flat` is the straight 14-line grid that shipped before any
+      // of this, and it is the whole of what a Low device draws.
+      check('the flat tier is still the fourteen straight grid lines it always was',
+        flat.length === 14 && flat.every((p) => p.points.length === 2 && !p.interior), `${flat.length}`);
+    }
+
+    // (4) THE TIER LADDER — `meshDetail` alone, the one value `createBiobuzzScene` hands
+    //     `buildBiobuzzField` (the field is built before the scene object exists, so there is no
+    //     `tier` to read there), and already resolved against the fixed tier an EXPORT runs at.
+    check('Low gets the flat mat and everything else gets the tiles', bbTileDetail('low') === 'flat' && bbTileDetail('high') === 'tiles');
+    check('...and Low keeps the 1024-texel canvas, with 2048 only where the teeth need it',
+      TILE_TEX_SIZE.flat === 1024 && TILE_TEX_SIZE.tiles === 2048);
+    check('...and the grain textures are not even allocated on Low', buildTileGrain('flat') === null);
+    // THE GRAIN IS A WHOLE NUMBER OF PERIODS PER TILE (4), which is the physical answer and not
+    // a convenience: the 36 tiles are identical translated copies of one moulding, so the fine
+    // surface has to repeat in phase from tile to tile. A repeat that did not divide the grid
+    // would drift the grain across the field and read as a texture laid over the mat.
+    check('the grain repeats a whole number of times per tile (4), in phase on every one',
+      TILE_GRAIN_REPEAT % (BB_TILE_SEAMS.length - 1) === 0 && TILE_GRAIN_REPEAT / (BB_TILE_SEAMS.length - 1) === 4, `${TILE_GRAIN_REPEAT}`);
+
+    // (5) NO DOUBLE-MULTIPLY. `MeshStandardMaterial` multiplies `color` by `map`, so a tone
+    //     passed as both comes out squared and near black — the venue's ground shipped exactly
+    //     that bug. The floor's albedo is the canvas and nothing else, and the two new map slots
+    //     carry no colour at all (an sRGB decode on a normal or roughness map is the same class
+    //     of silent wrongness one level down).
+    {
+      const fat = floorSrc.indexOf('function buildFloor(');
+      const fbody = fat < 0 ? '' : floorSrc.slice(fat, floorSrc.indexOf('function wallMaterial(', fat));
+      check('the floor material takes a map and NO colour',
+        /new THREE\.MeshStandardMaterial\(\{ map: buildFloorTexture\(withTape, detail\) \}\)/.test(fbody) && !/color:/.test(fbody),
+        `${fbody.length} chars`);
+      check('...and it takes the grain on the normal and roughness slots',
+        fbody.includes('material.normalMap = grain.normalMap') && fbody.includes('material.roughnessMap = grain.roughnessMap'));
+      const tileSrc = readFileSync(join(root, 'src/games/biobuzz/scene/renderTiles.ts'), 'utf8');
+      check('...and neither grain map is decoded as sRGB', /srgb \? THREE\.SRGBColorSpace : THREE\.NoColorSpace/.test(tileSrc) && /mk\(canvas, false\)/.test(tileSrc) && /mk\(rough, false\)/.test(tileSrc));
+    }
+
+    // (6) THE 3D MAT IS A REAL TILE GREY, and how far it may go is MEASURED rather than
+    //     chosen. A field tile is grey EVA foam (AndyMark am-2499, spec "Gray"), not the
+    //     near-black the 2D board paints, so the 3D floor was lifted to one — and the 2D
+    //     `COLORS.mat`/`COLORS.tile` were deliberately NOT touched, because repainting
+    //     DECODE's board was never the ask. What stops the lift going further is below.
+    {
+      const lin = (v: number): number => (v / 255 <= 0.03928 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4));
+      const chan = (h: string): number[] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+      const lum = (h: string): number => { const c = chan(h); return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]); };
+      const ratio = (a: string, b: string): number => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+      for (const [name, next, token] of [['mat', TILE_MAT, SHARED_COLORS.mat], ['line', TILE_LINE, SHARED_COLORS.tile]] as const) {
+        const c = chan(next);
+        check(`the 3D ${name} is NEUTRAL grey — the CAD's own tile hue, not DECODE's blue mat`, c[0] === c[1] && c[1] === c[2], next);
+        check(`...and the 3D ${name} is LIGHTER than the 2D token, which is the point of it`,
+          lum(next) > lum(token), `${next} vs ${token}`);
+      }
+      /**
+       * ⚠️ **ON-FIELD TEXT IS THE CEILING NOW, NOT THE DRIVER LABEL** (owner, 2026-09-21:
+       * lighten the mat, strengthen the label stroke).
+       *
+       * The mat used to be locked to `COLORS.tile`'s luminance because the driver label's FILL
+       * was measured against the lightest ground it crosses. `LABEL_STROKE` is OPAQUE now
+       * (`render/renderer.ts`), so a glyph reads against its own halo and that pair stopped
+       * moving with the field — which is what let the mat go to a real tile grey at all.
+       *
+       * What binds instead is canvas TEXT drawn over the field: `--ds-on-field-dim`. MEASURED,
+       * #585858 put it at 3.77 and was backed out for it. Both floors are asserted here so the
+       * next lift has to answer to them rather than rediscover them.
+       */
+      const ON_FIELD_DIM = '#b9beb8';
+      check(
+        '⚠️ the mat stays dark enough for canvas ON-FIELD TEXT to clear AA (this is the real ceiling)',
+        ratio(ON_FIELD_DIM, TILE_MAT) >= 4.5 && ratio(ON_FIELD_DIM, TILE_LINE) >= 4.5,
+        `mat ${ratio(ON_FIELD_DIM, TILE_MAT).toFixed(2)} line ${ratio(ON_FIELD_DIM, TILE_LINE).toFixed(2)}`,
+      );
+      check(
+        '⚠️ the driver label clears AA against its OWN STROKE — the pair that does not move with the field',
+        ratio('#f87171', '#14161a') >= 4.5 && ratio('#60a5fa', '#14161a') >= 4.5,
+        `red ${ratio('#f87171', '#14161a').toFixed(2)} blue ${ratio('#60a5fa', '#14161a').toFixed(2)}`,
+      );
+      check(
+        '⚠️ ...and that stroke is OPAQUE, which is the whole reason the pair holds',
+        /const LABEL_STROKE = 'rgb\(/.test(readFileSync(join(root, 'src/render/renderer.ts'), 'utf8')),
+        'an alpha stroke lets the ground through the halo, and the ceiling comes back',
+      );
+      // THE PER-TILE TONE NEVER GOES UP. `TILE_MAT` is the measured ceiling (see above); a
+      // jitter that could brighten is a jitter that could walk a measured pair past its floor
+      // without anything failing.
+      const tones = [] as string[];
+      for (let iy = 0; iy < 6; iy++) for (let ix = 0; ix < 6; ix++) tones.push(tileTone(ix, iy));
+      /* HOW MANY DISTINCT TONES 8-BIT sRGB HAS IN THE JITTER'S RANGE IS A FUNCTION OF THE BASE,
+         so it is DERIVED rather than written down — at the old near-black mat it was four, and
+         a lighter mat has more room. What is actually under test is that the jitter resolves to
+         SEVERAL tones and they are mixed up; a hard-coded count just breaks on every re-tone. */
+      const base = chan(TILE_MAT)[0];
+      const want = new Set(Array.from({ length: 64 }, (_, k) => Math.round(base * (1 - (k / 63) * 0.08)))).size;
+      // 36 draws from `want` buckets will usually miss one, so the band is want-1…want. The
+      // FLOOR is what is under test (the jitter is not being quantised down to a flat sheet);
+      // the CEILING is a tripwire on a range that grew without anyone measuring the darkest tile.
+      const got = new Set(tones).size;
+      check('the 36 tiles take very nearly every tone 8-bit sRGB has in the jitter range',
+        got >= want - 1 && got <= want, `${got} distinct, ${want} available at base ${base}`);
+      const neighbours = tones.filter((t, i) => i % 6 > 0 && t !== tones[i - 1]).length;
+      check('...and the tones are scattered, not laid in blocks', neighbours >= 15, `${neighbours} of 30 adjacent pairs differ`);
+      check('...and not one of them is lighter than the mat itself', tones.every((t) => lum(t) <= lum(TILE_MAT) + 1e-12));
+      check('...and the groove under the seam is darker than the mat, so it can only widen a ratio', lum(TILE_GROOVE) < lum(TILE_MAT));
+      // DETERMINISM: the same field on every machine and in every exported frame.
+      const again = [] as string[];
+      for (let iy = 0; iy < 6; iy++) for (let ix = 0; ix < 6; ix++) again.push(tileTone(ix, iy));
+      check('the mat is deterministic — two builds paint the same 36 tones', again.join() === tones.join());
+      const p1 = JSON.stringify(tileSeamPaths('tiles'));
+      check('...and the same seams', p1 === JSON.stringify(tileSeamPaths('tiles')));
+    }
   }
 
   // ---- the seam itself: GameModule.scene is a function ------------------------------------
@@ -2702,9 +2897,17 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
     'Ultra is soft shadows, 16x filtering and the full effects set',
     GFX_PRESETS.ultra.shadows === 'soft' && GFX_PRESETS.ultra.anisotropy === 16 && GFX_PRESETS.ultra.effects === 'full',
   );
+  /**
+   * ⚠️ **THE PiP MINIMAP IS OFF ON EVERY PRESET (owner, 2026-09-21).** It used to be ON at Low
+   * and Medium, on the reasoning that the machines with the hardest-to-read 3D shot are the
+   * ones that want a top-down aid. Two things were wrong with that: it is a SECOND FULL PASS
+   * over the scene, which is the cost those machines can least afford, and it covers a corner
+   * of the very field it is meant to help with. It stays one click away in Graphics.
+   */
   check(
-    'the PiP minimap is ON for Low/Medium and OFF for High/Ultra (the table, and it is a second pass)',
-    GFX_PRESETS.low.minimap && GFX_PRESETS.medium.minimap && !GFX_PRESETS.high.minimap && !GFX_PRESETS.ultra.minimap,
+    'the PiP minimap is OFF on every preset — it is a second pass, and it covers the field',
+    GFX_TIERS.every((t) => GFX_PRESETS[t].minimap === false),
+    GFX_TIERS.map((t) => `${t}=${GFX_PRESETS[t].minimap}`).join(' '),
   );
   check('no preset turns on a feature this build does not implement (AO)', GFX_TIERS.every((t) => GFX_PRESETS[t].ao === 'off'));
   check(

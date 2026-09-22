@@ -35,6 +35,20 @@ import {
 } from '../nectarBox';
 import { hiveTiltAngle, hiveTrayRefTheta } from '../sim3d/tilt';
 import { cellPanelMaterial, loadFieldGlb, wallPanelMaterial, type FieldGroups } from './renderFieldGlb';
+import {
+  bbTileDetail,
+  buildTileGrain,
+  tileSeamPaths,
+  tileTone,
+  TILE_GRAIN_NORMAL_SCALE,
+  TILE_GROOVE,
+  TILE_GROOVE_W,
+  TILE_LINE,
+  TILE_LINE_W,
+  TILE_MAT,
+  TILE_TEX_SIZE,
+  type BbTileDetail,
+} from './renderTiles';
 
 /**
  * BIOBUZZ 3D SCENE — the field: floor, walls, the two hives (frame + tilting tray) and the four
@@ -153,19 +167,25 @@ function mat(color: string, opacity = 1): THREE.MeshStandardMaterial {
 // The SEAM GRID is painted at the CAD's own pitch and footprint when the collider set carries
 // them (23.53 in over ±70.585, not `C.TILE`'s 24 over ±72 — audit §7), so the seams line up with
 // the CAD tape lying on top of them. It falls back to the constants when they are absent.
-const TEX_SIZE = 1024;
-const TEX_SCALE = TEX_SIZE / (2 * BB_HALF_X);
+// ⚠️ THE CANVAS EDGE IS THE TIER'S NOW (`TILE_TEX_SIZE`), so everything below takes it as an
+// argument rather than reading a module constant. 1024 is what shipped and what the Low column
+// still gets; the detailed mat needs 2048 to put a 0.405-in tooth on more than three texels.
+const TEX_SCALE_AT = (size: number): number => size / (2 * BB_HALF_X);
 
 /** world (x,y) → floor-texture canvas pixel. The canvas's row 0 is world +y (the far wall from
  * a driver standing at -y) because a `CanvasTexture`'s default `flipY` already corrects a
  * not-rotated `PlaneGeometry`'s V axis to run the same way — the same reason a ground texture
  * drawn "right side up" in 2D canvas code needs no extra flip here. */
-function toTex(x: number, y: number): [number, number] {
-  return [(x + BB_HALF_X) * TEX_SCALE, (BB_HALF_Y - y) * TEX_SCALE];
+function toTex(x: number, y: number, size: number): [number, number] {
+  const s = TEX_SCALE_AT(size);
+  return [(x + BB_HALF_X) * s, (BB_HALF_Y - y) * s];
 }
 
 /** `toTex` as the 2×3 `snapTapeGroup` reads — the same map, so the two cannot disagree. */
-const TEX_XFORM = { a: TEX_SCALE, b: 0, c: 0, d: -TEX_SCALE, e: BB_HALF_X * TEX_SCALE, f: BB_HALF_Y * TEX_SCALE };
+function texXform(size: number): { a: number; b: number; c: number; d: number; e: number; f: number } {
+  const s = TEX_SCALE_AT(size);
+  return { a: s, b: 0, c: 0, d: -s, e: BB_HALF_X * s, f: BB_HALF_Y * s };
+}
 
 /**
  * OWNER BUG 12 (2026-09-19): "the blue alliance looks too purple — are you sure that is the
@@ -197,9 +217,9 @@ const TAPE_GAFFER: Record<Alliance, string> = { red: '#e02020', blue: ALLIANCE_B
 
 /** a filled world-space rectangle on the floor texture — used for a tape STRIP, which is a
  * physical band of a stated width, not a stroked outline. */
-function fillStripTex(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string): void {
-  const [px0, py0] = toTex(Math.min(x0, x1), Math.max(y0, y1));
-  const [px1, py1] = toTex(Math.max(x0, x1), Math.min(y0, y1));
+function fillStripTex(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, color: string, size: number): void {
+  const [px0, py0] = toTex(Math.min(x0, x1), Math.max(y0, y1), size);
+  const [px1, py1] = toTex(Math.max(x0, x1), Math.min(y0, y1), size);
   ctx.fillStyle = color;
   ctx.fillRect(px0, py0, Math.max(1, px1 - px0), Math.max(1, py1 - py0));
 }
@@ -218,15 +238,15 @@ function fillStripTex(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1:
  * reads. Both renderers now draw `BB_TAPE` — the measured rectangles — so the 2D panel, this
  * fallback and the GLB's own tape geometry are one layout by construction.
  */
-function drawZoneTape(ctx: CanvasRenderingContext2D, a: Alliance): void {
+function drawZoneTape(ctx: CanvasRenderingContext2D, a: Alliance, size: number): void {
   const colour = TAPE_GAFFER[a];
   // SNAPPED TO THE TEXEL GRID AS A GROUP, AT ONE WIDTH — `snapTapeGroup` (`drawField.ts`) has the
   // why: at 7.24 texels per inch a strip's edges land mid-texel, so two 1-in tapes came out as
   // different mixes of solid and half-lit columns and read as different widths.
   const fill = (strips: readonly BbRect[], paint: readonly BbRect[]): void => {
-    const snapped = snapTapeGroup(TEX_XFORM, strips);
+    const snapped = snapTapeGroup(texXform(size), strips);
     if (!snapped) {
-      for (const s of paint) fillStripTex(ctx, s.x0, s.y0, s.x1, s.y1, colour);
+      for (const s of paint) fillStripTex(ctx, s.x0, s.y0, s.x1, s.y1, colour, size);
       return;
     }
     ctx.fillStyle = colour;
@@ -279,15 +299,41 @@ function buildSupplementalTape(): THREE.Group {
   return group;
 }
 
-function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
+/**
+ * THE MAT, PAINTED (`renderTiles.ts` carries the measurements and the tier ladder).
+ *
+ * `detail === 'tiles'` (everything but the Low column) paints the field as the 36 `am-2499` soft
+ * tiles it is: a neutral mat, a per-tile tone, and the CAD's own square castellation where two
+ * tiles meet, straight only where the mat's own perimeter edge really is straight. `'flat'` is
+ * the 1024-texel field with straight 2-px seam lines that shipped before, unchanged.
+ */
+function buildFloorTexture(withTape: boolean, detail: BbTileDetail): THREE.CanvasTexture {
+  const size = TILE_TEX_SIZE[detail];
+  const tiled = detail === 'tiles';
   const canvas = document.createElement('canvas');
-  canvas.width = TEX_SIZE;
-  canvas.height = TEX_SIZE;
+  canvas.width = size;
+  canvas.height = size;
   const ctx = canvas.getContext('2d');
   if (!ctx) return new THREE.CanvasTexture(canvas);
+  const pxPerIn = TEX_SCALE_AT(size);
 
-  ctx.fillStyle = C.COLORS.mat;
-  ctx.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
+  ctx.fillStyle = tiled ? TILE_MAT : C.COLORS.mat;
+  ctx.fillRect(0, 0, size, size);
+
+  // ── the 36 MATS, each its own tone. A real field is thirty-six pieces of foam that have taken
+  // thirty-six matches' worth of scuffing, and a single flat fill is the loudest reason the
+  // before capture reads as one painted sheet. `tileTone` is deterministic and never goes UP
+  // (see its own comment: `COLORS.tile` is a measured ceiling).
+  if (tiled) {
+    for (let iy = 0; iy < BB_TILE_SEAMS.length - 1; iy++) {
+      for (let ix = 0; ix < BB_TILE_SEAMS.length - 1; ix++) {
+        const [x0, y0] = toTex(BB_TILE_SEAMS[ix], BB_TILE_SEAMS[iy + 1], size);
+        const [x1, y1] = toTex(BB_TILE_SEAMS[ix + 1], BB_TILE_SEAMS[iy], size);
+        ctx.fillStyle = tileTone(ix, iy);
+        ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      }
+    }
+  }
 
   // tile SEAM GRID — the CAD's own seven measured seam lines per axis (`BB_TILE_SEAMS`), which is
   // exactly what the 2D renderer draws, so the painted seams agree with the CAD tape lying on top
@@ -295,18 +341,37 @@ function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
   // set's own floor extent, falling back to `C.TILE` — the same grid to about a hundredth, but
   // reached two different ways in two files, and the fallback branch drew the 24-in grid the
   // whole field-size finding is about.
-  ctx.strokeStyle = C.COLORS.tile;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (const seam of BB_TILE_SEAMS) {
-    const [px] = toTex(seam, 0);
-    ctx.moveTo(px, 0);
-    ctx.lineTo(px, TEX_SIZE);
-    const [, py] = toTex(0, seam);
-    ctx.moveTo(0, py);
-    ctx.lineTo(TEX_SIZE, py);
+  //
+  // ⚠️ THE SEAM IS NOT A STRAIGHT LINE ON THE DETAILED TIER, AND THAT IS THE REQUEST. `am-2499`
+  // interlocks with a 50 %-duty SQUARE castellation, period 2.369 in, half-amplitude 0.405 in
+  // (measured off the STEP — `renderTiles.ts`'s header), and it is the single thing that makes a
+  // floor read as tiles rather than as a grid drawn on a sheet. The seam is painted twice: a
+  // GROOVE under a thin LIP, because a seam has depth and a one-pixel line does not.
+  const strokePath = (points: readonly [number, number][]): void => {
+    ctx.beginPath();
+    points.forEach(([wx, wy], i) => {
+      const [px, py] = toTex(wx, wy, size);
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+  };
+  const paths = tileSeamPaths(detail);
+  if (tiled) {
+    // the CAD's ~0.14-in broken corner arrives as the round join, not as modelled fillet arcs
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'butt';
+    ctx.strokeStyle = TILE_GROOVE;
+    ctx.lineWidth = TILE_GROOVE_W * pxPerIn;
+    for (const p of paths) strokePath(p.points);
+    ctx.strokeStyle = TILE_LINE;
+    ctx.lineWidth = TILE_LINE_W * pxPerIn;
+    for (const p of paths) strokePath(p.points);
+  } else {
+    ctx.strokeStyle = C.COLORS.tile;
+    ctx.lineWidth = 2;
+    for (const p of paths) strokePath(p.points);
   }
-  ctx.stroke();
 
   // ⚠️ NO CENTRE MARK — the 2D renderer's reasoning, and the same removal (owner, 2026-09-19).
   // Event Field Guide V1.0 §8 tapes the LOADING ZONES, the GARDENS and the ALLIANCE AREAS and
@@ -314,7 +379,7 @@ function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
   // so the origin is bare tile under the HIVE. Both floor texture paths therefore paint the
   // seam grid and the tape, full stop; this was a white cross at tape width on both.
 
-  if (withTape) for (const a of ALLIANCES) drawZoneTape(ctx, a);
+  if (withTape) for (const a of ALLIANCES) drawZoneTape(ctx, a, size);
   // (the garden's corner patch is painted with its band above; the CAD path gets it as geometry,
   // beside the GLB's own real tape — a painted copy under real strips would double every line)
 
@@ -326,9 +391,23 @@ function buildFloorTexture(withTape: boolean): THREE.CanvasTexture {
 
 /** `withTape` is false on the CAD path — the tape is real geometry there (the GLB's own `tape`
  * node), and painting a second copy under it would double every line. */
-function buildFloor(withTape: boolean): THREE.Mesh {
+function buildFloor(withTape: boolean, detail: BbTileDetail): THREE.Mesh {
   const geo = new THREE.PlaneGeometry(2 * BB_HALF_X, 2 * BB_HALF_Y);
-  const material = new THREE.MeshStandardMaterial({ map: buildFloorTexture(withTape) });
+  // ⚠️ NO `color` HERE, EVER. `MeshStandardMaterial` MULTIPLIES `color` by `map`, so a tone
+  // passed as both comes out squared and near black — the venue's ground shipped exactly that
+  // bug once. The albedo is the canvas and the canvas alone; the grain below is relief and
+  // sheen, on two map slots that carry no colour at all and have their OWN UV transform (three
+  // r151+), which is how a 2.37-in tooth and a fine foam speckle can tile at different pitches
+  // off one plane.
+  const material = new THREE.MeshStandardMaterial({ map: buildFloorTexture(withTape, detail) });
+  const grain = buildTileGrain(detail);
+  if (grain) {
+    material.normalMap = grain.normalMap;
+    material.normalScale = new THREE.Vector2(TILE_GRAIN_NORMAL_SCALE, TILE_GRAIN_NORMAL_SCALE);
+    material.roughnessMap = grain.roughnessMap;
+    material.roughness = 1; // foam is matte; the map only MULTIPLIES this down
+    material.metalness = 0;
+  }
   const mesh = new THREE.Mesh(geo, material);
   mesh.name = 'floor';
   // a HAIR below z = 0. The CAD tape sits at z 0.000–0.010 and the GLB tile slab's top face is
@@ -780,11 +859,11 @@ export interface BbFieldHandles {
  * (`renderScene.ts`, `updateBiobuzzField`) reaches into this function's internals, only ever the
  * returned handles.
  */
-function buildBiobuzzFieldConstants(): BbFieldHandles {
+function buildBiobuzzFieldConstants(detail: BbTileDetail): BbFieldHandles {
   const group = new THREE.Group();
   group.name = 'bb-field';
 
-  const floor = buildFloor(true);
+  const floor = buildFloor(true, detail);
   const walls = buildWalls();
   group.add(floor, walls, buildCrossbar());
 
@@ -833,7 +912,7 @@ function buildBiobuzzFieldConstants(): BbFieldHandles {
  * pair rather than the CAD grey, because the HUD contrast ratios (`npm run contrast`) are tuned
  * against those two tokens.
  */
-function glbFieldToHandles(fg: FieldGroups): BbFieldHandles {
+function glbFieldToHandles(fg: FieldGroups, detail: BbTileDetail): BbFieldHandles {
   const group = fg.root;
   group.name = 'bb-field';
 
@@ -841,7 +920,7 @@ function glbFieldToHandles(fg: FieldGroups): BbFieldHandles {
   // object with nothing missing) and use the procedural seam-grid plane instead — see the header.
   // The TAPE node is left visible: it is the real thing.
   fg.floor.visible = false;
-  const floor = buildFloor(false);
+  const floor = buildFloor(false, detail);
   group.add(floor);
 
   // the GLB's tape is the real thing; the ONE strip the CAD does not carry is added beside it.
@@ -903,13 +982,18 @@ function glbFieldToHandles(fg: FieldGroups): BbFieldHandles {
  * (`SceneQuality.meshDetail`, `renderScene.ts`); it does nothing on the constants fallback.
  */
 export async function buildBiobuzzField(quality: 'high' | 'low' = 'high'): Promise<BbFieldHandles> {
+  // ONE ARGUMENT, TWO JOBS, and neither is a new setting: `quality` is `GraphicsSettings.
+  // meshDetail`, which picks the GLB's LOD *and* (through `bbTileDetail`) whether the mat is
+  // painted as the 36 measured soft tiles or as the flat 1024-texel grid the Low column keeps.
+  // `renderTiles.ts`'s `bbTileDetail` carries why that is the right dial to read here.
+  const detail = bbTileDetail(quality);
   try {
     const fg = await loadFieldGlb('models/biobuzz', quality);
-    return glbFieldToHandles(fg);
+    return glbFieldToHandles(fg, detail);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('BIOBUZZ 3D field: CAD field.glb failed to load; falling back to the constants-built field.', err);
-    return buildBiobuzzFieldConstants();
+    return buildBiobuzzFieldConstants(detail);
   }
 }
 

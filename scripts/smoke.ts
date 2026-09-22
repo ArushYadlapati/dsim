@@ -242,6 +242,15 @@ import {
   syncKeyInGame,
   syncPadInGame,
 } from '../src/input/bindings';
+import {
+  TOUCH_OTHER_ACTIONS,
+  allTouchButtons,
+  packTouchControls,
+  touchButtonsFor,
+  touchCoverageGaps,
+  visibleTouchButtons,
+} from '../src/ui/mobileActions';
+import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
 import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
 import {
   awardBadgeRank,
@@ -24553,7 +24562,7 @@ const dumperSetup = (): RobotSetup => {
   check('padnav: a refused character still RELEASES caps, so it cannot stick armed forever', armed.value === 'abc' && armed.caps === false);
   check('padnav: `set` truncates to the cap', oskReduce(oskInit(''), { t: 'set', value: 'abcdef' }, 4).value === 'abcd');
 }
-
+
 // ---- SEASON AWARD TITLES: the sentence, and the one word that is not relative ----
 // `src/awards.ts` turns an award row into words. The server owns the KEY (`awardTitleId`)
 // and the rows; this is the half a designer rewrites, which is exactly why the sentence is
@@ -24677,6 +24686,201 @@ const dumperSetup = (): RobotSetup => {
     awardTitleText(row({ game: 'biobuzz' })).startsWith('BIOBUZZ'),
     awardTitleText(row({ game: 'biobuzz' })),
   );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// THE TOUCH PAD — its button set is DERIVED from `ACTION_GAMES`, and this block is
+// what makes that true rather than aspirational. Four BIOBUZZ actions shipped with a
+// keybind, a pad button and nothing at all on a phone, because a hand-written list of
+// mobile buttons cannot fail; a coverage check can.
+// ──────────────────────────────────────────────────────────────────────────────
+{
+  const bbSpec = coerceSpec(DEFAULT_SPEC, DEFAULT_SPEC, 'biobuzz');
+  const mech = (
+    launcher: 'turret' | 'twinturret' | 'dumper',
+    lift: boolean,
+    intake: 'sweeper' | 'ramp',
+  ): RobotSpec => ({
+    ...bbSpec,
+    bbMech: {
+      launcher: { kind: launcher, mount: 'center' },
+      lift: lift ? { kind: 'vslide', mount: 'front' } : null,
+      intake: { kind: intake, mount: 'front' },
+    },
+  }) as RobotSpec;
+  const ctx = (spec: RobotSpec) => ({ spec, autoIntake: false, autoFire: false });
+
+  for (const g of GAME_IDS) {
+    check(
+      `⚠️ touch: every action ${g} uses is reachable on a touch screen (button, stick or chrome)`,
+      touchCoverageGaps(g).length === 0,
+      touchCoverageGaps(g).join(', '),
+    );
+    check(
+      `touch: ${g} offers no button for an action it does not use`,
+      touchButtonsFor(g).every((b) => actionUsedBy(b.action, g)),
+      touchButtonsFor(g).filter((b) => !actionUsedBy(b.action, g)).map((b) => b.action).join(', '),
+    );
+    const acts = touchButtonsFor(g).map((b) => b.action);
+    check(`touch: ${g} draws one button per action`, new Set(acts).size === acts.length, acts.join(', '));
+  }
+
+  // the per-game SETS, spelled out — the coverage check above says nothing is missing, and
+  // these say what each season's driver actually gets
+  check(
+    'touch: DECODE is shoot, intake and the three utilities',
+    touchButtonsFor('decode').map((b) => b.action).join(',') === 'fire,intake,flipFront,driveMode,park',
+    touchButtonsFor('decode').map((b) => b.action).join(','),
+  );
+  check(
+    'touch: Chain Reaction adds the catalyst and the catapult throw',
+    touchButtonsFor('chain').map((b) => b.action).join(',') === 'fire,intake,catalyst,fling,flipFront,driveMode,park',
+    touchButtonsFor('chain').map((b) => b.action).join(','),
+  );
+  check(
+    '⚠️ touch: BIOBUZZ reaches both places, the pass, the ramp and the human player',
+    touchButtonsFor('biobuzz').map((b) => b.action).join(',') ===
+      'fire,intake,bbPlace,bbPlaceNectar,bbPass,bbRamp,bbNectar,flipFront,driveMode,park',
+    touchButtonsFor('biobuzz').map((b) => b.action).join(','),
+  );
+
+  // `TOUCH_OTHER_ACTIONS` is a signed statement, not a dumping ground: everything in it has
+  // to be a real action, or an action could be excused by a typo.
+  check(
+    'touch: every excused action is a real KeyAction',
+    Object.keys(TOUCH_OTHER_ACTIONS).every((a) => (KEY_ACTIONS as string[]).includes(a)),
+  );
+  check(
+    'touch: no action is both excused and given a button',
+    allTouchButtons().every((b) => TOUCH_OTHER_ACTIONS[b.action] === undefined),
+  );
+  check(
+    'touch: every button holds a command bit or pulses an edge, never neither',
+    allTouchButtons().every((b) => (b.hold === undefined) !== (b.tap === undefined)),
+  );
+  check(
+    'touch: at most one primary button per game',
+    GAME_IDS.every((g) => touchButtonsFor(g).filter((b) => b.primary).length <= 1),
+  );
+
+  // ── PRESENCE: a button for a mechanism this build does not have is never drawn ──
+  const claw = { ...DEFAULT_SPEC, catalystType: 'arm' } as RobotSpec;
+  const launcher = { ...DEFAULT_SPEC, catalystType: 'launcher' } as RobotSpec;
+  const has = (g: 'decode' | 'chain' | 'biobuzz', spec: RobotSpec, a: string): boolean =>
+    visibleTouchButtons(g, ctx(spec)).some((b) => b.action === a);
+  check('touch: a claw-only Chain build gets no THROW button', !has('chain', claw, 'fling'));
+  check('touch: a catapult build does', has('chain', launcher, 'fling'));
+  check(
+    'touch: WHEELS is butterfly-only, in every game',
+    !has('decode', DEFAULT_SPEC as RobotSpec, 'driveMode') &&
+      has('decode', { ...DEFAULT_SPEC, drivetrain: 'butterfly' } as RobotSpec, 'driveMode'),
+  );
+  {
+    const noTube = mech('turret', false, 'sweeper');
+    const tube = mech('turret', true, 'sweeper');
+    const twin = mech('twinturret', true, 'sweeper');
+    const dumper = mech('dumper', true, 'sweeper');
+    const ramp = mech('turret', true, 'ramp');
+    check('touch: no Box Tube ⇒ neither place button', !has('biobuzz', noTube, 'bbPlace') && !has('biobuzz', noTube, 'bbPlaceNectar'));
+    check('touch: a Box Tube places POLLEN', has('biobuzz', tube, 'bbPlace'));
+    check(
+      '⚠️ touch: place-NECTAR needs a launcher that can CARRY nectar, not just the tube',
+      !has('biobuzz', tube, 'bbPlaceNectar') && has('biobuzz', twin, 'bbPlaceNectar'),
+    );
+    check(
+      'touch: PASS is turreted-only (a dumper fires along a line and cannot aim at a point)',
+      has('biobuzz', tube, 'bbPass') && !has('biobuzz', dumper, 'bbPass'),
+    );
+    check('touch: RAMP only on the ramp intake', !has('biobuzz', tube, 'bbRamp') && has('biobuzz', ramp, 'bbRamp'));
+    check('touch: the human player button is on every BIOBUZZ build', has('biobuzz', noTube, 'bbNectar'));
+  }
+
+  // ⚠️ AN ASSISTED ACTION IS GHOSTED, NOT REMOVED. Hiding them is what left a default DECODE
+  // phone with no action buttons at all: auto intake and auto fire are both on by default and
+  // they were the only two the pad had.
+  {
+    const assisted = visibleTouchButtons('decode', { spec: DEFAULT_SPEC as RobotSpec, autoIntake: true, autoFire: true });
+    check(
+      '⚠️ touch: auto intake + auto fire still draw their buttons (ghosted), so the pad is never empty',
+      assisted.some((b) => b.action === 'fire') && assisted.some((b) => b.action === 'intake'),
+    );
+    check(
+      'touch: and they report themselves as automatic',
+      assisted
+        .filter((b) => b.action === 'fire' || b.action === 'intake')
+        .every((b) => b.auto?.({ spec: DEFAULT_SPEC as RobotSpec, autoIntake: true, autoFire: true }) === true),
+    );
+  }
+
+  // ── ARRANGEMENT: on screen, no overlaps, in BOTH orientations ──
+  // The shipped default stored SHOOT and INTAKE 0.16 apart in x, which is 60px of a portrait
+  // phone — closer than their radii — and put the DRIVE base's left edge off the screen. The
+  // pad packs itself against the live viewport now, so both are structural rather than tuned.
+  {
+    const views = [
+      { name: 'portrait 375x812', w: 375, h: 812 },
+      { name: 'landscape 740x360', w: 740, h: 360 },
+      { name: 'tablet 1024x768', w: 1024, h: 768 },
+    ];
+    for (const vp of views) {
+      for (const g of GAME_IDS) {
+        const spec = g === 'biobuzz' ? mech('twinturret', true, 'ramp') : ({ ...DEFAULT_SPEC, drivetrain: 'butterfly', catalystType: 'launcher' } as RobotSpec);
+        const packed = packTouchControls(visibleTouchButtons(g, ctx(spec)), DEFAULT_MOBILE_LAYOUT, vp);
+        const all = [packed.drive, packed.turn, ...packed.buttons];
+        check(
+          `touch: ${g} · ${vp.name} — every control is fully on screen`,
+          all.every((c) => c.x - c.size / 2 >= 0 && c.x + c.size / 2 <= vp.w && c.y - c.size / 2 >= 0 && c.y + c.size / 2 <= vp.h),
+          all.filter((c) => c.x - c.size / 2 < 0 || c.x + c.size / 2 > vp.w || c.y - c.size / 2 < 0 || c.y + c.size / 2 > vp.h).length + ' off',
+        );
+        let clash = 0;
+        for (let i = 0; i < all.length; i++) {
+          for (let j = i + 1; j < all.length; j++) {
+            if (Math.hypot(all[i].x - all[j].x, all[i].y - all[j].y) < (all[i].size + all[j].size) / 2) clash++;
+          }
+        }
+        check(`⚠️ touch: ${g} · ${vp.name} — no two controls overlap`, clash === 0, `${clash} overlapping pairs`);
+        // the top-left block is MENU / RESET / the sponsor mark, measured at 212×102; the
+        // top-right is the status chip row. A button landing on either is a control the
+        // driver cannot press, which is how the connection chip lost its clicks for months.
+        check(
+          `touch: ${g} · ${vp.name} — no button lands on the top-left MENU stack`,
+          packed.buttons.every((c) => c.x - c.size / 2 > 218 || c.y - c.size / 2 > 108),
+        );
+        check(
+          `touch: ${g} · ${vp.name} — none lands on the top-right status chips`,
+          packed.buttons.every((c) => c.x + c.size / 2 < vp.w - 218 || c.y - c.size / 2 > 64),
+        );
+      }
+    }
+    // a DRAGGED control keeps exactly where the player put it; an untouched one arranges itself
+    const dragged = { ...DEFAULT_MOBILE_LAYOUT, shoot: { x: 0.4, y: 0.6 } };
+    const out = packTouchControls(visibleTouchButtons('decode', ctx(DEFAULT_SPEC as RobotSpec)), dragged, { w: 400, h: 800 });
+    const shoot = out.buttons.find((b) => b.button.action === 'fire')!;
+    check(
+      '⚠️ touch: a stored position is honoured the moment it differs from the default, and only then',
+      shoot.stored && Math.abs(shoot.x - 160) < 1 && Math.abs(shoot.y - 480) < 1,
+      `${shoot.x},${shoot.y},stored=${shoot.stored}`,
+    );
+    check(
+      'touch: the untouched sticks still arrange themselves around it',
+      !out.buttons.filter((b) => b.button.action !== 'fire').some((b) => b.stored),
+    );
+    // determinism: the arrangement is a pure function, so a re-render cannot move a button
+    const a = packTouchControls(visibleTouchButtons('biobuzz', ctx(mech('twinturret', true, 'ramp'))), DEFAULT_MOBILE_LAYOUT, { w: 375, h: 812 });
+    const b2 = packTouchControls(visibleTouchButtons('biobuzz', ctx(mech('twinturret', true, 'ramp'))), DEFAULT_MOBILE_LAYOUT, { w: 375, h: 812 });
+    check('touch: the arrangement is deterministic', JSON.stringify(a) === JSON.stringify(b2));
+  }
+
+  // the smallest layout scale the settings allow must still leave a finger-sized target
+  {
+    const small = { ...DEFAULT_MOBILE_LAYOUT, scale: 0.7 };
+    const packed = packTouchControls(visibleTouchButtons('biobuzz', ctx(mech('twinturret', true, 'ramp'))), small, { w: 375, h: 812 });
+    check(
+      '⚠️ touch: at the smallest layout scale every button is still at least 44px',
+      packed.buttons.every((c) => c.size >= 44),
+      String(Math.min(...packed.buttons.map((c) => c.size))),
+    );
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

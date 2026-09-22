@@ -795,8 +795,21 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       // ---- callback ----
       const code = url.searchParams.get('code');
       const state = url.searchParams.get('state');
+      /**
+       * ⚠️ **THE CALLBACK LANDS ON THE GAME SERVER, WHICH DOES NOT SERVE THE APP**, so a
+       * relative `/account` 302 is a 404 on every real deploy. Fly runs this process alone;
+       * the SPA is on Vercel at a different origin, and the only path that serves the client
+       * from here is the LAN self-host (`SERVE_CLIENT`).
+       *
+       * So the bounce goes to `APP_ORIGIN` when it is set, and stays relative when it is not
+       * — which is right for the LAN case and for `npm run dev`, where the two ARE the same
+       * origin. It is an env var rather than something the client hands to `/start`: the
+       * client could name any origin, and a server that redirects wherever it is told is an
+       * open redirect whatever else is signed around it.
+       */
+      const appOrigin = (process.env.APP_ORIGIN ?? '').replace(/\/$/, '');
       const back = (q: string): true => {
-        res.writeHead(302, { location: `/account?link=${q}`, 'cache-control': 'no-store' });
+        res.writeHead(302, { location: `${appOrigin}/account?link=${q}`, 'cache-control': 'no-store' });
         res.end();
         return true;
       };

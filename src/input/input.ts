@@ -60,8 +60,39 @@ export class InputManager {
     this.applyPreventKeys();
   }
 
+  /**
+   * THE FOUR EDGE ACTIONS a virtual control can fire. Flip, park, start and restart are not
+   * command bits — they are edges the CONTROLLER reads off this manager once per frame — so
+   * `setVirtualInput` cannot express them, and until this existed a touch driver could not
+   * flip the front or park at all. `flipFront` and `park` are the two the touch pad draws;
+   * `start` and `restart` are on-screen chrome already (the pre-match overlay and RESET), and
+   * they are here so nothing has to grow a second mechanism if that ever changes.
+   *
+   * ⚠️ A TAP IS A LATCH, NOT A FRAME. `poll()` runs once per animation frame and CONSUMES it,
+   * so a touch that lands between two frames still counts exactly once — the same reason the
+   * pad's chord resolver holds a tap for `PAD_TAP_HOLD_MS` rather than one frame.
+   */
+  private virtualTaps: Record<'flipFront' | 'park' | 'start' | 'restart', boolean> = {
+    flipFront: false,
+    park: false,
+    start: false,
+    restart: false,
+  };
+
   setVirtualInput(update: Partial<VirtualInput>): void {
     Object.assign(this.virtualState, update);
+  }
+
+  /** fire one edge action from a virtual control (the touch pad's tap buttons) */
+  pressVirtual(action: 'flipFront' | 'park' | 'start' | 'restart'): void {
+    this.virtualTaps[action] = true;
+  }
+
+  /** read and clear one latch — `poll()`'s consumer, never called anywhere else */
+  private takeTap(action: 'flipFront' | 'park' | 'start' | 'restart'): boolean {
+    const had = this.virtualTaps[action];
+    this.virtualTaps[action] = false;
+    return had;
   }
 
   setBindings(bindings: ControlBindings): void {
@@ -127,10 +158,16 @@ export class InputManager {
     const kLeft = (heldAny(keys.driveUp) ? 1 : 0) - (heldAny(keys.driveDown) ? 1 : 0);
     const kRight = (heldAny(keys.tankRightUp) ? 1 : 0) - (heldAny(keys.tankRightDown) ? 1 : 0);
 
-    this.startPressed = pressedAny(keys.start) || g.start;
-    this.restartPressed = pressedAny(keys.restart) || g.restart;
-    this.flipPressed = pressedAny(keys.flipFront) || g.flipFront;
-    this.parkPressed = pressedAny(keys.park) || g.park;
+    // the virtual latch is read LAST and unconditionally, so a `||` short-circuit can never
+    // leave one set to be spent on a later frame
+    const vStart = this.takeTap('start');
+    const vRestart = this.takeTap('restart');
+    const vFlip = this.takeTap('flipFront');
+    const vPark = this.takeTap('park');
+    this.startPressed = pressedAny(keys.start) || g.start || vStart;
+    this.restartPressed = pressedAny(keys.restart) || g.restart || vRestart;
+    this.flipPressed = pressedAny(keys.flipFront) || g.flipFront || vFlip;
+    this.parkPressed = pressedAny(keys.park) || g.park || vPark;
 
     const cmd: RobotCommand = {
       driveX: clamp(kx + g.driveX + this.virtualState.driveX, -1, 1),
