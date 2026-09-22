@@ -1088,30 +1088,22 @@ function Hud({
                   </div>
                 </div>
               )}
-              {/* NO CR CHIPS HERE. `ChainHudChips` (`GameChips`, above) already draws the
-                  mult/catalysts/hold state as dots and icons; the endgame status gets its own
-                  THIRD card below. FOULS and WAITING moved to the event log's pinned lines
-                  (`GamePinnedNotice`/`eventlog-pinned`, below) — a call to action, not a
-                  standing fact, same reasoning as BIOBUZZ's PIN/CONTROL 5+. */}
-              <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
-              {hud.net?.server && (
-                <span className="chip on">🌐 {hud.net.server}</span>
-              )}
-              {/* who is watching. Shown only when somebody IS: a standing "0 watching"
-                  is noise on an already-busy chip row, and the moment worth surfacing
-                  is the one where the number stops being zero. */}
-              {hud.spectators > 0 && (
-                <span
-                  className="chip on"
-                  title={`${hud.spectators} ${hud.spectators === 1 ? 'person is' : 'people are'} watching this match live`}
-                >
-                  👁 {hud.spectators}
-                </span>
-              )}
-              {/* the one connection fact left on this row: a link that has gone actively
-                  WRONG, not just a measurement — ping/jitter/Hz live on the performance
-                  read-out below instead (see the note at the top of this file). */}
-              {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
+              {/* ⚠️ NOTHING ELSE GOES IN THIS CARD. It is the GAME's card — a column of dots,
+                  a gauge, a lever — and every text/emoji chip that used to sit beside them was
+                  relocated by the owner's own pass over this corner (`HUD-RELOCATION.md`, which
+                  names a destination per chip):
+                    · 🌐 server, SPEC <n>, ⚠ DESYNC → the bottom-right `.net-corner`, below;
+                    · WAITING · <name>, FOULS, PIN / CONTROL 5+ → pinned lines in the event log
+                      (`GamePinnedNotice` / `eventlog-pinned`), because each is a call to action
+                      rather than a standing fact;
+                    · REVERSED / butterfly / card → the icon-only `.sub-hud` under this card;
+                    · Chain Reaction's mult/catalyst/hold state → `ChainHudChips` (`GameChips`
+                      above), its ASCENDED/PARKED status → the `.park-status` card below;
+                    · 🎮 gamepad → nowhere. A pad that is plugged in says so by driving the
+                      robot, and one that is not is a menu problem, not a match one.
+                  A chip added back here also widens `[data-hud-band]` (it is on the row), and a
+                  band that changes width mid-match re-frames the 3D field — measured at 1440px:
+                  one spectator chip took the band from 83px to 227px in BIOBUZZ. */}
             </div>
           </div>
           {/* a SECOND card, below the first — icon-only rows for state that's active only
@@ -1166,6 +1158,47 @@ function Hud({
           {hud.prediction && (
             <PredictionPanel stats={hud.prediction} onPick={setPredictionPref} />
           )}
+        </div>
+      )}
+
+      {/* THE BOTTOM-RIGHT NET CLUSTER — who is WATCHING, and WHERE the match is hosted. Its
+          own corner, per the owner's destinations in `HUD-RELOCATION.md`: these are facts about
+          the SESSION, and parking them in the top-right card made that card grow sideways every
+          time somebody joined to watch. Same anchor idiom as `.status-wrap`, mirrored to the
+          opposite corner and edge.
+
+          NO `data-hud-band`. The cluster's width follows the spectator count and the region
+          name, and a band's box is what the 3D camera fits the field around — a band that
+          changes size mid-match moves the field under the driver (`.breakdown-row`'s note
+          records the measurement). It takes the 3D scrim by name instead, exactly like
+          `.status-wrap` does (`.game-root.view-3d .net-corner` in styles.css).
+
+          The connection READ-OUT is not here: ping, jitter and snapshot rate live on `PerfHud`
+          with the frame rate (see the note at the top of this file). Only DESYNC stayed a chip,
+          because a link that has gone actively wrong is a state, not a measurement. */}
+      {/* gated on the three things inside it, not on `hud.net` alone: main could gate on the
+          connection because the connection chip was always in here to fill the cluster, and
+          that chip is on `PerfHud` now — a bare `hud.net` would mount an empty corner. */}
+      {!coarsePointer && (hud.spectators > 0 || !!hud.net?.desync || !!hud.net?.server) && (
+        <div className="net-corner">
+          <div className="net-corner-row">
+            {/* who is watching. Shown only when somebody IS: a standing "0 watching" is
+                noise, and the moment worth surfacing is the one where it stops being zero. */}
+            {hud.spectators > 0 && (
+              <span
+                className="chip on"
+                title={`${hud.spectators} ${hud.spectators === 1 ? 'person is' : 'people are'} watching this match live`}
+              >
+                SPEC {hud.spectators}
+              </span>
+            )}
+            {hud.net?.desync && (
+              <span className="chip desync" role="status">
+                ⚠ DESYNC
+              </span>
+            )}
+            {hud.net?.server && <span className="chip on">🌐 {hud.net.server}</span>}
+          </div>
         </div>
       )}
 

@@ -222,11 +222,13 @@ button {
    against BOTH the card and the field, and it is light enough in either theme to
    separate a dark card from a bright 3D background.
    --------------------------------------------------------------------------- */
-/* `.status-wrap` is named as well as the bands: `data-hud-band` sits on the CHIP ROW inside it
-   (see GameView), so the read-out and the prediction panel stacked under the chips would
-   otherwise be the two things in this corner without the scrim. */
+/* `.status-wrap` and `.net-corner` are named as well as the bands. `data-hud-band` sits on the
+   CHIP ROW inside `.status-wrap` (see GameView), so the read-out and the prediction panel
+   stacked under the chips would otherwise go without the scrim; `.net-corner` carries no band
+   at all, on purpose, because its width follows the spectator count. */
 .game-root.view-3d [data-hud-band],
-.game-root.view-3d .status-wrap {
+.game-root.view-3d .status-wrap,
+.game-root.view-3d .net-corner {
   --ds-hud: rgba(14, 18, 22, 0.82);
   --ds-hud-soft: rgba(14, 18, 22, 0.7);
   --text: var(--ds-on-field);
@@ -560,6 +562,26 @@ button {
      block below already caps and wraps this row on a phone; this is the same rule for the
      desktop, where nobody had yet built a row long enough to need it. */
   max-width: 50%;
+}
+
+/* the bottom-right net cluster (spectators / desync / server region) — same anchor idiom as
+   `.status-wrap` above, mirrored to the opposite corner and edge. `bottom` rather than `top`
+   so the box grows UPWARD if a row is ever added under it, instead of running off the screen.
+   Carries no `data-hud-band` and says why in `GameView`. */
+.net-corner {
+  position: absolute;
+  bottom: 12px;
+  right: max(12px, env(safe-area-inset-right));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.net-corner-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* ===========================================================================
