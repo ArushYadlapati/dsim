@@ -32,11 +32,32 @@ neutral that holds. The seam LIP is the tighter cap of the two (`#565656` read 3
 missed it. Both are pinned in `contrast.mjs`. **`COLORS.mat`/`COLORS.tile` are UNTOUCHED** —
 those are the 2D board for all three games and repainting DECODE's was never the ask.
 
-⚠️ **THE REWARDS SECRETS ARE NOT SET YET, AND ONE COMMAND IS WAITING ON THE OWNER.** The
-values are in `D:/Projects/2ddecodesim/.env` (owner put them there 2026-09-21); writing them
-to Fly was refused by this session's tool policy, so it is in the owner's hands. The exact
-command is in the message that ends this session and in `.env.example`, which now documents
-the whole set. Two things about it that are not obvious:
+**THE REWARDS SECRETS ARE SET ON `dsim-alpha`** — nine of them, from the owner's
+`D:/Projects/2ddecodesim/.env`, mapped onto the names the server actually reads
+(`*_OAUTH_ID` → `*_OAUTH_CLIENT_ID`). What is verified against the REAL providers, and what
+is not:
+
+| | |
+|---|---|
+| Discord bot reads the guild | ✓ 200, **422 members**, 0 boosting — so the SERVER MEMBERS intent is ON |
+| GitHub OAuth client id + secret | ✓ a bogus code at the token endpoint returns `bad_verification_code`, not `incorrect_client_credentials` and not `redirect_uri_mismatch` |
+| Discord OAuth client id + secret | ✓ same probe returns `invalid_grant`, not `invalid_client` |
+| Discord redirect URI registered | **UNVERIFIED** — Discord validates it client-side in a SPA and does not check it before the code, so neither probe reaches it |
+| the browser round trip | **UNVERIFIED** — it needs a person to sign in and click through |
+| the star sweep | **OFF.** See below. |
+
+⚠️ **`GITHUB_TOKEN` IS REQUIRED AND IS NOT SET.** Found by calling the API once the rest was
+in place. MEASURED anonymously from a clean rate-limit budget on a repo that is genuinely
+public (`GET /repos/genius0412/dsim` → 200, `"private": false`): the stargazers endpoint answers
+**401 Requires authentication**, and 200 with any credential. `stargazers.ts` had said the
+opposite — optional, buys rate limit alone. The defect was not the 401 but how quiet it is:
+every layer below `fetchStargazers` refuses to act on a list it cannot trust, so an
+unauthenticated deploy sweeps hourly, logs one generic line, and is indistinguishable from a
+repo nobody has starred. It now refuses BEFORE the request, names the variable, warns at BOOT
+rather than an hour later (confirmed in the deployed log), and three `dbtest` checks pin it.
+The token needs NO SCOPES; a personal CLI token must not be reused here.
+
+Two more things that are not obvious:
 
 - **The provider callback is registered on the GAME SERVER, not the site.** Vercel serves the
   SPA and proxies nothing to Fly, so it is `https://dsim-alpha.fly.dev/api/link/<p>/callback`.
