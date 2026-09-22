@@ -132,7 +132,6 @@ export function PracticeReplays({
       <div className="ds-panel-h">
         <span className="ds-panel-title">Practice replays</span>
       </div>
-
       {loading && rows.length === 0 ? (
         <div className="ds-loading">Loading…</div>
       ) : rows.length === 0 ? (

@@ -86,13 +86,22 @@ interface Props {
   /** the Discord Activity group (instance id) to tag a created room with, so it
    * appears in this activity's lobby browser. '' / undefined ⇒ untagged. */
   group?: string;
+  /**
+   * A name typed on a screen BEFORE this one (the LAN Play entry card), handed over the
+   * same one-shot way `autoJoin` is. Checked ahead of the ordinary `displayName ??
+   * settings.spec.teamName` default so it actually takes — writing it into
+   * `settings.spec.teamName` instead would silently lose to a signed-in `displayName`.
+   */
+  initialName?: string;
 }
 
 type Phase = 'entry' | 'connecting' | 'room' | 'error';
 
 /** The lobby is a full-screen surface, so it cannot use AppShell's side panel.
- * Keep the actual room UI and the shared FriendsPanel as siblings here instead. */
-function RoomFriendsLayout({
+ * Keep the actual room UI and the shared FriendsPanel as siblings here instead.
+ * Exported: `LanPanel` bypasses AppShell the same way and reuses this exact wrapper
+ * rather than duplicating it. */
+export function RoomFriendsLayout({
   children,
   signedIn,
   myUserId,
@@ -151,6 +160,7 @@ export function Lobby({
   onAutoJoinConsumed,
   discordActivity = false,
   group = '',
+  initialName,
 }: Props) {
   const isRecord = config.kind === 'record';
   const capacity = roomCapacity(config);
@@ -188,7 +198,7 @@ export function Lobby({
   const [region, setRegion] = useState(autoJoinRegion || selectedServer()?.region || '');
   // the region came from an INVITE, so it is the host's and not ours to change
   const [regionLocked, setRegionLocked] = useState(!!autoJoinRegion);
-  const [name, setName] = useState((displayName ?? settings.spec.teamName) || 'Player');
+  const [name, setName] = useState(initialName || (displayName ?? settings.spec.teamName) || 'Player');
   const [players, setPlayers] = useState<LobbyPlayer[]>([]);
   const [hostId, setHostId] = useState('');
   /**

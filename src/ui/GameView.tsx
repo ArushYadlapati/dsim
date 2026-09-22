@@ -21,7 +21,6 @@ import type { NetSession } from '../net/session';
 import { clearActiveGame } from '../net/activeGame';
 import { TutorialCard } from './TutorialCard';
 import type { Replay, ReplayResult } from '../sim/replay';
-import { CHAIN_MODE_LABELS } from '../games/chain/labels';
 import { moduleFor } from '../games';
 import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
@@ -115,23 +114,22 @@ function PredictionPanel({
 }
 
 /** top-right drive power-draw gauge: how much current the flywheel spin-up + intake
- * are pulling off the drive motors right now (0 → POWER_DRAW_MAX). The bar fills
- * toward the cap and shifts green→amber→red; the number is the actual % the drive is
- * slowed at that instant. */
+ * are pulling off the drive motors right now (0 → POWER_DRAW_MAX). Bar on top (fills
+ * upward toward the cap, green→amber→red), the actual % the drive is slowed at that
+ * instant underneath — vertical to sit beside DECODE's storage+gate column. */
 function PowerGauge({ draw }: { draw: number }) {
-  const frac = Math.max(0, Math.min(1, draw / POWER_DRAW_MAX)); // 0..1 of the cap
+  const frac = Math.max(0, Math.min(1, draw)); // literal 0-100%, matches pct below
   const pct = Math.round(draw * 100); // actual drive slowdown right now
-  const cls = frac > 0.75 ? 'hot' : frac > 0.4 ? 'warm' : '';
+  const cls = draw > POWER_DRAW_MAX * 0.75 ? 'hot' : draw > POWER_DRAW_MAX * 0.4 ? 'warm' : '';
   return (
     <span
       className="power-gauge"
       title={`Drive power draw - flywheel spin-up + intake pulling current off the drive motors (${pct}% slower right now)`}
     >
-      <span className="pg-label">PWR</span>
-      <span className="pg-bar">
-        {/* the LEVEL, not a width: the fill is full-width and clipped to it, so the bar
-            animates without laying anything out — see .pg-fill */}
-        <span className={`pg-fill ${cls}`} style={{ ['--pg' as string]: String(frac) }} />
+      <span className="v-gauge">
+        {/* the LEVEL, not a height: the fill is full-size and clipped to it, so the bar
+            animates without laying anything out — see .v-gauge-fill */}
+        <span className={`v-gauge-fill ${cls}`} style={{ ['--vg' as string]: String(frac) }} />
       </span>
       <span className="pg-num">{pct}%</span>
     </span>
@@ -927,6 +925,7 @@ function Hud({
   // the ones that were already there.
   const GameScoreBar = moduleFor(hud.game).scoreBar;
   const GameChips = moduleFor(hud.game).hudChips;
+  const GamePinnedNotice = moduleFor(hud.game).pinnedNotice;
   const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
   const endgame = hud.timeLeft <= ENDGAME_START && hud.phase === 'teleop';
   const redScore = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
@@ -1053,58 +1052,45 @@ function Hud({
             <div className="robot-status">
               {GameChips && <GameChips hud={hud} />}
               {dec && (
-                <>
-                  <div className="hopper">
-                    {[0, 1, 2].map((i) => (
-                      <span key={i} className={`hopper-pip ${hud.hopper[i] ?? 'empty'}`} />
-                    ))}
+                <div className="dec-hud">
+                  <div className="dec-hud-left">
+                    <div className="hopper vertical">
+                      {[0, 1, 2].map((i) => (
+                        <span key={i} className={`hopper-pip ${hud.hopper[i] ?? 'empty'}`} />
+                      ))}
+                    </div>
+                    {/* the gate lever always renders — closed is a real, visible state, unlike
+                        the old chip that vanished entirely when the gate wasn't open */}
+                    <span
+                      className={`gate-icon${hud.gateOpen ? ' open' : ''}${hud.gateOpen && hud.gateForced ? ' forced' : ''}`}
+                      role="img"
+                      aria-label={
+                        hud.gateOpen
+                          ? hud.gateForced
+                            ? 'Gate forced open by the opponent.'
+                            : 'Gate open.'
+                          : 'Gate closed.'
+                      }
+                      title={
+                        hud.gateOpen
+                          ? hud.gateForced
+                            ? 'Gate forced open by the opponent'
+                            : 'Gate open'
+                          : 'Gate closed'
+                      }
+                    />
                   </div>
-                  <PowerGauge draw={hud.powerDraw} />
-                  {hud.gateOpen && <span className="chip on">GATE OPEN</span>}
-                </>
+                  <div className="dec-hud-right">
+                    <PowerGauge draw={hud.powerDraw} />
+                  </div>
+                </div>
               )}
-              {cr && hud.chain && (
-                <>
-                  <span className="chip">{CHAIN_MODE_LABELS[hud.chain.mode].toUpperCase()}</span>
-                  <span className="chip">HOPPER {hud.hopper.length}/{hud.chain.storage}</span>
-                  <span className={`chip ${hud.chain.mult > 1 ? 'on' : ''}`}>×{hud.chain.mult}</span>
-                  {hud.chain.carrying && <span className="chip on">◍ CARRYING CATALYST</span>}
-                  {hud.chain.ringAction === 'pickup' && <span className="chip prompt">◎ PICK UP CATALYST ▸</span>}
-                  {hud.chain.ringAction === 'place' && <span className="chip prompt">◎ PLACE CATALYST ▸</span>}
-                  {/* the catapult's throw is on its OWN key, so name it — otherwise the only
-                      discoverable action is the claw button, which just puts the ring down */}
-                  {hud.chain.ringAction === 'fling' && <span className="chip prompt">◎ THROW CATALYST ▸</span>}
-                  {hud.chain.endgame === 'ascended' && <span className="chip on">▲ ASCENDED</span>}
-                  {hud.chain.endgame === 'parked' && <span className="chip on">■ PARKED</span>}
-                </>
-              )}
-              {dec && hud.mode === 'match' &&
-                (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
-                  <span className="chip warn">
-                    FOULS {hud.fouls[hud.alliance].minor} MIN · {hud.fouls[hud.alliance].major} MAJ
-                  </span>
-                )}
-              {/* A CARD is issued to the TEAM, and a RED voids the alliance's match points —
-                  the single most consequential thing that can happen to a score, so it is not
-                  allowed to live only in the event log. */}
-              {hud.card && (
-                <span className={`chip ${hud.card === 'red' ? 'bad' : 'warn'}`}>
-                  {hud.card === 'red' ? '\u25A0 RED CARD' : '\u25A0 YELLOW CARD'}
-                </span>
-              )}
-              {hud.frontFlipped && <span className="chip warn">REVERSED</span>}
-              {/* BUTTERFLY: name the set that is DOWN. It changes handling AND whether strafe
-                  exists at all, so it can't be invisible state. */}
-              {hud.butterflyMode && (
-                <span className="chip">{hud.butterflyMode === 'tank' ? 'TRACTION' : 'MECANUM'}</span>
-              )}
+              {/* NO CR CHIPS HERE. `ChainHudChips` (`GameChips`, above) already draws the
+                  mult/catalysts/hold state as dots and icons; the endgame status gets its own
+                  THIRD card below. FOULS and WAITING moved to the event log's pinned lines
+                  (`GamePinnedNotice`/`eventlog-pinned`, below) — a call to action, not a
+                  standing fact, same reasoning as BIOBUZZ's PIN/CONTROL 5+. */}
               <span className={`chip ${hud.gamepadConnected ? 'on' : 'off'}`}>🎮</span>
-              {/* NO PEER-COUNT CHIP. "NET 2P" was a headcount, and a headcount is only news
-                  the moment it CHANGES — which is exactly what the two chips beside it already
-                  say out loud: `WAITING · <name>` when somebody is missing, `⚠ DESYNC` when the
-                  link is bad, and `NetQuality` for the link itself. A standing count of a
-                  roster the player assembled themselves is the same class of noise as the
-                  "0 watching" spectator chip that was taken out below. */}
               {hud.net?.server && (
                 <span className="chip on">🌐 {hud.net.server}</span>
               )}
@@ -1119,23 +1105,60 @@ function Hud({
                   👁 {hud.spectators}
                 </span>
               )}
-              {/* NO CONNECTION CHIP. Ping, jitter and the snapshot rate are on the
-                  performance read-out below, beside the frame rate — see the note at the top
-                  of this file. What stays on the chip row is the two things that are NOT
-                  measurements: somebody is missing, or the link has gone wrong. */}
-              {hud.net?.waitingFor && (
-                <span className="chip warn">WAITING · {hud.net.waitingFor}</span>
-              )}
+              {/* the one connection fact left on this row: a link that has gone actively
+                  WRONG, not just a measurement — ping/jitter/Hz live on the performance
+                  read-out below instead (see the note at the top of this file). */}
               {hud.net?.desync && <span className="chip off">⚠ DESYNC</span>}
             </div>
           </div>
+          {/* a SECOND card, below the first — icon-only rows for state that's active only
+              sometimes (reversed drive, a butterfly's wheel set, a card), so it appears and
+              grows downward rather than permanently reserving chip width in the row above. */}
+          {(hud.frontFlipped || hud.butterflyMode || hud.card) && (
+            <div className="sub-hud">
+              {hud.frontFlipped && (
+                <span
+                  className="reversed-icon"
+                  role="img"
+                  aria-label="Front flipped: driving reversed."
+                  title="Front flipped, driving reversed"
+                />
+              )}
+              {hud.butterflyMode && (
+                <span
+                  className={`butterfly-icon ${hud.butterflyMode}`}
+                  role="img"
+                  aria-label={`Butterfly drivetrain: ${hud.butterflyMode === 'tank' ? 'traction' : 'mecanum'} wheels down.`}
+                  title={hud.butterflyMode === 'tank' ? 'Traction wheels down' : 'Mecanum wheels down'}
+                />
+              )}
+              {hud.card && (
+                <span
+                  className={`card-icon ${hud.card}`}
+                  role="img"
+                  aria-label={`${hud.card === 'red' ? 'Red' : 'Yellow'} card issued.`}
+                  title={hud.card === 'red' ? 'Red card' : 'Yellow card'}
+                />
+              )}
+            </div>
+          )}
+          {/* a THIRD card CR's ring-stand/lab-area endgame status. Only while it's actually
+              true (`hud.chain.endgame` is already phase-gated to 'none' outside endgame by
+              the sim itself, see `chainStep`), so no default/reminder state to render.
+              Border colour matches the existing on-canvas badge over the robot
+              (`drawChain.ts`: ascended gold, parked white) see HUD-RELOCATION.md. */}
+          {cr && hud.chain && (hud.chain.endgame === 'ascended' || hud.chain.endgame === 'parked') && (
+            <div className={`park-status ${hud.chain.endgame}`}>
+              {hud.chain.endgame === 'ascended' ? 'ASCENDED' : 'PARKED'}
+            </div>
+          )}
           <PerfHud level={perfLevel} stats={perfStats} />
           {/* THE PREDICTION PICKER, whenever the setting would do something (a 3D-physics room
-              and nothing else — `hud.prediction` is null everywhere it is inert).
+              and nothing else, `hud.prediction` is null everywhere it is inert).
               It used to be behind the connection chip's click, which means it was never
               reachable: that click never landed (see the top of this file). It is a CONTROL, so
-              it is not part of the read-out above — a `pointer-events: none` card cannot hold
-              one — and it is not gated on the display level either, because hiding a control
+              it is not part of the read-out above, a `pointer-events: none` card cannot hold
+              one, and it is not gated on the display level either, because hiding a control
               behind a diagnostic's setting is the same mistake in a different place. */}
           {hud.prediction && (
             <PredictionPanel stats={hud.prediction} onPick={setPredictionPref} />
@@ -1148,6 +1171,18 @@ function Hud({
           field corner clear, and nothing here is actionable. */}
       {showEventLog && (
         <div className="eventlog" aria-live="polite">
+          {GamePinnedNotice && <GamePinnedNotice hud={hud} />}
+          {/* a call to action, not a standing fact — pinned like the per-game notices
+              above rather than parked as a chip in the HUD card. */}
+          {hud.net?.waitingFor && (
+            <div className="eventlog-line eventlog-pinned">WAITING · {hud.net.waitingFor}</div>
+          )}
+          {dec && hud.mode === 'match' &&
+            (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
+              <div className="eventlog-line eventlog-pinned">
+                FOULS {hud.fouls[hud.alliance].minor} MIN · {hud.fouls[hud.alliance].major} MAJ
+              </div>
+            )}
           {hud.toasts.map((t) => (
             <div key={t.id} className="eventlog-line">
               {t.text}

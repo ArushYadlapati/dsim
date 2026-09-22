@@ -115,10 +115,9 @@ export function HomeMenu({
       </p>
       <h1 className="ds-home-title">{APP_NAME}</h1>
 
-      {/* The APP's presenting sponsor, directly under the app's name — which is the
-          only place it can sit without being read as a claim about the SEASON. The
-          eyebrow above already says who presents the GAME (RTX presents BIOBUZZ;
-          that is FIRST's, not ours to sell), and the two are different facts. */}
+      {/* The APP's presenting sponsor, directly under the app's name. The SEASON
+          also has its own presenter (RTX presents BIOBUZZ; that is FIRST's, not
+          ours to sell) — this mark is the app's own and a different fact. */}
       <SponsorPresents />
 
       <p className="ds-home-lead">{APP_BLURB}</p>

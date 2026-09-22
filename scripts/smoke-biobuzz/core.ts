@@ -606,7 +606,12 @@ export function coreChecks(check: Check): void {
     const hudSrc = readRepo('src/games/biobuzz/HudSlots.tsx');
     check('HudSlots.tsx renders no HOPPER count chip', !hudSrc.includes('HOPPER'));
     check('HudSlots.tsx renders the held elements as hopper pips', hudSrc.includes('hopper-pip'));
-    check('HudSlots.tsx shows the FLOWER IN REACH chip', hudSrc.includes('FLOWER IN REACH'));
+    // FLOWER IN REACH is now the flower icon's RING, not its own text chip.
+    check('HudSlots.tsx draws the flower icon', hudSrc.includes('flower-icon'));
+    check(
+      '...ringed by the same flowerInReach signal FLOWER IN REACH used to read',
+      hudSrc.includes("r?.flowerInReach ? ' reach'"),
+    );
 
     /**
      * ⚠️ THERE IS NO NECTAR STOCK CHIP, AND IT MUST NOT COME BACK (owner, 2026-09-19: "get rid
@@ -637,20 +642,18 @@ export function coreChecks(check: Check): void {
     check('...and G410 keeps its own separate chip', hudSrc.includes('NECTAR LOCKED'));
 
     /**
-     * THE CUE HAS A POSITIVE SIGNAL, HELD, NOT A CHIP THAT SITS THERE FOR A MINUTE.
-     * NECTAR LOCKED used to just stop being drawn at 1:00, which is not a cue. The chip must
-     * go through `useHeldBump` (`opened`) or it becomes noise for the rest of the match, and
-     * it must reuse `chip on` — a colour token invented for one chip is a new pair for
-     * `npm run contrast` to audit.
+     * THE FLOWER ICON'S FILL IS A STANDING STATE, NOT A HELD-BUMP FLASH.
+     * "Grey before the 1:00 mark" is a standing fact for the rest of the match, unlike a G407
+     * warning, which genuinely only matters for a few seconds — so this one reads straight off
+     * `nectarLocked` instead of going through `useHeldBump`.
      */
-    check('HudSlots.tsx shows FLOWERS OPEN at the 1:00 cue', hudSrc.includes('FLOWERS OPEN'));
     check(
-      '...HELD off the match clock, not bound to the state for the rest of the match',
-      hudSrc.includes('{opened && '),
+      'the flower icon fill reads nectarLocked directly, as a standing state',
+      hudSrc.includes('f?.nectarLocked === false'),
     );
     check(
-      '...and it reuses `chip on` rather than a colour of its own',
-      hudSrc.includes('<span className="chip on">FLOWERS OPEN</span>'),
+      '...and the open class name says so',
+      hudSrc.includes("flowerOpen ? ' open'"),
     );
   }
 

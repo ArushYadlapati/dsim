@@ -74,7 +74,7 @@ export const CONTRIBUTORS: Contributor[] = [
   {
     fallbackName: 'Aadvik Gupta',
     inGameUsername: 'aadvikg_',
-    githubUrl: 'https://github.com/alarmclock011',
+    githubUrl: 'https://github.com/aadvikgg',
   },
   {
     fallbackName: 'Baron',
