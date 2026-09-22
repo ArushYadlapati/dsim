@@ -119,6 +119,16 @@ export const SEASONS: readonly Season[] = [
   },
 ] as const;
 
+/** a season's brand file as a fetchable URL, under the Vite base (the Electron build serves
+ * from `./`, where a bare `/brand/...` resolves at the filesystem root and 404s silently). */
+export function brandUrl(path: string): string {
+  // typed by hand: this file is also compiled by tsconfig.server.json, which has no Vite
+  // client types, and the server never calls this
+  const env = (import.meta as { env?: { BASE_URL?: string } }).env;
+  const base = (env?.BASE_URL ?? '/').replace(/\/+$/, '');
+  return `${base}/${path.replace(/^\/+/, '')}`.replace(/\/{2,}/g, '/');
+}
+
 /**
  * Is this season visible on a client built for `channel`?
  *
@@ -134,16 +144,6 @@ export const SEASONS: readonly Season[] = [
  * direction: a typo'd `VITE_APP_CHANNEL` hides the unannounced season rather than
  * publishing it.
  */
-/** a season's brand file as a fetchable URL, under the Vite base (the Electron build serves
- * from `./`, where a bare `/brand/...` resolves at the filesystem root and 404s silently). */
-export function brandUrl(path: string): string {
-  // typed by hand: this file is also compiled by tsconfig.server.json, which has no Vite
-  // client types, and the server never calls this
-  const env = (import.meta as { env?: { BASE_URL?: string } }).env;
-  const base = (env?.BASE_URL ?? '/').replace(/\/+$/, '');
-  return `${base}/${path.replace(/^\/+/, '')}`.replace(/\/{2,}/g, '/');
-}
-
 export function seasonVisibleOn(s: Season, channel: string): boolean {
   return !s.channels || (s.channels as readonly string[]).includes(channel);
 }
