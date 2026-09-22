@@ -97,12 +97,15 @@ export function HomeMenu({
           ours to sell) — this mark is the app's own and a different fact. */}
       <SponsorPresents />
 
-      {/* THE GAME PICKER IS THE SEASONS' OWN ARTWORK. Each tile is the publisher's lockup on a
-          fixed dark card (two of the three are white-on-transparent), the selected one edged
-          in accent. The name is repeated as text under the art so the tile still reads with
-          images off and to a screen reader; the art itself is decorative (`alt=""`). */}
+      {/* THE GAME PICKER IS A WORDMARK TAB STRIP. Each season's official horizontal wordmark,
+          in the page's ink (the black cut on the light theme, the white cut on the dark one —
+          both `<img>`s are in the DOM and the theme picks one in CSS, so there is no JS theme
+          subscription), muted when not selected, an accent rule under the one that is. No card,
+          no caption: the wordmark IS the name, and `aria-label` carries it for a reader. The
+          heights differ per brand on purpose (`Season.brand.h`): the FIRST files include a
+          "presented by" subline, so matching total height would shrink their main word. */}
       {games.length > 1 && (
-        <div className="ds-posters" role="tablist" aria-label="Game">
+        <div className="ds-wordmarks" role="tablist" aria-label="Game">
           {games.map((g) => {
             const season = seasonFor(g.id);
             const on = settings.game === g.id;
@@ -111,15 +114,31 @@ export function HomeMenu({
                 key={g.id}
                 role="tab"
                 aria-selected={on}
-                className={`ds-poster${on ? ' on' : ''}`}
+                aria-label={season.name}
+                data-brand={g.id}
+                className={`ds-wm${on ? ' on' : ''}`}
                 onClick={() => onGame(g.id)}
               >
                 {season.brand ? (
-                  <img className="ds-poster-art" src={brandUrl(season.brand.poster)} alt="" draggable={false} />
+                  <>
+                    <img
+                      className="ds-wm-light"
+                      src={brandUrl(season.brand.onLight)}
+                      alt=""
+                      draggable={false}
+                      height={season.brand.h}
+                    />
+                    <img
+                      className="ds-wm-dark"
+                      src={brandUrl(season.brand.onDark)}
+                      alt=""
+                      draggable={false}
+                      height={season.brand.h}
+                    />
+                  </>
                 ) : (
-                  <span className="ds-poster-art" />
+                  <span className="ds-wm-text">{season.name}</span>
                 )}
-                <span className="ds-poster-name">{season.name}</span>
               </button>
             );
           })}
