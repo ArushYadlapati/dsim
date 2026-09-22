@@ -124,6 +124,11 @@ export interface PadBindings {
  * Stick role, deadzone, curve, trigger threshold and the combo wait are deliberately NOT here.
  * They are how a player's hand works, not what a button means, and nobody wants a different
  * deadzone per season.
+ *
+ * ONLY AN OVERRIDABLE ACTION MAY APPEAR HERE (`actionOverridable` — Intake and Shoot today). A
+ * SHARED control has one value everywhere, and a SEASON-ONLY action's main bind is already that
+ * season's alone, so an override of either is a second store for one value. `mergePerGame`
+ * migrates both kinds out of older blobs, and every reader below ignores them.
  */
 export interface GameBindingOverride {
   keys?: Partial<Record<KeyAction, string[]>>;
@@ -227,6 +232,74 @@ export function padActionsFor(game: GameId): PadAction[] {
  */
 export function actionsConflict(a: KeyAction, b: KeyAction): boolean {
   return ACTION_GAMES[a].some((g) => actionUsedBy(b, g));
+}
+
+// ---- WHAT A SEASON SCOPE MAY CHANGE ------------------------------------------------
+// Every action is exactly one of three kinds, and the kind decides where its binds are
+// stored and which scope of the Controls screen shows it:
+//
+//   SHARED       how the robot is DRIVEN and how a MATCH is run. Main only, All games only.
+//   SEASON-ONLY  an action exactly one game uses (Catalyst, Place POLLEN…). Main only — main's
+//                bind for it already reaches that one game and no other — shown and edited
+//                in that season's scope alone.
+//   OVERRIDABLE  a mechanism more than one game has (Intake, Shoot). Main is the bind every
+//                season starts from (All games); a season may override it (`perGame`).
+//
+// ⚠️ THIS WAS NOT ALWAYS THE MODEL. `perGame` used to take an override for ANY action a game
+// used, so every season scope listed the eight drive keys, the stick sliders and the match
+// keys a second time, each with a SYNCED marker and a disabled Sync button (owner,
+// 2026-09-22: "Shared settings like drivetrain controls SHOULD BE only shown on global").
+// And a season-only action had TWO stores for the one bind it has — main and the override —
+// with nothing to tell a player which one they were editing. `mergePerGame` migrates both
+// away on load; see the notes there for what that costs and why it is safe.
+
+/**
+ * THE SHARED CONTROLS. Every game reads each of these (`ACTION_GAMES` says ALL, and `npm test`
+ * holds it to that) and they mean the same thing in every game — the drive keys, the wheel-set
+ * swap, flip front, park, start and restart. `park` belongs here because park mode is a SPEED
+ * CAP on the drive command (`GameController`, `parkSpeedPct`), a drivetrain control whatever
+ * endgame it is used for.
+ */
+export const SHARED_ACTIONS: readonly KeyAction[] = [
+  'driveUp',
+  'driveDown',
+  'tankRightUp',
+  'tankRightDown',
+  'driveLeft',
+  'driveRight',
+  'rotateCCW',
+  'rotateCW',
+  'driveMode',
+  'flipFront',
+  'park',
+  'start',
+  'restart',
+];
+const SHARED: ReadonlySet<KeyAction> = new Set(SHARED_ACTIONS);
+
+/** is `a` a shared control (the same in every season, never overridden)? */
+export function actionIsShared(a: KeyAction): boolean {
+  return SHARED.has(a);
+}
+
+/** is `a` used by exactly one game? Its main bind is then that game's bind, and nothing else's. */
+export function actionIsSeasonOnly(a: KeyAction): boolean {
+  return !SHARED.has(a) && ACTION_GAMES[a].length === 1;
+}
+
+/** may a season override `a`? Only a mechanism more than one game has — Intake and Shoot today. */
+export function actionOverridable(a: KeyAction): boolean {
+  return !SHARED.has(a) && ACTION_GAMES[a].length > 1;
+}
+
+/** what a season's scope lists: every keyboard action `game` uses that is not shared */
+export function seasonKeyActions(game: GameId): KeyAction[] {
+  return keyActionsFor(game).filter((a) => !SHARED.has(a));
+}
+
+/** the pad twin of `seasonKeyActions` */
+export function seasonPadActions(game: GameId): PadAction[] {
+  return padActionsFor(game).filter((a) => !SHARED.has(a));
 }
 
 export const KEY_ACTIONS: KeyAction[] = [
@@ -591,6 +664,28 @@ export function mergeBindings(saved: unknown): ControlBindings {
  * ids, unknown actions, and actions the game does not USE are dropped outright — an override
  * for `catalyst` under BIOBUZZ can never fire, so keeping it would only be a trap for the
  * conflict rules. Every list goes through the same validators as main and the same cap.
+ *
+ * ── THE MIGRATION (2026-09-22) — only OVERRIDABLE actions survive as overrides ─────────────
+ * Blobs written before the three kinds existed (see `SHARED_ACTIONS`) can carry an override of
+ * any action a game uses. This is where they are brought into the model, on every load, so it
+ * is idempotent and there is no version field to get wrong:
+ *
+ *  1. A SEASON-ONLY override is FOLDED INTO MAIN. Lossless: main's bind for such an action
+ *     reaches that one game and no other, so the game plays exactly what it played before, and
+ *     the player now finds that bind in the one place the screen shows it. `main` is MUTATED —
+ *     the caller hands in the map it is building.
+ *  2. A SHARED override is DROPPED — that game drives on the shared keys again. It is the one
+ *     lossy step, and the one that cannot be otherwise: a shared control has a single value by
+ *     definition, and which game's override would win is not a question with an answer. It
+ *     only ever existed on the alpha channel, for three days, and the usual way one got there
+ *     was not a choice at all: a season-scope rebind that STOLE a drive key desynced the drive
+ *     action as its victim.
+ *  3. …which is why step 2 is followed by a SCRUB of that game. The drive key the victim lost
+ *     is back on the drive action, and the action that took it would now share it — W
+ *     driving forward AND shooting. The season's own action gives it up, by the same rule as a
+ *     main edit colliding with an override: the bind the whole app shares wins. It reads as
+ *     UNBOUND in that season's scope, which is honest and one click to fix. A game that had no
+ *     shared override is not scrubbed, so an ordinary blob is untouched by any of this.
  */
 function mergePerGame(saved: unknown, main: ControlBindings): ControlBindings['perGame'] | undefined {
   if (typeof saved !== 'object' || saved === null) return undefined;
@@ -602,6 +697,7 @@ function mergePerGame(saved: unknown, main: ControlBindings): ControlBindings['p
     if (typeof raw !== 'object' || raw === null) continue;
     const r = raw as { keys?: unknown; padButtons?: unknown; padCombos?: unknown };
     const ov: GameBindingOverride = {};
+    let droppedShared = false;
 
     if (typeof r.keys === 'object' && r.keys !== null) {
       const src = r.keys as Record<string, unknown>;
@@ -610,7 +706,10 @@ function mergePerGame(saved: unknown, main: ControlBindings): ControlBindings['p
         if (!actionUsedBy(a, g)) continue;
         const v = src[a];
         if (Array.isArray(v) && v.every((k) => typeof k === 'string' && k !== 'escape')) {
-          keys[a] = (v as string[]).map((k) => k.toLowerCase()).slice(0, BIND_SLOTS_MAX);
+          const list = (v as string[]).map((k) => k.toLowerCase()).slice(0, BIND_SLOTS_MAX);
+          if (actionIsShared(a)) droppedShared = true; // step 2
+          else if (actionIsSeasonOnly(a)) main.keys[a] = list; // step 1
+          else keys[a] = list;
         }
       }
       if (Object.keys(keys).length) ov.keys = keys;
@@ -642,13 +741,23 @@ function mergePerGame(saved: unknown, main: ControlBindings): ControlBindings['p
       }
       const over = bt.length + cb.length - BIND_SLOTS_MAX;
       const keptCb = over > 0 ? cb.slice(0, Math.max(0, cb.length - over)) : cb;
-      buttons[a] = over > 0 ? bt.slice(0, BIND_SLOTS_MAX - keptCb.length) : bt;
-      combos[a] = keptCb;
+      const keptBt = over > 0 ? bt.slice(0, BIND_SLOTS_MAX - keptCb.length) : bt;
+      if (actionIsShared(a)) {
+        droppedShared = true; // step 2
+      } else if (actionIsSeasonOnly(a)) {
+        main.pad.buttons[a] = keptBt; // step 1 — the unit folds whole, singles and combos
+        main.pad.combos[a] = keptCb;
+      } else {
+        buttons[a] = keptBt;
+        combos[a] = keptCb;
+      }
     }
     if (Object.keys(buttons).length) {
       ov.padButtons = buttons;
       ov.padCombos = combos;
     }
+
+    if (droppedShared) scrubSharedFromSeason(main, ov, g); // step 3
 
     if (ov.keys || ov.padButtons) {
       out[g] = ov;
@@ -658,33 +767,63 @@ function mergePerGame(saved: unknown, main: ControlBindings): ControlBindings['p
   return any ? out : undefined;
 }
 
+/**
+ * Take every bind a SHARED action holds in `main` off `game`'s own actions — its overrides,
+ * and the main lists of its season-only actions (which reach no other game). The migration's
+ * step 3; see `mergePerGame`. Exact like every other steal: a single scrubs singles, a combo
+ * scrubs the identical combo. Lists are filtered, never deleted, so a desynced action stays
+ * desynced — as UNBOUND if it gave up its only bind.
+ */
+function scrubSharedFromSeason(main: ControlBindings, ov: GameBindingOverride, game: GameId): void {
+  const keys = new Set<string>();
+  for (const s of SHARED_ACTIONS) for (const k of main.keys[s]) keys.add(k);
+  const singles = new Set<number>();
+  const combos = new Set<string>();
+  for (const s of PAD_ACTIONS) {
+    if (!actionIsShared(s)) continue;
+    for (const i of main.pad.buttons[s]) singles.add(i);
+    for (const c of main.pad.combos[s]) combos.add(chordKey(c));
+  }
+  for (const a of seasonKeyActions(game)) {
+    const v = ov.keys?.[a];
+    if (v) ov.keys![a] = v.filter((k) => !keys.has(k));
+    else if (actionIsSeasonOnly(a)) main.keys[a] = main.keys[a].filter((k) => !keys.has(k));
+  }
+  for (const a of seasonPadActions(game)) {
+    const bt = ov.padButtons?.[a];
+    if (bt) {
+      ov.padButtons![a] = bt.filter((i) => !singles.has(i));
+      ov.padCombos![a] = (ov.padCombos?.[a] ?? []).filter((c) => !combos.has(chordKey(c)));
+    } else if (actionIsSeasonOnly(a)) {
+      main.pad.buttons[a] = main.pad.buttons[a].filter((i) => !singles.has(i));
+      main.pad.combos[a] = main.pad.combos[a].filter((c) => !combos.has(chordKey(c)));
+    }
+  }
+}
+
 // ---- THE EFFECTIVE MAP ------------------------------------------------------------
 // What a game actually plays on: main, with that game's overrides applied, and every action
 // the game does not use EMPTIED. Emptying is not cosmetic — it is what stops a Chain Reaction
 // catalyst bind firing, masking or consuming inside BIOBUZZ's chord resolver, which reads a
 // `PadBindings` and has no idea what a game is.
 
-/** is `action`'s keyboard bind desynced (overridden) in `game`? */
+/** is `action`'s keyboard bind desynced (overridden) in `game`? Never, for an action that may
+ *  not be overridden — see `actionOverridable`. */
 export function keyDesynced(b: ControlBindings, game: GameId, action: KeyAction): boolean {
-  return b.perGame?.[game]?.keys?.[action] !== undefined;
+  return actionOverridable(action) && b.perGame?.[game]?.keys?.[action] !== undefined;
 }
 
 /** is `action`'s pad bind desynced in `game`? Singles and combos are one unit, so either half
  *  being present is the answer. */
 export function padDesynced(b: ControlBindings, game: GameId, action: PadAction): boolean {
+  if (!actionOverridable(action)) return false;
   const ov = b.perGame?.[game];
   return ov?.padButtons?.[action] !== undefined || ov?.padCombos?.[action] !== undefined;
 }
 
-/** does `game` override anything at all? (what the UI's "Sync all" is offered for) */
+/** does `game` override anything at all? */
 export function gameHasOverrides(b: ControlBindings, game: GameId): boolean {
-  const ov = b.perGame?.[game];
-  if (!ov) return false;
-  return (
-    Object.keys(ov.keys ?? {}).length > 0 ||
-    Object.keys(ov.padButtons ?? {}).length > 0 ||
-    Object.keys(ov.padCombos ?? {}).length > 0
-  );
+  return KEY_ACTIONS.some((a) => keyDesynced(b, game, a)) || PAD_ACTIONS.some((a) => padDesynced(b, game, a));
 }
 
 /**
@@ -702,7 +841,7 @@ export function effectiveBindings(b: ControlBindings, game: GameId): ControlBind
       out.keys[a] = [];
       continue;
     }
-    const v = ov?.keys?.[a];
+    const v = keyDesynced(b, game, a) ? ov?.keys?.[a] : undefined;
     if (v) out.keys[a] = [...v];
   }
   for (const a of PAD_ACTIONS) {
@@ -872,17 +1011,40 @@ export function removePadBind(b: ControlBindings, action: PadAction, slot: numbe
 
 // ---- editing INSIDE ONE GAME'S SCOPE ------------------------------------------------
 // Every one of these is the SAME main-shaped editor run against the game's EFFECTIVE map, and
-// then diffed back into that game's override. Two properties fall out of doing it that way
-// rather than writing a second steal policy:
+// then diffed back. Three properties fall out of doing it that way rather than writing a second
+// steal policy:
 //
 //  · THE STEAL SCOPE IS AUTOMATICALLY RIGHT. In the effective map every action the game does
 //    not use is already empty, so `assignKey`'s filter reaches exactly the actions the game
 //    uses and nothing else. Binding X to A in game G takes X off every other action G uses.
-//  · MAIN IS NEVER TOUCHED. The edit happens on a copy; only the override is written back.
-//    A victim of the steal is DESYNCED in G to record its loss — which is the only honest way
-//    to say "this action has different binds here", and it is undone by Sync like any other.
+//  · EACH ACTION IS WRITTEN WHERE IT LIVES. An OVERRIDABLE action (Intake, Shoot) goes to G's
+//    override, and a victim of the steal among them is DESYNCED in G to record its loss — the
+//    only honest way to say "this action has different binds here", undone by Sync like any
+//    other. A SEASON-ONLY action goes to main, because main's bind for it reaches G alone.
+//  · A SHARED CONTROL IS NEVER TOUCHED. It has one value in every game, so a season scope may
+//    not take a key from one: the edit is REFUSED (`sharedKeyHolder` / `sharedPadHolder` say
+//    which control holds it, for the screen to tell the player) instead of stealing a drive key
+//    in one season, or in all of them from a screen that says it is editing one.
 
-/** run `edit` on `game`'s effective map and write the result back as `game`'s override. */
+/** the SHARED control that holds `key` in main, if any — what a season scope may not take */
+export function sharedKeyHolder(b: ControlBindings, key: string): KeyAction | null {
+  return SHARED_ACTIONS.find((s) => b.keys[s].includes(key)) ?? null;
+}
+
+/** the SHARED control that holds `chord` in main, if any. Exact, like every steal: a single
+ *  is held by a single, a combo by the identical combo. */
+export function sharedPadHolder(b: ControlBindings, chord: PadChord): PadAction | null {
+  const combo = chord.length > 1 ? normalizeChord(chord) : null;
+  for (const a of PAD_ACTIONS) {
+    if (!actionIsShared(a)) continue;
+    if (combo ? b.pad.combos[a].some((c) => chordKey(c) === chordKey(combo)) : b.pad.buttons[a].includes(chord[0])) {
+      return a;
+    }
+  }
+  return null;
+}
+
+/** run `edit` on `game`'s effective map and write each changed action back where it lives. */
 function editInGame(
   b: ControlBindings,
   game: GameId,
@@ -893,19 +1055,26 @@ function editInGame(
   const next = cloneBindings(b);
   const ov: GameBindingOverride = next.perGame?.[game] ?? {};
   const same = (x: readonly unknown[], y: readonly unknown[]): boolean => JSON.stringify(x) === JSON.stringify(y);
-  for (const a of keyActionsFor(game)) {
+  for (const a of seasonKeyActions(game)) {
+    const moved = !same(after.keys[a], before.keys[a]);
+    if (actionIsSeasonOnly(a)) {
+      if (moved) next.keys[a] = [...after.keys[a]];
+      continue;
+    }
     // an action that was ALREADY desynced stays desynced even if this edit did not move it —
     // the player said "these are mine here", and only Sync takes that back.
-    if (!same(after.keys[a], before.keys[a]) || keyDesynced(b, game, a)) {
-      (ov.keys ??= {})[a] = [...after.keys[a]];
-    }
+    if (moved || keyDesynced(b, game, a)) (ov.keys ??= {})[a] = [...after.keys[a]];
   }
-  for (const a of padActionsFor(game)) {
-    if (
-      !same(after.pad.buttons[a], before.pad.buttons[a]) ||
-      !same(after.pad.combos[a], before.pad.combos[a]) ||
-      padDesynced(b, game, a)
-    ) {
+  for (const a of seasonPadActions(game)) {
+    const moved = !same(after.pad.buttons[a], before.pad.buttons[a]) || !same(after.pad.combos[a], before.pad.combos[a]);
+    if (actionIsSeasonOnly(a)) {
+      if (moved) {
+        next.pad.buttons[a] = [...after.pad.buttons[a]];
+        next.pad.combos[a] = after.pad.combos[a].map((c) => [...c]);
+      }
+      continue;
+    }
+    if (moved || padDesynced(b, game, a)) {
       (ov.padButtons ??= {})[a] = [...after.pad.buttons[a]];
       (ov.padCombos ??= {})[a] = after.pad.combos[a].map((c) => [...c]);
     }
@@ -914,8 +1083,9 @@ function editInGame(
   return prunePerGame(next);
 }
 
-/** put `key` on `action` at `slot` within `game` only — desyncing `action` there, and
- *  desyncing whatever action of that game it was stolen from. Main is untouched. */
+/** put `key` on `action` at `slot` within `game` only, taking it from whatever other action of
+ *  that game had it. REFUSED (an unchanged copy) for a shared control, and for a key a shared
+ *  control holds. */
 export function assignKeyInGame(
   b: ControlBindings,
   game: GameId,
@@ -923,17 +1093,17 @@ export function assignKeyInGame(
   slot: number,
   key: string,
 ): ControlBindings {
-  if (!actionUsedBy(action, game)) return cloneBindings(b);
+  if (!actionUsedBy(action, game) || actionIsShared(action) || sharedKeyHolder(b, key)) return cloneBindings(b);
   return editInGame(b, game, (eff) => assignKey(eff, action, slot, key));
 }
 
 /** drop the key at `slot` of `action` within `game` only */
 export function removeKeyInGame(b: ControlBindings, game: GameId, action: KeyAction, slot: number): ControlBindings {
-  if (!actionUsedBy(action, game)) return cloneBindings(b);
+  if (!actionUsedBy(action, game) || actionIsShared(action)) return cloneBindings(b);
   return editInGame(b, game, (eff) => removeKey(eff, action, slot));
 }
 
-/** put `chord` on `action` at `slot` within `game` only */
+/** put `chord` on `action` at `slot` within `game` only — refused like `assignKeyInGame` */
 export function assignPadBindInGame(
   b: ControlBindings,
   game: GameId,
@@ -941,36 +1111,113 @@ export function assignPadBindInGame(
   slot: number,
   chord: PadChord,
 ): ControlBindings {
-  if (!actionUsedBy(action, game)) return cloneBindings(b);
+  if (!actionUsedBy(action, game) || actionIsShared(action) || sharedPadHolder(b, chord)) return cloneBindings(b);
   return editInGame(b, game, (eff) => assignPadBind(eff, action, slot, chord));
 }
 
 /** drop the bind at `slot` of `action` within `game` only */
 export function removePadBindInGame(b: ControlBindings, game: GameId, action: PadAction, slot: number): ControlBindings {
-  if (!actionUsedBy(action, game)) return cloneBindings(b);
+  if (!actionUsedBy(action, game) || actionIsShared(action)) return cloneBindings(b);
   return editInGame(b, game, (eff) => removePadBind(eff, action, slot));
 }
 
-/** SYNC BACK one keyboard action in one game: delete its override, so it inherits main again. */
+/**
+ * SYNC BACK one keyboard action in one game: delete its override, so it inherits main again.
+ *
+ * ⚠️ AND THE BINDS IT COMES BACK TO WIN. While it was desynced, another of the game's actions may
+ * have taken one of main's keys for it (a season-scope rebind of Place POLLEN onto J, with Shoot
+ * on J in All games). Deleting the override alone would put J on both in that game — the
+ * duplicate the steal policy exists to prevent, arrived at by pressing Sync. So the game's other
+ * actions give those keys up, by the rule a main edit already follows against an override: the
+ * bind every season shares is the one that survives.
+ */
 export function syncKeyInGame(b: ControlBindings, game: GameId, action: KeyAction): ControlBindings {
+  if (!keyDesynced(b, game, action)) return cloneBindings(b);
   const next = cloneBindings(b);
-  delete next.perGame?.[game]?.keys?.[action];
+  delete next.perGame![game]!.keys![action];
+  const back = new Set(next.keys[action]);
+  for (const o of seasonKeyActions(game)) {
+    if (o === action || back.size === 0) continue;
+    const own = next.perGame?.[game]?.keys;
+    if (keyDesynced(next, game, o) && own) own[o] = own[o]!.filter((k) => !back.has(k));
+    else if (actionIsSeasonOnly(o)) next.keys[o] = next.keys[o].filter((k) => !back.has(k));
+  }
   return prunePerGame(next);
 }
 
-/** SYNC BACK one pad action in one game. Singles and combos go together — they are one unit. */
+/** SYNC BACK one pad action in one game. Singles and combos go together — they are one unit —
+ *  and the binds it comes back to win, exactly as `syncKeyInGame` says. */
 export function syncPadInGame(b: ControlBindings, game: GameId, action: PadAction): ControlBindings {
+  if (!padDesynced(b, game, action)) return cloneBindings(b);
   const next = cloneBindings(b);
   delete next.perGame?.[game]?.padButtons?.[action];
   delete next.perGame?.[game]?.padCombos?.[action];
+  const singles = new Set(next.pad.buttons[action]);
+  const combos = new Set(next.pad.combos[action].map(chordKey));
+  for (const o of seasonPadActions(game)) {
+    if (o === action) continue;
+    const ov = next.perGame?.[game];
+    if (padDesynced(next, game, o) && ov) {
+      if (ov.padButtons?.[o]) ov.padButtons[o] = ov.padButtons[o]!.filter((i) => !singles.has(i));
+      if (ov.padCombos?.[o]) ov.padCombos[o] = ov.padCombos[o]!.filter((c) => !combos.has(chordKey(c)));
+    } else if (actionIsSeasonOnly(o)) {
+      next.pad.buttons[o] = next.pad.buttons[o].filter((i) => !singles.has(i));
+      next.pad.combos[o] = next.pad.combos[o].filter((c) => !combos.has(chordKey(c)));
+    }
+  }
   return prunePerGame(next);
 }
 
-/** SYNC BACK everything in one game — the scope's "Sync all". */
+/** SYNC BACK every override in one game, one action at a time so each one's binds win. */
 export function syncGame(b: ControlBindings, game: GameId): ControlBindings {
-  const next = cloneBindings(b);
-  delete next.perGame?.[game];
+  let next = cloneBindings(b);
+  for (const a of seasonKeyActions(game)) next = syncKeyInGame(next, game, a);
+  for (const a of seasonPadActions(game)) next = syncPadInGame(next, game, a);
   return prunePerGame(next);
+}
+
+/**
+ * RESET ONE SEASON: its overrides synced away (so Intake and Shoot follow All games again) and
+ * its season-only actions back on their defaults — minus any default a bind the whole app shares
+ * now holds in that game. A player who moved Drive forward onto C has made C a drive key
+ * everywhere, and resetting BIOBUZZ must not put Place POLLEN back on top of it. Nothing outside
+ * this one season moves: the shared controls, the other seasons, and main's Intake and Shoot.
+ */
+export function resetGame(b: ControlBindings, game: GameId): ControlBindings {
+  const next = syncGame(b, game);
+  const eff = effectiveBindings(next, game);
+  const keys = new Set<string>();
+  const singles = new Set<number>();
+  const combos = new Set<string>();
+  for (const a of keyActionsFor(game)) if (!actionIsSeasonOnly(a)) for (const k of eff.keys[a]) keys.add(k);
+  for (const a of padActionsFor(game)) {
+    if (actionIsSeasonOnly(a)) continue;
+    for (const i of eff.pad.buttons[a]) singles.add(i);
+    for (const c of eff.pad.combos[a]) combos.add(chordKey(c));
+  }
+  for (const a of seasonKeyActions(game)) {
+    if (actionIsSeasonOnly(a)) next.keys[a] = DEFAULT_BINDINGS.keys[a].filter((k) => !keys.has(k));
+  }
+  for (const a of seasonPadActions(game)) {
+    if (!actionIsSeasonOnly(a)) continue;
+    next.pad.buttons[a] = DEFAULT_BINDINGS.pad.buttons[a].filter((i) => !singles.has(i));
+    next.pad.combos[a] = DEFAULT_BINDINGS.pad.combos[a].filter((c) => !combos.has(chordKey(c))).map((c) => [...c]);
+  }
+  return next;
+}
+
+/**
+ * The season's own actions that have NO bind on one device or the other in that game. A main
+ * edit can take a key from an action the All games scope does not list (put Shoot on C and
+ * Catalyst and Place POLLEN both lose it), so the screen marks the season that needs a look
+ * rather than leaving the player to find out in a match.
+ */
+export function seasonUnbound(b: ControlBindings, game: GameId): KeyAction[] {
+  const eff = effectiveBindings(b, game);
+  const pad = new Set<KeyAction>(seasonPadActions(game));
+  return seasonKeyActions(game).filter(
+    (a) => eff.keys[a].length === 0 || (pad.has(a) && padBinds(eff.pad, a as PadAction).length === 0),
+  );
 }
 
 /** display label for a bound key */

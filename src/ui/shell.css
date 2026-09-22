@@ -2124,6 +2124,11 @@ button.ds-key:focus-visible {
   text-transform: uppercase;
   color: var(--ds-mut);
 }
+/* A PANEL THAT IS ONLY ITS HEAD — a title and its one action (Controls ▸ Touch controls and
+   Tutorial). The head's own bottom rule would otherwise sit on the card's bottom border. */
+.ds-panel > .ds-panel-h:last-child {
+  border-bottom: 0;
+}
 
 /* the leaderboard's large Act·Season heading (sits below the Records tab strip) */
 .lb-period-head {
@@ -4535,12 +4540,10 @@ tr.lb-detail td {
    the puck ring, so the track/thumb are drawn per-engine. Applies to every
    range in the app (builder, controls, replay seek) via the shared selector. */
 input[type='range'].ds-range,
-.ds-bind-row input[type='range'],
 /* The mint FILL comes from `--fill`, set per-input by rangeFill() — `accent-color`
    stops painting it the moment we take over the track. Custom properties inherit
    into pseudo-elements, so the gradient can read it here. */
 input[type='range'].ds-range::-webkit-slider-runnable-track,
-.ds-bind-row input[type='range']::-webkit-slider-runnable-track,
 .ds-replay-seek::-webkit-slider-runnable-track {
   height: 8px;
   border-radius: var(--ds-round-full);
@@ -4553,7 +4556,6 @@ input[type='range'].ds-range::-webkit-slider-runnable-track,
   box-shadow: inset 0 1px 0 var(--ds-inset);
 }
 input[type='range'].ds-range::-webkit-slider-thumb,
-.ds-bind-row input[type='range']::-webkit-slider-thumb,
 .ds-replay-seek::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 18px;
@@ -4565,7 +4567,6 @@ input[type='range'].ds-range::-webkit-slider-thumb,
   box-shadow: 0 2px 0 var(--ds-accent-edge);
 }
 input[type='range'].ds-range::-moz-range-track,
-.ds-bind-row input[type='range']::-moz-range-track,
 .ds-replay-seek::-moz-range-track {
   height: 8px;
   border-radius: var(--ds-round-full);
@@ -4573,14 +4574,12 @@ input[type='range'].ds-range::-moz-range-track,
   border: 1px solid var(--ds-line);
 }
 input[type='range'].ds-range::-moz-range-progress,
-.ds-bind-row input[type='range']::-moz-range-progress,
 .ds-replay-seek::-moz-range-progress {
   height: 8px;
   border-radius: var(--ds-round-full);
   background: var(--ds-accent);
 }
 input[type='range'].ds-range::-moz-range-thumb,
-.ds-bind-row input[type='range']::-moz-range-thumb,
 .ds-replay-seek::-moz-range-thumb {
   width: 16px;
   height: 16px;
@@ -4591,6 +4590,12 @@ input[type='range'].ds-range::-moz-range-thumb,
 input[type='range']:focus-visible {
   outline: 2px solid var(--ds-accent);
   outline-offset: 2px;
+}
+/* a slider that does nothing right now (Controls ▸ Gamepad's combo wait, with no combo bound):
+   shown greyed rather than hidden, so the rows under it never move */
+input[type='range'].ds-range:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ---- robot hero ------------------------------------------------------ */
@@ -5230,14 +5235,12 @@ button.bb-cell:focus-visible {
   }
   /* the slider PUCK is the target, not the 22px track */
   input[type='range'].ds-range::-webkit-slider-thumb,
-  .ds-bind-row input[type='range']::-webkit-slider-thumb,
   .ds-replay-seek::-webkit-slider-thumb {
     width: 26px;
     height: 26px;
     margin-top: -10px;
   }
   input[type='range'].ds-range::-moz-range-thumb,
-  .ds-bind-row input[type='range']::-moz-range-thumb,
   .ds-replay-seek::-moz-range-thumb {
     width: 26px;
     height: 26px;
@@ -5345,65 +5348,90 @@ a.ds-cta {
 }
 
 /* ---- rebindable controls (keycaps) ---------------------------------- */
+/* THE SCOPE SWITCH and the one status line under it — a refused bind, or what a main edit took
+   from a row the current scope does not show. The line is ALWAYS there (it reads the Backspace
+   hint when there is nothing else to say), so a message never pushes the panels down. */
+.ds-bind-scope {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+/* A SEASON WITH A ROW THAT HAS NO BIND. Pinned to the button's corner, out of flow, so lighting
+   it moves nothing — an inline dot either reflowed the strip when it lit or, reserved, left a gap
+   after every season's name. Never lit on the season being shown: its UNBOUND keycaps are
+   already on screen, and its button is the accent fill the red would sit on. */
+.ds-bind-scope .ds-seg {
+  position: relative;
+}
+.ds-seg-dot {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--ds-round-full);
+  background: var(--ds-danger);
+  visibility: hidden;
+}
+.ds-seg-dot.lit {
+  visibility: visible;
+}
+.ds-seg.on .ds-seg-dot {
+  visibility: hidden;
+}
+/* four seasons' worth of names do not fit a phone in one row; they wrapped 3 + 1, which read as
+   an afterthought. Two by two instead, the `.ds-segs.even` argument with a wider floor so that
+   "Chain Reaction" keeps to one line. */
+@media (max-width: 640px) {
+  .ds-bind-scope > .ds-segs {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  }
+  .ds-bind-scope > .ds-segs > .ds-seg {
+    text-align: center;
+  }
+}
+/* A BIND PANEL'S TWO DEVICE COLUMNS, keyboard then gamepad; one track on a phone. Every panel
+   is the same two columns, so a keyboard player reads down the left of each and a pad player
+   down the right. */
 .ds-binds {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: var(--ds-s-4);
+  gap: var(--ds-s-4) var(--ds-s-5);
   align-items: start;
 }
-/* THE GAMEPAD'S TWO BLOCKS ARE ONE COLUMN. `.ds-binds` is an auto-fit grid, so splitting the
-   pad into "sticks" and "buttons" gave it three children and they wrapped 2 + 1 — the short
-   sticks card left ~600px of dead space beside the keyboard and the buttons started a row of
-   their own underneath. Nesting them keeps the grid at two children, which is what the
-   auto-fit track count was written for. */
 .ds-bind-col {
   display: flex;
   flex-direction: column;
-  gap: var(--ds-s-4);
+  gap: var(--ds-s-2);
   min-width: 0;
 }
-.ds-bind-block {
-  border: 1px solid var(--ds-line);
-  border-radius: var(--ds-round);
-  background: var(--ds-panel);
-  padding: 12px 16px;
-  box-shadow: var(--ds-block);
-}
-.ds-bind-block h3 {
-  margin: 0 0 11px;
+.ds-bind-col > h3 {
+  margin: 0;
   font-family: var(--ds-font-mono);
   font-size: 11px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--ds-mut);
 }
-.ds-bind-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
+/* LABEL LEFT, KEYCAPS RIGHT, AND THE LABEL GIVES WAY FIRST. This was a flex row where both
+   sides shrank, so a long label and three keycaps split the difference and the keycaps wrapped
+   into a column of one (`C` above `+`). As a grid the keycaps take what they need and wrap only
+   when the label is already down to its floor; the label wraps before that. */
 .ds-bind-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(7em, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 26px;
+  gap: var(--ds-s-3);
+  min-height: 28px;
 }
 .ds-bind-label {
   color: var(--ds-ink-dim);
   font-size: 13px;
 }
-.ds-bind-row input[type='range'] {
-  width: 130px;
-  cursor: pointer;
-}
-.ds-bind-row input[type='range']:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 .ds-keys {
   display: flex;
-  gap: 6px;
+  gap: var(--ds-s-2);
   flex-wrap: wrap;
   justify-content: flex-end;
 }

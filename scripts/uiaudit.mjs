@@ -75,7 +75,9 @@ const BASELINE = {
   // `.chip.net-quality.clickable` rules along with the dead ping-graph feature they served
   // (superseded by `.perf-hud`, owner ruling 2026-09-19); two of their off-grid literals
   // went with them.
-  'off-grid-gap': 144,
+  // 144 → 143, 2026-09-22: the Controls overhaul. `.ds-keys` spaced its keycaps `6px` apart; it
+  // is `--ds-s-2`, the within-a-row step, now that the rows are a grid the keycaps can wrap in.
+  'off-grid-gap': 143,
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
   // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
   // not the 31 first measured. The other two start where they stand: paying them down needs a

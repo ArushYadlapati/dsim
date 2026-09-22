@@ -244,7 +244,19 @@ import {
   syncGame,
   syncKeyInGame,
   syncPadInGame,
+  SHARED_ACTIONS,
+  actionIsShared,
+  actionIsSeasonOnly,
+  actionOverridable,
+  seasonKeyActions,
+  seasonPadActions,
+  sharedKeyHolder,
+  sharedPadHolder,
+  resetGame,
+  seasonUnbound,
+  removePadBindInGame,
 } from '../src/input/bindings';
+import { ACTION_LABELS, ALL_GAMES_PANELS, seasonPanel } from '../src/ui/controlsLayout';
 import {
   TOUCH_OTHER_ACTIONS,
   allTouchButtons,
@@ -23984,7 +23996,9 @@ const dumperSetup = (): RobotSetup => {
 
   // PAD: singles and combos desync TOGETHER — "the binds of Shoot on a pad in BIOBUZZ" is one
   // thing, so writing one half writes both and Sync takes both back.
-  let p = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [3]);
+  // RS (11), a button no default uses — Y was the fixture until Flip front became a SHARED control,
+  // which a season scope may not take a button from (the refusal is checked further down)
+  let p = assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [11]);
   check('override/pad: a single edit desyncs the action', padDesynced(p, 'biobuzz', 'fire'));
   check(
     'override/pad: BOTH halves are written, so combos are frozen with the singles',
@@ -23995,7 +24009,7 @@ const dumperSetup = (): RobotSetup => {
   p = assignPadBindInGame(p, 'biobuzz', 'fire', 2, [5, 1]);
   check(
     'override/pad: a combo added in a game stays in that game',
-    J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')) === J([[3], [0], [1, 5]]) &&
+    J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')) === J([[11], [0], [1, 5]]) &&
       J(effectiveBindings(p, 'chain').pad.combos.fire) === J([]),
     J(padBinds(effectiveBindings(p, 'biobuzz').pad, 'fire')),
   );
@@ -24073,8 +24087,16 @@ const dumperSetup = (): RobotSetup => {
     J(g.perGame?.biobuzz?.keys),
   );
   check(
-    'conflict/game: MAIN is untouched by the steal',
-    J(g.keys.fire) === J(DEFAULT_BINDINGS.keys.fire) && J(g.keys.bbPlace) === J(DEFAULT_BINDINGS.keys.bbPlace),
+    'conflict/game: main Shoot is untouched by the steal — the victim is overridden, not edited',
+    J(g.keys.fire) === J(DEFAULT_BINDINGS.keys.fire),
+  );
+  // …while Place POLLEN, which only BIOBUZZ has, is written where it lives: main, which reaches
+  // BIOBUZZ alone (the season-only kind — see SHARED_ACTIONS in bindings.ts)
+  check(
+    'conflict/game: a season-only action edited in its scope lands in main, with no override',
+    J(g.keys.bbPlace) === J([' ']) && g.perGame?.biobuzz?.keys?.bbPlace === undefined &&
+      J(effectiveBindings(g, 'chain').keys.catalyst) === J(DEFAULT_BINDINGS.keys.catalyst),
+    J({ main: g.keys.bbPlace, ov: g.perGame?.biobuzz?.keys }),
   );
   check(
     'conflict/game: the other games keep Shoot on SPACE',
@@ -24103,12 +24125,14 @@ const dumperSetup = (): RobotSetup => {
   );
   // …but NOT when the main-edited action is itself desynced in that game: main's new bind never
   // reaches that game, so there is no duplicate to resolve and the override is left alone.
-  const both = assignKeyInGame(pre, 'biobuzz', 'intake', 0, 'q'); // slot 0 REPLACES: ['q','k']
+  // slot 0 REPLACES: ['u','k']. 'u' because it is free — 'q' was, until Turn left became a SHARED
+  // control a season scope may not take a key from
+  const both = assignKeyInGame(pre, 'biobuzz', 'intake', 0, 'u');
   const noClash = assignKey(both, 'intake', 0, 'g');
   check(
     'conflict/collision: a main edit to an action desynced there leaves the override alone',
     J(effectiveBindings(noClash, 'biobuzz').keys.fire) === J(['g']) &&
-      J(effectiveBindings(noClash, 'biobuzz').keys.intake) === J(['q', 'k']) &&
+      J(effectiveBindings(noClash, 'biobuzz').keys.intake) === J(['u', 'k']) &&
       J(noClash.keys.intake) === J(['g', 'k']),
     J({ eff: effectiveBindings(noClash, 'biobuzz').keys.intake, main: noClash.keys.intake }),
   );
@@ -24161,7 +24185,10 @@ const dumperSetup = (): RobotSetup => {
   const corrupt = mergeBindings({
     perGame: {
       biobuzz: { keys: { fire: ['g'], catalyst: ['q'], nonsense: ['z'], intake: 'nope', park: ['escape'] } },
-      chain: { padButtons: { catalyst: [4], bbPlace: [9], fling: 'x' }, padCombos: { catalyst: [[7, 12], [7], 'junk'] } },
+      chain: {
+        padButtons: { catalyst: [4], bbPlace: [9], fling: 'x' },
+        padCombos: { catalyst: [[7, 12], [7], 'junk'], fire: [[5, 12], [5], 'junk'] },
+      },
       decode: 'not an object',
       atlantis: { keys: { fire: ['z'] } },
     },
@@ -24181,14 +24208,27 @@ const dumperSetup = (): RobotSetup => {
   check('perGame: escape is refused in an override too', corrupt.perGame?.biobuzz?.keys?.park === undefined);
   check(
     'perGame: combos in an override go through normalizeChord, entry by entry',
-    J(corrupt.perGame?.chain?.padCombos?.catalyst) === J([[7, 12]]),
+    J(corrupt.perGame?.chain?.padCombos?.fire) === J([[5, 12]]),
     J(corrupt.perGame?.chain?.padCombos),
   );
   check(
     'perGame: a half-written pad override is completed from main, so the unit is whole',
-    J(corrupt.perGame?.chain?.padButtons?.fling) === J(DEFAULT_BINDINGS.pad.buttons.fling) &&
-      corrupt.perGame?.chain?.padCombos?.fling !== undefined,
+    J(corrupt.perGame?.chain?.padButtons?.fire) === J(DEFAULT_BINDINGS.pad.buttons.fire) &&
+      corrupt.perGame?.chain?.padCombos?.fire !== undefined,
     J({ bt: corrupt.perGame?.chain?.padButtons, cb: corrupt.perGame?.chain?.padCombos }),
+  );
+  // a SEASON-ONLY override goes through the same validators and then FOLDS INTO MAIN, whole
+  check(
+    'perGame: a season-only pad override is validated, completed, and folded into main',
+    J(corrupt.pad.buttons.catalyst) === J([4]) && J(corrupt.pad.combos.catalyst) === J([[7, 12]]) &&
+      J(corrupt.pad.buttons.fling) === J(DEFAULT_BINDINGS.pad.buttons.fling) &&
+      corrupt.perGame?.chain?.padButtons?.catalyst === undefined &&
+      corrupt.perGame?.chain?.padButtons?.fling === undefined,
+    J({ main: { bt: corrupt.pad.buttons.catalyst, cb: corrupt.pad.combos.catalyst }, ov: corrupt.perGame?.chain }),
+  );
+  check(
+    'perGame: an unused action is dropped without reaching main either',
+    J(corrupt.pad.buttons.bbPlace) === J(DEFAULT_BINDINGS.pad.buttons.bbPlace),
   );
   check(
     'perGame: a perGame that validates to nothing leaves the field absent',
@@ -24323,6 +24363,285 @@ const dumperSetup = (): RobotSetup => {
     'resolver/effective: DECODE fires only what DECODE has',
     ds.fire === true && ds.catalyst === false && ds.bbPlace === false && ds.bbPlaceNectar === false,
     J(ds),
+  );
+}
+
+// ---- THE THREE KINDS OF ACTION, and the Controls screen that follows them ----------
+// SHARED (drive, the drive toggles, start/restart) is main only and listed under All games only.
+// SEASON-ONLY (Catalyst, Place POLLEN…) is main only too — main's bind already reaches one game —
+// and is listed in its season alone. OVERRIDABLE (Intake, Shoot) is main plus a per-season
+// override. Owner, 2026-09-22: "Shared settings like drivetrain controls SHOULD BE only shown on
+// global." These checks hold the model, the migration off the old one, the season-scope editors
+// and the screen's layout table to that, so a new action cannot quietly land in two scopes or none.
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+
+  // -- the kinds
+  check(
+    'kinds: every shared control is used by every game (otherwise it is not shared)',
+    SHARED_ACTIONS.every((a) => GAME_IDS.every((g) => actionUsedBy(a, g))),
+  );
+  check(
+    'kinds: every action is exactly one of shared / season-only / overridable',
+    KEY_ACTIONS.every((a) => [actionIsShared(a), actionIsSeasonOnly(a), actionOverridable(a)].filter(Boolean).length === 1),
+  );
+  check(
+    'kinds: the overridable mechanisms today are exactly Intake and Shoot',
+    J(KEY_ACTIONS.filter(actionOverridable)) === J(['intake', 'fire']),
+    J(KEY_ACTIONS.filter(actionOverridable)),
+  );
+  check(
+    'kinds: the drive keys, the drive toggles and the match keys are shared',
+    (['driveUp', 'driveDown', 'driveLeft', 'driveRight', 'rotateCCW', 'rotateCW', 'tankRightUp', 'tankRightDown', 'driveMode', 'flipFront', 'park', 'start', 'restart'] as const).every(actionIsShared),
+  );
+  check(
+    'kinds: a season scope lists no shared control, on either device',
+    GAME_IDS.every((g) => seasonKeyActions(g).every((a) => !actionIsShared(a)) && seasonPadActions(g).every((a) => !actionIsShared(a))),
+  );
+  check(
+    'kinds: DECODE, with no mechanism of its own, lists Intake and Shoot and nothing else',
+    J(seasonKeyActions('decode')) === J(['intake', 'fire']),
+    J(seasonKeyActions('decode')),
+  );
+
+  // -- the layout table covers every action exactly once per scope, and names each one
+  const allKeys = ALL_GAMES_PANELS.flatMap((p) => p.keys);
+  const allPads = ALL_GAMES_PANELS.flatMap((p) => p.pads);
+  check(
+    'layout: All games lists every shared and overridable key action, each once, and nothing else',
+    new Set(allKeys).size === allKeys.length &&
+      J([...allKeys].sort()) === J(KEY_ACTIONS.filter((a) => !actionIsSeasonOnly(a)).sort()),
+    J(allKeys),
+  );
+  check(
+    'layout: …and the same for the pad',
+    new Set(allPads).size === allPads.length &&
+      J([...allPads].sort()) === J(PAD_ACTIONS.filter((a) => !actionIsSeasonOnly(a)).sort()),
+    J(allPads),
+  );
+  check(
+    'layout: a season panel is exactly that season’s own actions, keyboard and pad in one order',
+    GAME_IDS.every((g) => {
+      const p = seasonPanel(g);
+      const padOrder = p.pads.map((a) => p.keys.indexOf(a));
+      return (
+        J([...p.keys].sort()) === J(seasonKeyActions(g).sort()) &&
+        J([...p.pads].sort()) === J(seasonPadActions(g).sort()) &&
+        padOrder.every((i, n) => i >= 0 && (n === 0 || i > padOrder[n - 1]))
+      );
+    }),
+  );
+  check(
+    'layout: every season-only action is listed by exactly the one season that has it',
+    KEY_ACTIONS.filter(actionIsSeasonOnly).every(
+      (a) => GAME_IDS.filter((g) => seasonPanel(g).keys.includes(a)).length === 1 && !allKeys.includes(a),
+    ),
+  );
+  check('layout: every action has a name', KEY_ACTIONS.every((a) => (ACTION_LABELS[a] ?? '').trim().length > 0));
+
+  // -- readers ignore an override of a kind that may not have one (an in-memory object that has
+  //    not been through mergeBindings)
+  const raw: ReturnType<typeof cloneBindings> = {
+    ...cloneBindings(DEFAULT_BINDINGS),
+    perGame: { biobuzz: { keys: { driveUp: ['i'], bbPlace: ['o'] } } },
+  };
+  check(
+    'readers: an override of a shared or season-only action is not desynced and does not apply',
+    !keyDesynced(raw, 'biobuzz', 'driveUp') && !keyDesynced(raw, 'biobuzz', 'bbPlace') &&
+      J(effectiveBindings(raw, 'biobuzz').keys.driveUp) === J(['w']) &&
+      J(effectiveBindings(raw, 'biobuzz').keys.bbPlace) === J(['c']) &&
+      !gameHasOverrides(raw, 'biobuzz'),
+  );
+
+  // -- THE MIGRATION (mergePerGame). Step 1: a season-only override FOLDS into main, losslessly.
+  const legacyFold = {
+    perGame: { chain: { keys: { catalyst: ['q'] }, padButtons: { catalyst: [11] }, padCombos: { catalyst: [[7, 12]] } } },
+  };
+  const folded = mergeBindings(legacyFold);
+  check(
+    'migration: a season-only override folds into main, keys and the pad unit whole',
+    J(folded.keys.catalyst) === J(['q']) && J(folded.pad.buttons.catalyst) === J([11]) &&
+      J(folded.pad.combos.catalyst) === J([[7, 12]]) && folded.perGame === undefined,
+    J({ keys: folded.keys.catalyst, bt: folded.pad.buttons.catalyst, pg: folded.perGame }),
+  );
+  check(
+    'migration: …and Chain Reaction plays exactly what it played before',
+    J(effectiveBindings(folded, 'chain').keys.catalyst) === J(['q']) &&
+      J(padBinds(effectiveBindings(folded, 'chain').pad, 'catalyst')) === J([[11], [7, 12]]),
+  );
+  check(
+    'migration: …while the season sharing its default (BIOBUZZ, C for Place POLLEN) is untouched',
+    J(effectiveBindings(folded, 'biobuzz').keys.bbPlace) === J(['c']) &&
+      J(effectiveBindings(folded, 'biobuzz').pad.buttons.bbPlace) === J([4]),
+  );
+  // Step 2: a shared override is dropped — that season drives on the shared keys again.
+  const dropped = mergeBindings({ perGame: { biobuzz: { keys: { driveUp: ['i'] }, padButtons: { park: [11] } } } });
+  check(
+    'migration: a shared override is dropped, and the season drives on the shared keys',
+    dropped.perGame === undefined && J(effectiveBindings(dropped, 'biobuzz').keys.driveUp) === J(['w']) &&
+      J(effectiveBindings(dropped, 'biobuzz').pad.buttons.park) === J([2]),
+    J(dropped.perGame),
+  );
+  // Step 3: the SCRUB. The usual way a shared override got written was a season-scope steal:
+  // binding W to Shoot in BIOBUZZ desynced Drive forward there as the victim. Dropping that
+  // override puts W back on Drive forward, so Shoot must give it up or W would do both.
+  const stolen = mergeBindings({ perGame: { biobuzz: { keys: { driveUp: [], fire: ['w', 'j'] } } } });
+  const effS = effectiveBindings(stolen, 'biobuzz');
+  check(
+    'migration: after the drop, the season’s own action gives the shared key back',
+    J(effS.keys.driveUp) === J(['w']) && J(effS.keys.fire) === J(['j']) && keyDesynced(stolen, 'biobuzz', 'fire'),
+    J({ driveUp: effS.keys.driveUp, fire: effS.keys.fire }),
+  );
+  check(
+    'migration: no key is on two BIOBUZZ actions afterwards',
+    (() => {
+      const seen = new Set<string>();
+      for (const a of keyActionsFor('biobuzz')) for (const k of effS.keys[a]) {
+        if (seen.has(k)) return false;
+        seen.add(k);
+      }
+      return true;
+    })(),
+  );
+  check(
+    'migration: …and an override left with nothing reads as UNBOUND, not as synced',
+    (() => {
+      const m = mergeBindings({ perGame: { biobuzz: { keys: { driveUp: [], fire: ['w'] } } } });
+      return keyDesynced(m, 'biobuzz', 'fire') && J(effectiveBindings(m, 'biobuzz').keys.fire) === J([]);
+    })(),
+  );
+  const stolenFold = mergeBindings({ perGame: { biobuzz: { keys: { driveUp: [], bbPlace: ['w'] } } } });
+  check(
+    'migration: the scrub reaches a folded season-only action too',
+    J(stolenFold.keys.bbPlace) === J([]) && J(stolenFold.keys.driveUp) === J(['w']) && stolenFold.perGame === undefined,
+    J({ bbPlace: stolenFold.keys.bbPlace, pg: stolenFold.perGame }),
+  );
+  const stolenPad = mergeBindings({ perGame: { biobuzz: { padButtons: { park: [], fire: [2, 7] } } } });
+  check(
+    'migration: the pad scrub is exact — X goes back to Park mode, Shoot keeps RT',
+    J(effectiveBindings(stolenPad, 'biobuzz').pad.buttons.park) === J([2]) &&
+      J(effectiveBindings(stolenPad, 'biobuzz').pad.buttons.fire) === J([7]),
+    J(effectiveBindings(stolenPad, 'biobuzz').pad.buttons),
+  );
+  check(
+    'migration: a game with no shared override is not scrubbed at all',
+    (() => {
+      // a (corrupt) main that already has W on Catalyst stays exactly as loaded: the scrub only
+      // runs to undo what dropping an override put back
+      const m = mergeBindings({ keys: { catalyst: ['w'] }, perGame: { chain: { keys: { fire: ['j'] } } } });
+      return J(m.keys.catalyst) === J(['w']) && J(m.perGame?.chain?.keys?.fire) === J(['j']);
+    })(),
+  );
+  check(
+    'migration: it is idempotent — a migrated blob loads to itself',
+    [legacyFold, { perGame: { biobuzz: { keys: { driveUp: [], fire: ['w', 'j'] } } } }].every((x) => {
+      const once = mergeBindings(x);
+      return J(mergeBindings(JSON.parse(J(once)))) === J(once);
+    }),
+  );
+  check(
+    'migration: an override of Intake or Shoot alone is kept byte for byte',
+    (() => {
+      const b = assignKeyInGame(DEFAULT_BINDINGS, 'chain', 'intake', 0, 'j');
+      return J(mergeBindings(JSON.parse(J(b)))) === J(b) && keyDesynced(b, 'chain', 'intake');
+    })(),
+  );
+  check(
+    'migration: through coerceSettings, and the rest of the blob survives it',
+    (() => {
+      const s = coerceSettings({ parkSpeedPct: 55, showEventLog: false, bindings: legacyFold });
+      return s.parkSpeedPct === 55 && s.showEventLog === false && J(s.bindings) === J(mergeBindings(legacyFold));
+    })(),
+  );
+
+  // -- THE SEASON-SCOPE EDITORS
+  const place = assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'bbPlace', 0, 'j');
+  check(
+    'season scope: a season-only rebind writes main and no override',
+    J(place.keys.bbPlace) === J(['j']) && place.perGame === undefined &&
+      J(effectiveBindings(place, 'chain').keys.catalyst) === J(['c']),
+    J({ main: place.keys.bbPlace, pg: place.perGame }),
+  );
+  check('season scope: sharedKeyHolder names the control that holds a key', sharedKeyHolder(DEFAULT_BINDINGS, 'w') === 'driveUp' && sharedKeyHolder(DEFAULT_BINDINGS, 'j') === null);
+  check(
+    'season scope: a key a shared control holds is REFUSED, not stolen',
+    J(assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, 'w')) === J(DEFAULT_BINDINGS) &&
+      J(assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'bbPlace', 0, 'p')) === J(DEFAULT_BINDINGS),
+  );
+  check(
+    'season scope: a shared control cannot be edited from a season at all',
+    J(assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'driveUp', 0, 'i')) === J(DEFAULT_BINDINGS) &&
+      J(removeKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'park', 0)) === J(DEFAULT_BINDINGS) &&
+      J(removePadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'start', 0)) === J(DEFAULT_BINDINGS),
+  );
+  check(
+    'season scope: the pad refusal is exact — Y (Flip front) is refused, a Y combo is not',
+    sharedPadHolder(DEFAULT_BINDINGS, [3]) === 'flipFront' && sharedPadHolder(DEFAULT_BINDINGS, [3, 7]) === null &&
+      J(assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [3])) === J(DEFAULT_BINDINGS) &&
+      J(padBinds(effectiveBindings(assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 2, [3, 7]), 'biobuzz').pad, 'fire')) ===
+        J([[7], [0], [3, 7]]),
+  );
+  check(
+    'season scope: a main edit of a shared control still steals, as it always did',
+    J(assignKey(DEFAULT_BINDINGS, 'driveUp', 0, 'c').keys.catalyst) === J([]) &&
+      J(assignKey(DEFAULT_BINDINGS, 'driveUp', 0, 'c').keys.bbPlace) === J([]),
+  );
+
+  // -- SYNC: the binds an action comes back to WIN. Shoot desynced in BIOBUZZ onto J, then Place
+  //    POLLEN (season-only, main) takes SPACE there, which main's Shoot still holds. Syncing Shoot
+  //    would put SPACE on both inside BIOBUZZ; Place POLLEN gives it up.
+  const pre = assignKeyInGame(assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, 'j'), 'biobuzz', 'bbPlace', 0, ' ');
+  check(
+    'sync: the setup is legal — Shoot is J and Place POLLEN is SPACE in BIOBUZZ',
+    J(effectiveBindings(pre, 'biobuzz').keys.fire) === J(['j']) && J(effectiveBindings(pre, 'biobuzz').keys.bbPlace) === J([' ']),
+  );
+  const synced = syncKeyInGame(pre, 'biobuzz', 'fire');
+  check(
+    'sync: Shoot is back on SPACE and Place POLLEN gave it up',
+    J(effectiveBindings(synced, 'biobuzz').keys.fire) === J([' ']) && J(effectiveBindings(synced, 'biobuzz').keys.bbPlace) === J([]) &&
+      synced.perGame === undefined,
+    J({ fire: effectiveBindings(synced, 'biobuzz').keys.fire, bbPlace: effectiveBindings(synced, 'biobuzz').keys.bbPlace }),
+  );
+  check(
+    'sync: syncing a row that is not desynced changes nothing',
+    J(syncKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire')) === J(DEFAULT_BINDINGS) &&
+      J(syncPadInGame(DEFAULT_BINDINGS, 'biobuzz', 'bbPlace')) === J(DEFAULT_BINDINGS),
+  );
+  const padPre = assignPadBindInGame(assignPadBindInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, [11]), 'biobuzz', 'bbRamp', 0, [7]);
+  const padSynced = syncPadInGame(padPre, 'biobuzz', 'fire');
+  check(
+    'sync/pad: RT back on Shoot comes off Deploy ramp, which had taken it',
+    J(effectiveBindings(padSynced, 'biobuzz').pad.buttons.fire) === J([7, 0]) &&
+      J(effectiveBindings(padSynced, 'biobuzz').pad.buttons.bbRamp) === J([]),
+    J(effectiveBindings(padSynced, 'biobuzz').pad.buttons),
+  );
+
+  // -- RESET ONE SEASON
+  const messy = assignKeyInGame(assignKeyInGame(DEFAULT_BINDINGS, 'biobuzz', 'fire', 0, 'j'), 'biobuzz', 'bbRamp', 0, 'y');
+  const chainToo = assignKeyInGame(messy, 'chain', 'catalyst', 0, 'u');
+  const reset = resetGame(chainToo, 'biobuzz');
+  check(
+    'reset season: its overrides go and its own actions are back on their defaults',
+    !gameHasOverrides(reset, 'biobuzz') && J(reset.keys.bbRamp) === J(DEFAULT_BINDINGS.keys.bbRamp) &&
+      J(effectiveBindings(reset, 'biobuzz').keys.fire) === J(DEFAULT_BINDINGS.keys.fire),
+  );
+  check('reset season: another season is untouched', J(reset.keys.catalyst) === J(['u']));
+  const driveOnC = assignKey(DEFAULT_BINDINGS, 'driveUp', 0, 'c');
+  const resetC = resetGame(driveOnC, 'biobuzz');
+  check(
+    'reset season: a default a shared control now holds is NOT put back on top of it',
+    J(resetC.keys.driveUp) === J(['c']) && J(resetC.keys.bbPlace) === J([]) && J(resetC.keys.bbPlaceNectar) === J(['x']),
+    J({ driveUp: resetC.keys.driveUp, bbPlace: resetC.keys.bbPlace }),
+  );
+
+  // -- WHAT THE SEASON BUTTONS MARK
+  check('unbound: nothing is unbound on the defaults', GAME_IDS.every((g) => seasonUnbound(DEFAULT_BINDINGS, g).length === 0));
+  const shootOnC = assignKey(DEFAULT_BINDINGS, 'fire', 0, 'c');
+  check(
+    'unbound: Shoot on C (All games) leaves Catalyst and Place POLLEN without a key, and DECODE clean',
+    J(seasonUnbound(shootOnC, 'chain')) === J(['catalyst']) && J(seasonUnbound(shootOnC, 'biobuzz')) === J(['bbPlace']) &&
+      seasonUnbound(shootOnC, 'decode').length === 0,
+    J({ chain: seasonUnbound(shootOnC, 'chain'), biobuzz: seasonUnbound(shootOnC, 'biobuzz') }),
   );
 }
 
