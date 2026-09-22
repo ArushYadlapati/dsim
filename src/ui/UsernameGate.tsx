@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { authClient } from '../lib/authClient';
 import { gameServerConfigured } from '../net/env';
 import { fetchProfile, updateUsername } from '../net/api';
@@ -24,7 +24,7 @@ function suggest(seed: string | undefined): string {
  * is asking people to read. The profile check still runs, so coming back off those
  * pages does not restart from "unknown".
  */
-export function UsernameGate({ suspended = false }: { suspended?: boolean }) {
+export function UsernameGate({ suspended = false, children }: { suspended?: boolean; children?: ReactNode }) {
   const configured = gameServerConfigured();
   const session = authClient!.useSession();
   const user = session.data?.user;
@@ -56,7 +56,11 @@ export function UsernameGate({ suspended = false }: { suspended?: boolean }) {
     };
   }, [configured, user]);
 
-  if (suspended || !configured || !user || needs !== true) return null;
+  /* CHILDREN WAIT BEHIND THE GATE, the way `TermsGate`'s do: the claim dialog is a child, and a
+     second modal over this one would show one dialog dimmed behind the other. While the check
+     is still in flight (`null`) they wait too, so a reward never flashes up and is then
+     covered by the gate a moment later. */
+  if (suspended || !configured || !user || needs !== true) return needs === null && configured && user ? null : <>{children}</>;
 
   const submit = (e: FormEvent): void => {
     e.preventDefault();

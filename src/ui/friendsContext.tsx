@@ -340,7 +340,7 @@ export function FriendToasts({
           >
             <span className="fr-toast-name">{t.from.handle}</span>
             <SupporterBadge supporter={t.from.supporter} role={t.from.role} />
-            <TitleMark title={t.from.title} />
+            <TitleMark title={t.from.title} badges={t.from.badges} />
             <span className="fr-toast-sub">
               {t.kind === 'invite'
                 ? challengeLine(t.invite?.format ?? null)

@@ -4,7 +4,7 @@ import type { HudSnapshot } from '../../game';
 import type { ArtifactColor } from '../../types';
 import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
 import { BiobuzzBuilder } from './Builder';
-import { BB_PTS } from './config';
+import { BB_NECTAR_COUNT, BB_PTS } from './config';
 import type { BbCellHud, BbPinHud, BiobuzzFieldHud } from './hud';
 import type { BiobuzzHud } from './hudRobot';
 import type { BbAllianceScore } from './score';
@@ -127,6 +127,21 @@ const pinLine = (p: BbPinHud): string =>
   `PIN · ${BB_PTS.foulMajor} IN ${p.nextIn.toFixed(1)} S` +
   (p.billed > 0 ? ` · ${p.billed * BB_PTS.foulMajor} BILLED` : '');
 
+// 8 NECTAR/alliance = 3 staged in the HIVE at kickoff + 5 stock (spawn.ts's NECTAR_PER_CELL /
+// NECTAR_STOCK — Lane A constants, not exported, so this total is kept in sync by comment
+// rather than a cross-lane import). BB_NECTAR_COUNT (config.ts) is the total's single source
+// of truth.
+const NECTAR_STAGED = 3;
+const NECTAR_STOCK_MAX = BB_NECTAR_COUNT - NECTAR_STAGED;
+
+/** the NECTAR dot row's accessible name — the dots carry no text, so this says the same
+ * thing in words: how many are placed, how many are left, and whether a press does anything. */
+function nectarPhrase(placed: number, stock: number, available: boolean, ringed: number): string {
+  const parts = [`${NECTAR_STAGED + placed} placed`, `${stock} in stock`];
+  if (available) parts.push(ringed > 0 ? `${ringed} due now` : 'available');
+  return `Nectar: ${parts.join(', ')}.`;
+}
+
 /**
  * THE PENDING LINE — what this alliance has SATISFIED but has not been AWARDED yet.
  *
@@ -196,14 +211,16 @@ function useHeldBump(count: number, timeLeft: number, phase: string, hold: numbe
  * that change what THEY do next. So the robot half and the alliance half (own CELL, own NECTAR
  * supply) both belong here, and the opponent's numbers do not.
  *
- * STORAGE is dots only, no wording (owner ruling 2026-09-12 extended to every chip in this
- * card): one disc per held element, coloured by element, then a hollow ring per free slot up
- * to the cap (NEXT-OUT FIRST: the leftmost filled disc carries the `.next` ring). Under it, the
- * FLOWER icon (grey while G410 locks entry, alliance-yellow once it opens, ringed while
- * `flowerInReach`). NO NECTAR COLUMN (owner, 2026-09-19: "get rid of ... the top right corner
- * display that shows the number of nectar remaining") — the human player's box, which now
- * stands where the drive team can see it, is the thing that actually holds the NECTAR, and a
- * count beside it would be a second copy of a number you can look at.
+ * TWO COLUMNS, dots only, no wording anywhere (owner ruling 2026-09-12 extended to every chip
+ * in this card):
+ *  - LEFT, top-aligned: STORAGE — one disc per held element, coloured by element, then a
+ *    hollow ring per free slot up to the cap (NEXT-OUT FIRST: the leftmost filled disc carries
+ *    the `.next` ring). Under it, bottom-aligned: the FLOWER icon (grey while G410 locks entry,
+ *    alliance-yellow once it opens, ringed while `flowerInReach`).
+ *  - RIGHT, top-aligned: NECTAR — 8 dots per alliance (see the color/ring rule at
+ *    `nectarPhrase`, below). Removed 2026-09-19 and restored 2026-09-22 at the owner's request
+ *    — the human player's box is where the NECTAR physically sits, but the drive team still
+ *    reads this corner, not the pit.
  * The PIN countdown and the CONTROL 5+ warning do NOT live here — both are transient calls to
  * action rather than standing facts, so `BiobuzzPinnedNotice` renders them above the event log
  * instead (see there).
@@ -213,9 +230,18 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
   const s = sliceOf(hud);
   const f = s?.field;
   const r = s?.robot;
+  const due = f?.nectarDue[hud.alliance] ?? 0;
   const held = r?.held ?? [];
   const free = r ? Math.max(0, r.cap - held.length) : 0;
   const said = heldPhrase(held);
+
+  const stock = f?.nectarStock[hud.alliance] ?? 0;
+  const placed = NECTAR_STOCK_MAX - stock;
+  const available = f?.nectarWhy[hud.alliance] === 'ok';
+  // the dump window: past the 1:00 cue the WHOLE remaining stock may go in with nothing
+  // banked, so `due` reads 0 while a press is still granted — ring every dot left in stock.
+  const ringCount = !available ? 0 : due > 0 ? Math.min(due, stock) : stock;
+  const nectarSaid = nectarPhrase(placed, stock, available, ringCount);
 
   // G410: grey while locked, alliance-yellow once the FLOWERS open — a standing fill, not a
   // flash (contrast a G407 warning, which genuinely only matters for a few seconds).
@@ -256,11 +282,31 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
           />
         )}
       </div>
-      {/* the `ramp` intake's own state — absent (no chip) for every other archetype, per
-          `hudRobot.ts`'s `rampOut`. `.on`/`.off` are the same GATE OPEN/CLOSED pair, not a new
-          colour: down is the ready state, folded recedes like a closed gate does. */}
-      {r?.rampOut !== undefined && (
-        <span className={`chip ${r.rampOut ? 'on' : 'off'}`}>{r.rampOut ? 'RAMP DOWN' : 'RAMP UP'}</span>
+      {/* THE NECTAR COLUMN. The 3 staged dots are always alliance-coloured. Of the 5 stock
+          dots: already-placed ones (`i < placed`) are alliance-coloured too, and never ringed
+          — a placed dot isn't due any more. Of the rest, `nectarWhy === 'ok'` turns a dot from
+          grey to alliance-coloured the moment a press would succeed, whether or not it has
+          been pressed yet; the ring layers ON TOP of that colour, for the ones within
+          `ringCount`, and is never drawn on a grey dot. */}
+      {f && (
+        <div className="bb-hud-right">
+          <div className="hopper vertical" role="img" aria-label={nectarSaid} title={nectarSaid}>
+            {Array.from({ length: NECTAR_STAGED }, (_, i) => (
+              <span key={`ns${i}`} className={`hopper-pip ${hud.alliance}`} />
+            ))}
+            {Array.from({ length: NECTAR_STOCK_MAX }, (_, i) => {
+              const isPlaced = i < placed;
+              const colored = isPlaced || available;
+              const ringed = !isPlaced && i - placed < ringCount;
+              return (
+                <span
+                  key={`nk${i}`}
+                  className={`hopper-pip${colored ? ` ${hud.alliance}` : ' grey'}${ringed ? ' due' : ''}`}
+                />
+              );
+            })}
+          </div>
+        </div>
       )}
     </div>
   );

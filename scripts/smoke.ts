@@ -264,8 +264,19 @@ import {
   awardTitleId,
   compareAwards,
   parseAwardTitleId,
+  awardPodiumTier,
   type AwardRow,
 } from '../src/awards';
+import {
+  BADGE_EARN,
+  BADGE_KEYS,
+  BADGE_LABELS,
+  MAX_EQUIPPED_BADGES,
+  coerceEquippedBadges,
+  podiumBadge,
+  withBadgeEquipped,
+} from '../src/badges';
+import { compareGrants, rewardHeadline, rewardTitleText, rewardWhy, type RewardGrant } from '../src/rewards';
 import {
   PAD_GLYPHS,
   PAD_MENU_BUTTON,
@@ -24887,6 +24898,58 @@ const dumperSetup = (): RobotSetup => {
     awardTitleText(row({ game: 'biobuzz' })).startsWith('BIOBUZZ'),
     awardTitleText(row({ game: 'biobuzz' })),
   );
+}
+
+// ---- THE REWARD LEDGER (0048): act podium titles, badges, and the claim dialog's words ----
+// The server mints grants as data (`reward_grants.items` / `.reason`); `src/rewards.ts` and
+// `src/badges.ts` are the client's half — the words, the counter rules, and the queue order.
+{
+  // ⚠️ AN ACT AWARD IS KEYED BY ITS ACT, and the id has to carry it: the chip beside a name
+  // names the act, and it is parsed off the id alone (no join) the way every title is.
+  const act: AwardRow = { game: 'biobuzz', balanceVersion: 17, act: 2, seasonNo: 0, kind: 'ranked_act', mode: '1v1', drivetrain: null, rank: 2, score: 1843 };
+  const id = awardTitleId(act);
+  check('rewards: an act podium id carries the ACT, not a season', id === 'award:biobuzz:act2:ranked_act:1v1:2', id);
+  const back = parseAwardTitleId(id);
+  check('⚠️ rewards: ...and parses back WITH its act (a season award cannot, an act award must)',
+    !!back && back.kind === 'ranked_act' && back.act === 2 && back.rank === 2 && back.mode === '1v1', JSON.stringify(back));
+  check('rewards: the act sentence names the act and no season', awardTitleText(act) === 'BIOBUZZ · Act 2 · 1v1 Finalist', awardTitleText(act));
+  check('rewards: the chip form keeps the act, so it cannot read as a retired per-season title', awardShortText(back!) === 'Act 2 · 1v1 Finalist', awardShortText(back!));
+  check('rewards: an act podium title wears the metal of its placement',
+    awardPodiumTier({ kind: 'ranked_act', rank: 1 }) === 'gold' && awardPodiumTier({ kind: 'ranked_act', rank: 3 }) === 'bronze' && awardPodiumTier({ kind: 'record_overall', rank: 1 }) === null);
+  check('rewards: a malformed act id is refused', parseAwardTitleId('award:biobuzz:act:ranked_act:1v1:1') === null && parseAwardTitleId('award:biobuzz:act2:ranked_act:solo:1') === null);
+  // an OLDER client's parser reads `act2` as a number — NaN — and draws nothing: no chip, never a wrong one
+  check('rewards: an older parser would see a non-number version (graceful, not wrong)', !Number.isFinite(Number(id.split(':')[2])));
+
+  // badges: the registry, the counter, the equip rule
+  check('⚠️ badges: every key has a label AND an earn sentence', BADGE_KEYS.every((k) => BADGE_LABELS[k]?.length > 0 && BADGE_EARN[k]?.length > 0));
+  check('badges: podium placement → metal', podiumBadge(1) === 'ranked-gold' && podiumBadge(2) === 'ranked-silver' && podiumBadge(3) === 'ranked-bronze' && podiumBadge(4) === null);
+  check('badges: the wire is read tolerantly — an unknown id, a bad count and a duplicate drop out',
+    JSON.stringify(coerceEquippedBadges([{ id: 'ranked-gold', n: 2 }, { id: 'fake', n: 1 }, { id: 'record-holder', n: 0 }, { id: 'ranked-gold', n: 5 }, null])) === JSON.stringify([{ id: 'ranked-gold', n: 2 }]));
+  check('badges: ...and a non-array is nothing', coerceEquippedBadges(undefined).length === 0 && coerceEquippedBadges({}).length === 0);
+  check('badges: Equip now appends while there is room', JSON.stringify(withBadgeEquipped(['ranked-gold'], 'record-holder')) === JSON.stringify(['ranked-gold', 'record-holder']));
+  check('badges: ...is a no-op for one already worn', JSON.stringify(withBadgeEquipped(['ranked-gold'], 'ranked-gold')) === JSON.stringify(['ranked-gold']));
+  const full = withBadgeEquipped(['ranked-gold', 'ranked-silver', 'ranked-bronze'], 'record-holder');
+  check(`badges: ...and when all ${MAX_EQUIPPED_BADGES} are worn the OLDEST makes room`, full.length === MAX_EQUIPPED_BADGES && full[0] === 'ranked-silver' && full[2] === 'record-holder', full.join(','));
+
+  // the dialog's words — the owner's own example is the shape
+  const g = (over: Partial<RewardGrant>): RewardGrant => ({ id: 'x', source: 'ranked_act', items: [], createdAt: '2026-09-22T00:00:00Z', claimedAt: null,
+    reason: { kind: 'ranked_act', game: 'biobuzz', act: 2, mode: '1v1', rank: 2, rating: 1843 }, ...over });
+  const ranked = g({});
+  check('⚠️ rewards: WHY says the placement, the ladder and the period — "#2 in 1v1 ranked, BIOBUZZ Act 2."',
+    rewardWhy(ranked)[0] === '#2 in 1v1 ranked, BIOBUZZ Act 2.' && rewardWhy(ranked)[1] === 'Final rating 1843.', rewardWhy(ranked).join(' | '));
+  check('rewards: the headline is the title\'s words', rewardHeadline(ranked) === '1v1 Finalist', rewardHeadline(ranked));
+  const rec = g({ source: 'record_season', reason: { kind: 'record_season', game: 'decode', act: 1, seasonNo: 3, balanceVersion: 9,
+    placements: [{ board: 'overall', rank: 1, score: 212 }, { board: 'mecanum', rank: 1, score: 212 }] } });
+  check('rewards: a record award says each board it placed on', rewardWhy(rec).length === 2 && rewardWhy(rec)[1].startsWith('#1 on the Mecanum record board, DECODE Act 1 Season 3.'), rewardWhy(rec).join(' | '));
+  check('rewards: ...and heads with its best placement', rewardHeadline(rec) === 'Record Champion', rewardHeadline(rec));
+  check('rewards: a record title reads with its season, filled from the grant', rewardTitleText('award:decode:9:record_overall:solo:1', rec.reason) === 'DECODE · Act 1 Season 3 · Record Champion',
+    rewardTitleText('award:decode:9:record_overall:solo:1', rec.reason));
+  const star = g({ source: 'stargazer', reason: { kind: 'stargazer' }, items: [{ kind: 'title', id: 'title:stargazer' }] });
+  check('rewards: a ledger reward heads with its title label', rewardHeadline(star) === 'Stargazer');
+  // the queue: prestigious first, OLDEST first within a kind, so a backfilled counter counts up 1, 2, 3
+  const q = [star, g({ id: 'late', reason: { kind: 'ranked_act', game: 'decode', act: 3, mode: '2v2', rank: 1, rating: 0 } }), rec, g({ id: 'early', reason: { kind: 'ranked_act', game: 'decode', act: 1, mode: '1v1', rank: 1, rating: 0 } })].sort(compareGrants);
+  check('rewards: the queue shows the podium first, oldest act first, then records, then the rest',
+    q.map((x) => x.id === 'x' ? x.reason.kind : x.id).join(',') === 'early,late,record_season,stargazer', q.map((x) => x.id === 'x' ? x.reason.kind : x.id).join(','));
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

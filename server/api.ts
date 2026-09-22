@@ -54,13 +54,13 @@ import {
   replayAccess,
   replayRefusalMessage,
   setReplaysPublic,
-  clearTitleIfEquipped,
   earnedTitles,
   linkProvider,
   providerLinks,
-  revokeCosmetic,
-  STARGAZER_TITLE,
-  STARGAZER_GRANTS,
+  claimReward,
+  revokeStargazer,
+  rewardState,
+  setEquippedBadges,
   unlinkProvider,
   type LinkProvider,
   getTitle,
@@ -133,6 +133,9 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *   POST /api/user/privacy {replaysPublic}   — set it (Bearer JWT)
  *   GET  /api/user/title                     — your equipped title + what you have earned
  *   POST /api/user/title {title}             — equip one, or null to clear (Bearer JWT)
+ *   GET  /api/user/rewards                   — pending rewards + badges + title (Bearer JWT)
+ *   POST /api/user/rewards/claim {id,equip}  — claim one, and with equip wear it (Bearer JWT)
+ *   POST /api/user/badges {badges}           — wear these badges, in order (Bearer JWT)
  *   GET  /api/link/<p>/start                 — the authorize URL for github|discord (JWT)
  *   GET  /api/link/<p>/callback              — the provider's redirect; 302s into /account
  *   POST /api/link/<p>/unlink                — drop the link and its reward (Bearer JWT)
@@ -728,6 +731,60 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       return json(200, { title: wanted }), true;
     }
 
+    /**
+     * THE REWARD LEDGER (0048). GET is everything the claim dialog and the appearance page
+     * read at once — pending grants, badge counts, what is worn, what is wearable. POST claim
+     * takes one grant and, with `equip`, wears it.
+     *
+     * ⚠️ NEW ROUTES, NOT NEW FIELDS ON OLD ONES, so every older client keeps working exactly as
+     * it did: it never asks for pending rewards, so it never sees one, and `/api/user/title`
+     * still answers what is wearable (claimed titles only). An older SERVER answers 404 here,
+     * which the client reads as "nothing pending" — so no capability flag is needed either way.
+     */
+    if (url.pathname === '/api/user/rewards' && req.method === 'GET') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(200, { pending: [], badges: {}, equippedBadges: [], title: null, earnedTitles: [] }), true;
+      await ensureProfile(user.userId, user.handle);
+      return json(200, await rewardState(user.userId)), true;
+    }
+    if (url.pathname === '/api/user/rewards/claim' && req.method === 'POST') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(503, { error: 'Rewards need the database.' }), true;
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+      } catch {
+        return json(400, { error: 'bad json' }), true;
+      }
+      // a UUID, checked BEFORE the query — the column is `uuid`, and a malformed string there
+      // is a Postgres error rather than a clean "no such reward"
+      const id = typeof body.id === 'string' && /^[0-9a-f-]{36}$/i.test(body.id) ? body.id : null;
+      if (!id) return json(400, { error: 'id must be a reward id' }), true;
+      const state = await claimReward(user.userId, id, body.equip === true);
+      if (!state) return json(404, { error: 'That reward is not yours to claim.' }), true;
+      return json(200, state), true;
+    }
+    /** WEAR these badges, in this order. The server decides what is held (`setEquippedBadges`),
+     *  on the same terms `setTitle` decides what is earned. */
+    if (url.pathname === '/api/user/badges' && req.method === 'POST') {
+      const user = await verifyAuthToken(bearer(req));
+      if (!user) return json(401, { error: 'sign in required' }), true;
+      if (!dbEnabled) return json(503, { error: 'Badges need the database.' }), true;
+      let body: Record<string, unknown>;
+      try {
+        body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+      } catch {
+        return json(400, { error: 'bad json' }), true;
+      }
+      const ids = Array.isArray(body.badges) && body.badges.every((b) => typeof b === 'string') ? (body.badges as string[]) : null;
+      if (!ids) return json(400, { error: 'badges must be a list of badge ids' }), true;
+      const worn = await setEquippedBadges(user.userId, ids);
+      if (!worn) return json(403, { error: 'You have not earned one of those badges.' }), true;
+      return json(200, { equippedBadges: worn }), true;
+    }
+
     /** what this account has linked, and which providers the server can actually offer. */
     if (url.pathname === '/api/user/links' && req.method === 'GET') {
       const user = await verifyAuthToken(bearer(req));
@@ -788,15 +845,11 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
            to prevent, one level up — and it is also the farm: unlink, keep the decal, relink
            elsewhere. The 0047 row survives, so the PAIR still cannot earn again. */
         if (ok && provider === 'github') {
-          /* ⚠️ EVERY id the star granted, not just the title. `STARGAZER_GRANTS` is iterated
-             here for the same reason `sweepStargazers` iterates it: half a reward is a state
-             no later sweep repairs — an account that unlinked would have kept the decal
-             forever, because the sweep only ever looks at accounts that still have a LIVE
-             link and this one no longer does. */
-          for (const id of STARGAZER_GRANTS) {
-            await revokeCosmetic(user.userId, id, 'rewards', 'github unlinked');
-          }
-          await clearTitleIfEquipped(user.userId, STARGAZER_TITLE);
+          /* ⚠️ THE WHOLE REWARD, THROUGH THE ONE REVOKE PATH (`revokeStargazer`): the ledger
+             grant (pending or claimed), both ids it delivered, and the equipped title. Half a
+             reward is a state no later sweep repairs — the sweep only looks at accounts that
+             still have a LIVE link, and this one no longer does. */
+          await revokeStargazer(user.userId, 'github unlinked');
         }
         return json(200, { unlinked: ok }), true;
       }

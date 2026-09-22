@@ -1,20 +1,17 @@
 import { useEffect, useState } from 'react';
 import { ToggleRow } from './OptRow';
-import { TitlePicker } from './TitlePicker';
 import { LinkedAccounts } from './LinkedAccounts';
 import { StarReward } from './StarReward';
 import type { GameSettings } from '../game';
 import { defaultSettings } from '../settings';
 import { authEnabled, authClient } from '../lib/authClient';
-import { gameServerConfigured, multiServer, selectedServerId } from '../net/env';
+import { requestPasswordReset } from '../lib/authFlows';
+import { multiServer, selectedServerId } from '../net/env';
 import {
   deleteMyAccount,
   fetchEntitlements,
-  fetchProfile,
   fetchReplaysPublic,
   saveReplaysPublic,
-  updateHandle,
-  updateUsername,
   type Entitlements,
 } from '../net/api';
 import { AuthDisabled } from './AuthDisabled';
@@ -22,44 +19,47 @@ import { AuthPanel } from './AuthPanel';
 import { copyText } from './copyText';
 import { DesktopUpdate } from './DesktopUpdate';
 import { fmtDay } from './fmtDate';
+import { ProfileTabs, type ProfileTab } from './ProfileTabs';
 import { ServerMenu } from './ServerMenu';
-import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
 import { VerifyEmailBanner } from './VerifyEmailBanner';
 import { SUPPORT_ENABLED } from '../net/env';
 import { LEGAL_CONTACT } from '../legalText';
 import { trackEvent } from '../analytics';
 
 /**
- * Profile — identity (sign in / out via Neon Auth), the default server region,
- * and a settings reset. Audio and controls moved to `Configure`, which owns
- * everything you tune before a match; what stays here is the ACCOUNT itself.
- * Auth is a stable module constant, so the `authEnabled` branch that skips the
+ * ACCOUNT — the account itself: sign in / out (Neon Auth), email and password, the default
+ * server region, linked accounts, privacy, membership, a settings reset and deletion.
+ *
+ * HOW YOU APPEAR TO OTHERS — name, title, badges, rewards, robot look — is the OTHER page of
+ * this destination, `Appearance` (owner, 2026-09-22: "Profile account settings should be
+ * separated from like profile title and cosmetics settings"). Audio and controls live in
+ * `Configure`. Auth is a stable module constant, so the `authEnabled` branch that skips the
  * session hook is safe.
  */
 export function Account({
   settings,
   onChange,
-  onHandleSaved,
   onDonate,
+  onTab,
 }: {
   settings: GameSettings;
   onChange: (s: GameSettings) => void;
-  /** a saved display name, pushed straight back up to App so the header pill
-   * updates on save instead of waiting for the next reload */
-  onHandleSaved?: (handle: string) => void;
   /** navigate to the Support page — the membership card links to it rather than
    * duplicating the tier pitch here */
   onDonate?: () => void;
+  /** the Appearance | Account strip */
+  onTab?: (t: ProfileTab) => void;
 }) {
   return (
     <>
       <h1 className="ds-h1">Profile</h1>
+      <ProfileTabs active="account" onPick={onTab} />
 
       {/* ABOVE the identity panel, because it is about the address that panel shows,
           and because this is the page the ranked refusal sends people to. */}
       {authEnabled && <VerifyEmailBanner />}
 
-      {authEnabled ? <Identity onHandleSaved={onHandleSaved} /> : <IdentityDisabled />}
+      {authEnabled ? <Identity /> : <IdentityDisabled />}
 
       {multiServer() && (
         // `ds-panel-open` drops the panel's `overflow: hidden` so the region
@@ -79,17 +79,12 @@ export function Account({
 
       <DesktopUpdate />
 
-      {/* Above Privacy: a title is part of how a name is PRESENTED, which is what the
-          identity panels above are about, whereas Privacy begins the settings half of
-          the page. Renders nothing at all until the account has earned one. */}
-      {/* ⚠️ ABOVE `LinkedAccounts`, and both facts matter. It has to MOUNT first because
-          `LinkedAccounts` strips `?link` from the URL once it has read it, and it has to READ
-          first because this panel is the thing somebody is coming back to see — burying a
-          reward under the row that granted it is the version of this that still feels like
-          nothing happened. */}
+      {/* ⚠️ `StarReward` ABOVE `LinkedAccounts`, and both facts matter. It has to MOUNT first
+          because `LinkedAccounts` strips `?link` from the URL once it has read it, and it has to
+          READ first because this is the thing somebody is coming back to see. The reward itself
+          arrives through the claim dialog; this panel only says what to do when there is none. */}
       {authEnabled && <StarReward />}
       {authEnabled && <LinkedAccounts />}
-      {authEnabled && <TitlePicker />}
       {authEnabled && <ReplayPrivacy />}
 
       {authEnabled && SUPPORT_ENABLED && <Membership onDonate={onDonate} />}
@@ -376,7 +371,7 @@ export function DeleteAccount() {
   );
 }
 
-function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void }) {
+function Identity() {
   const client = authClient!;
   const session = client.useSession();
   const [open, setOpen] = useState(false);
@@ -410,8 +405,7 @@ function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void 
               Sign out
             </button>
           </div>
-          <DisplayName userId={user.id} fallback={user.name ?? 'Player'} onSaved={onHandleSaved} />
-          <Username userId={user.id} />
+          {user.email && <PasswordRow email={user.email} />}
           <div className="ds-acct-id">
             <p className="ds-hint">Account ID</p>
             <div className="ds-field-row">
@@ -448,168 +442,38 @@ function Identity({ onHandleSaved }: { onHandleSaved?: (handle: string) => void 
   );
 }
 
-/** editable public display name (the leaderboard/profile handle) */
-function DisplayName({
-  userId,
-  fallback,
-  onSaved,
-}: {
-  userId: string;
-  fallback: string;
-  onSaved?: (handle: string) => void;
-}) {
-  const configured = gameServerConfigured();
-  const [name, setName] = useState(fallback);
-  const [saved, setSaved] = useState(fallback);
-  const [status, setStatus] = useState<'idle' | 'saving' | 'ok' | 'error'>('idle');
-  const [error, setError] = useState('');
-
-  // load the current handle from the server (may differ from the auth name)
-  useEffect(() => {
-    if (!configured) return;
-    let alive = true;
-    fetchProfile(userId)
-      .then((p) => {
-        if (!alive || !p.handle) return;
-        setName(p.handle);
-        setSaved(p.handle);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [userId, configured]);
-
-  const trimmed = name.trim();
-  const dirty = trimmed !== saved;
-  const valid = trimmed.length >= 2 && trimmed.length <= 24;
-
-  const save = (): void => {
-    if (!dirty || !valid) return;
-    setStatus('saving');
-    setError('');
-    updateHandle(trimmed)
-      .then((r) => {
-        setSaved(r.handle);
-        setName(r.handle);
-        setStatus('ok');
-        onSaved?.(r.handle);
-      })
-      .catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
-        setStatus('error');
-      });
+/**
+ * PASSWORD — a reset link to the account's own address. Sign-in lives with the auth provider,
+ * so a password is changed through the same emailed-link flow as a forgotten one
+ * (`requestPasswordReset`, `src/lib/authFlows.ts`), rather than by a form here that would
+ * have to hold the old password.
+ */
+function PasswordRow({ email }: { email: string }) {
+  const [state, setState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [msg, setMsg] = useState('');
+  const send = async (): Promise<void> => {
+    setState('sending');
+    const r = await requestPasswordReset(email);
+    if (r.ok) {
+      setState('sent');
+    } else {
+      setMsg(r.message);
+      setState('error');
+    }
   };
-
   return (
-    <div className="ds-panelbox">
-      <label className="ds-field">
-        <span className="cap">
-          Display name <span className={`val${valid ? '' : ' over'}`}>{trimmed.length}/24</span>
+    <>
+      <div className="ds-field-row">
+        <span className="ds-hint">
+          {state === 'sent' ? `A link to set a new password is on its way to ${email}.` : 'Password'}
         </span>
-        <div className="ds-field-row">
-          <input
-            className="ds-input grow"
-            type="text"
-            maxLength={24}
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-              if (status !== 'idle') setStatus('idle');
-            }}
-            placeholder="Shown on leaderboards"
-          />
-          <button className="ds-btn primary" disabled={!dirty || !valid || status === 'saving'} onClick={save}>
-            {status === 'saving' ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-      </label>
-      <p className="ds-hint">
-        {!configured && 'Editing needs the game server.'}
-        {status === 'ok' && !dirty && <span className="ok">Saved.</span>}
-        {status === 'error' && <span className="err">{error}</span>}
-      </p>
-    </div>
-  );
-}
-
-/** the unique public username (the /profile/<username> slug + @-mention) */
-function Username({ userId }: { userId: string }) {
-  const configured = gameServerConfigured();
-  const [value, setValue] = useState('');
-  const [current, setCurrent] = useState<string | null>(null);
-  const [status, setStatus] = useState<'idle' | 'saving' | 'ok' | 'error'>('idle');
-  const [error, setError] = useState('');
-  const check = useUsernameCheck(value, current ?? undefined);
-
-  useEffect(() => {
-    if (!configured) return;
-    let alive = true;
-    fetchProfile(userId)
-      .then((p) => {
-        if (!alive) return;
-        setCurrent(p.username);
-        if (p.username) setValue(p.username);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, [userId, configured]);
-
-  const dirty = check.normalized !== (current ?? '');
-  const canSave = dirty && check.ok && status !== 'saving';
-
-  const save = (): void => {
-    if (!canSave) return;
-    setStatus('saving');
-    setError('');
-    updateUsername(check.normalized)
-      .then((r) => {
-        setCurrent(r.username);
-        setValue(r.username);
-        setStatus('ok');
-      })
-      .catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
-        setStatus('error');
-      });
-  };
-
-  return (
-    <div className="ds-panelbox">
-      <label className="ds-field">
-        <span className="cap">Username</span>
-        <div className="ds-field-row">
-          <div className="grow">
-            <UsernameInput value={value} onChange={setValue} />
-          </div>
-          <button className="ds-btn primary" disabled={!canSave} onClick={save}>
-            {status === 'saving' ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-      </label>
-      <p className="ds-hint">
-        {current && (
-          <>
-            Your profile: <code>/profile/{current}</code>.{' '}
-          </>
-        )}
-        {!configured && 'Editing needs the game server. '}
-        {status === 'error' ? (
-          <span className="err">{error}</span>
-        ) : status === 'ok' && !dirty ? (
-          <span className="ok">Saved.</span>
-        ) : (
-          // the format rule comes from `useUsernameCheck` and ONLY from there —
-          // it used to be spelled out a second time here, one edit away from
-          // disagreeing with the rule the checker actually enforces
-          (dirty || !current) && (
-            <span style={{ color: usernameHintColor(check.status) }}>{check.message}</span>
-          )
-        )}
-      </p>
-    </div>
+        <span className="ds-head-spacer" />
+        <button className="ds-btn ghost small" disabled={state === 'sending' || state === 'sent'} onClick={() => void send()}>
+          {state === 'sending' ? 'Sending…' : 'Change password'}
+        </button>
+      </div>
+      {state === 'error' && <p className="ds-hint warn">{msg}</p>}
+    </>
   );
 }
 

@@ -1,6 +1,7 @@
 import { parseAwardTitleId } from '../awards';
 import { titleLabel } from '../cosmetics';
 import { AwardBadge } from './AwardBadge';
+import { BadgeMarks } from './BadgeMark';
 
 /**
  * A LEDGER TITLE beside a name — `title:stargazer` and whatever the rewards ledger grants
@@ -55,8 +56,17 @@ export function TitleChip({ id }: { id: string }) {
  * It is a SIBLING of `SupporterBadge`, never nested in it: a champion who also pays shows
  * both, and a badge is decoration beside a name rather than part of one.
  */
-export function TitleMark({ title }: { title?: string | null }) {
-  if (!title) return null;
-  const award = parseAwardTitleId(title);
-  return award ? <AwardBadge award={award} /> : <TitleChip id={title} />;
+export function TitleMark({ title, badges }: { title?: string | null; badges?: unknown }) {
+  /* ⚠️ THE WORN BADGES RIDE HERE TOO (0048), before the title, for the reason this component
+     exists at all: every surface that prints a name already calls it, so the badges reach all
+     of them by passing one more prop — rather than by a second component each surface would
+     have to remember. Badges first, because they are the counted, rarer claim; the title is
+     the words, and it reads last. */
+  const award = title ? parseAwardTitleId(title) : null;
+  return (
+    <>
+      <BadgeMarks badges={badges} />
+      {title ? award ? <AwardBadge award={award} /> : <TitleChip id={title} /> : null}
+    </>
+  );
 }

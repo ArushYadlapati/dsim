@@ -324,6 +324,14 @@ export interface LobbyPlayer {
    */
   title?: string | null;
   /**
+   * the EQUIPPED BADGES and their counters, `[{id, n}]` (migration 0048, `src/badges.ts`).
+   * Server-authored on exactly the same terms as `title` above — a badge is a claim to have
+   * won something — and read at join off the same `getProfile` row, so a roster broadcast
+   * still costs no database read. At most three short ids, never a rendered string. Optional:
+   * an older server never sets it and an older client ignores it.
+   */
+  badges?: { id: string; n: number }[];
+  /**
    * THIS SEAT IS A BOT, and the string is its TIER (plan §6).
    *
    * Server-authored on exactly the same terms as `supporter` and `role` — `sanitizePlayerPatch`

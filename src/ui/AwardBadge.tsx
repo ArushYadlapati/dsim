@@ -1,4 +1,4 @@
-import { awardBadgeRank, awardShortText, awardTitleText, type AwardRow } from '../awards';
+import { awardBadgeRank, awardPodiumTier, awardShortText, awardTitleText, type AwardRow } from '../awards';
 
 /**
  * A SEASON-AWARD BADGE — a hexagon carrying the rank numeral.
@@ -23,11 +23,13 @@ import { awardBadgeRank, awardShortText, awardTitleText, type AwardRow } from '.
  * glyph's size and position inside the disc are decided by the FONT's metrics, it is drawn
  * on the baseline rather than centred, and not every platform has the character.
  */
-export function AwardBadge({ award, size = 'sm' }: { award: AwardRow; size?: 'sm' | 'md' }) {
+export function AwardBadge({ award, size = 'sm' }: { award: AwardRow; size?: 'sm' | 'md' | 'lg' }) {
   const rank = awardBadgeRank(award);
+  // an ACT podium title wears the podium's metal (0048) — see `awardPodiumTier`
+  const tier = awardPodiumTier(award);
   return (
     <span
-      className={`award-badge award-${size}`}
+      className={`award-badge award-${size}${tier ? ` podium-${tier}` : ''}`}
       role="img"
       aria-label={awardTitleText(award)}
       title={awardShortText(award)}

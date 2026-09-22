@@ -52,7 +52,7 @@ function PlayerLink({
   const badge = (
     <>
       <SupporterBadge supporter={p.supporter} role={p.role} />
-      <TitleMark title={p.title} />
+      <TitleMark title={p.title} badges={p.badges} />
     </>
   );
   if (p.username && onOpenProfile) {

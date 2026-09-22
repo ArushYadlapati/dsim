@@ -1,7 +1,7 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { adsConfigured } from './adsense';
 import { authClient, authEnabled } from '../lib/authClient';
-import { fetchEntitlements } from '../net/api';
+import { ENTITLEMENTS_CHANGED, fetchEntitlements } from '../net/api';
 
 /**
  * Whether ads should render right now, for this user.
@@ -45,6 +45,15 @@ export function AdsProvider({ children }: { children: ReactNode }) {
   const [supporter, setSupporter] = useState(false);
   const [checked, setChecked] = useState(false);
   const [earnedCosmetics, setEarnedCosmetics] = useState<readonly string[]>([]);
+  /* bumped by `ENTITLEMENTS_CHANGED` — a claimed reward that unlocked a cosmetic — so the
+     builder's swatch unlocks without a reload. Re-running the effect below IS the re-read. */
+  const [epoch, setEpoch] = useState(0);
+  const checkedFor = useRef<string | null>(null);
+  useEffect(() => {
+    const bump = (): void => setEpoch((n) => n + 1);
+    window.addEventListener(ENTITLEMENTS_CHANGED, bump);
+    return () => window.removeEventListener(ENTITLEMENTS_CHANGED, bump);
+  }, []);
 
   useEffect(() => {
     // Nothing to ask about: auth is off in this build, or nobody is signed in.
@@ -54,10 +63,14 @@ export function AdsProvider({ children }: { children: ReactNode }) {
       setSupporter(false);
       setEarnedCosmetics([]);
       setChecked(true);
+      checkedFor.current = null;
       return;
     }
     let cancelled = false;
-    setChecked(false);
+    // a RE-READ for the same account (`epoch`) keeps the settled answer on screen while it
+    // runs — resetting `checked` would drop the ad slot for a beat and shift the page
+    if (checkedFor.current !== userId) setChecked(false);
+    checkedFor.current = userId;
     void fetchEntitlements().then((e) => {
       if (cancelled) return;
       setSupporter(e.supporter);
@@ -72,7 +85,7 @@ export function AdsProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [userId, epoch]);
 
   const showAds = adsConfigured() && checked && !supporter;
   return <Ctx.Provider value={{ showAds, supporter, checked, earnedCosmetics }}>{children}</Ctx.Provider>;

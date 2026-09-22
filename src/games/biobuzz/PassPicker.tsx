@@ -226,7 +226,6 @@ export function BbPassPicker({ spec, alliance, startIndex, startPose, onChange, 
   return (
     <>
       <h3 className="ds-subh">Pass target</h3>
-      <p className="ds-hint">Where PASS throws a held element. Click the map for an exact spot, or pick a preset.</p>
       <div className="ds-passpick">
         <div className="ds-startpos-stage">
           <canvas

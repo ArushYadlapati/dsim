@@ -619,32 +619,34 @@ export function coreChecks(check: Check): void {
     );
 
     /**
-     * ⚠️ THERE IS NO NECTAR STOCK CHIP, AND IT MUST NOT COME BACK (owner, 2026-09-19: "get rid
-     * of ... the top right corner display that shows the number of nectar remaining").
-     *
-     * The count was said TWICE on screen — on this right-anchored row and on a billboard over
-     * the human player's box in the 3D world — and the box itself is the thing that actually
-     * holds the NECTAR. Both are gone.
-     *
-     * WHAT WENT WITH IT, recorded because it was a real thing and not just clutter: the chip's
-     * TEXT was the only place the HUD said WHY a press would refuse — `none-owed` (a full stock
-     * the alliance is not yet entitled to spend), `none-left`, and `locked` (the FROZEN FIELD,
-     * not G410). `nectarWhy` still exists on the slice and FIELD-lane checks still pin every
-     * branch of it, so the fact is still derived; it is only no longer DRAWN. If it is wanted
-     * back it belongs on the score bar's own rule row, which survives a coarse pointer — not on
-     * this row, which is `nowrap`, right-anchored and grows leftward into the sponsor mark.
+     * THE NECTAR COLUMN IS BACK (owner, 2026-09-22: "Make the top right HUD look like main's
+     * top right HUD, with the nectar display too"), reversing the 2026-09-19 removal this pin
+     * used to record. `.bb-hud-right` is a dot column, same spelling as STORAGE — never the
+     * text chip the 2026-09-19 ruling was actually about — indexed by this alliance's own
+     * stock and debt so a driver reads their own supply, not the opponent's.
      */
-    // the DECLARATION, not the name: the comment that records why the chip went still says
-    // `NECTAR_CHIP`, and a check that a word never appears is a check that forbids writing
-    // down why something was removed.
-    check('HudSlots.tsx renders no NECTAR stock chip', !/const NECTAR_CHIP/.test(hudSrc));
+    check('HudSlots.tsx draws the NECTAR column', hudSrc.includes('bb-hud-right'));
     check(
-      '...and nothing else on that row reads the stock or the debt',
-      !hudSrc.includes('nectarStock[hud.alliance]') && !hudSrc.includes('nectarDue[hud.alliance]'),
+      "...indexed by this alliance's own stock and debt",
+      hudSrc.includes('nectarStock[hud.alliance]') && hudSrc.includes('nectarDue[hud.alliance]'),
     );
     // G410 KEEPS ITS OWN CHIP, and it is a different rule about a different act — a NECTAR
-    // entering a FLOWER, not a human player's entry. Removing the stock chip must not take it.
+    // entering a FLOWER, not a human player's entry. The NECTAR column returning must not fold
+    // the two together.
     check('...and G410 keeps its own separate chip', hudSrc.includes('NECTAR LOCKED'));
+
+    /**
+     * THE RAMP UP / RAMP DOWN CHIP IS GONE (owner, 2026-09-22: "Fix the 'Ramp up' thing top
+     * right HUD. Just get rid of it. It is self-explanatory if you look at the robot"). It was
+     * the one TEXT chip left in this card, and the only fact in it a driver could already see
+     * on the built robot without reading a word.
+     */
+    check(
+      'HudSlots.tsx renders no RAMP UP/DOWN chip',
+      !hudSrc.includes('RAMP UP') && !hudSrc.includes('RAMP DOWN'),
+    );
+    const hudRobotSrc = readRepo('src/games/biobuzz/hudRobot.ts');
+    check('...and hudRobot.ts carries no leftover rampOut plumbing for it', !hudRobotSrc.includes('rampOut'));
 
     /**
      * THE FLOWER ICON'S FILL IS A STANDING STATE, NOT A HELD-BUMP FLASH.

@@ -60,7 +60,7 @@ export function CareerPanel({
           {/* and the equipped title, for the same reason: this chip is the whole of "who
               you are" on this screen, and a title that shows on the board but not here
               reads as having been lost. */}
-          <TitleMark title={stats?.title} />
+          <TitleMark title={stats?.title} badges={stats?.badges} />
         </span>
         {headerAction}
       </div>

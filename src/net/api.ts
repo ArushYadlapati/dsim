@@ -1,5 +1,7 @@
 import type { Replay } from '../sim/replay';
 import type { AwardRow } from '../awards';
+import type { EquippedBadge } from '../badges';
+import type { RewardGrant } from '../rewards';
 import type { LiveRoom, StaffRole } from './protocol';
 import type { ReportedUser, ReportRow } from '../report';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
@@ -53,6 +55,12 @@ export interface BadgeFields {
    * `parseAwardTitleId` turns it back into an award without touching `season_awards`.
    */
   title?: string | null;
+  /**
+   * the EQUIPPED BADGES and their counters, `[{id, n}]` (0048). Rides `badgeCols` beside the
+   * title for the same reason — every name surface draws it. Absent from an older server;
+   * read through `coerceEquippedBadges`, which drops anything this build does not know.
+   */
+  badges?: EquippedBadge[] | null;
 }
 
 export interface RecordConfig {
@@ -76,6 +84,8 @@ export interface RecordRow extends BadgeFields {
   partnerRole?: StaffRole;
   /** ...and the partner's equipped title, for the same reason. */
   partnerTitle?: string | null;
+  /** ...and the partner's worn badges. */
+  partnerBadges?: EquippedBadge[] | null;
   score: number;
   replayId: string | null;
   createdAt: string;
@@ -234,6 +244,10 @@ export interface UserStats {
   awards?: AwardRow[];
   /** the equipped title id, or null. */
   title?: string | null;
+  /** the worn badges and their counters (0048). */
+  badges?: EquippedBadge[] | null;
+  /** every badge the account holds and how many times — the trophy case (0048). */
+  badgeCounts?: Record<string, number>;
 }
 
 /** One round-trip: a user's whole competitive profile for the current season
@@ -622,6 +636,52 @@ export function saveTitle(title: string | null): Promise<{ title: string | null 
   return authedJson('/api/user/title', {
     method: 'POST',
     body: JSON.stringify({ title }),
+  });
+}
+
+/**
+ * THE REWARD LEDGER (0048) — everything the claim dialog and the appearance page read, in one
+ * request: pending grants, badge counts, what is worn, what is wearable.
+ *
+ * An older server has no such route and answers 404, which `authedJson` raises as
+ * `FriendsUnavailableError` — the caller reads that as "nothing pending", which is true.
+ */
+export interface RewardStateDto {
+  pending: RewardGrant[];
+  badges: Record<string, number>;
+  equippedBadges: EquippedBadge[];
+  title: string | null;
+  earnedTitles: string[];
+  /** the trophy case behind the award titles — names each one's act and season. Absent from
+   *  a server that predates the field. */
+  awards?: AwardRow[];
+}
+
+/**
+ * A `window` event saying the account's unlocks changed (a claim delivered a cosmetic). The
+ * entitlement provider re-reads `/api/user/entitlements` on it, so the robot builder unlocks
+ * the swatch without a reload. An event rather than an import, because `src/ads/` must not
+ * depend on the reward UI.
+ */
+export const ENTITLEMENTS_CHANGED = 'dsim:entitlements';
+
+export function fetchRewards(): Promise<RewardStateDto> {
+  return authedJson('/api/user/rewards');
+}
+
+/** CLAIM one grant, and with `equip` wear it. Answers the account's whole reward state after. */
+export function claimReward(id: string, equip: boolean): Promise<RewardStateDto> {
+  return authedJson('/api/user/rewards/claim', {
+    method: 'POST',
+    body: JSON.stringify({ id, equip }),
+  });
+}
+
+/** WEAR these badges, in this order. The server re-validates against what is held. */
+export function saveBadges(badges: string[]): Promise<{ equippedBadges: EquippedBadge[] }> {
+  return authedJson('/api/user/badges', {
+    method: 'POST',
+    body: JSON.stringify({ badges }),
   });
 }
 

@@ -94,7 +94,8 @@ kept. The app bar names the loaded season (`.ds-bar-season`, "DSIM · BIOBUZZ").
 **Reverted, same day (owner):** the wordmark-tab-strip game picker and the poster-tile/hive-lockup
 season artwork (`public/brand/*`, `Season.brand`, `brandUrl`, the `.ds-wordmarks`/`.ds-poster` home
 picker, `renderFieldGlb.ts`'s `bannerTexture`) are backed out; the home game picker and the hive
-banner are back to how they were before this session touched them.
+banner are back to how they were before this session touched them. (Landed independently on both
+sides of this merge — genius0412/alpha's own 58ebb3e reverts the same thing, same day.)
 
 **Also this day:** the box tube clears the flower's REAL solid (`BB_FLOWER_OUTER_R` measured off the
 GLB, tip parks outside the top plate's edge; swept-arm check 0/5176 vs 3736 for the bore aim); the
