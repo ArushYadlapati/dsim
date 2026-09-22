@@ -38,8 +38,24 @@ import {
   BB_NECTAR_R,
   BB_TAPE,
   BB_TAPE_W,
+  BB_TILE_SEAMS,
   BB_VIEW_MARGIN,
 } from '../../src/games/biobuzz/config';
+// THE FIELD MAT'S SURFACE (2026-09-21) — `scene/renderTiles.ts` is deliberately almost all pure
+// functions over numbers, so the seam the owner asked for is MEASURED here rather than grepped.
+import {
+  BB_TILE_TOOTH,
+  bbTileDetail,
+  buildTileGrain,
+  TILE_GRAIN_REPEAT,
+  TILE_GROOVE,
+  TILE_LINE,
+  TILE_MAT,
+  TILE_TEX_SIZE,
+  tileSeamPaths,
+  tileSeamPolyline,
+  tileTone,
+} from '../../src/games/biobuzz/scene/renderTiles';
 import { drawBiobuzzField, snapTapeGroup } from '../../src/games/biobuzz/drawField';
 // the CAD loader's own DOM-free exports — the AprilTag bitmap, the ID table the manual sets, and
 // the creased-normal pass. Importing a `scene/` module here is fine: this is a script, not the
@@ -281,7 +297,8 @@ import {
   stepTier,
   type GpuProbe,
 } from '../../src/games/biobuzz/graphics/auto';
-import { BASE_RIG, BB_ENVIRONMENTS, BB_ENVIRONMENT_IDS, environmentDef, hdriEnvironments } from '../../src/games/biobuzz/graphics/environments';
+import { BASE_RIG, BB_ENVIRONMENTS, BB_ENVIRONMENT_IDS, environmentDef, hdriEnvironments, type VenueSpec } from '../../src/games/biobuzz/graphics/environments';
+import { bbVenueDetail, buildBiobuzzVenue } from '../../src/games/biobuzz/scene/renderVenue';
 import { ENVIRONMENT_IDS, type EnvironmentId } from '../../src/games/biobuzz/graphics/settings';
 import { drawBiobuzzFlowerReadout } from '../../src/games/biobuzz/drawFlowerReadout';
 import { BIOBUZZ_MODULE } from '../../src/games/biobuzz';
@@ -845,6 +862,185 @@ export function renderChecks(check: Check): void {
       body.length > 0 && !originAnchored,
       body.length === 0 ? 'buildFloorTexture not found' : originAnchored ? 'toTex(0, 0) is back' : `${body.length} chars scanned`,
     );
+
+    // ═══ THE MAT READS AS THIRTY-SIX SOFT TILES (owner, 2026-09-21: "For higher graphics
+    //     settings, have proper texture and the proper pattern of the field tile (where two
+    //     tiles meet). More accurate colour would be good too") ═══════════════════════════════
+    //
+    // `scene/renderTiles.ts` carries the measurement: the part is `am-2499`, the field has 36 of
+    // them in three variants, and the interlock is a 50 %-duty SQUARE castellation at period
+    // 2.369 in, half-amplitude 0.405 in — all of it read off the same sha-pinned STEP
+    // `npm run field-cad` uses. Everything below is arithmetic on the real polyline, because a
+    // seam that misses its own tile corner is exactly the failure a source grep cannot see.
+
+    // (1) THE PITCH DIVIDES THE FIELD. A grid that does not land on the CAD's own seams looks
+    //     worse than no grid at all, and `BB_TILE_SEAMS` is the only place the answer lives.
+    check('the tile grid is 6 cells per axis over the CAD seam lines', BB_TILE_SEAMS.length === 7, `${BB_TILE_SEAMS.length} lines`);
+    {
+      const spans = BB_TILE_SEAMS.slice(1).map((s, i) => s - BB_TILE_SEAMS[i]);
+      const worst = Math.max(...spans.map((s) => Math.abs(s - 23.5283)));
+      check('...and every cell is within half an inch of TILE_PITCH (the CAD seams are NOT even)', worst < 0.5, `worst ${worst.toFixed(3)} in`);
+      const total = BB_TILE_SEAMS[6] - BB_TILE_SEAMS[0];
+      check('...and the six of them sum to the CAD tile footprint, 141.17 in', Math.abs(total - 141.1696) < 0.01, `${total.toFixed(4)}`);
+    }
+
+    // (2) THE SEAM IS THE CASTELLATION, ON ITS OWN SEAM LINE, AND IT CLOSES AT THE TILE CORNER.
+    {
+      const at = BB_TILE_SEAMS[3];
+      const a = BB_TILE_SEAMS[2];
+      const b = BB_TILE_SEAMS[3];
+      const pts = tileSeamPolyline(at, a, b, 'x');
+      const devs = pts.map((p) => p[0] - at);
+      const A = BB_TILE_TOOTH.amplitude;
+      check('a seam run deviates by exactly ±the measured tab projection, never in between',
+        devs.every((d) => Math.abs(Math.abs(d) - A) < 1e-9), `${devs.length} points, A=${A}`);
+      check('...and it is NOT a straight line (the check is not vacuous)', new Set(devs.map((d) => Math.sign(d))).size === 2);
+      check('...and it starts and ends on the tile corners it runs between',
+        Math.abs(pts[0][1] - a) < 1e-9 && Math.abs(pts[pts.length - 1][1] - b) < 1e-9,
+        `${pts[0][1]} .. ${pts[pts.length - 1][1]}`);
+      // TEN TEETH TO AN EDGE, at the measured period stretched to fit the cell — never truncated,
+      // because a part-tooth straddling a tile corner is the one thing that reads as a mistake.
+      const flips = pts.filter((p, i) => i > 0 && p[0] !== pts[i - 1][0]).length;
+      check('ten teeth to an edge, so no tooth straddles a corner', flips === 2 * BB_TILE_TOOTH.perEdge, `${flips} flips`);
+      const period = (b - a) / BB_TILE_TOOTH.perEdge;
+      check('...and the stretched period stays within 1.5 % of the CAD\'s 2.369 in',
+        Math.abs(period - BB_TILE_TOOTH.period) / BB_TILE_TOOTH.period < 0.015, `${period.toFixed(4)} in`);
+      // 50 % DUTY, and the CELL CENTRE sits in a GAP — where the CAD puts it (its own centre gap
+      // is measured at 11.377…12.156 of a 23.99-in edge).
+      let hi = 0;
+      let lo = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const run = pts[i][1] - pts[i - 1][1];
+        if (run <= 0) continue;
+        if (pts[i][0] > at) hi += run;
+        else lo += run;
+      }
+      check('the wave is 50 % duty — as much tab as notch along the seam', Math.abs(hi - lo) < 1e-6, `${hi.toFixed(4)} vs ${lo.toFixed(4)}`);
+      const mid = (a + b) / 2;
+      const seg = pts.findIndex((p, i) => i > 0 && pts[i - 1][1] <= mid && p[1] >= mid);
+      check('...and the cell centre falls in a NOTCH, the phase the CAD has', seg > 0 && pts[seg][0] < at, `centre dev ${seg > 0 ? (pts[seg][0] - at).toFixed(3) : 'n/a'}`);
+    }
+
+    // (3) THE PERIMETER OF THE MAT IS STRAIGHT, and that is CAD, not a simplification: the field
+    //     carries 16 `am-2499-Side` and 4 `am-2499-Corner` tiles whose outer edges are cut flat,
+    //     which is why the tiled floor measures exactly 6 × TILE_PITCH with nothing poking out.
+    {
+      const tiled = tileSeamPaths('tiles');
+      const flat = tileSeamPaths('flat');
+      const straight = tiled.filter((p) => !p.interior);
+      check('the mat\'s own perimeter edge is straight on all four sides', straight.length === 4 && straight.every((p) => p.points.length === 2), `${straight.length}`);
+      check('...and the five interior seams per axis are toothed, one run per cell',
+        tiled.filter((p) => p.interior).length === 2 * 5 * 6, `${tiled.filter((p) => p.interior).length}`);
+      // THE LOW COLUMN PAYS NOTHING. `flat` is the straight 14-line grid that shipped before any
+      // of this, and it is the whole of what a Low device draws.
+      check('the flat tier is still the fourteen straight grid lines it always was',
+        flat.length === 14 && flat.every((p) => p.points.length === 2 && !p.interior), `${flat.length}`);
+    }
+
+    // (4) THE TIER LADDER — `meshDetail` alone, the one value `createBiobuzzScene` hands
+    //     `buildBiobuzzField` (the field is built before the scene object exists, so there is no
+    //     `tier` to read there), and already resolved against the fixed tier an EXPORT runs at.
+    check('Low gets the flat mat and everything else gets the tiles', bbTileDetail('low') === 'flat' && bbTileDetail('high') === 'tiles');
+    check('...and Low keeps the 1024-texel canvas, with 2048 only where the teeth need it',
+      TILE_TEX_SIZE.flat === 1024 && TILE_TEX_SIZE.tiles === 2048);
+    check('...and the grain textures are not even allocated on Low', buildTileGrain('flat') === null);
+    // THE GRAIN IS A WHOLE NUMBER OF PERIODS PER TILE (4), which is the physical answer and not
+    // a convenience: the 36 tiles are identical translated copies of one moulding, so the fine
+    // surface has to repeat in phase from tile to tile. A repeat that did not divide the grid
+    // would drift the grain across the field and read as a texture laid over the mat.
+    check('the grain repeats a whole number of times per tile (4), in phase on every one',
+      TILE_GRAIN_REPEAT % (BB_TILE_SEAMS.length - 1) === 0 && TILE_GRAIN_REPEAT / (BB_TILE_SEAMS.length - 1) === 4, `${TILE_GRAIN_REPEAT}`);
+
+    // (5) NO DOUBLE-MULTIPLY. `MeshStandardMaterial` multiplies `color` by `map`, so a tone
+    //     passed as both comes out squared and near black — the venue's ground shipped exactly
+    //     that bug. The floor's albedo is the canvas and nothing else, and the two new map slots
+    //     carry no colour at all (an sRGB decode on a normal or roughness map is the same class
+    //     of silent wrongness one level down).
+    {
+      const fat = floorSrc.indexOf('function buildFloor(');
+      const fbody = fat < 0 ? '' : floorSrc.slice(fat, floorSrc.indexOf('function wallMaterial(', fat));
+      check('the floor material takes a map and NO colour',
+        /new THREE\.MeshStandardMaterial\(\{ map: buildFloorTexture\(withTape, detail\) \}\)/.test(fbody) && !/color:/.test(fbody),
+        `${fbody.length} chars`);
+      check('...and it takes the grain on the normal and roughness slots',
+        fbody.includes('material.normalMap = grain.normalMap') && fbody.includes('material.roughnessMap = grain.roughnessMap'));
+      const tileSrc = readFileSync(join(root, 'src/games/biobuzz/scene/renderTiles.ts'), 'utf8');
+      check('...and neither grain map is decoded as sRGB', /srgb \? THREE\.SRGBColorSpace : THREE\.NoColorSpace/.test(tileSrc) && /mk\(canvas, false\)/.test(tileSrc) && /mk\(rough, false\)/.test(tileSrc));
+    }
+
+    // (6) THE 3D MAT IS A REAL TILE GREY, and how far it may go is MEASURED rather than
+    //     chosen. A field tile is grey EVA foam (AndyMark am-2499, spec "Gray"), not the
+    //     near-black the 2D board paints, so the 3D floor was lifted to one — and the 2D
+    //     `COLORS.mat`/`COLORS.tile` were deliberately NOT touched, because repainting
+    //     DECODE's board was never the ask. What stops the lift going further is below.
+    {
+      const lin = (v: number): number => (v / 255 <= 0.03928 ? v / 255 / 12.92 : Math.pow((v / 255 + 0.055) / 1.055, 2.4));
+      const chan = (h: string): number[] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+      const lum = (h: string): number => { const c = chan(h); return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]); };
+      const ratio = (a: string, b: string): number => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+      for (const [name, next, token] of [['mat', TILE_MAT, SHARED_COLORS.mat], ['line', TILE_LINE, SHARED_COLORS.tile]] as const) {
+        const c = chan(next);
+        check(`the 3D ${name} is NEUTRAL grey — the CAD's own tile hue, not DECODE's blue mat`, c[0] === c[1] && c[1] === c[2], next);
+        check(`...and the 3D ${name} is LIGHTER than the 2D token, which is the point of it`,
+          lum(next) > lum(token), `${next} vs ${token}`);
+      }
+      /**
+       * ⚠️ **ON-FIELD TEXT IS THE CEILING NOW, NOT THE DRIVER LABEL** (owner, 2026-09-21:
+       * lighten the mat, strengthen the label stroke).
+       *
+       * The mat used to be locked to `COLORS.tile`'s luminance because the driver label's FILL
+       * was measured against the lightest ground it crosses. `LABEL_STROKE` is OPAQUE now
+       * (`render/renderer.ts`), so a glyph reads against its own halo and that pair stopped
+       * moving with the field — which is what let the mat go to a real tile grey at all.
+       *
+       * What binds instead is canvas TEXT drawn over the field: `--ds-on-field-dim`. MEASURED,
+       * #585858 put it at 3.77 and was backed out for it. Both floors are asserted here so the
+       * next lift has to answer to them rather than rediscover them.
+       */
+      const ON_FIELD_DIM = '#b9beb8';
+      check(
+        '⚠️ the mat stays dark enough for canvas ON-FIELD TEXT to clear AA (this is the real ceiling)',
+        ratio(ON_FIELD_DIM, TILE_MAT) >= 4.5 && ratio(ON_FIELD_DIM, TILE_LINE) >= 4.5,
+        `mat ${ratio(ON_FIELD_DIM, TILE_MAT).toFixed(2)} line ${ratio(ON_FIELD_DIM, TILE_LINE).toFixed(2)}`,
+      );
+      check(
+        '⚠️ the driver label clears AA against its OWN STROKE — the pair that does not move with the field',
+        ratio('#f87171', '#14161a') >= 4.5 && ratio('#60a5fa', '#14161a') >= 4.5,
+        `red ${ratio('#f87171', '#14161a').toFixed(2)} blue ${ratio('#60a5fa', '#14161a').toFixed(2)}`,
+      );
+      check(
+        '⚠️ ...and that stroke is OPAQUE, which is the whole reason the pair holds',
+        /const LABEL_STROKE = 'rgb\(/.test(readFileSync(join(root, 'src/render/renderer.ts'), 'utf8')),
+        'an alpha stroke lets the ground through the halo, and the ceiling comes back',
+      );
+      // THE PER-TILE TONE NEVER GOES UP. `TILE_MAT` is the measured ceiling (see above); a
+      // jitter that could brighten is a jitter that could walk a measured pair past its floor
+      // without anything failing.
+      const tones = [] as string[];
+      for (let iy = 0; iy < 6; iy++) for (let ix = 0; ix < 6; ix++) tones.push(tileTone(ix, iy));
+      /* HOW MANY DISTINCT TONES 8-BIT sRGB HAS IN THE JITTER'S RANGE IS A FUNCTION OF THE BASE,
+         so it is DERIVED rather than written down — at the old near-black mat it was four, and
+         a lighter mat has more room. What is actually under test is that the jitter resolves to
+         SEVERAL tones and they are mixed up; a hard-coded count just breaks on every re-tone. */
+      const base = chan(TILE_MAT)[0];
+      const want = new Set(Array.from({ length: 64 }, (_, k) => Math.round(base * (1 - (k / 63) * 0.08)))).size;
+      // 36 draws from `want` buckets will usually miss one, so the band is want-1…want. The
+      // FLOOR is what is under test (the jitter is not being quantised down to a flat sheet);
+      // the CEILING is a tripwire on a range that grew without anyone measuring the darkest tile.
+      const got = new Set(tones).size;
+      check('the 36 tiles take very nearly every tone 8-bit sRGB has in the jitter range',
+        got >= want - 1 && got <= want, `${got} distinct, ${want} available at base ${base}`);
+      const neighbours = tones.filter((t, i) => i % 6 > 0 && t !== tones[i - 1]).length;
+      check('...and the tones are scattered, not laid in blocks', neighbours >= 15, `${neighbours} of 30 adjacent pairs differ`);
+      check('...and not one of them is lighter than the mat itself', tones.every((t) => lum(t) <= lum(TILE_MAT) + 1e-12));
+      check('...and the groove under the seam is darker than the mat, so it can only widen a ratio', lum(TILE_GROOVE) < lum(TILE_MAT));
+      // DETERMINISM: the same field on every machine and in every exported frame.
+      const again = [] as string[];
+      for (let iy = 0; iy < 6; iy++) for (let ix = 0; ix < 6; ix++) again.push(tileTone(ix, iy));
+      check('the mat is deterministic — two builds paint the same 36 tones', again.join() === tones.join());
+      const p1 = JSON.stringify(tileSeamPaths('tiles'));
+      check('...and the same seams', p1 === JSON.stringify(tileSeamPaths('tiles')));
+    }
   }
 
   // ---- the seam itself: GameModule.scene is a function ------------------------------------
@@ -1531,8 +1727,100 @@ function cosmeticsChecks(check: Check): void {
     drawDecal(ctx, 8, 6, 'stripe', '#ff0000');
     check('a "stripe" decal issues at least one fill', fillCount > 0, String(fillCount));
 
+    fillCount = 0;
+    drawDecal(ctx, 8, 6, 'star', '#ff0000');
+    check('a "star" decal issues at least one fill (the earned key draws too, not just the shipped tier ones)', fillCount > 0, String(fillCount));
+
     void strokeCount;
     void strokeStyle;
+  }
+
+  // ---- star decal: PARAMETRIC in the footprint, sized off the SMALLER half-dimension ---------
+  // (`docs/cosmetics-plan.md` §4's named risk — a decal must scale to any legal chassis).
+  // Traces the actual vertices `drawDecal`'s `'star'` case emits on two very different
+  // footprints: a near-square one and a long, narrow one this sim's legal chassis range
+  // actually spans. A per-axis scale (hl one way, hw the other — fine for `chevron`, an
+  // arrow with no rotational symmetry to protect) would squash a 5-fold-symmetric star into
+  // an ellipse on the narrow chassis; sizing off `Math.min(hl, hw)` is what a REAL star, not
+  // a lookalike, requires.
+  {
+    const trace = (hl: number, hw: number): { xs: number[]; ys: number[] } => {
+      const xs: number[] = [];
+      const ys: number[] = [];
+      const ctx = {
+        save() {}, restore() {}, beginPath() {}, closePath() {}, clip() {}, rect() {},
+        moveTo(x: number, y: number) { xs.push(x); ys.push(y); },
+        lineTo(x: number, y: number) { xs.push(x); ys.push(y); },
+        arc() {}, arcTo() {}, fillRect() {}, strokeRect() {}, fill() {}, stroke() {},
+        set strokeStyle(_v: string) {}, get strokeStyle() { return ''; },
+        set fillStyle(_v: string) {}, set lineWidth(_v: number) {},
+      } as unknown as CanvasRenderingContext2D;
+      drawDecal(ctx, hl, hw, 'star', '#ff0000');
+      return { xs, ys };
+    };
+    // `starPoints` alternates outer/inner starting on an outer vertex, and `drawDecal` traces
+    // it in that order untouched — so the recorded points do too: even index = outer, odd = inner.
+    const radii = (t: { xs: number[]; ys: number[] }) => t.xs.map((x, i) => Math.hypot(x, t.ys[i]));
+    const outerRadii = (t: { xs: number[]; ys: number[] }) => radii(t).filter((_, i) => i % 2 === 0);
+    const spread = (ns: number[]) => Math.max(...ns) - Math.min(...ns);
+
+    const square = trace(8, 8); // hl === hw: min-dimension and either dimension agree
+    const narrow = trace(20, 3); // a long, narrow chassis: hw is the binding dimension
+
+    check(
+      'star decal: outer radius is 0.8× the SMALLER half-dimension, on both a square and a long/narrow footprint',
+      Math.abs(Math.max(...outerRadii(square)) - 8 * 0.8) < 0.01 && Math.abs(Math.max(...outerRadii(narrow)) - 3 * 0.8) < 0.01,
+      `square r=${Math.max(...outerRadii(square)).toFixed(3)} (want ${(8 * 0.8).toFixed(3)}), narrow r=${Math.max(...outerRadii(narrow)).toFixed(3)} (want ${(3 * 0.8).toFixed(3)})`,
+    );
+    check(
+      'star decal: two very different footprints scale PROPORTIONALLY (not the same absolute size)',
+      Math.abs(Math.max(...outerRadii(square)) - Math.max(...outerRadii(narrow))) > 1,
+      `square r=${Math.max(...outerRadii(square)).toFixed(3)}, narrow r=${Math.max(...outerRadii(narrow)).toFixed(3)}`,
+    );
+    // A per-axis (x one scale, y another) distortion would spread the five OUTER vertices'
+    // radii apart from each other, because they sit at five different angles (0/72/144/216/288)
+    // and an anisotropic scale moves each by a different amount. `Math.hypot` on each recorded
+    // vertex, on the LONG/NARROW footprint where a bug would show up worst, is what a bounding-
+    // box aspect ratio can't tell you: a regular 5-point star's bbox is legitimately not square
+    // (~0.951 pointing on-axis, arithmetic in the header of `starPoints`) even when the star
+    // itself is perfectly regular, which is what tripped this check up on the first pass.
+    check(
+      'star decal: all five OUTER vertices sit at the SAME radius on the long/narrow footprint — a real star, not an ellipse',
+      spread(outerRadii(narrow)) < 1e-9,
+      `outer radii spread=${spread(outerRadii(narrow)).toExponential(2)}`,
+    );
+  }
+
+  // ---- the OTHER two draw sites must handle "star" too — a silent fallthrough (nothing drawn,
+  // nothing thrown) is exactly how this would ship broken, so these are read off the SOURCE:
+  // `getDecalTexture` needs a DOM canvas this DOM-free lane deliberately does not stub (see this
+  // function's own comment above `buildRobotGroup`), and `decalShape` returns a React element
+  // this lane has no renderer for — grepping the switch body is what the sign/plate checks in
+  // this file already do for the same reason (`buildDumper`, `buildTurret`'s no-accent contract).
+  {
+    const robotsSrc = readFileSync(join(root, 'src', 'games', 'biobuzz', 'scene', 'renderRobots.ts'), 'utf8');
+    const from = robotsSrc.indexOf('function getDecalTexture(');
+    const to = robotsSrc.indexOf('\nconst PLATE_SILVER', from);
+    const body = from > 0 ? robotsSrc.slice(from, to > from ? to : undefined) : '';
+    check(
+      '3D decal texture: getDecalTexture HANDLES "star" (a real case, not a silent fallthrough)',
+      from > 0 && to > from && /case 'star':/.test(body) && /starPoints\(/.test(body) && /ctx\.fill\(\)/.test(body),
+      `${body.length} chars scanned`,
+    );
+    check(
+      '3D decal texture: the star case sizes off Math.min(hw, hh) — this canvas’s own isotropic half-extents — matching the 2D 0.8× radius exactly',
+      /Math\.min\(hw,\s*hh\)\s*\*\s*0\.8/.test(body),
+    );
+
+    const menuSrc = readFileSync(join(root, 'src', 'ui', 'Menu.tsx'), 'utf8');
+    const mFrom = menuSrc.indexOf('function decalShape(');
+    const mTo = menuSrc.indexOf('\nfunction plateShape(', mFrom);
+    const mBody = mFrom > 0 ? menuSrc.slice(mFrom, mTo > mFrom ? mTo : undefined) : '';
+    check(
+      'builder swatch: decalShape HANDLES "star" (else the swatch silently renders nothing, and nobody notices)',
+      mFrom > 0 && mTo > mFrom && /case 'star':/.test(mBody) && /starPoints\(/.test(mBody) && /<path/.test(mBody),
+      `${mBody.length} chars scanned`,
+    );
   }
 
   // ---- NO SPRITE STROKES IN AN ALLIANCE COLOUR (owner, 2026-09-21: "Remove the red/blue alliance
@@ -2701,9 +2989,17 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
     'Ultra is soft shadows, 16x filtering and the full effects set',
     GFX_PRESETS.ultra.shadows === 'soft' && GFX_PRESETS.ultra.anisotropy === 16 && GFX_PRESETS.ultra.effects === 'full',
   );
+  /**
+   * ⚠️ **THE PiP MINIMAP IS OFF ON EVERY PRESET (owner, 2026-09-21).** It used to be ON at Low
+   * and Medium, on the reasoning that the machines with the hardest-to-read 3D shot are the
+   * ones that want a top-down aid. Two things were wrong with that: it is a SECOND FULL PASS
+   * over the scene, which is the cost those machines can least afford, and it covers a corner
+   * of the very field it is meant to help with. It stays one click away in Graphics.
+   */
   check(
-    'the PiP minimap is ON for Low/Medium and OFF for High/Ultra (the table, and it is a second pass)',
-    GFX_PRESETS.low.minimap && GFX_PRESETS.medium.minimap && !GFX_PRESETS.high.minimap && !GFX_PRESETS.ultra.minimap,
+    'the PiP minimap is OFF on every preset — it is a second pass, and it covers the field',
+    GFX_TIERS.every((t) => GFX_PRESETS[t].minimap === false),
+    GFX_TIERS.map((t) => `${t}=${GFX_PRESETS[t].minimap}`).join(' '),
   );
   check('no preset turns on a feature this build does not implement (AO)', GFX_TIERS.every((t) => GFX_PRESETS[t].ao === 'off'));
   check(
@@ -8444,6 +8740,216 @@ function environmentAndReadoutChecks(check: Check): void {
           sil.top >= 0.5 && sil.bottom > sil.top && sil.bottom <= 1 && sil.teeth >= 4 && sil.alpha > 0 && sil.alpha <= 1,
           JSON.stringify(sil),
         );
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────────────
+    // THE VENUE (owner, 2026-09-21: "The graphic lighting environment is too basic. Make it
+    // render an actual environment instead of blurry lights").
+    //
+    // A `scene.background` dome has no parallax, no horizon and — on the CAD field path — no
+    // ground under it at all, so every environment now also builds REAL geometry around the
+    // field (`scene/renderVenue.ts`). Every check below is a rule that geometry had to be
+    // tuned INTO, and three of them are bugs the first build shipped and the captures caught.
+    //
+    // ⚠️ **THE VENUE IS BUILT FOR REAL HERE, BEHIND A ONE-METHOD CANVAS STUB.** It is DOM-free
+    // except for the ground's `CanvasTexture`, and that one call is what this stub answers —
+    // `THREE.CanvasTexture` only ever stores the object as `image`, so nothing downstream of it
+    // needs a real 2D context. Measuring the built group is the whole point: "the shell is wider
+    // than the orbit camera can zoom" is not a claim a grep can make.
+    {
+      const hadDoc = 'document' in globalThis;
+      const stubCtx = new Proxy({}, { get: () => () => ({ addColorStop(): void {} }) });
+      if (!hadDoc) {
+        (globalThis as { document?: unknown }).document = {
+          createElement: () => ({ width: 0, height: 0, getContext: () => stubCtx }),
+        };
+      }
+      try {
+        const ORBIT_RADIUS_MAX = 620; // `scene/renderCameras.ts` — the escape the guard exists for
+
+        check('every environment carries a venue of a known kind', BB_ENVIRONMENTS.every((e) =>
+          ['hall', 'arena', 'studio', 'outdoor'].includes(e.venue.kind)));
+        check(
+          'the eleven venues are not all one kind — a picker of identical rooms is one room',
+          new Set(BB_ENVIRONMENTS.map((e) => e.venue.kind)).size === 4,
+        );
+
+        const chanOfV = (hexv: number): number[] => [(hexv >> 16) & 255, (hexv >> 8) & 255, hexv & 255];
+        const chromaV = (hexv: number): number => {
+          const c = chanOfV(hexv);
+          return (Math.max(...c) - Math.min(...c)) / 255;
+        };
+
+        for (const e of BB_ENVIRONMENTS) {
+          const v: VenueSpec = e.venue;
+          // ⚠️ THE CAMERA-ESCAPE BOUND. `workshop` first shipped at 290 in — smaller than the
+          // orbit ring's own zoom-out — so the eye stood outside a `BackSide` shell and the
+          // walls simply vanished. The DATA is held to it as well as the builder's clamp, so a
+          // new environment cannot reintroduce it and quietly rely on the guard.
+          if (v.kind !== 'outdoor') {
+            check(`${e.id}: the enclosure is wider than the orbit camera can zoom`, v.half > ORBIT_RADIUS_MAX, `half ${v.half}`);
+            check(`${e.id}: the ceiling is above the field's tallest furniture and below the room's width`,
+              v.ceil >= 160 && v.ceil < v.half, `ceil ${v.ceil}`);
+          } else {
+            check(`${e.id}: an outdoor horizon is far, and its ground stays inside the 4000-in far plane`,
+              v.half >= 800 && v.half * 1.35 < 4000, `half ${v.half}`);
+          }
+          // GAMEPLAY BEATS MOOD, the same rule the rigs are held to: the alliance reds/blues, the
+          // yellow POLLEN and the blue NECTAR are the only saturated things allowed in frame, so
+          // no venue surface may be a colour — only a tint.
+          for (const [what, hexv] of [['floor', v.floor], ['wall', v.wall], ['trim', v.trim]] as const) {
+            check(`${e.id}: the venue ${what} is a tint, not a colour`, chromaV(hexv) <= 0.26, `${hexv.toString(16)} chroma ${chromaV(hexv).toFixed(3)}`);
+          }
+          check(`${e.id}: an unlit venue declares no fittings, and a lit one is not blinding`,
+            v.lampPower >= 0 && v.lampPower <= 3 && (v.lampPower === 0 || v.lamp > 0), `${v.lampPower}`);
+        }
+
+        // ── the BUILT group ────────────────────────────────────────────────────────────────
+        for (const e of BB_ENVIRONMENTS) {
+          const g = buildBiobuzzVenue(e.venue, 'high');
+          check(`${e.id}: the venue builds as one named group with a ground in it`,
+            g.name === 'bb-venue' && !!g.getObjectByName('bb-venue:ground'));
+
+          const ground = g.getObjectByName('bb-venue:ground') as THREE.Mesh;
+          // BELOW the CAD's own ALLIANCE AREA tape (z −0.589…−0.579), which a ground at −0.5
+          // covers — the same number and the same reason the deleted `bb-room` floor carried.
+          check(`${e.id}: the ground is under the CAD's alliance-area tape`, Math.abs(ground.position.z + 0.75) < 1e-9, String(ground.position.z));
+          check(`${e.id}: the ground receives shadow`, ground.receiveShadow === true);
+          // ⚠️ WHITE TINT, NOT THE FLOOR COLOUR. `color` MULTIPLIES `map`, and the first build
+          // passed the floor colour to both: a 0x555b63 practice-room floor rendered as its own
+          // albedo SQUARED, i.e. near black, which is exactly what the first capture showed.
+          check(`${e.id}: the ground's tint is white, so its texture is not squared`,
+            (ground.material as THREE.MeshStandardMaterial).color.getHex() === 0xffffff);
+
+          let casters = 0;
+          let meshes = 0;
+          g.traverse((o) => {
+            const m = o as THREE.Mesh;
+            if (!m.isMesh) return;
+            meshes++;
+            if (m.castShadow) casters++;
+          });
+          // ⚠️ NOTHING IN A VENUE CASTS. The sun's shadow camera is sized to the FIELD
+          // (±90.674, far 260) so its texels are spent where a robot is; a venue caster is
+          // outside that frustum by construction and would cost a depth-pass submission for a
+          // shadow that cannot land anywhere.
+          check(`${e.id}: no venue mesh casts a shadow`, casters === 0, `${casters} of ${meshes}`);
+          // DRAWS are the budget a venue can spend badly, which is why every structural part is
+          // an `InstancedMesh` over one unit box. MEASURED at `high`: 2 (outdoor) … 7 (arena,
+          // the only ones carrying seating and a crowd), 470 … 5,762 triangles — against a
+          // High scene total of 337k–462k (`docs/area/biobuzz.md`'s element measurement).
+          check(`${e.id}: the whole venue is a handful of draws, not a scene`, meshes <= 9, String(meshes));
+          let tris = 0;
+          g.traverse((o) => {
+            const m = o as THREE.Mesh & THREE.InstancedMesh;
+            if (!m.isMesh) return;
+            const geo = m.geometry;
+            const n = geo.index ? geo.index.count / 3 : geo.attributes.position.count / 3;
+            tris += n * (m.isInstancedMesh ? m.count : 1);
+          });
+          check(`${e.id}: and its triangle budget stays inside 2 % of a High scene`, tris <= 8000, String(Math.round(tris)));
+
+          // ⚠️ NOTHING THIS MODULE BUILDS MAY STAND ON THE MAT, and the test has to be
+          // PER-INSTANCE. The first spelling took `Box3.setFromObject` of each `InstancedMesh`
+          // and failed on every one of them, correctly and uselessly: a colonnade RING's AABB
+          // encloses the field by definition while no column is anywhere near it. So: walk the
+          // instances, and a member passes if its own footprint clears the field rect OR it
+          // hangs clear above it (a lighting truss and a ceiling fitting are over the field on
+          // purpose; 130 in is well above the flowers, the hives and any shot arc that matters).
+          const FIELD_RECT = 71;
+          const OVERHEAD_CLEAR = 130;
+          const im4 = new THREE.Matrix4();
+          const pos3 = new THREE.Vector3();
+          const scl3 = new THREE.Vector3();
+          const quat = new THREE.Quaternion();
+          for (const child of g.children) {
+            const im = child as THREE.InstancedMesh;
+            if (!im.isInstancedMesh) continue;
+            let intruders = 0;
+            let worst = '';
+            for (let i = 0; i < im.count; i++) {
+              im.getMatrixAt(i, im4);
+              im4.decompose(pos3, quat, scl3);
+              const clearsRect =
+                Math.abs(pos3.x) - scl3.x / 2 > FIELD_RECT || Math.abs(pos3.y) - scl3.y / 2 > FIELD_RECT;
+              if (clearsRect || pos3.z - scl3.z / 2 >= OVERHEAD_CLEAR) continue;
+              intruders++;
+              worst = `(${pos3.x.toFixed(0)}, ${pos3.y.toFixed(0)}, ${pos3.z.toFixed(0)})`;
+            }
+            check(`${e.id}: every ${child.name} member clears the field or hangs over it`, intruders === 0, `${intruders} at ${worst}`);
+          }
+
+          if (e.venue.kind !== 'outdoor') {
+            const shell = g.getObjectByName('bb-venue:shell') ?? g.getObjectByName('bb-venue:cyc');
+            const box = new THREE.Box3().setFromObject(shell!);
+            check(`${e.id}: the built enclosure clears the orbit camera's furthest zoom`,
+              Math.min(box.max.x, box.max.y, -box.min.x, -box.min.y) > ORBIT_RADIUS_MAX,
+              `${box.max.x.toFixed(0)} / ${box.max.y.toFixed(0)}`);
+          }
+
+          // DETERMINISM: the crowd, the horizon and the ground's mottle all come off a hash, so
+          // two builds are the same venue — an exported replay's first frame cannot differ from
+          // its second, or from anybody else's.
+          const again = buildBiobuzzVenue(e.venue, 'high');
+          const key = (root3: THREE.Object3D): string => {
+            const parts: string[] = [];
+            root3.traverse((o) => {
+              const im = o as THREE.InstancedMesh;
+              if (im.isInstancedMesh) parts.push(`${im.name}:${im.count}:${Array.from(im.instanceMatrix.array).join(',')}`);
+            });
+            return parts.join('|');
+          };
+          check(`${e.id}: two builds of the same venue are identical`, key(g) === key(again));
+        }
+
+        // ⚠️ THE CAMERA GUARD IS THE BUILDER'S, NOT THE DATA'S — a spec under the bound is
+        // clamped rather than trusted, which is what makes the rule survive a new environment.
+        {
+          const tiny: VenueSpec = { kind: 'hall', floor: 0x555555, wall: 0x666666, trim: 0x777777, lamp: 0xffffff, lampPower: 1, half: 290, ceil: 172 };
+          const box = new THREE.Box3().setFromObject(buildBiobuzzVenue(tiny, 'high').getObjectByName('bb-venue:shell')!);
+          check('a venue authored too small is CLAMPED past the orbit zoom, not built as written',
+            box.max.x > ORBIT_RADIUS_MAX, box.max.x.toFixed(0));
+        }
+
+        // THE LADDER. Low pays for a ground, a shell and its fittings and nothing else; the
+        // trussing, the colonnade, the seating and the crowd are the three higher columns'.
+        {
+          const arena = environmentDef('arena').venue;
+          const countOf = (d: 'low' | 'high'): number => {
+            let n = 0;
+            buildBiobuzzVenue(arena, d).traverse((o) => {
+              if ((o as THREE.Mesh).isMesh) n++;
+            });
+            return n;
+          };
+          check('the low venue is strictly cheaper than the high one', countOf('low') < countOf('high'), `${countOf('low')} vs ${countOf('high')}`);
+          check('low still has a ground and an enclosure — it is a cheaper room, not no room',
+            !!buildBiobuzzVenue(arena, 'low').getObjectByName('bb-venue:ground') &&
+              !!buildBiobuzzVenue(arena, 'low').getObjectByName('bb-venue:shell'));
+        }
+
+        // WHICH TIER GETS WHICH, and why it is not `bbWheelDetail`'s split: MEDIUM is where the
+        // empty backdrop looked worst (image-based lighting is off there, so the dome was not
+        // even lighting anything), and nine instanced boxes is not the budget a wheel's
+        // sixteen lathed corners are.
+        check('only Low takes the cut; Medium and up get the full venue',
+          bbVenueDetail(GFX_PRESETS.low, 'low') === 'low' &&
+            bbVenueDetail(GFX_PRESETS.medium, 'medium') === 'high' &&
+            bbVenueDetail(GFX_PRESETS.high, 'high') === 'high' &&
+            bbVenueDetail(GFX_PRESETS.ultra, 'ultra') === 'high');
+        check('meshDetail: low keeps its promise here too',
+          bbVenueDetail({ meshDetail: 'low' }, 'ultra') === 'low');
+
+        // AND THE OLD SURROUND IS GONE. `bb-room` was a grey disc and a grey cylinder built by
+        // the CONSTANTS fallback alone — a second floor at the venue's own z would z-fight
+        // across the whole frame, and its 424-in cylinder would sit inside every hall's walls.
+        {
+          const fieldSrc = readFileSync(join(SCENE_DIR, 'renderField.ts'), 'utf8');
+          check('the procedural bb-room is gone from the constants field', !/name = 'bb-room'/.test(fieldSrc));
+        }
+      } finally {
+        if (!hadDoc) delete (globalThis as { document?: unknown }).document;
       }
     }
 

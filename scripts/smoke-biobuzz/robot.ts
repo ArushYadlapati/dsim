@@ -118,7 +118,7 @@ import {
   mouthAxes,
 } from '../../src/games/biobuzz/robot';
 import { bbConfigSummary } from '../../src/games/biobuzz/labels';
-import { bbAimTarget, bbFlightEnters, bbKindOf } from '../../src/games/biobuzz/play';
+import { bbAimTarget, bbFlightEnters, bbKindOf, bbPassPoint } from '../../src/games/biobuzz/play';
 import { hiveCellTarget } from '../../src/games/biobuzz/elements';
 import {
   BB_INTAKE_KINDS,
@@ -3408,5 +3408,84 @@ export function robotChecks(check: Check): void {
     run(b, cmd({ driveY: 1, intake: true, fire: true }), 4);
     check('determinism: two identical robot runs hash identically', worldHash(a) === worldHash(b), `${worldHash(a)} vs ${worldHash(b)}`);
     check('determinism: ...after exactly the expected number of ticks', a.tick === Math.round(4 / C.SIM_DT), `tick=${a.tick}`);
+  }
+
+  /**
+   * ⚠️ PASS DELIVERS TO ITS POINT, AND ONLY WHEN THE TURRET IS ON IT.
+   *
+   * `bbPass` retargets the ONE turret solver at a field point (`bbPassTargetOf`) instead of the
+   * hive: the player's own `spec.bbPassTarget`, or the alliance's LOADING ZONE when they never
+   * set one. It never reads the partner's pose — owner, 2026-09-21: “in real life, you can't
+   * know where your opponent is accurately” — so the target is a fixed point either way.
+   *
+   * ⚠️ THE ON-TARGET GATE IS WHAT THIS CHECK IS REALLY FOR. A solved arc says a shot EXISTS,
+   * not that the hardware has slewed onto it. The hive path never had to say so out loud,
+   * because `bbTurretShotEnters` forward-simulates from the turret's CURRENT pose and a turret
+   * still slewing simply misses the cell. A pass has no cell to miss, so without
+   * `bbTurretOnTarget` it releases on the first tick of the press and throws wherever the turret
+   * happened to be facing: MEASURED, three passes at a 102-in preset landed 34.8, 64.2 and 78.3
+   * in short. With the gate they land inside 6 in, which is what the bound below is set from.
+   */
+  {
+    const NEAR = 8; // in — worst measured is 6.6; a miss without the on-target gate is 34+
+    const throwTo = (target?: Vec2): { worst: number; thrown: number; inHive: number; pt: Vec2 } => {
+      const w = mkWorld('free', 5, 'biobuzz');
+      const r = w.robots[0];
+      if (target) r.spec = { ...r.spec, bbPassTarget: target };
+      w.balls.length = 0;
+      for (const f of w.biobuzz!.flowers) f.stack = [];
+      w.biobuzz!.hives.red.contents = [];
+      w.biobuzz!.hives.blue.contents = [];
+      r.hopper = ['yellow', 'yellow', 'yellow'];
+      r.hopper.forEach((c, i) => {
+        w.balls.push({
+          id: i + 1, color: c, state: { kind: 'held', robot: r.id, slot: i },
+          pos: { x: r.pos.x, y: r.pos.y }, vel: { x: 0, y: 0 }, z: 0, vz: 0, r: BB_POLLEN_R,
+        } as Artifact);
+      });
+      const pt = bbPassPoint(r);
+      run(w, cmd({ bbPass: true }), 8);
+      const loose = w.balls.filter((b) => b.state.kind === 'ground');
+      const worst = loose.length
+        ? Math.max(...loose.map((b) => hyp(b.pos.x - pt.x, b.pos.y - pt.y)))
+        : Infinity;
+      return { worst, thrown: 3 - r.hopper.length, inHive: w.biobuzz!.hives.red.contents.length + w.biobuzz!.hives.blue.contents.length, pt };
+    };
+
+    const preset = throwTo();
+    check(
+      '⚠️ pass: the PRESET throws all three to the alliance LOADING ZONE, and none of them scores',
+      preset.thrown === 3 && preset.worst < NEAR && preset.inHive === 0,
+      `thrown ${preset.thrown}/3, worst ${preset.worst.toFixed(1)}in from (${preset.pt.x.toFixed(1)}, ${preset.pt.y.toFixed(1)}), in a hive ${preset.inHive}`,
+    );
+
+    const custom = throwTo({ x: 40, y: -40 });
+    check(
+      'pass: a CUSTOM `bbPassTarget` is where they land instead',
+      custom.thrown === 3 && custom.worst < NEAR && Math.abs(custom.pt.x - 40) < 1e-9 && Math.abs(custom.pt.y + 40) < 1e-9,
+      `thrown ${custom.thrown}/3, worst ${custom.worst.toFixed(1)}in from (${custom.pt.x.toFixed(1)}, ${custom.pt.y.toFixed(1)})`,
+    );
+
+    // the CONTROL: the same build holding FIRE still aims at the HIVE and still scores.
+    const w = mkWorld('free', 5, 'biobuzz');
+    const r = w.robots[0];
+    w.balls.length = 0;
+    for (const f of w.biobuzz!.flowers) f.stack = [];
+    w.biobuzz!.hives.red.contents = [];
+    w.biobuzz!.hives.blue.contents = [];
+    r.hopper = ['yellow', 'yellow', 'yellow'];
+    r.hopper.forEach((c, i) => {
+      w.balls.push({
+        id: i + 1, color: c, state: { kind: 'held', robot: r.id, slot: i },
+        pos: { x: r.pos.x, y: r.pos.y }, vel: { x: 0, y: 0 }, z: 0, vz: 0, r: BB_POLLEN_R,
+      } as Artifact);
+    });
+    run(w, cmd({ fire: true }), 8);
+    const scored = w.biobuzz!.hives.red.contents.length + w.biobuzz!.hives.blue.contents.length;
+    check(
+      'pass: ...and FIRE is untouched — the same build still shoots its own HIVE',
+      scored === 3,
+      `${scored}/3 in a hive on the fire control`,
+    );
   }
 }

@@ -44,7 +44,21 @@ const LABEL_SCREEN_LIFT = 4;
  * on the backdrop — so the fill only has to clear AA against the DARK grounds, which is exactly
  * what `COLORS.redLabel`/`blueLabel` are picked for.
  */
-const LABEL_STROKE = 'rgba(20,22,26,0.8)';
+/**
+ * ⚠️ **OPAQUE, AND THAT IS WHAT LETS THE 3D MAT BE A REAL TILE GREY (owner, 2026-09-21).**
+ *
+ * It was `rgba(20,22,26,0.8)`. At 0.8 the ground showed through the halo, so the glyph's
+ * effective surround was part STROKE and part MAT — which is why `contrast.mjs` had to measure
+ * the fill against the LIGHTEST GROUND a label crosses and why lifting the mat one step failed
+ * AA at 4.27:1. An FTC field tile is grey EVA foam (AndyMark am-2499, spec "Gray"), nowhere
+ * near the near-black the mat was, and that ceiling was the only thing holding it there.
+ *
+ * Opaque, the halo is a KNOWN colour under every glyph whatever the ground is, so the governing
+ * pair becomes fill-against-its-own-stroke — which `contrast.mjs` already measures and which
+ * does not move when the field does. The stroke's own job is then to stay visible against the
+ * ground, which is a pair that gets EASIER as the mat lightens.
+ */
+const LABEL_STROKE = 'rgb(20,22,26)';
 
 /**
  * WHO TO PRINT OVER A ROBOT: the person driving it, else the thing they built.

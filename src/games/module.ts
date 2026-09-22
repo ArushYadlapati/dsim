@@ -2,7 +2,6 @@ import type { ComponentType } from 'react';
 import type {
   Alliance,
   Artifact,
-  MobileLayout,
   RobotSpec,
   RobotState,
   StartCat,
@@ -131,9 +130,14 @@ export interface GameModule extends GameSimModule {
    * and each screen arranges it.
    */
   resultsRows?(hud: HudSnapshot): readonly ResultsSection[];
-  /** extra touch action buttons. Each one's POSITION comes from
-   * `GameSettings.mobileLayout`, so a genuinely new action needs a key there too. */
-  mobileButtons?: readonly GameMobileButton[];
+  /**
+   * ⚠️ TOUCH BUTTONS ARE NOT A MODULE SLOT ANY MORE. A game's own touch buttons live in
+   * `src/games/<id>/mobile.ts` and are read through `src/ui/mobileActions.ts`, whose set is
+   * DERIVED from `ACTION_GAMES` and whose coverage `npm test` asserts. As a slot here they
+   * were optional, so four BIOBUZZ actions shipped with no way to press them on a phone; as
+   * a table keyed by action they cannot be forgotten. The other reason is plainer: this
+   * interface pulls in the canvas renderers, and the coverage check has to run headless.
+   */
   /** `false` when this game has no auto-fire assist, which hides `Menu`'s Auto fire toggle. The
    * game's sim must also ignore the flag (BIOBUZZ forces it false at spawn). Absent means the
    * toggle is offered, as it is for DECODE and Chain Reaction. */
@@ -309,34 +313,6 @@ export interface GameStatTile {
 
 /** one results-screen section: a heading and its rows, each `[label, mine, opp]`. */
 export type ResultsSection = readonly [string, readonly (readonly [string, number, number])[]];
-
-/** which `RobotCommand` action a touch button holds down. A genuinely new game
- * action needs a protocol bit as well — see the netcode section of CLAUDE.md. */
-export type MobileActionField = 'intake' | 'fire' | 'catalyst' | 'fling' | 'bbNectar';
-
-/** one extra touch action button contributed by a game */
-export interface GameMobileButton {
-  /** which `mobileLayout` entry positions it (the editor drags THAT key) */
-  name: keyof MobileLayout;
-  /** ARIA label — never drawn (it does not fit inside an 82px circle) */
-  label: string;
-  /** the drawn glyph */
-  glyph: string;
-  /** style class on the button */
-  cls: string;
-  /** the big primary button (at most one per game) */
-  primary: boolean;
-  field: MobileActionField;
-  /**
-   * Does THIS build have the mechanism right now? Absent means always.
-   *
-   * It reads `HudSnapshot.gameHud` — the game's own HUD slice — rather than the
-   * spec, because that is the shape the live HUD already carries to the touch
-   * layer (CR's inline `hasFling` prop is the same fact by hand). A button that
-   * does nothing is worse than no button on a phone-sized screen.
-   */
-  present?(gameHud: unknown): boolean;
-}
 
 /**
  * Props every start editor takes. DECODE's `StartPositionEditor` and CR's

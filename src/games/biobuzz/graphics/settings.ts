@@ -308,6 +308,14 @@ export interface GraphicsSettings {
   fov: number;
   cameraMotion: CameraMotion;
   /** the picture-in-picture overhead map in a corner. */
+  /**
+   * The PiP top-down aid. ⚠️ **OFF ON EVERY PRESET (owner, 2026-09-21).** Low and Medium
+   * used to default it ON, on the reasoning that the machines with the hardest-to-read 3D
+   * shot are the ones that want a top-down aid. It is still a SECOND FULL PASS over the
+   * scene, which is the cost those machines can least afford, and it covers a corner of
+   * the field it is meant to help with. It stays a one-click setting for anyone who wants
+   * it; it is simply not a thing a new player is given without asking.
+   */
   minimap: boolean;
   perfOverlay: PerfOverlay;
 }
@@ -356,7 +364,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     effects: 'minimal',
     fov: 70,
     cameraMotion: 'reduced',
-    minimap: true,
+    minimap: false,
     perfOverlay: 'off',
   },
   medium: {
@@ -375,7 +383,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     effects: 'standard',
     fov: 70,
     cameraMotion: 'full',
-    minimap: true,
+    minimap: false,
     perfOverlay: 'off',
   },
   high: {

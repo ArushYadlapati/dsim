@@ -566,6 +566,42 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     was. `BASE_RIG` is a COPY of `renderCore.ts`'s `SCENE_*` constants — `graphics/` may not import
     `scene/` — and the RENDER lane asserts the copy value for value; the robot-builder preview
     still lights from the constants directly, so a build cannot come out two colours.
+    - ⚠️ **THE SURROUND IS GEOMETRY NOW, NOT THE DOME (`scene/renderVenue.ts`, 2026-09-21).**
+      The entries above still carry the background and the rig, and both still do their job — but
+      a `scene.background` ALONE was the whole surround until this, and it failed three ways at
+      once. Owner: “the graphic lighting environment is too basic … an actual environment instead
+      of blurry lights.”
+      - **No parallax.** A background texture is sampled by view DIRECTION, so it does not move
+        when the camera does; orbiting slid the field across a gradient that never shifted.
+      - **No horizon in frame.** Every camera here looks DOWN at the field, so most of the frame
+        samples the dome's LOWER half — one gradient stop to the next — and
+        `backgroundBlurriness` (0.16–0.40) then smeared the only structure a painted dome had
+        (its truss bar, its silhouette teeth) into a soft band. **That band IS what the owner
+        was calling the blurry lights.**
+      - **No ground at all on the shipping field.** `renderField.ts`'s procedural `bb-room` was
+        added by the CONSTANTS FALLBACK only — `glbFieldToHandles` never called it — so the CAD
+        field hung in the clear colour with its own alliance tape running off into the void.
+      `renderVenue.ts` builds four kinds (`hall`, `arena`, `studio`, `outdoor`) off a `venue` on
+      each environment row, every structural part ONE `InstancedMesh` over a unit box so each
+      category is one draw call, and a procedural ground texture for the scale a flat colour
+      cannot give. `bb-room` is DELETED: two floors at z −0.75 would z-fight, and its 424-in
+      cylinder sits inside every hall's walls.
+      - ⚠️ **AN ENCLOSED VENUE MUST BE WIDER THAN THE ORBIT CAMERA'S REACH.** `workshop` was
+        290 in across and the orbit camera zooms to 620, so the eye stood OUTSIDE its own
+        `BackSide` shell and the walls simply vanished. `VENUE_MIN_HALF` (660) is clamped in the
+        BUILDER, not trusted to the data. Going above a ceiling degrades to a cutaway and needs
+        no guard.
+      - ⚠️ **`color` × `map` MULTIPLY.** The ground was handed `spec.floor` as BOTH tint and
+        texture, so it rendered its own albedo squared and the practice room came out near
+        black. White-tinted now, and pinned.
+      - Tiering reads the existing `meshDetail` + preset column (`bbVenueDetail`, no new
+        setting). Only **Low** takes the cut — Medium is where the void looked worst, because
+        `envLighting` is off there and the dome was not even lighting anything.
+      - Cost: scene +1.86 KB gz, **zero new asset bytes** (the ground texture is a 128×128 canvas
+        painted at runtime), worst case 7 draws and 5,762 triangles against High scene totals of
+        337k–462k. ~126 checks in the RENDER lane build it for real and measure it.
+      - OPEN: `school-hall` and `monochrome-studio` still download 1.6–1.7 MB of HDRI that now
+        buys only IBL and reflections, since the geometry hides the photograph.
     - ⚠️ **AN ENVIRONMENT MAP IS SAMPLED IN THREE'S y-UP FRAME AND THIS SCENE IS z-UP.** Every
       camera here sets `up = (0,0,1)`, but an environment map is not in the scene graph:
       `textureCubeUV` takes a world direction and three's equirect convention is +y = zenith, so an

@@ -73,6 +73,12 @@ const BTN_BBNECTAR = 128;
 // tick of input on a build that has no ramp to deploy; an older peer reading a newer replay masks
 // the bits it knows, as always. The BIOBUZZ deployable-ramp toggle, an EDGE like `driveMode`.
 const BTN_BBRAMP = 256;
+// BIOBUZZ PASS-TO-PARTNER, an EDGE like `fire`. Bit 512 needs no widening — `buttons` has
+// been 16 bits since 2026-09-20 (see BTN_BBRAMP) and `BUTTONS_MAX` already admits it. An
+// older server's sanitizer stops at 0xffff too, so unlike the ramp's bit this one costs a
+// new client NOTHING against an old server: the packet is accepted, the bit is simply
+// ignored by a step that has no pass in it.
+const BTN_BBPASS = 512;
 /** the widest `buttons` an honest sender can produce — every bit above is refused. */
 const BUTTONS_MAX = 0xffff;
 
@@ -90,7 +96,8 @@ export function quantizeCommand(c: RobotCommand): QCommand {
       (c.bbPlaceNectar ? BTN_BBPLACE_NECTAR : 0) |
       (c.bbPlace ? BTN_BBPLACE : 0) |
       (c.bbNectar ? BTN_BBNECTAR : 0) |
-      (c.bbRamp ? BTN_BBRAMP : 0),
+      (c.bbRamp ? BTN_BBRAMP : 0) |
+      (c.bbPass ? BTN_BBPASS : 0),
     ld: Math.round(clamp(c.leftDrive ?? 0, -1, 1) * 127),
     rd: Math.round(clamp(c.rightDrive ?? 0, -1, 1) * 127),
   };
@@ -154,6 +161,7 @@ export function dequantizeCommand(q: QCommand): RobotCommand {
     bbPlace: (q.buttons & BTN_BBPLACE) !== 0,
     bbNectar: (q.buttons & BTN_BBNECTAR) !== 0,
     bbRamp: (q.buttons & BTN_BBRAMP) !== 0,
+    bbPass: (q.buttons & BTN_BBPASS) !== 0,
   };
 }
 

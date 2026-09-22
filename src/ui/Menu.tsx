@@ -77,6 +77,7 @@ import { moduleFor } from '../games';
 import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
 import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
+import { starPoints } from '../render/drawRobot';
 
 const INTAKE_LABELS: Record<IntakeStyle, string> = {
   sloped: 'Sloped',
@@ -145,20 +146,25 @@ interface Props {
   onChange: (s: GameSettings) => void;
 }
 
-/** no earned cosmetic exists yet (`src/cosmetics.ts`: every defined key today sits in
- * `free` or `supporter` — nothing falls through), and `Entitlements.unlockedCosmetics`
- * has not landed (`docs/cosmetics-plan.md` §3.8, server agent). `cosmeticAllowed` already
- * takes the earned list structurally, so wiring the real one in later is this one name. */
-const NO_EARNED_COSMETICS: readonly string[] = [];
+/**
+ * Why a locked swatch is locked, for `title`/`aria-label` — never "supporter perk" on the
+ * caption itself (free users have real choices on every axis now), only on the specific
+ * options they don't have yet.
+ *
+ * ⚠️ **AN `earned` KEY SAYS HOW TO EARN IT, BY NAME, WHEREVER THAT IS KNOWABLE.** The
+ * generic fallback used to be the only answer and it pointed at Career, which is right for a
+ * season award and WRONG for the only earned key that exists: no amount of playing gets you
+ * `decal:star`, you star the repo. A hint that sends somebody to the wrong screen is worse
+ * than a vague one, because they go and look.
+ */
+const EARN_HINT: Record<string, string> = {
+  'decal:star': 'Star the repo on GitHub — connect it in Account',
+};
 
-/** why a locked swatch is locked, for `title`/`aria-label` — never "supporter perk" on
- * the caption itself (free users have real choices on every axis now), only on the
- * specific options they don't have yet. `earned` items never reach here disabled
- * (`cosmeticAllowed` already passes them), so a locked id is always `supporter` or
- * `earned`-and-not-owned. */
 function lockReason(id: CosmeticId, supporter: boolean, earned: readonly string[]): string | undefined {
   if (cosmeticAllowed(id, supporter, earned)) return undefined;
-  return cosmeticTier(id) === 'earned' ? 'Earned — see Career' : 'Supporter perk';
+  if (cosmeticTier(id) !== 'earned') return 'Supporter perk';
+  return EARN_HINT[id] ?? 'Earned — see Career';
 }
 
 /** one swatch button, shared by all four axis rows below: same size, hover, ring and
@@ -238,6 +244,19 @@ function decalShape(decal: Decal, accentHex: string): ReactNode {
           <rect x="16" y="16" width="8" height="8" fill={accentHex} />
         </>
       );
+    case 'star': {
+      // The one swatch that is NOT parametric off a footprint — this is a fixed 24x24 preview
+      // icon, not a robot, so a literal radius is fine here and nowhere else. Still built off
+      // the shared `starPoints` (`render/drawRobot.ts`) so this icon is genuinely the same
+      // shape the two live renderers draw, not a hand-tuned lookalike. −90° puts the first
+      // point at the TOP (r=9 lands its tip at y=3, the same tip height `chevron`'s "L12 3"
+      // uses above), matching this file's convention that a decal's forward point reads "up".
+      const d =
+        starPoints(12, 12, 9, -Math.PI / 2)
+          .map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(2)} ${y.toFixed(2)}`)
+          .join(' ') + ' Z';
+      return <path d={d} fill={accentHex} />;
+    }
   }
 }
 
@@ -278,8 +297,19 @@ function CosmeticsRows({
   spec: RobotSpec;
   onPick: (patch: Partial<RobotSpec>) => void;
 }) {
-  const { supporter } = useAds();
-  const earned = NO_EARNED_COSMETICS;
+  /**
+   * ⚠️ **THIS WAS A HARDCODED EMPTY LIST UNTIL `decal:star` EXISTED, AND THAT MADE THE FIRST
+   * EARNED COSMETIC UNSELECTABLE.** The placeholder was honest about itself — "no earned
+   * cosmetic exists yet … wiring the real one in later is this one name" — and it was still
+   * missed when the GitHub star reward added the first key to fall through to `earned`. The
+   * owner had the title, held the decal in `profiles.cosmetics`, and found the swatch locked.
+   *
+   * Everything either side of this line was already correct, which is what made it quiet:
+   * `/api/user/entitlements` has sent `unlockedCosmetics` since 0044, and the server strips
+   * an unentitled spec on join and on every re-pick. Only the PICKER believed nobody owned
+   * anything, so the one surface where you choose a cosmetic was the one that said no.
+   */
+  const { supporter, earnedCosmetics: earned } = useAds();
   const current = clampCosmetics(spec);
   const chassisHex = chassisFill(current.chassisColor);
   const accentHex = accentFill(current.accent, current.chassisColor);

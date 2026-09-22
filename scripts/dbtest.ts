@@ -16,12 +16,19 @@
  * Deliberately NOT wired into `npm test` — a red `npm test` must keep meaning
  * "physics broke" (see CLAUDE.md). This is its own command, like `contrast`.
  */
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import { setPoolForTests, type DbPool } from '../server/db/pool';
 import { monthsFor, whyNoMonths, DEFAULT_POLICY, policyFromEnv } from '../server/kofi';
 // a LEAF module (no imports, no env read at module scope — see its own header), so unlike
 // `server/db/repo` this is safe to import up front rather than after the pool swap.
-import { stripUnentitledCosmetics } from '../src/cosmetics';
+import { stripUnentitledCosmetics, cosmeticTier, type CosmeticId } from '../src/cosmetics';
+
+/** the repo root — the few checks below read SOURCE, because what they guard is a call
+ *  being deleted while tidying, not a behaviour this suite can drive. */
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * MODERATION, STUBBED AT THE TRANSPORT — so `saveReplay`'s name scrub can be exercised
@@ -3400,6 +3407,412 @@ async function main(): Promise<void> {
       'audit: ...but the audit log outlives the account it names, which is the point of it',
       (await repo.listAudit({ targetUser: 'adm-target' })).rows.length > 0,
     );
+  }
+
+
+  // ---- SEASON AWARDS + TITLES (0045/0046) ------------------------------------------
+  /**
+   * The checks `docs/rewards-round2-plan.md` §7 asks for by name. The one that matters
+   * most is IDEMPOTENCY: a season roll is a thing an admin can press twice, and the whole
+   * defence is 0045's unique slot index plus `on conflict do nothing`.
+   */
+  {
+    await repo.ensureProfile('aw-1', 'Champ');
+    await repo.ensureProfile('aw-2', 'Runner');
+
+    const GAME = 'decode' as const;
+    // A season with no boards behind it still rolls, and awards nothing. That is the
+    // ordinary case on a fresh install and it must not throw.
+    const before = await repo.startNewSeason(1, 'awards-a', false, GAME);
+    check('awards: a season with empty boards still rolls', typeof before.season === 'number');
+    check('awards: ...and mints nothing', (await repo.userAwards('aw-1')).length === 0);
+
+    // Mint a slot by hand — the board plumbing is exercised by `computeSeasonAwards`'s own
+    // callers; what is under test HERE is the table's contract, not the boards'.
+    const mint = async (rank: number, user: string) =>
+      db.query(
+        `insert into season_awards (game, balance_version, act, kind, mode, drivetrain, rank, user_id, score)
+         values ($1, $2, $3, 'ranked', '1v1', null, $4, $5, 1500) on conflict do nothing`,
+        [GAME, before.season, 0, rank, user],
+      );
+    await mint(1, 'aw-1');
+    await mint(2, 'aw-2');
+    check('awards: two ranks, two holders', (await repo.userAwards('aw-1')).length === 1 && (await repo.userAwards('aw-2')).length === 1);
+
+    // ⚠️ THE SAME SLOT TWICE IS ONE ROW. This is what makes a retried close safe.
+    await mint(1, 'aw-1');
+    check('⚠️ awards: re-minting the same slot is a no-op (the unique slot index)', (await repo.userAwards('aw-1')).length === 1);
+
+    // ...but a DUO slot legitimately holds two people, which is why `user_id` is in it.
+    await db.query(
+      `insert into season_awards (game, balance_version, act, kind, mode, drivetrain, rank, user_id, score)
+       values ($1, $2, 0, 'record_overall', 'duo', null, 1, $3, 900),
+              ($1, $2, 0, 'record_overall', 'duo', null, 1, $4, 900) on conflict do nothing`,
+      [GAME, before.season, 'aw-1', 'aw-2'],
+    );
+    const duo = await db.query<{ n: number }>(
+      `select count(*)::int as n from season_awards where kind = 'record_overall' and mode = 'duo' and rank = 1`,
+    );
+    check('⚠️ awards: a DUO rank decorates BOTH members, not whichever one inserted first', Number(duo.rows[0].n) === 2);
+
+    // titles: derived, and validated on write
+    const titles = await repo.earnedTitles('aw-1');
+    const rankedTitle = repo.awardTitleId({ game: GAME, balanceVersion: before.season, kind: 'ranked', mode: '1v1', drivetrain: null, rank: 1 });
+    check('titles: an award yields a title id', titles.includes(rankedTitle), titles.join(', '));
+    check('titles: setTitle accepts an earned one', (await repo.setTitle('aw-1', rankedTitle)) === true);
+    check('⚠️ titles: setTitle REFUSES an unearned one (0046 has no check constraint — this is the validation)',
+      (await repo.setTitle('aw-1', 'award:decode:999:ranked:1v1:1')) === false);
+    const held = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'aw-1'`);
+    check('titles: ...and the refusal did not overwrite the equipped one', held.rows[0].title === rankedTitle);
+    check('titles: null clears it', (await repo.setTitle('aw-1', null)) === true);
+    await repo.setTitle('aw-1', rankedTitle);
+    await repo.clearTitleIfEquipped('aw-1', rankedTitle);
+    const cleared = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'aw-1'`);
+    check('titles: clearTitleIfEquipped removes it when it matches', cleared.rows[0].title === null);
+
+    // the FK cascades — an award decorates a name, so with no name there is nothing left
+    await repo.deleteAccount('aw-2');
+    const left = await db.query<{ n: number }>(`select count(*)::int as n from season_awards where user_id = 'aw-2'`);
+    check('awards: a deleted account takes its awards with it (the FK cascades, no deleteAccount line needed)', Number(left.rows[0].n) === 0);
+  }
+
+
+  // ---- PROVIDER LINKS + THE STAR SWEEP (0047) --------------------------------------
+  /**
+   * The anti-farm and the fail-safe. `docs/rewards-round2-plan.md` §3.1/§6 asks for both by
+   * name, and the fail-safe is the one that was written before the code.
+   */
+  {
+    await repo.ensureProfile('gh-1', 'Star');
+    await repo.ensureProfile('gh-2', 'Other');
+
+    check('links: linking an account takes', (await repo.linkProvider('gh-1', 'github', '1001')) === true);
+    check('links: ...and it shows up as live', (await repo.providerLinks('gh-1')).length === 1);
+    check('links: re-linking the SAME pair is fine (somebody undoing their own mistake)', (await repo.linkProvider('gh-1', 'github', '1001')) === true);
+    check(
+      '⚠️ links: the SAME external account cannot be linked to a SECOND DSIM account',
+      (await repo.linkProvider('gh-2', 'github', '1001')) === false,
+    );
+
+    // the sweep grants to a linked stargazer and not to anybody else
+    let r = await repo.sweepStargazers(['1001'], true);
+    check('star sweep: a linked stargazer is granted', r.applied && r.granted.includes('gh-1'), JSON.stringify(r));
+    check('star sweep: ...and holds the title', (await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    /**
+     * ⚠️ **THE STAR GRANTS TWO IDS AND THEY MUST MOVE TOGETHER** (owner, 2026-09-21: the
+     * star should carry a cosmetic, not only a name decal). Half a reward is a state no
+     * later sweep repairs — the holder set is read off the TITLE, so an account holding the
+     * decal without the title would never be reconciled by anything. Every one of the four
+     * sites that touches the pair iterates `STARGAZER_GRANTS`; these checks are what stops a
+     * fifth being written out by hand.
+     */
+    const cosmOf = async (u: string): Promise<string[]> => {
+      const rows = await db.query<{ cosmetics: unknown }>(`select cosmetics from profiles where user_id = $1`, [u]);
+      const c = rows.rows[0]?.cosmetics;
+      return Array.isArray(c) ? (c as string[]) : Object.keys((c as Record<string, unknown>) ?? {});
+    };
+    const held = await cosmOf('gh-1');
+    check('⚠️ star sweep: ...and the COSMETIC too — both ids, or the reward is half granted',
+      repo.STARGAZER_GRANTS.every((id) => held.includes(id)), JSON.stringify(held));
+    check('...and the cosmetic it grants is `earned` tier, NOT a supporter fill given away free',
+      cosmeticTier(repo.STARGAZER_DECAL as CosmeticId) === 'earned', repo.STARGAZER_DECAL);
+    r = await repo.sweepStargazers(['1001'], true);
+    check('star sweep: a second identical sweep grants nothing new (grantCosmetic is idempotent)', r.granted.length === 0 && r.revoked.length === 0);
+
+    // ⚠️ THE FAIL-SAFE. A fetch that did not finish must change NOTHING — with revocation
+    // on, the same failure that used to mean "no grants this cycle" would otherwise strip
+    // the title from every holder at once.
+    r = await repo.sweepStargazers([], false);
+    check(
+      '⚠️ star sweep: an INCOMPLETE fetch revokes nobody and grants nobody',
+      r.applied === false && r.revoked.length === 0 && r.granted.length === 0,
+    );
+    check('⚠️ star sweep: ...and the title is still held after it', (await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+
+    // unstarring revokes (owner ruling 2026-09-21) — and takes the EQUIPPED title with it
+    await repo.setTitle('gh-1', repo.STARGAZER_TITLE);
+    const wearing = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'gh-1'`);
+    check('star sweep: the title can be equipped before it is taken away', wearing.rows[0].title === repo.STARGAZER_TITLE);
+    r = await repo.sweepStargazers([], true);
+    check('⚠️ star sweep: unstarring REVOKES (owner, 2026-09-21)', r.applied && r.revoked.includes('gh-1'), JSON.stringify(r));
+    check('star sweep: ...the ledger no longer has it', !(await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    /* ⚠️ BOTH ids, the other way. The grant side is checked above; an asymmetry here is the
+       one that LASTS — a revoke that took the title and left the decal leaves an account
+       wearing a reward it no longer qualifies for, and the holder set is read off the title,
+       so no later sweep would ever look at it again. */
+    const leftOver = await cosmOf('gh-1');
+    check('⚠️ star sweep: ...and the COSMETIC went with it — a half-revoke is permanent',
+      repo.STARGAZER_GRANTS.every((id) => !leftOver.includes(id)), JSON.stringify(leftOver));
+    const after = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'gh-1'`);
+    check(
+      '⚠️ star sweep: ...and the EQUIPPED title was cleared, not left dangling',
+      after.rows[0].title === null,
+      `title=${after.rows[0].title}`,
+    );
+
+    // unlink keeps the row, so the pair can never earn on another account
+    check('links: unlinking takes', (await repo.unlinkProvider('gh-1', 'github')) === true);
+    check('links: ...and the account has no live link', (await repo.providerLinks('gh-1')).length === 0);
+    check(
+      '⚠️ links: ...but the PAIR is still spoken for — unlink/relink is not a free reward mint',
+      (await repo.linkProvider('gh-2', 'github', '1001')) === false,
+    );
+    check('links: the original owner may relink it', (await repo.linkProvider('gh-1', 'github', '1001')) === true);
+
+    // a ledger title is a closed set; an unknown one is refused like any cosmetic id
+    check('links: an unknown title id cannot be granted', (await repo.grantCosmetic('gh-1', 'title:selfawarded', 'rewards')) === false);
+
+    await repo.deleteAccount('gh-2');
+    const left = await db.query<{ n: number }>(`select count(*)::int as n from provider_links where user_id = 'gh-2'`);
+    check('links: a deleted account takes its links with it (the FK cascades)', Number(left.rows[0].n) === 0);
+  }
+
+
+  // ---- THE STARGAZER FETCH: `complete` is the safety property ----------------------
+  /**
+   * `fetchStargazers` takes an injected `fetch`, so every failure path is reachable without
+   * a network or a token. The property under test is not "does it parse JSON" — it is that
+   * EVERY failure produces `complete: false`, because `sweepStargazers` revokes on a
+   * complete list and an incomplete one misread as empty strips every holder at once.
+   */
+  {
+    /* ⚠️ IMPORTED LAZILY, LIKE `server/db/repo` ITSELF. `server/stargazers` pulls repo in,
+       repo pulls `server/moderation`, and moderation reads its key AT MODULE SCOPE — so a
+       top-of-file import here resolves moderation as DISABLED before the stub at the top of
+       this file sets the env, and the replay name-scrub check goes red. That stub's own
+       header warns about exactly this; this is that hazard, met. */
+    const stargazers = await import('../server/stargazers');
+    const page = (n: number, ids: number[]) => ({ ok: true, status: 200, json: async () => ids.map((id) => ({ id })) }) as unknown as Response;
+    const stub = (pages: Response[]): typeof fetch => {
+      let i = 0;
+      return (async () => pages[Math.min(i++, pages.length - 1)]) as unknown as typeof fetch;
+    };
+
+    // a single short page is a complete answer
+    let got = await stargazers.fetchStargazers('o/r', undefined, stub([page(1, [1, 2, 3])]));
+    check('stargazers: a short page ends the walk and is COMPLETE', got.complete && got.ids.join() === '1,2,3', JSON.stringify(got));
+
+    // ⚠️ zero stars is a real, COMPLETE answer — and it is the one a naive implementation
+    // conflates with failure. `sweepStargazers` would revoke everybody on it, correctly.
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([page(1, [])]));
+    check('⚠️ stargazers: an EMPTY repo is complete, not a failure', got.complete && got.ids.length === 0);
+
+    // a full page followed by a short one pages through
+    const full = Array.from({ length: 100 }, (_, k) => k + 1);
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([page(1, full), page(2, [101])]));
+    check('stargazers: it pages until a short page', got.complete && got.ids.length === 101);
+
+    // every failure path is INCOMPLETE
+    const bad = { ok: false, status: 502, headers: new Headers(), json: async () => [] } as unknown as Response;
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([bad]));
+    check('⚠️ stargazers: a non-2xx is INCOMPLETE', !got.complete);
+
+    const throws = (async () => {
+      throw new Error('socket hang up');
+    }) as unknown as typeof fetch;
+    got = await stargazers.fetchStargazers('o/r', undefined, throws);
+    check('⚠️ stargazers: a thrown fetch is INCOMPLETE', !got.complete);
+
+    const notJson = { ok: true, status: 200, json: async () => { throw new Error('bad json'); } } as unknown as Response;
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([notJson]));
+    check('⚠️ stargazers: an unparseable body is INCOMPLETE', !got.complete);
+
+    const notArray = { ok: true, status: 200, json: async () => ({ message: 'rate limited' }) } as unknown as Response;
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([notArray]));
+    check('⚠️ stargazers: a body that is not an array is INCOMPLETE (this is the rate-limit shape)', !got.complete);
+
+    // a list that never shortens must stop, and stopping early is INCOMPLETE
+    got = await stargazers.fetchStargazers('o/r', undefined, stub([page(1, full)]));
+    check('⚠️ stargazers: a list that never ends hits MAX_PAGES and is INCOMPLETE', !got.complete, `${got.ids.length} ids`);
+
+    /**
+     * ⚠️ **NO TOKEN MUST NOT MEAN "NOBODY STARRED", AND FOR A WHILE IT DID.**
+     *
+     * MEASURED against the live API on 2026-09-21: `GET /repos/<public repo>/stargazers`
+     * answers **401 Requires authentication** anonymously — from a clean rate-limit budget,
+     * on a repo whose own `/repos/…` is 200 with `"private": false` — and 200 with any
+     * credential. The token is REQUIRED, and this file's own comments used to say it was
+     * optional and bought rate limit alone.
+     *
+     * That wrong belief was survivable only because of how quiet the failure is. Every layer
+     * below `fetchStargazers` refuses to act on a list it cannot trust, so an unauthenticated
+     * deploy sweeps hourly, logs one generic `stargazer fetch 401` line, grants nothing,
+     * revokes nothing, and is indistinguishable from a repo nobody has starred. So what is
+     * under test here is not the 401 — it is that the sweep NAMES the reason and does not
+     * spend a request finding out.
+     */
+    let fetched = 0;
+    const countingFetch = (async () => {
+      fetched++;
+      return page(1, [1]);
+    }) as unknown as typeof fetch;
+    stargazers.resetNoTokenWarning();
+    const warnings: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...a: unknown[]) => void warnings.push(a.join(' '));
+    const noTok = await stargazers.runStarSweep('o/r', undefined, countingFetch);
+    console.warn = realWarn;
+    check('⚠️ star sweep: NO GITHUB_TOKEN means the sweep does not apply — a 401 list is not an empty one',
+      !noTok.applied && noTok.granted.length === 0 && noTok.revoked.length === 0, JSON.stringify(noTok));
+    check('...and it refuses BEFORE the request, so it does not burn one to learn that',
+      fetched === 0, `${fetched} fetches`);
+    check('...and it says GITHUB_TOKEN by name, because the alternative is a silent no-op forever',
+      warnings.some((w) => w.includes('GITHUB_TOKEN')), warnings.join(' | ').slice(0, 120));
+
+    /**
+     * ⚠️ **AND AN EXPIRED TOKEN IS THE SAME OUTAGE, ARRIVING LATER.** The refusal above
+     * catches a token that is ABSENT; one that has lapsed is PRESENT and reaches the non-2xx
+     * path instead. A fine-grained GitHub token caps out around a year, so this is the
+     * ordinary end of its life rather than an edge case — and the reward would go quiet on
+     * whatever day that is, with a `401` in a log nobody is reading.
+     *
+     * 403 is deliberately NOT the same sentence: rate limiting is self-healing and the next
+     * sweep is an hour away, so it is a note. The two are told apart by
+     * `x-ratelimit-remaining`, not by the status.
+     */
+    const errs: string[] = [];
+    const realErr = console.error;
+    const realWarn2 = console.warn;
+    const capture = async (status: number, remaining: string | null): Promise<string> => {
+      errs.length = 0;
+      console.error = (...a: unknown[]) => void errs.push(a.join(' '));
+      console.warn = (...a: unknown[]) => void errs.push(a.join(' '));
+      const res = {
+        ok: false,
+        status,
+        headers: { get: (h: string) => (h === 'x-ratelimit-remaining' ? remaining : null) },
+        json: async () => [],
+      };
+      await stargazers.fetchStargazers('o/r', 'tok', (async () => res) as unknown as typeof fetch);
+      console.error = realErr;
+      console.warn = realWarn2;
+      return errs.join(' | ');
+    };
+
+    const dead = await capture(401, null);
+    check('⚠️ stargazers: a REJECTED token (401) says the token was rejected, not just "401"',
+      /REJECTED|expired/i.test(dead) && dead.includes('GITHUB_TOKEN'), dead.slice(0, 110));
+    const limited = await capture(403, '0');
+    check('...and a rate-limit 403 does NOT cry credential — it is self-healing by the next sweep',
+      /rate-limited/i.test(limited) && !/REJECTED/i.test(limited), limited.slice(0, 110));
+    const forbidden = await capture(403, '57');
+    check('...while a 403 with budget left DOES, because that one is not going to fix itself',
+      /FORBIDDEN/i.test(forbidden), forbidden.slice(0, 110));
+
+    /**
+     * ⚠️ **AND 404 IS THE ONE THAT LIES.** On this endpoint GitHub answers 404 rather than
+     * 403 for an under-scoped token, so that a caller cannot use the status to learn a repo
+     * exists — which makes the one status that reads as "you typed the name wrong" also mean
+     * "your token is too weak". MEASURED 2026-09-21: an unscoped classic PAT reads `/user` and
+     * `/repos/genius0412/dsim` at 200 and 404s on that repo's `/stargazers`. This check exists
+     * because I gave the owner the wrong advice from exactly that 404.
+     */
+    const notfound = await capture(404, null);
+    check('⚠️ stargazers: a 404 WITH a token says MISSING SCOPE, because GitHub will not',
+      /scope/i.test(notfound) && notfound.includes('public_repo'), notfound.slice(0, 120));
+
+    /**
+     * ⚠️ **THE LINK MUST SWEEP FOR ITSELF, AND THE SWEEP MUST NOT BE ABLE TO FAIL THE LINK.**
+     * Both halves were wrong at once and it is worth spelling out how it presented: the only
+     * thing that granted anything was `setInterval(…, 1 h)` in `server/index.ts`, created at
+     * BOOT — so every deploy pushed the first fire back another hour, and after an afternoon
+     * of alpha deploys the live log had no `[rewards]` line at all. Somebody who linked saw
+     * GitHub connected and nothing else, indefinitely, which is indistinguishable from a
+     * feature that does not work. It is what the owner reported.
+     *
+     * Grepped rather than driven: the route needs a signed `state`, a verified bearer token
+     * and a live provider round trip, none of which this suite has. What is actually at risk
+     * is somebody deleting either half while tidying — a reachable `runStarSweep` call, and
+     * the `try` around it, since the link is already COMMITTED by then and a GitHub outage
+     * must not turn a good link into `?link=error` and send somebody round OAuth again.
+     */
+    const apiSrc = readFileSync(join(ROOT, 'server/api.ts'), 'utf8');
+    const cb = apiSrc.slice(apiSrc.indexOf('const linked = await linkProvider('));
+    const onLink = cb.slice(0, cb.indexOf('return back(linked'));
+    check('⚠️ link: a completed GitHub link sweeps IMMEDIATELY — an hourly timer is the bug',
+      /runStarSweep\(/.test(onLink), onLink.length ? 'found the callback' : 'CALLBACK NOT FOUND');
+    check('...and the sweep is wrapped, so a GitHub outage cannot fail a link already committed',
+      /try \{/.test(onLink) && /catch/.test(onLink));
+    const idxSrc = readFileSync(join(ROOT, 'server/index.ts'), 'utf8');
+    check('...and one sweep runs after BOOT too, because the hourly timer first fires an hour late',
+      /starBoot = setTimeout\(/.test(idxSrc) && /runStarSweep\(STAR_REPO/.test(idxSrc));
+  }
+
+
+  // ---- THE BOOST FLOOR, AND THE MISTAKE IT EXISTS TO NOT MAKE ---------------------
+  /**
+   * ⚠️ **THE BOOST FLOOR DOES NOT ACCUMULATE.** `docs/rewards-round2-plan.md` §7 names this
+   * as the check to write BEFORE the code, and it is the single most expensive mistake
+   * available in the rewards work: `grantSupporter` adds MONTHS, so an hourly sweep routed
+   * through it would mint a decade of membership inside a year and nothing in the system
+   * could expire it — `supporter_until` is the one predicate behind the badge, ads-off, the
+   * saved-start cap and the palette. A thousand sweeps must leave the account inside the
+   * grace window, not a thousand months out.
+   */
+  {
+    const boosts = await import('../server/boosts');
+    await repo.ensureProfile('bo-1', 'Booster');
+    await repo.ensureProfile('bo-2', 'Payer');
+
+    const untilOf = async (u: string): Promise<Date | null> => {
+      const r = await db.query<{ supporter_until: string | null }>(
+        `select supporter_until from profiles where user_id = $1`, [u],
+      );
+      const v = r.rows[0]?.supporter_until;
+      return v ? new Date(v) : null;
+    };
+
+    const first = await repo.ensureSupporterFloor('bo-1', boosts.BOOST_GRACE_DAYS);
+    check('boost: the first sweep sets a floor', first === true);
+    const at1 = await untilOf('bo-1');
+    const days = (d: Date | null): number => (d ? (d.getTime() - Date.now()) / 86_400_000 : -1);
+    check('boost: ...roughly the grace window out', Math.abs(days(at1) - boosts.BOOST_GRACE_DAYS) < 1, `${days(at1).toFixed(2)}d`);
+
+    // A THOUSAND SWEEPS. With `EXTEND_SQL` this lands ~83 years out; with a floor it does not move.
+    for (let i = 0; i < 1000; i++) await repo.ensureSupporterFloor('bo-1', boosts.BOOST_GRACE_DAYS);
+    const at2 = await untilOf('bo-1');
+    check(
+      '⚠️ boost: A THOUSAND SWEEPS LEAVE IT INSIDE THE GRACE WINDOW (it is a floor, not an extension)',
+      Math.abs(days(at2) - boosts.BOOST_GRACE_DAYS) < 1,
+      `${days(at2).toFixed(2)}d after 1001 sweeps \u2014 EXTEND_SQL would give ~${(1001 * 30).toFixed(0)}d`,
+    );
+
+    // ...and it writes ONE audit row, not 1001. The table exists to answer "why does this
+    // account have a membership?" and an hourly heartbeat would stop it answering.
+    const grants = await db.query<{ n: number }>(
+      `select count(*)::int as n from supporter_grants where user_id = 'bo-1' and source = 'boost'`,
+    );
+    check('⚠️ boost: ...and logs ONCE, not once per sweep', Number(grants.rows[0].n) === 1, `${grants.rows[0].n} rows`);
+
+    // a PAYER who also boosts keeps the later of the two — paid time is never truncated
+    await repo.grantSupporter('bo-2', 6, 'kofi');
+    const paid = await untilOf('bo-2');
+    await repo.ensureSupporterFloor('bo-2', boosts.BOOST_GRACE_DAYS);
+    const after = await untilOf('bo-2');
+    check(
+      '⚠️ boost: a PAYER who boosts keeps the later date \u2014 the floor never truncates paid time',
+      !!paid && !!after && after.getTime() === paid.getTime(),
+      `${paid?.toISOString()} -> ${after?.toISOString()}`,
+    );
+
+    // the fetch half: an empty member list is the INTENT-IS-OFF signature, not "nobody boosts"
+    const ok = (rows: unknown[]) => ({ ok: true, status: 200, json: async () => rows }) as unknown as Response;
+    const stub = (pages: Response[]): typeof fetch => {
+      let i = 0;
+      return (async () => pages[Math.min(i++, pages.length - 1)]) as unknown as typeof fetch;
+    };
+    let got = await boosts.fetchBoosters('g', 't', stub([ok([{ user: { id: '5' }, premium_since: '2026-01-01' }, { user: { id: '6' }, premium_since: null }])]));
+    check('boost fetch: only members with premium_since count', got.complete && got.ids.join() === '5', JSON.stringify(got));
+    got = await boosts.fetchBoosters('g', 't', stub([ok([])]));
+    check(
+      '⚠️ boost fetch: an EMPTY member list is INCOMPLETE \u2014 it is what Discord returns with the intent OFF, with a 200 and no error',
+      !got.complete,
+    );
+    const bad = { ok: false, status: 403, json: async () => [] } as unknown as Response;
+    got = await boosts.fetchBoosters('g', 't', stub([bad]));
+    check('boost fetch: a non-2xx is INCOMPLETE', !got.complete);
+    const swept = await boosts.sweepBoosters([], false);
+    check('⚠️ boost sweep: an incomplete read pushes no floors at all', swept.applied === false && swept.floored.length === 0);
   }
 
   await db.close();

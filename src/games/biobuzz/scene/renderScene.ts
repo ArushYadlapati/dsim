@@ -35,6 +35,7 @@ import { buildBiobuzzElements, setElementDetail, setElementShadows, updateBiobuz
 import { loadElementGeometries } from './renderElementsGlb';
 import { bbWheelDetail, buildBiobuzzRobots, updateBiobuzzRobots, type BbRobots } from './renderRobots';
 import { buildBiobuzzReticle, updateBiobuzzReticle, type BbReticle } from './renderReticle';
+import { applyVenueLayers, bbVenueDetail, buildBiobuzzVenue } from './renderVenue';
 import { createCameras, setCameraTuning, setDriverHeightIn, type BbCameras } from './renderCameras';
 import { applyEnvironmentRig, createEnvironment, type BbEnvironment } from './renderEnvironment';
 import { environmentDef } from '../graphics/environments';
@@ -191,6 +192,14 @@ class BiobuzzScene implements GameScene {
    * built lazily per spec, so anisotropy and reflections have to be re-applied when one appears
    * — a cheap integer compare per frame instead of a traverse. */
   private robotChildren = -1;
+
+  /** THE VENUE (`renderVenue.ts`) — real geometry around the field, rebuilt only when the
+   * environment or the detail level actually changes. `venueKey` is what makes `applyQuality`
+   * idempotent for it: that method runs on every settings change and rebuilding a room because
+   * somebody moved the FOV slider would throw away and re-upload a dozen buffers per frame of
+   * the drag. */
+  private venue: THREE.Group | null = null;
+  private venueKey = '';
 
   private cssW = 1;
   private cssH = 1;
@@ -414,8 +423,35 @@ class BiobuzzScene implements GameScene {
     // `renderCore.ts`'s `SCENE_*` constants are still the DEFAULT rig's values — `BASE_RIG`
     // copies them and the RENDER lane asserts the copy — and the builder preview still lights
     // from them directly, which is what keeps a robot the same colour in both places.
-    applyEnvironmentRig(this.renderer, this.hemi, this.sun, environmentDef(s.environment), s.envLighting);
+    const def = environmentDef(s.environment);
+    applyEnvironmentRig(this.renderer, this.hemi, this.sun, def, s.envLighting);
     void this.env.apply(s.environment, this.onQualityEvent, s.envLighting);
+
+    // ── the venue ──────────────────────────────────────────────────────────────────────────
+    //
+    // THE SURROUND IS GEOMETRY NOW, not only a background texture (`renderVenue.ts` carries the
+    // three measurements that decided it). It is a pure function of the environment and of the
+    // detail level, so it is keyed and rebuilt only when one of those two moves — everything
+    // else in this method is a property write, and a room rebuilt on an FOV drag would not be.
+    // It is added BEFORE `tuneMaterials` so the ground's own texture gets the anisotropy row,
+    // which is the most grazing-angle surface in the scene once a driver camera is on it.
+    const detail = bbVenueDetail(s, this.tier);
+    const key = `${def.id}:${detail}`;
+    if (key !== this.venueKey) {
+      if (this.venue) {
+        this.scene.remove(this.venue);
+        disposeObject3D(this.venue);
+      }
+      this.venue = buildBiobuzzVenue(def.venue, detail);
+      /* ⚠️ THE TWO TOP-DOWN CAMERAS ARE LEFT OUT ON PURPOSE. Everything the venue hangs
+         over the field — the lighting grid, the ceiling fittings — sits on
+         `VENUE_OVERHEAD_LAYER`, and enabling it here for the side-on cameras only is what
+         keeps a 5×5 beam grid from being drawn as a giant cross across the overhead shot
+         and the PiP. Re-applied on every rebuild because the cameras outlive the venue. */
+      applyVenueLayers([this.cameras.driver, this.cameras.chase, this.cameras.orbit, this.cameras.free]);
+      this.scene.add(this.venue);
+      this.venueKey = key;
+    }
 
     this.tuneMaterials();
     setCameraTuning(s.fov, s.cameraMotion);

@@ -22,9 +22,17 @@ import { clamp } from './math';
 // the key itself comes from the registry every privacy surface reads (src/storageKeys.ts)
 import { SETTINGS_KEY as STORAGE_KEY } from './storageKeys';
 
-/** default touch-control layout (centres as viewport fractions), tuned for landscape:
- * drive stick bottom-left, turn stick bottom-right, action buttons clustered on the
- * right above the turn stick. Editable + persisted per device. */
+/**
+ * The touch-control layout (centres as viewport fractions), editable + persisted per device.
+ *
+ * ⚠️ THESE VALUES ARE THE "UNTOUCHED" SENTINEL, NOT THE ARRANGEMENT ANY MORE. A fraction
+ * cannot be right in both orientations at once — these were tuned for landscape, and in
+ * portrait `shoot` and `intake` were 60 px apart with radii of 41 and 32, so they overlapped,
+ * while the drive base's left edge hung off the screen. `src/ui/mobileActions.ts` arranges the
+ * pad against the LIVE viewport instead, and reads a key here only once it DIFFERS from what
+ * is written below — which is exactly "the player has dragged this control". So every
+ * customised layout keeps working, and nobody has to hand-tune two sets of numbers.
+ */
 export const DEFAULT_MOBILE_LAYOUT: GameSettings['mobileLayout'] = {
   drive: { x: 0.13, y: 0.74 },
   turn: { x: 0.87, y: 0.74 },
@@ -32,9 +40,9 @@ export const DEFAULT_MOBILE_LAYOUT: GameSettings['mobileLayout'] = {
   intake: { x: 0.74, y: 0.44 },
   catalyst: { x: 0.82, y: 0.29 },
   fling: { x: 0.66, y: 0.29 },
-  // The HUMAN PLAYER button sits ABOVE the cluster and further inboard than the rest: it is an
-  // alliance action pressed at a cue, and putting it in the thumb's sweep is how a driver
-  // spends an entitlement they were saving. Only drawn in BIOBUZZ (`mobileButtons`).
+  // The HUMAN PLAYER button. Only drawn in BIOBUZZ (`src/games/biobuzz/mobile.ts`), where it
+  // sits on the drive thumb's side: it is an alliance action pressed at a cue, and putting it
+  // in the scoring thumb's sweep is how a driver spends an entitlement they were saving.
   bbNectar: { x: 0.74, y: 0.16 },
   scale: 1,
 };

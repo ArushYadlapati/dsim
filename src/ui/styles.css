@@ -2287,15 +2287,29 @@ button {
   border-color: var(--ds-on-field-accent);
   cursor: grab;
 }
-/* the CATAPULT throw — a different action from the claw, so a different colour */
-.mobile-btn.fling {
+/* THE SECOND RANK — the CATAPULT throw (a different action from the claw) and the three
+   utilities every season carries. Dimmer than the scoring buttons beside them, because a
+   thumb that is hunting mid-match is hunting for SHOOT, not for PARK. */
+.mobile-btn.fling,
+.mobile-btn.flip,
+.mobile-btn.drivemode,
+.mobile-btn.park {
   border-color: var(--ds-on-field-dim);
   color: var(--ds-on-field-dim);
 }
-/* an action the ROBOT is doing for you: never drawn in play, ghosted while laying the
-   pad out so the layout stays arrangeable whatever the assists are set to today */
+/* an action the ROBOT is doing for you. GHOSTED, NOT HIDDEN: hiding them is what left a
+   default DECODE phone with no action buttons at all — auto intake and auto fire are both on
+   by default and they were the only two the pad had — and a manual press still reaches the
+   sim with the assist on. */
 .mobile-btn.auto {
   opacity: 0.45;
+}
+/* laying the pad out, a button with no stored position of its own: drawn, so the arrangement
+   is complete, but not grabbable. The solid edge against the draggable ones' dashed one is
+   what says which is which; the ARIA label says it in words. */
+.mobile-btn.fixed {
+  pointer-events: none;
+  opacity: 0.55;
 }
 
 /* edit-layout bar (mobile control customization) */

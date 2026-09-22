@@ -2,6 +2,8 @@ import type { Replay } from '../../src/sim/replay';
 import type { AssistConfig, GameId, RobotSpec } from '../../src/types';
 import type { PendingMatch, PendingRosterEntry } from '../matchTypes';
 import { BALANCE_VERSION, PLACEMENT_GAMES } from '../../src/config';
+import { awardTitleId } from '../../src/awards';
+import { isTitleId } from '../../src/cosmetics';
 import { coerceGameId, GAME_IDS, serverPhysics } from '../../src/games/types';
 import { simModuleFor } from '../../src/games/sim';
 import { COSMETIC_AXES } from '../../src/cosmetics';
@@ -182,24 +184,65 @@ export async function startNewSeason(
   bumpAct = false,
   game?: Game,
 ): Promise<{ season: number; act: number; seasonNo: number }> {
-  const next = (await currentSeasonNumber(fallback, game)) + 1;
+  const closing = await currentSeasonNumber(fallback, game);
+  const next = closing + 1;
   const cur = await q<{ act: number | null }>(
     `select act from seasons where game = $1 order by balance_version desc limit 1`,
     [g(game)],
   );
-  const act = Number(cur[0]?.act ?? 0) + (bumpAct ? 1 : 0);
+  const closingAct = Number(cur[0]?.act ?? 0);
+  const act = closingAct + (bumpAct ? 1 : 0);
   const custom = name && name.trim() ? name.trim() : null;
-  await q(
-    `insert into seasons (game, balance_version, name, act, active) values ($1, $2, $3, $4, true)
-     on conflict (game, balance_version) do update set name = excluded.name, act = excluded.act, active = true`,
-    [g(game), next, custom, act],
+
+  /**
+   * THE CLOSING SEASON'S AWARDS, computed BEFORE the roll and written INSIDE it.
+   *
+   * Read outside the transaction on purpose: these are four board queries, the boards of a
+   * season that is about to stop moving, and holding a connection across them for the
+   * length of a roll buys nothing. What must be atomic is the WRITE — see below.
+   *
+   * ⚠️ IT IS THE *CLOSING* SEASON THAT IS AWARDED, at the act it belonged to. `act` above
+   * may have been bumped for the season being OPENED; an award stamped with that would
+   * name the wrong act in its own title for every roll that starts a new act.
+   */
+  const closingNo = await q<{ n: number }>(
+    `select count(*)::int as n from seasons where game = $1 and act = $2 and balance_version <= $3`,
+    [g(game), closingAct, closing],
   );
-  await q(`update seasons set active = false where game = $1 and balance_version <> $2`, [g(game), next]);
-  const cnt = await q<{ n: number }>(
-    `select count(*)::int as n from seasons where game = $1 and act = $2`,
-    [g(game), act],
-  );
-  return { season: next, act, seasonNo: Number(cnt[0]?.n ?? 1) };
+  const awards = await computeSeasonAwards(game, closing, closingAct, Math.max(1, Number(closingNo[0]?.n ?? 1)));
+
+  /**
+   * ⚠️ ONE TRANSACTION, WHICH THIS FUNCTION DID NOT USED TO HAVE. It was four sequential
+   * `q()` calls, and `q()` takes a connection PER CALL (`pool.ts`), so a failure between
+   * them left a half-rolled season — and now that awards are part of a roll the exposure is
+   * worse than untidy: inserting the new season and then failing to write the awards leaves
+   * the closed season permanently un-awarded, because the next attempt reads `closing` from
+   * a `seasons` table that has already moved on. Either the roll happens or none of it does.
+   */
+  const seasonNo = await tx(async (query) => {
+    await query(
+      `insert into seasons (game, balance_version, name, act, active) values ($1, $2, $3, $4, true)
+       on conflict (game, balance_version) do update set name = excluded.name, act = excluded.act, active = true`,
+      [g(game), next, custom, act],
+    );
+    await query(`update seasons set active = false where game = $1 and balance_version <> $2`, [g(game), next]);
+    for (const a of awards) {
+      // `do nothing` against 0045's unique slot index is what makes a REPEATED close
+      // idempotent — a retried roll recomputes the same set and inserts none of it again.
+      await query(
+        `insert into season_awards (game, balance_version, act, season_no, kind, mode, drivetrain, rank, user_id, score)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         on conflict do nothing`,
+        [a.game, a.balanceVersion, a.act, a.seasonNo, a.kind, a.mode, a.drivetrain, a.rank, a.userId, a.score],
+      );
+    }
+    const cnt = await query<{ n: number }>(
+      `select count(*)::int as n from seasons where game = $1 and act = $2`,
+      [g(game), act],
+    );
+    return Number(cnt[0]?.n ?? 1);
+  });
+  return { season: next, act, seasonNo };
 }
 
 /** Delete all replays stamped with a given (archived) game×season. The record/match
@@ -403,7 +446,16 @@ const SUPPORTER_COL = `${supporterPred()} as supporter`;
 function badgeCols(a: string, prefix?: string): string {
   const role = prefix ? `"${prefix}Role"` : 'role';
   const sup = prefix ? `"${prefix}Supporter"` : 'supporter';
-  return `${a}role as ${role}, coalesce(${supporterPred(a)}, false) as ${sup}`;
+  const title = prefix ? `"${prefix}Title"` : 'title';
+  /**
+   * ⚠️ THE EQUIPPED TITLE RIDES ALONG, AND IT COSTS NOTHING EXTRA. It is one more column
+   * off a `profiles` row this query has already joined — no second join, no per-row
+   * lookup of `season_awards`, because the title ID ENCODES the whole award
+   * (`awardTitleId`) and `parseAwardTitleId` (`src/awards.ts`) reads it back on the
+   * client. That is the reason the id is derived from the slot rather than being a
+   * surrogate key: a board can print the award without ever reading the award table.
+   */
+  return `${a}role as ${role}, coalesce(${supporterPred(a)}, false) as ${sup}, ${a}title as ${title}`;
 }
 
 /**
@@ -667,7 +719,7 @@ const EXTEND_SQL = `update profiles
    returning supporter_until as until`;
 
 /** where a change to `supporter_until` came from — recorded in supporter_grants */
-export type GrantSource = 'kofi' | 'admin' | 'revoke';
+export type GrantSource = 'kofi' | 'admin' | 'revoke' | 'boost';
 
 /**
  * Extend a membership by `months` and write the audit row.
@@ -707,6 +759,49 @@ export async function revokeSupporter(userId: string, note?: string): Promise<bo
   );
   if (rows.length === 0) return false;
   await logGrant(userId, 'revoke', 0, null, note ?? null);
+  return true;
+}
+
+/**
+ * THE DISCORD BOOST FLOOR — push `supporter_until` to at least `days` from now.
+ *
+ * ⚠️ **IT MUST NOT GO THROUGH `EXTEND_SQL`, AND THIS IS THE SINGLE MOST EXPENSIVE MISTAKE
+ * AVAILABLE IN THE REWARDS WORK.** That statement ADDS MONTHS. An hourly sweep through it
+ * would mint a decade of membership inside a year and nothing in the system could expire it
+ * — `supporter_until` is the one predicate behind the badge, ads-off, the saved-start cap
+ * and the palette, so it would be an unrevokable entitlement handed out by a cron. This sets
+ * a FLOOR instead: `greatest(current, now() + days)`.
+ *
+ * `greatest` also means a booster who PAYS keeps the later of the two and never has paid
+ * time truncated — the same reasoning `EXTEND_SQL`'s own comment gives for extending rather
+ * than overwriting.
+ *
+ * ⚠️ AND IT ONLY LOGS WHEN THE FLOOR ACTUALLY MOVED BY MORE THAN A DAY. `supporter_grants`
+ * is append-only and exists to answer "why does this account have a membership?"; an hourly
+ * sweep writing 24 rows per booster per day would stop it answering that. Returns true only
+ * when something really changed, so the sweep's own count is honest too.
+ */
+export async function ensureSupporterFloor(userId: string, days: number): Promise<boolean> {
+  const rows = await q<{ until: string; moved: boolean }>(
+    /* ⚠️ THE CTE SNAPSHOTS THE OLD VALUE, AND IT HAS TO. Postgres' `RETURNING` sees the
+       row AFTER the update, so `supporter_until < now() + grace` compared there is always
+       false — which silently made "did the floor move?" answer NO on every sweep including
+       the first, and with it the audit row. (`RETURNING OLD.col` is PG 18; this runs on 17.) */
+    `with prev as (select supporter_until as before from profiles where user_id = $1)
+     update profiles p
+        set supporter_until = greatest(coalesce(p.supporter_until, now()), now() + ($2 || ' days')::interval),
+            updated_at = now()
+       from prev
+      where p.user_id = $1
+      returning p.supporter_until as until,
+                (prev.before is null or prev.before < now() + ($2 || ' days')::interval - interval '1 day') as moved`,
+    [userId, String(days)],
+  );
+  const row = rows[0];
+  if (!row) return false;
+  if (!row.moved) return false;
+  // months = 0 is a real, meaningful value here and 0019 already defines it as one.
+  await logGrant(userId, 'boost', 0, row.until, 'discord server boost');
   return true;
 }
 
@@ -759,6 +854,10 @@ export async function listSupporterGrants(
  *  grant nothing while reporting success, and must never let a free-text value land in
  *  the column and later read back as "entitled". */
 function isCosmeticId(id: string): boolean {
+  // a LEDGER TITLE lives in the same jsonb array but is not a robot-spec axis, so it has
+  // its own closed set (`TITLE_KEYS`, src/cosmetics.ts) rather than widening COSMETIC_AXES
+  // — see that constant's header for why a title must not become a spec axis.
+  if (id.startsWith('title:')) return isTitleId(id);
   const i = id.indexOf(':');
   if (i < 0) return false;
   const axis = id.slice(0, i) as keyof typeof COSMETIC_AXES;
@@ -826,6 +925,350 @@ export async function revokeCosmetic(
   if (rows.length === 0) return false;
   await writeAudit({ adminId: source, action: 'cosmetics.revoke', targetUser: userId, detail: { id }, note: note ?? undefined });
   return true;
+}
+
+
+// ----------------------------------------------------- season awards -------
+/**
+ * SEASON AWARDS — what a board's top finishers keep once the season has closed
+ * (migration 0045, `docs/rewards-round2-plan.md` §2.2).
+ *
+ * Owner's counts, 2026-09-21: ranked TOP 3 per mode; the record board OVERALL TOP 3 and
+ * PER-DRIVETRAIN TOP 1; and the DUO record board gets that same pair. A duo row is a
+ * PAIR's run, so both members are decorated — which is why `user_id` is part of 0045's
+ * unique slot index.
+ */
+export interface SeasonAward {
+  game: Game;
+  balanceVersion: number;
+  act: number;
+  /** the season's number within its act — “Act 2 Season 3” */
+  seasonNo: number;
+  kind: 'ranked' | 'record_overall' | 'record_drivetrain';
+  mode: '1v1' | '2v2' | 'solo' | 'duo';
+  drivetrain: string | null;
+  rank: number;
+  userId: string;
+  score: number | null;
+}
+
+/** how deep each board's award slice goes — the owner's counts, in exactly one place. */
+export { awardTitleId };
+
+export const AWARD_DEPTH = { ranked: 3, record_overall: 3, record_drivetrain: 1 } as const;
+
+/** the drivetrains a per-drivetrain award is minted for. `DrivetrainType`, spelled out
+ *  here because this module must not import from `src/types.ts` for a runtime value. */
+export const AWARD_DRIVETRAINS = ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const;
+
+/**
+ * COMPUTE one closed season's awards. READ-ONLY — `startNewSeason` writes them.
+ *
+ * ⚠️ EVERY BOARD READ HERE IS THE BOARD'S OWN FUNCTION, called the way the site calls it.
+ * An award that disagreed with the board it claims to come from is worse than no award,
+ * and the two ways to cause that are both live hazards:
+ *   · `recordLeaderboard` takes an optional `physics`; omitting it takes `boardPhysics`'s
+ *     DEFAULT, which is what the public board uses. Passing one here would mint an award
+ *     for a holder the board itself hides.
+ *   · ranked uses `eloHistoryLeaderboard` (keyed by BALANCE_VERSION), never
+ *     `eloLeaderboard` (keyed by ACT). A season's ranked winner is a per-season fact; the
+ *     act board spans several and would name the wrong person on every season but the last
+ *     of an act.
+ * Both boards already apply their own `PLACEMENT_GAMES` floor, and an award inherits it
+ * for the same reason — it must agree with its board.
+ *
+ * TIES resolve to the BOARD'S OWN ORDER. Neither board promises a tiebreak beyond its
+ * `order by`, and inventing one here would be a second opinion about who came second.
+ */
+export async function computeSeasonAwards(
+  game: Game | undefined,
+  balanceVersion: number,
+  act: number,
+  seasonNo: number,
+): Promise<SeasonAward[]> {
+  const out: SeasonAward[] = [];
+  const base = { game: g(game), balanceVersion, act, seasonNo };
+
+  for (const mode of ['1v1', '2v2'] as const) {
+    const rows = await eloHistoryLeaderboard({ mode, balanceVersion, limit: AWARD_DEPTH.ranked, game });
+    rows.forEach((r, i) => {
+      out.push({ ...base, kind: 'ranked', mode, drivetrain: null, rank: i + 1, userId: r.userId, score: Math.round(r.rating) });
+    });
+  }
+
+  for (const mode of ['solo', 'duo'] as const) {
+    const overall = await recordLeaderboard({ mode, balanceVersion, limit: AWARD_DEPTH.record_overall, game });
+    overall.forEach((r, i) => {
+      // BOTH HALVES OF A DUO RUN ARE DECORATED — see `SeasonAward`'s header.
+      for (const uid of [r.userId, ...(mode === 'duo' && r.partnerId ? [r.partnerId] : [])]) {
+        out.push({ ...base, kind: 'record_overall', mode, drivetrain: null, rank: i + 1, userId: uid, score: Math.round(r.score) });
+      }
+    });
+    for (const dt of AWARD_DRIVETRAINS) {
+      const rows = await recordLeaderboard({ mode, drivetrain: dt, balanceVersion, limit: AWARD_DEPTH.record_drivetrain, game });
+      rows.forEach((r, i) => {
+        for (const uid of [r.userId, ...(mode === 'duo' && r.partnerId ? [r.partnerId] : [])]) {
+          out.push({ ...base, kind: 'record_drivetrain', mode, drivetrain: dt, rank: i + 1, userId: uid, score: Math.round(r.score) });
+        }
+      });
+    }
+  }
+  return out;
+}
+
+/** every award this account holds, newest season first — the profile read. */
+export async function userAwards(userId: string): Promise<SeasonAward[]> {
+  const rows = await q<{
+    game: Game; balance_version: number; act: number; season_no: number; kind: SeasonAward['kind'];
+    mode: SeasonAward['mode']; drivetrain: string | null; rank: number; score: number | null;
+  }>(
+    `select game, balance_version, act, season_no, kind, mode, drivetrain, rank, score
+       from season_awards where user_id = $1
+      order by balance_version desc, kind, mode, rank`,
+    [userId],
+  );
+  return rows.map((r) => ({
+    game: r.game as Game, balanceVersion: r.balance_version, act: r.act, seasonNo: r.season_no, kind: r.kind,
+    mode: r.mode, drivetrain: r.drivetrain, rank: r.rank, userId, score: r.score,
+  }));
+}
+
+/**
+ * EVERY TITLE THIS ACCOUNT MAY WEAR. The one resolver, and the only thing that decides.
+ *
+ * Two sources, unioned (0046's header):
+ *   · AWARD titles, derived from `season_awards` rows;
+ *   · GRANTED titles — the GitHub reward, loyalty milestones — which live as `title:`
+ *     entries in `profiles.cosmetics`.
+ * ⚠️ The granted half is READ here already even though nothing grants one yet. Reading a
+ * prefix out of that jsonb array needs no registry change; GRANTING one does, because
+ * `CosmeticId` (`src/cosmetics.ts`) is a template type over the four ROBOT SPEC axes and a
+ * title is not a spec field. That decision belongs to stage B, and this function is
+ * deliberately already correct for it rather than needing a second edit then.
+ */
+export async function earnedTitles(userId: string): Promise<string[]> {
+  const awards = await userAwards(userId);
+  const fromAwards = awards.map((a) => awardTitleId(a));
+  const rows = await q<{ cosmetics: unknown }>(`select cosmetics from profiles where user_id = $1`, [userId]);
+  const ledger = Array.isArray(rows[0]?.cosmetics) ? (rows[0].cosmetics as unknown[]) : [];
+  const granted = ledger.filter((v): v is string => typeof v === 'string' && v.startsWith('title:'));
+  return [...new Set([...fromAwards, ...granted])];
+}
+
+/**
+ * EQUIP a title, or clear it with `null`. Validated against `earnedTitles` on WRITE —
+ * 0046's column is bare `text`, so this is the only thing standing between it and an
+ * unearned value. Returns false when the account has not earned `id`.
+ */
+/** the equipped title id, or null. A one-column read so the title route does not have to
+ *  build a whole `getUserStats` (which needs a season and a game it has no opinion about). */
+export async function getTitle(userId: string): Promise<string | null> {
+  const rows = await q<{ title: string | null }>(`select title from profiles where user_id = $1`, [userId]);
+  return rows[0]?.title ?? null;
+}
+
+export async function setTitle(userId: string, id: string | null): Promise<boolean> {
+  if (id !== null) {
+    const earned = await earnedTitles(userId);
+    if (!earned.includes(id)) return false;
+  }
+  const rows = await q<{ user_id: string }>(
+    `update profiles set title = $2, updated_at = now() where user_id = $1 returning user_id`,
+    [userId, id],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * CLEAR an equipped title that the account no longer holds. Called by every path that
+ * takes a title away — an award reversal, `revokeCosmetic` on a `title:` id — for the
+ * reason `clearUsername` exists (`docs/area/accounts.md`): the moderator takes the thing
+ * away, they do not leave a dangling reference for a render path to discover.
+ */
+export async function clearTitleIfEquipped(userId: string, id: string): Promise<void> {
+  await q(`update profiles set title = null, updated_at = now() where user_id = $1 and title = $2`, [userId, id]);
+}
+
+
+// ------------------------------------------------- linked social accounts --
+/** the providers a DSIM account can link (0047). */
+export type LinkProvider = 'github' | 'discord';
+
+/**
+ * LINKED SOCIAL ACCOUNTS (0047) and the STAR REWARD that reads them.
+ * `docs/rewards-round2-plan.md` §2.1 / §3.1.
+ */
+export interface ProviderLink {
+  provider: LinkProvider;
+  providerUserId: string;
+  userId: string;
+  linkedAt: string;
+  unlinkedAt: string | null;
+}
+
+/**
+ * LINK an external account. Answers false when that external account is already bound to a
+ * DIFFERENT DSIM account — including one that has since unlinked.
+ *
+ * ⚠️ THAT REFUSAL IS THE WHOLE ANTI-FARM, and it is why the row survives an unlink. Without
+ * it, unlink → relink on a second account mints the reward again for free, which is the
+ * cheapest farm available against any of these. Re-linking the SAME pair is allowed and
+ * simply clears `unlinked_at`, because that is a person undoing their own mistake.
+ */
+export async function linkProvider(userId: string, provider: LinkProvider, providerUserId: string): Promise<boolean> {
+  const rows = await q<{ user_id: string }>(
+    `insert into provider_links (provider, provider_user_id, user_id)
+     values ($1, $2, $3)
+     on conflict (provider, provider_user_id) do update
+       set unlinked_at = null
+       where provider_links.user_id = excluded.user_id
+     returning user_id`,
+    [provider, providerUserId, userId],
+  );
+  return rows.length > 0;
+}
+
+/** UNLINK: stamp `unlinked_at`, never delete — see `linkProvider`. */
+export async function unlinkProvider(userId: string, provider: LinkProvider): Promise<boolean> {
+  const rows = await q<{ user_id: string }>(
+    `update provider_links set unlinked_at = now()
+      where user_id = $1 and provider = $2 and unlinked_at is null
+      returning user_id`,
+    [userId, provider],
+  );
+  return rows.length > 0;
+}
+
+/** what this account has linked right now (unlinked rows excluded). */
+export async function providerLinks(userId: string): Promise<ProviderLink[]> {
+  const rows = await q<{ provider: LinkProvider; provider_user_id: string; linked_at: string }>(
+    `select provider, provider_user_id, linked_at from provider_links
+      where user_id = $1 and unlinked_at is null order by provider`,
+    [userId],
+  );
+  return rows.map((r) => ({ provider: r.provider, providerUserId: r.provider_user_id, userId, linkedAt: r.linked_at, unlinkedAt: null }));
+}
+
+/** every LIVE link for one provider — the sweep's left-hand side. */
+export async function liveLinks(provider: LinkProvider): Promise<{ providerUserId: string; userId: string }[]> {
+  const rows = await q<{ provider_user_id: string; user_id: string }>(
+    `select provider_user_id, user_id from provider_links where provider = $1 and unlinked_at is null`,
+    [provider],
+  );
+  return rows.map((r) => ({ providerUserId: r.provider_user_id, userId: r.user_id }));
+}
+
+/** the ledger id the GitHub star reward grants. */
+export const STARGAZER_TITLE = 'title:stargazer';
+/**
+ * …AND THE COSMETIC IT GRANTS WITH IT (owner, 2026-09-21: the star should carry something,
+ * not just a decal on a name).
+ *
+ * ⚠️ **IT IS AN `earned`-TIER KEY, NOT ONE OF THE SUPPORTER FILLS**, and that was the whole
+ * judgement: a star is one click, so gifting a premium chassis colour for it would price a
+ * Ko-fi membership at one click. `decal:star` is absent from both tier sets in
+ * `src/cosmetics.ts`, so `cosmeticTier` falls through to `'earned'` — the slot that file's
+ * header has been holding open for the rewards ledger since the palette shipped. It costs the
+ * supporter tier nothing and is worth more for being exclusive.
+ *
+ * ⚠️ BOTH IDS MOVE TOGETHER, in the same direction, on the same set difference. Granting one
+ * and not the other, or revoking one and not the other, is a state no sweep can repair later:
+ * the ledger is what "why does this account have this?" is answered from, and half a reward
+ * has no story. `STARGAZER_GRANTS` is therefore iterated rather than the two being written out
+ * at each of the four sites that touch them.
+ */
+export const STARGAZER_DECAL = 'decal:star';
+/** everything the GitHub star is worth, in the order a person would read it. */
+export const STARGAZER_GRANTS = [STARGAZER_TITLE, STARGAZER_DECAL] as const;
+
+/** every account holding one ledger id — ONE query, so a sweep does not ask per account. */
+export async function cosmeticHolders(id: string): Promise<Set<string>> {
+  const rows = await q<{ user_id: string }>(`select user_id from profiles where cosmetics ? $1`, [id]);
+  return new Set(rows.map((r) => r.user_id));
+}
+
+export interface StarSweepResult {
+  granted: string[];
+  revoked: string[];
+  /** false ⇒ nothing was changed, because the fetch could not be trusted. */
+  applied: boolean;
+}
+
+/**
+ * THE GITHUB STAR SWEEP — grant to everyone who stars, revoke from everyone who stops.
+ *
+ * `stargazers` is the COMPLETE set of stargazer ids for the repo, and `complete` says
+ * whether the fetch that produced it actually finished. The caller does the HTTP; this does
+ * the set algebra, so the interesting half is testable without a network or a token.
+ *
+ * ⚠️ **`complete: false` CHANGES NOTHING, AND THIS IS THE ENTIRE COST OF MAKING THE REWARD
+ * REVOCABLE** (owner ruling, 2026-09-21: "unstarring should revoke the reward honestly").
+ * Grant-only, a failed or truncated fetch meant "no new grants this cycle" and was harmless.
+ * With revocation the SAME failure would strip the title from every holder at once — a
+ * non-2xx, a timeout, a page loop that ended early, or a `304 Not Modified` misread as an
+ * empty list. So the sweep refuses to act on a set it does not trust, and the caller must
+ * pass `complete: false` rather than an empty array when anything went wrong.
+ *
+ * Revocation costs no extra traffic: it is the same set difference read the other way. It
+ * also costs no write for an account that did not hold the title, because `revokeCosmetic`
+ * is guarded by `and cosmetics ? $2`.
+ *
+ * ⚠️ AND IT CLEARS AN EQUIPPED TITLE. `profiles.title` may be wearing the very id being
+ * taken away, and leaving it would be a dangling reference for a render path to discover —
+ * the same rule `clearUsername` follows.
+ */
+export async function sweepStargazers(
+  stargazers: readonly string[],
+  complete: boolean,
+): Promise<StarSweepResult> {
+  if (!complete) return { granted: [], revoked: [], applied: false };
+  const stars = new Set(stargazers);
+  const links = await liveLinks('github');
+  /**
+   * ⚠️ WHO ALREADY HOLDS IT IS READ UP FRONT, IN ONE QUERY, AND IT IS NOT OPTIONAL.
+   * `grantCosmetic` is idempotent in EFFECT (its `case when cosmetics ? $2` never writes a
+   * duplicate) but NOT in its return value: the UPDATE matches the profile row either way,
+   * so it answers true every time. Driving the audit off that answer would write a
+   * `cosmetics.grant` row on EVERY sweep — turning an append-only table that exists to
+   * answer "why does this account have this?" into one that cannot, which is the same
+   * failure the boost floor's own note warns about. So the set difference decides, and
+   * `grantCosmetic` is only called for an account that does not already hold it.
+   */
+  /* ⚠️ THE TITLE IS THE WITNESS FOR BOTH IDS. One holder set is read, not two, and the
+     reward moves as a unit — see `STARGAZER_GRANTS`. Reading a set per id would let the two
+     drift apart (an account holding the decal and not the title, which nothing would ever
+     reconcile), and it would also cost a second full-table query every sweep to learn
+     something the first one already implies. */
+  const holders = await cosmeticHolders(STARGAZER_TITLE);
+  const granted: string[] = [];
+  const revoked: string[] = [];
+  for (const l of links) {
+    const has = holders.has(l.userId);
+    if (stars.has(l.providerUserId)) {
+      if (has) continue;
+      let any = false;
+      for (const id of STARGAZER_GRANTS) {
+        if (await grantCosmetic(l.userId, id, 'rewards', 'github star')) any = true;
+      }
+      if (any) granted.push(l.userId);
+    } else if (has) {
+      let any = false;
+      for (const id of STARGAZER_GRANTS) {
+        if (await revokeCosmetic(l.userId, id, 'rewards', 'github star withdrawn')) any = true;
+      }
+      if (any) {
+        /* ⚠️ AND THE EQUIPPED TITLE IS CLEARED, BUT THE EQUIPPED DECAL IS NOT — they are
+           different kinds of state. `profiles.title` is a reference TO the ledger, so a
+           revoked id leaves it dangling. A saved robot's `decal` is a plain key on a spec,
+           and `stripUnentitledCosmetics` already downgrades it at the server's live ingress
+           on the next match; rewriting every saved spec here would be this function reaching
+           into the builder's data to fix something that fixes itself. */
+        await clearTitleIfEquipped(l.userId, STARGAZER_TITLE);
+        revoked.push(l.userId);
+      }
+    }
+  }
+  return { granted, revoked, applied: true };
 }
 
 // ------------------------------------------------------- Ko-fi payments -----
@@ -3746,6 +4189,17 @@ export interface UserStats {
    * every season would make the number meaningless the moment it got interesting.
    */
   activity?: { games: number; seconds: number; allGames: number; allSeconds: number };
+  /**
+   * EVERY SEASON AWARD THIS ACCOUNT HOLDS, and the title it is wearing (0045/0046).
+   *
+   * Deliberately NOT season-scoped like `elo` and `records` above: a trophy case is a
+   * fact about the account, and filtering it to the season the page happens to be
+   * showing would hide every award the moment a new season opened — which is the one
+   * thing an award must never do. Same reasoning as `activity` directly above.
+   */
+  awards?: SeasonAward[];
+  /** the equipped title id, or null — validated on write by `setTitle`. */
+  title?: string | null;
 }
 
 /**
@@ -3876,6 +4330,8 @@ export async function getUserStats(
       allGames: activity.total.games,
       allSeconds: activity.total.seconds,
     },
+    awards: await userAwards(userId),
+    title: (await q<{ title: string | null }>(`select title from profiles where user_id = $1`, [userId]))[0]?.title ?? null,
   };
 }
 

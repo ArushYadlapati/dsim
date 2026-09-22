@@ -45,6 +45,41 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
 }
 
 /**
+ * FIVE-POINTED STAR VERTICES — the one place the shape is defined, read by `drawDecal`'s
+ * `'star'` case here, the BIOBUZZ 3D decal texture (`games/biobuzz/scene/renderRobots.ts`,
+ * different coordinate convention, same helper) and the builder's SVG swatch (`ui/Menu.tsx`),
+ * instead of ten vertices hand-listed three times over. Standard math angle convention (0 = +x,
+ * increasing counter-clockwise); `points` alternates an outer vertex and an inner notch every
+ * `pi/points`, starting on an OUTER vertex at `startAngle` — so a caller that wants "forward" to
+ * be the tip just passes the angle that means forward in ITS frame.
+ *
+ * `STAR_INNER_RATIO` is `1/phi^2` (`(3-sqrt(5))/2`, ~0.382): the ratio a regular pentagram's
+ * own edges converge to if extended, not a rounder ~0.5 that reads as a five-petaled flower
+ * rather than a star at decal size.
+ */
+export const STAR_INNER_RATIO = (3 - Math.sqrt(5)) / 2; // 1/phi^2 ~= 0.381966
+
+export function starPoints(cx: number, cy: number, outerR: number, startAngle: number, points = 5): [number, number][] {
+  const innerR = outerR * STAR_INNER_RATIO;
+  const step = Math.PI / points; // half the angle between two outer vertices
+  const out: [number, number][] = [];
+  for (let i = 0; i < points * 2; i++) {
+    const r = i % 2 === 0 ? outerR : innerR;
+    const a = startAngle + i * step;
+    out.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+  }
+  return out;
+}
+
+/** trace a closed `starPoints` polygon into the current path (no fill/stroke — the caller's
+ * job, same as `roundRect`/`body` elsewhere in this file). */
+function traceStar(ctx: CanvasRenderingContext2D, pts: readonly [number, number][]): void {
+  ctx.beginPath();
+  pts.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+  ctx.closePath();
+}
+
+/**
  * THE DECAL — a vector shape over the chassis fill, under the halo/outline, parametric in the
  * FOOTPRINT (fractions of length/width, never absolute inches — a decal must scale to any legal
  * chassis, the risk `docs/cosmetics-plan.md` §4 names). Called with the caller's already
@@ -119,6 +154,26 @@ export function drawDecal(ctx: CanvasRenderingContext2D, hl: number, hw: number,
           if ((i + j) % 2 === 0) ctx.fillRect(-hl + i * cw, -bandH / 2 + j * rh, cw, rh);
         }
       }
+      break;
+    }
+    case 'star': {
+      // A REGULAR star needs the SAME radius on both axes — scaling x by `hl` and y by `hw`
+      // separately (the way `chevron` does, fine for an arrow) would squash it into a
+      // lopsided diamond on a chassis whose length and width differ a lot, and this sim's
+      // legal chassis range does. So the radius is one number, off the SMALLER of the two
+      // half-dimensions — the one that actually bounds how big a regular star fits before
+      // it clips the footprint — at 0.8x, the same reach toward the edge `chevron` takes at
+      // 0.82x hw. `startAngle` 0 puts the first outer vertex on +x: one point forward.
+      //
+      // ⚠️ THE COST OF ONE RADIUS IS THAT A LONG CHASSIS GETS A SMALLER STAR, AND THAT IS
+      // FINE ONLY BECAUSE THE LEGAL RANGE IS NARROW. Measured against the intake presets in
+      // `config.ts`: length 11–18, width 14.5–18, so `min(hl, hw)` lands between 5.5 and 9
+      // and the star is always a real fraction of the deck. Drawn on an ILLEGAL 40x6 it
+      // becomes a speck — true, and not worth designing for; a stress case outside the
+      // builder's own clamps is not a chassis this ever renders.
+      const r = Math.min(hl, hw) * 0.8;
+      traceStar(ctx, starPoints(0, 0, r, 0));
+      ctx.fill();
       break;
     }
   }

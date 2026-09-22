@@ -1,4 +1,6 @@
 import { type ReactNode } from 'react';
+import { AwardList } from './AwardBadge';
+import { compareAwards } from '../awards';
 import { type UserStats } from '../net/api';
 import { SupporterBadge } from './SupporterBadge';
 import { averageMatch, playtimeLong, playtimeText } from '../playtime';
@@ -92,6 +94,17 @@ export function CareerPanel({
                     : ''}
                 </span>
               </div>
+            </div>
+          )}
+          {/* THE TROPHY CASE. Account-wide, not season-scoped like the tiles below, for
+              the same reason playtime above is: an award that vanished when a new season
+              opened would be the one thing an award must never do. `AwardList` renders
+              NOTHING when the account has none — this panel already has an empty state and
+              a second "no awards yet" under it would be the panel saying it twice. */}
+          {stats.awards && stats.awards.length > 0 && (
+            <div className="ds-field">
+              <span className="cap">Awards</span>
+              <AwardList awards={[...stats.awards].sort(compareAwards)} />
             </div>
           )}
           <div className="ds-stats">

@@ -18,6 +18,9 @@ import { moduleFor } from '../games';
 import { serverPhysics } from '../games/types';
 import { PeriodPicker } from './PeriodPicker';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
+import { AwardBadge } from './AwardBadge';
+import { parseAwardTitleId } from '../awards';
+import { TitleChip } from './TitleChip';
 import { PLACEMENT_GAMES } from '../config';
 import {
   CHAIN_MODE_LABELS,
@@ -68,15 +71,25 @@ function DriverName({
   username,
   supporter,
   role,
+  title,
   onOpenProfile,
 }: {
   handle: string | null;
   username: string | null;
   supporter?: boolean;
   role?: StaffRole;
+  /** the equipped TITLE id (`badgeCols`). Parsed, never joined — see `parseAwardTitleId`. */
+  title?: string | null;
   onOpenProfile?: (username: string) => void;
 }) {
   const label = handle ?? (username ? `@${username}` : 'Player');
+  /* THE AWARD CHIP. `title` is an id that encodes its own award, so a board prints one
+     without reading `season_awards` at all.
+     ⚠️ A `title:` grant from the cosmetics ledger parses to NULL here, and for a while that
+     meant it drew nothing — so the GitHub star's title was granted, equippable, and invisible
+     on the one surface the title picker promises it shows up on. `TitleChip` is that other
+     path; exactly one of the two renders, because a title is one id. */
+  const award = title ? parseAwardTitleId(title) : null;
   if (username && onOpenProfile) {
     return (
       <button
@@ -93,6 +106,7 @@ function DriverName({
             part of it. */}
         <span className="lb-name-h">{label}</span>
         <SupporterBadge supporter={supporter} role={role} />
+        {award ? <AwardBadge award={award} /> : title ? <TitleChip id={title} /> : null}
         <span className="lb-at">@{username}</span>
       </button>
     );
@@ -101,6 +115,9 @@ function DriverName({
     <>
       <span className="lb-name-h">{label}</span>
       <SupporterBadge supporter={supporter} role={role} />
+      {/* the same one-of-two as the linked path above — a row without a username (an
+          anonymous or unclaimed run) still shows whatever title it is wearing */}
+      {award ? <AwardBadge award={award} /> : title ? <TitleChip id={title} /> : null}
     </>
   );
 }
@@ -452,6 +469,7 @@ export function Leaderboard({
                             username={r.username}
                             supporter={r.supporter}
                             role={r.role}
+                            title={r.title}
                             onOpenProfile={onOpenProfile}
                           />
                           {isRecords && rec.partnerId && (
@@ -462,6 +480,7 @@ export function Leaderboard({
                                 username={rec.partnerUsername}
                                 supporter={rec.partnerSupporter}
                                 role={rec.partnerRole}
+                                title={rec.partnerTitle}
                                 onOpenProfile={onOpenProfile}
                               />
                               <span className="ds-dt lb-duo-tag">DUO</span>

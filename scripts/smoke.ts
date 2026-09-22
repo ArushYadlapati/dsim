@@ -171,7 +171,10 @@ import {
   PRE_COUNTDOWN,
   COLORS,
 } from '../src/config';
-import { CHASSIS_COLOR_KEYS, ACCENT_KEYS, DECAL_KEYS, PLATE_KEYS, COSMETIC_DEFAULTS } from '../src/cosmetics';
+import {
+  CHASSIS_COLOR_KEYS, ACCENT_KEYS, DECAL_KEYS, PLATE_KEYS, COSMETIC_DEFAULTS,
+  TITLE_KEYS, TITLE_LABELS, titleLabel, cosmeticTier, stripUnentitledCosmetics,
+} from '../src/cosmetics';
 import {
   pointDepthInRobot,
   robotCorners,
@@ -242,7 +245,27 @@ import {
   syncKeyInGame,
   syncPadInGame,
 } from '../src/input/bindings';
+import {
+  TOUCH_OTHER_ACTIONS,
+  allTouchButtons,
+  packTouchControls,
+  touchButtonsFor,
+  touchCoverageGaps,
+  visibleTouchButtons,
+} from '../src/ui/mobileActions';
+import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
 import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
+import {
+  awardBadgeRank,
+  awardBoardWord,
+  awardRankWord,
+  awardShortText,
+  awardTitleText,
+  awardTitleId,
+  compareAwards,
+  parseAwardTitleId,
+  type AwardRow,
+} from '../src/awards';
 import {
   PAD_GLYPHS,
   PAD_MENU_BUTTON,
@@ -702,6 +725,73 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
       );
     })(),
   );
+}
+
+// ---- LEDGER TITLES: every key is NAMED, and the reward's cosmetic is EXCLUSIVE -----------
+{
+  /**
+   * ⚠️ **A TITLE KEY IS NOT A LABEL, AND IT SHIPPED BEING USED AS ONE.** `TitlePicker` fell
+   * back to `id.replace(/^title:/, '')` for any title that was not a parseable season award,
+   * so `title:stargazer` — the only earnable title in the build — rendered as the lowercase
+   * slug `stargazer`, beside awards that read as proper sentences. `TITLE_LABELS` is the map
+   * that fixes it, and this is what stops the next key being added without one: the fallback
+   * still exists (a key from a newer build has to render as SOMETHING), so a missing label is
+   * silent, and silent is how the first one lasted.
+   */
+  check(
+    '⚠️ titles: EVERY TITLE_KEYS member has a display label — the fallback is a raw slug',
+    TITLE_KEYS.every((k) => (TITLE_LABELS[k] ?? '').length > 0),
+    TITLE_KEYS.filter((k) => !TITLE_LABELS[k]).join(',') || 'all labelled',
+  );
+  check(
+    '...and a label is not just the key with a capital — it is written for a person',
+    TITLE_KEYS.every((k) => TITLE_LABELS[k] !== k),
+  );
+  check('titles: titleLabel answers null for a season award, which renders through its own path',
+    titleLabel('title:s3:decode:elo1v1:1') === null && titleLabel('decal:star') === null);
+  check('titles: ...and for a key this build does not know', titleLabel('title:nope') === null);
+
+  /**
+   * ⚠️ **THE GITHUB STAR'S COSMETIC IS `earned`, NOT A SUPPORTER FILL GIVEN AWAY.** A star
+   * is one click; granting one of the six premium chassis colours for it would price a Ko-fi
+   * membership at one click. `decal:star` earns its tier by being absent from BOTH sets in
+   * `cosmetics.ts` — which is exactly the kind of thing a later edit adds "for completeness"
+   * without noticing it is the whole reward. `npm run dbtest` checks the sweep grants it;
+   * this checks it is still worth granting.
+   */
+  check('cosmetics: decal:star is `earned` tier — the reward is exclusive, not a free supporter key',
+    cosmeticTier('decal:star') === 'earned');
+  check('...and it is a real member of the closed axis, so coerceSpec keeps it',
+    DECAL_KEYS.includes('star') && coerceSpec({ decal: 'star' }).decal === 'star');
+  check('...while an account with no entitlement is stripped back to the default',
+    stripUnentitledCosmetics({ ...DEFAULT_SPEC, decal: 'star' }, false, []).decal === COSMETIC_DEFAULTS.decal);
+  check('...and one that EARNED it keeps it, with no membership at all',
+    stripUnentitledCosmetics({ ...DEFAULT_SPEC, decal: 'star' }, false, ['decal:star']).decal === 'star');
+
+  /**
+   * ⚠️ **THE PICKER MUST READ A REAL EARNED LIST, AND FOR ONE BUILD IT DID NOT.**
+   * `CosmeticsRows` held `const earned = NO_EARNED_COSMETICS` — a hardcoded `[]` from back
+   * when no key fell through to `earned`. `decal:star` was the first that did, so the owner
+   * held the decal in `profiles.cosmetics` and found the swatch LOCKED.
+   *
+   * What made it quiet is that every other link in the chain was already right: the
+   * entitlements route has sent `unlockedCosmetics` since 0044, and the server strips an
+   * unentitled spec on join and on every re-pick. Only the one surface where a person CHOOSES
+   * a cosmetic believed nobody owned any — so the feature was correct everywhere except where
+   * it was used.
+   *
+   * Grepped, because this lane has no DOM and cannot mount React. What is at risk is the
+   * placeholder coming back, or the provider dropping the field again.
+   */
+  const menuSrc = readFileSync('src/ui/Menu.tsx', 'utf8');
+  check('⚠️ cosmetics: the builder reads the signed-in account earned list, not a hardcoded empty one',
+    /earnedCosmetics: earned/.test(menuSrc) && !/NO_EARNED_COSMETICS/.test(menuSrc),
+    /NO_EARNED_COSMETICS/.test(menuSrc) ? 'the placeholder is BACK' : 'reads useAds()');
+  const adsSrc = readFileSync('src/ads/AdsProvider.tsx', 'utf8');
+  check('...and the provider that already fetches entitlements actually carries the field',
+    /setEarnedCosmetics\(e\.unlockedCosmetics/.test(adsSrc) && /earnedCosmetics }}/.test(adsSrc));
+  check('...and an unowned `earned` key says HOW to earn it, not "see Career" (wrong screen for this one)',
+    /'decal:star': /.test(menuSrc) && /EARN_HINT\[id\]/.test(menuSrc));
 }
 
 // ---- worldHash INVARIANCE across cosmetics (split from the block above; already
@@ -5963,12 +6053,36 @@ function queueTenth(w: World): void {
   // A default that is MISSING or SHARED is the same silent failure from the other side: an
   // action with no key cannot be pressed at all, and one sharing a key fires two things on
   // one press.
+  /**
+   * ⚠️ ONE PAD ACTION SHIPS UNBOUND, AND THE LIST IS AN ALLOWLIST SO A SECOND ONE CANNOT
+   * JOIN IT QUIETLY. The standard mapping has sixteen buttons and this game now has more
+   * actions than that: fire 7/0, intake 6/1, catalyst 4, fling 10, place 13/12, nectar 14,
+   * ramp 11, driveMode 5, flip 3, park 2, start 9, restart 8, and 15 is the in-match MENU
+   * button (`PAD_MENU_BUTTON`). 16 is the guide button, which a browser often does not
+   * report. `bbPass` therefore has a default KEY and no default BUTTON.
+   *
+   * It stays in `PAD_ACTIONS` because that is what makes it BINDABLE in Controls — the gap
+   * is a missing default, not a missing capability — and a default COMBO was rejected on
+   * its own merits: `padChords.ts`'s fast path is “no combo bound ⇒ the old any-button
+   * test, no state”, so the first default combo would move every player onto the stateful
+   * resolver to give one season one button.
+   *
+   * THE KEY HALF IS STILL ABSOLUTE. An action with no default key at all cannot be pressed
+   * by a new player on any device, which is the failure this check was written for.
+   */
+  const PAD_DEFAULT_EXEMPT: readonly string[] = ['bbPass'];
   const noKey = KEY_ACTIONS.filter((a) => DEFAULT_BINDINGS.keys[a].length === 0);
-  const noPad = PAD_ACTIONS.filter((a) => DEFAULT_BINDINGS.pad.buttons[a].length === 0);
+  const noPad = PAD_ACTIONS.filter((a) => DEFAULT_BINDINGS.pad.buttons[a].length === 0 && !PAD_DEFAULT_EXEMPT.includes(a));
+  const exemptBound = PAD_DEFAULT_EXEMPT.filter((a) => (DEFAULT_BINDINGS.pad.buttons[a as PadAction] ?? []).length > 0);
   check(
-    'bindings: every action has a default key and a default pad button',
+    'bindings: every action has a default key, and a default pad button unless it is on the exempt list',
     noKey.length === 0 && noPad.length === 0,
     `keys: ${noKey.join(',') || 'none'} pad: ${noPad.join(',') || 'none'}`,
+  );
+  check(
+    'bindings: ...and the exempt list is EXACT — an action that gained a default comes off it',
+    exemptBound.length === 0,
+    `still exempt but now bound: ${exemptBound.join(',') || 'none'}`,
   );
   const keyOwner = new Map<string, string>();
   const dupKeys: string[] = [];
@@ -24517,6 +24631,326 @@ const dumperSetup = (): RobotSetup => {
   const armed = oskReduce({ value: 'abc', layout: 'letters', caps: true }, { t: 'char', c: 'd' }, 3);
   check('padnav: a refused character still RELEASES caps, so it cannot stick armed forever', armed.value === 'abc' && armed.caps === false);
   check('padnav: `set` truncates to the cap', oskReduce(oskInit(''), { t: 'set', value: 'abcdef' }, 4).value === 'abcd');
+}
+
+// ---- SEASON AWARD TITLES: the sentence, and the one word that is not relative ----
+// `src/awards.ts` turns an award row into words. The server owns the KEY (`awardTitleId`)
+// and the rows; this is the half a designer rewrites, which is exactly why the sentence is
+// rendered rather than stored — storing it would have frozen every past award's wording at
+// the moment it was minted.
+{
+  const row = (over: Partial<AwardRow> = {}): AwardRow => ({
+    game: 'decode', balanceVersion: 12, act: 2, seasonNo: 3,
+    kind: 'ranked', mode: '1v1', drivetrain: null, rank: 1, score: 1500, ...over,
+  });
+
+  check(
+    'awards: the full sentence is season · act/season · board rank',
+    awardTitleText(row()) === 'DECODE · Act 2 Season 3 · 1v1 Champion',
+    awardTitleText(row()),
+  );
+  check(
+    'awards: ranks 1..3 are Champion / Finalist / Semifinalist (owner, 2026-09-21)',
+    awardRankWord('ranked', 1) === 'Champion' && awardRankWord('ranked', 2) === 'Finalist' && awardRankWord('ranked', 3) === 'Semifinalist',
+  );
+  /**
+   * ⚠️ A PER-DRIVETRAIN AWARD IS ALWAYS `Champion`, WHATEVER ITS RANK SAYS. That board's
+   * depth is ONE (`AWARD_DEPTH`), so every row on it is rank 1 and there is no 2nd or 3rd
+   * for the word to be relative to — "Finalist" on a field of one is a lie, and the rank
+   * column always being 1 is what would make that lie easy to ship unnoticed.
+   */
+  check(
+    '⚠️ awards: a per-drivetrain award is Champion even at a rank that would read Finalist',
+    awardRankWord('record_drivetrain', 2) === 'Champion' && awardRankWord('record_drivetrain', 1) === 'Champion',
+  );
+  check(
+    'awards: the board word names the board, and a duo record says so',
+    awardBoardWord({ kind: 'ranked', mode: '2v2', drivetrain: null }) === '2v2' &&
+      awardBoardWord({ kind: 'record_overall', mode: 'solo', drivetrain: null }) === 'Record' &&
+      awardBoardWord({ kind: 'record_overall', mode: 'duo', drivetrain: null }) === 'Duo Record',
+    `${awardBoardWord({ kind: 'record_overall', mode: 'duo', drivetrain: null })}`,
+  );
+  check(
+    'awards: a drivetrain award uses the SHARED label, not the raw enum',
+    awardBoardWord({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'xdrive' }) === 'X-drive Record',
+    awardBoardWord({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'xdrive' }),
+  );
+  check(
+    'awards: an unknown drivetrain falls back to its own id rather than rendering undefined',
+    awardBoardWord({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'hovercraft' }) === 'hovercraft Record',
+  );
+  check(
+    'awards: the SHORT form drops the season, which is context on a chip',
+    awardShortText(row({ kind: 'record_overall', mode: 'duo', rank: 2 })) === 'Duo Record Finalist',
+    awardShortText(row({ kind: 'record_overall', mode: 'duo', rank: 2 })),
+  );
+  // the badge carries 1/2/3 and nothing else — a 12px hexagon cannot hold "#11"
+  check(
+    'awards: the badge rank clamps into 1..3',
+    awardBadgeRank({ rank: 1 }) === 1 && awardBadgeRank({ rank: 3 }) === 3 && awardBadgeRank({ rank: 11 }) === 3 && awardBadgeRank({ rank: 0 }) === 1,
+  );
+  // newest season first, then the most impressive — the order you read your own trophies in
+  const sorted = [
+    row({ balanceVersion: 11, rank: 1 }),
+    row({ balanceVersion: 12, rank: 3 }),
+    row({ balanceVersion: 12, rank: 1 }),
+  ].sort(compareAwards);
+  check(
+    'awards: sorted newest season first, then by rank',
+    sorted[0].balanceVersion === 12 && sorted[0].rank === 1 && sorted[1].rank === 3 && sorted[2].balanceVersion === 11,
+    sorted.map((a) => `${a.balanceVersion}/${a.rank}`).join(' '),
+  );
+  /**
+   * ⚠️ THE ID ROUND-TRIPS, WHICH IS WHAT MAKES THE LEADERBOARD CHIP FREE. A board prints
+   * the equipped title beside every name; the alternative to parsing the id is joining
+   * `season_awards` once per row on a query that already joins `profiles`. So the id
+   * carrying its own meaning is load-bearing, not a convenience, and this is the check
+   * that keeps the two functions in step.
+   */
+  {
+    for (const r of [
+      row(),
+      row({ kind: 'record_overall', mode: 'duo', rank: 3 }),
+      row({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'butterfly', rank: 1 }),
+      row({ game: 'biobuzz', kind: 'ranked', mode: '2v2', rank: 2 }),
+    ]) {
+      const back = parseAwardTitleId(awardTitleId(r));
+      check(
+        `awards: the id round-trips — ${awardShortText(r)}`,
+        !!back &&
+          back.game === r.game &&
+          back.balanceVersion === r.balanceVersion &&
+          back.kind === r.kind &&
+          back.mode === r.mode &&
+          back.drivetrain === r.drivetrain &&
+          back.rank === r.rank,
+        `${awardTitleId(r)} -> ${JSON.stringify(back)}`,
+      );
+    }
+    // ⚠️ `act`/`seasonNo` are NOT in the key and cannot come back — they are denormalised
+    // on the row for the sentence. A parsed award is for `awardShortText`, never the full
+    // one, and the check says so rather than leaving the next caller to discover it.
+    const parsed = parseAwardTitleId(awardTitleId(row()))!;
+    check('⚠️ awards: a parsed id has NO act/season — those live on the row, not in the key', parsed.act === 0 && parsed.seasonNo === 0);
+    check(
+      'awards: a `title:` grant is not an award and parses to null (it is a registry key)',
+      parseAwardTitleId('title:stargazer') === null,
+    );
+    check(
+      'awards: malformed ids are refused rather than rendered',
+      parseAwardTitleId('award:decode:12:ranked:1v1') === null &&
+        parseAwardTitleId('award:decode:x:ranked:1v1:1') === null &&
+        parseAwardTitleId('award:decode:12:bogus:1v1:1') === null &&
+        parseAwardTitleId('award:decode:12:ranked:9v9:1') === null,
+    );
+    // a drivetrain belongs to exactly one kind, both ways round
+    check(
+      '⚠️ awards: a drivetrain on a non-drivetrain kind (and a drivetrain kind without one) are both refused',
+      parseAwardTitleId('award:decode:12:ranked:1v1:mecanum:1') === null &&
+        parseAwardTitleId('award:decode:12:record_drivetrain:solo:1') === null,
+    );
+  }
+
+  check(
+    'awards: a BIOBUZZ award names BIOBUZZ, so the sentence follows the season registry',
+    awardTitleText(row({ game: 'biobuzz' })).startsWith('BIOBUZZ'),
+    awardTitleText(row({ game: 'biobuzz' })),
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// THE TOUCH PAD — its button set is DERIVED from `ACTION_GAMES`, and this block is
+// what makes that true rather than aspirational. Four BIOBUZZ actions shipped with a
+// keybind, a pad button and nothing at all on a phone, because a hand-written list of
+// mobile buttons cannot fail; a coverage check can.
+// ──────────────────────────────────────────────────────────────────────────────
+{
+  const bbSpec = coerceSpec(DEFAULT_SPEC, DEFAULT_SPEC, 'biobuzz');
+  const mech = (
+    launcher: 'turret' | 'twinturret' | 'dumper',
+    lift: boolean,
+    intake: 'sweeper' | 'ramp',
+  ): RobotSpec => ({
+    ...bbSpec,
+    bbMech: {
+      launcher: { kind: launcher, mount: 'center' },
+      lift: lift ? { kind: 'vslide', mount: 'front' } : null,
+      intake: { kind: intake, mount: 'front' },
+    },
+  }) as RobotSpec;
+  const ctx = (spec: RobotSpec) => ({ spec, autoIntake: false, autoFire: false });
+
+  for (const g of GAME_IDS) {
+    check(
+      `⚠️ touch: every action ${g} uses is reachable on a touch screen (button, stick or chrome)`,
+      touchCoverageGaps(g).length === 0,
+      touchCoverageGaps(g).join(', '),
+    );
+    check(
+      `touch: ${g} offers no button for an action it does not use`,
+      touchButtonsFor(g).every((b) => actionUsedBy(b.action, g)),
+      touchButtonsFor(g).filter((b) => !actionUsedBy(b.action, g)).map((b) => b.action).join(', '),
+    );
+    const acts = touchButtonsFor(g).map((b) => b.action);
+    check(`touch: ${g} draws one button per action`, new Set(acts).size === acts.length, acts.join(', '));
+  }
+
+  // the per-game SETS, spelled out — the coverage check above says nothing is missing, and
+  // these say what each season's driver actually gets
+  check(
+    'touch: DECODE is shoot, intake and the three utilities',
+    touchButtonsFor('decode').map((b) => b.action).join(',') === 'fire,intake,flipFront,driveMode,park',
+    touchButtonsFor('decode').map((b) => b.action).join(','),
+  );
+  check(
+    'touch: Chain Reaction adds the catalyst and the catapult throw',
+    touchButtonsFor('chain').map((b) => b.action).join(',') === 'fire,intake,catalyst,fling,flipFront,driveMode,park',
+    touchButtonsFor('chain').map((b) => b.action).join(','),
+  );
+  check(
+    '⚠️ touch: BIOBUZZ reaches both places, the pass, the ramp and the human player',
+    touchButtonsFor('biobuzz').map((b) => b.action).join(',') ===
+      'fire,intake,bbPlace,bbPlaceNectar,bbPass,bbRamp,bbNectar,flipFront,driveMode,park',
+    touchButtonsFor('biobuzz').map((b) => b.action).join(','),
+  );
+
+  // `TOUCH_OTHER_ACTIONS` is a signed statement, not a dumping ground: everything in it has
+  // to be a real action, or an action could be excused by a typo.
+  check(
+    'touch: every excused action is a real KeyAction',
+    Object.keys(TOUCH_OTHER_ACTIONS).every((a) => (KEY_ACTIONS as string[]).includes(a)),
+  );
+  check(
+    'touch: no action is both excused and given a button',
+    allTouchButtons().every((b) => TOUCH_OTHER_ACTIONS[b.action] === undefined),
+  );
+  check(
+    'touch: every button holds a command bit or pulses an edge, never neither',
+    allTouchButtons().every((b) => (b.hold === undefined) !== (b.tap === undefined)),
+  );
+  check(
+    'touch: at most one primary button per game',
+    GAME_IDS.every((g) => touchButtonsFor(g).filter((b) => b.primary).length <= 1),
+  );
+
+  // ── PRESENCE: a button for a mechanism this build does not have is never drawn ──
+  const claw = { ...DEFAULT_SPEC, catalystType: 'arm' } as RobotSpec;
+  const launcher = { ...DEFAULT_SPEC, catalystType: 'launcher' } as RobotSpec;
+  const has = (g: 'decode' | 'chain' | 'biobuzz', spec: RobotSpec, a: string): boolean =>
+    visibleTouchButtons(g, ctx(spec)).some((b) => b.action === a);
+  check('touch: a claw-only Chain build gets no THROW button', !has('chain', claw, 'fling'));
+  check('touch: a catapult build does', has('chain', launcher, 'fling'));
+  check(
+    'touch: WHEELS is butterfly-only, in every game',
+    !has('decode', DEFAULT_SPEC as RobotSpec, 'driveMode') &&
+      has('decode', { ...DEFAULT_SPEC, drivetrain: 'butterfly' } as RobotSpec, 'driveMode'),
+  );
+  {
+    const noTube = mech('turret', false, 'sweeper');
+    const tube = mech('turret', true, 'sweeper');
+    const twin = mech('twinturret', true, 'sweeper');
+    const dumper = mech('dumper', true, 'sweeper');
+    const ramp = mech('turret', true, 'ramp');
+    check('touch: no Box Tube ⇒ neither place button', !has('biobuzz', noTube, 'bbPlace') && !has('biobuzz', noTube, 'bbPlaceNectar'));
+    check('touch: a Box Tube places POLLEN', has('biobuzz', tube, 'bbPlace'));
+    check(
+      '⚠️ touch: place-NECTAR needs a launcher that can CARRY nectar, not just the tube',
+      !has('biobuzz', tube, 'bbPlaceNectar') && has('biobuzz', twin, 'bbPlaceNectar'),
+    );
+    check(
+      'touch: PASS is turreted-only (a dumper fires along a line and cannot aim at a point)',
+      has('biobuzz', tube, 'bbPass') && !has('biobuzz', dumper, 'bbPass'),
+    );
+    check('touch: RAMP only on the ramp intake', !has('biobuzz', tube, 'bbRamp') && has('biobuzz', ramp, 'bbRamp'));
+    check('touch: the human player button is on every BIOBUZZ build', has('biobuzz', noTube, 'bbNectar'));
+  }
+
+  // ⚠️ AN ASSISTED ACTION IS GHOSTED, NOT REMOVED. Hiding them is what left a default DECODE
+  // phone with no action buttons at all: auto intake and auto fire are both on by default and
+  // they were the only two the pad had.
+  {
+    const assisted = visibleTouchButtons('decode', { spec: DEFAULT_SPEC as RobotSpec, autoIntake: true, autoFire: true });
+    check(
+      '⚠️ touch: auto intake + auto fire still draw their buttons (ghosted), so the pad is never empty',
+      assisted.some((b) => b.action === 'fire') && assisted.some((b) => b.action === 'intake'),
+    );
+    check(
+      'touch: and they report themselves as automatic',
+      assisted
+        .filter((b) => b.action === 'fire' || b.action === 'intake')
+        .every((b) => b.auto?.({ spec: DEFAULT_SPEC as RobotSpec, autoIntake: true, autoFire: true }) === true),
+    );
+  }
+
+  // ── ARRANGEMENT: on screen, no overlaps, in BOTH orientations ──
+  // The shipped default stored SHOOT and INTAKE 0.16 apart in x, which is 60px of a portrait
+  // phone — closer than their radii — and put the DRIVE base's left edge off the screen. The
+  // pad packs itself against the live viewport now, so both are structural rather than tuned.
+  {
+    const views = [
+      { name: 'portrait 375x812', w: 375, h: 812 },
+      { name: 'landscape 740x360', w: 740, h: 360 },
+      { name: 'tablet 1024x768', w: 1024, h: 768 },
+    ];
+    for (const vp of views) {
+      for (const g of GAME_IDS) {
+        const spec = g === 'biobuzz' ? mech('twinturret', true, 'ramp') : ({ ...DEFAULT_SPEC, drivetrain: 'butterfly', catalystType: 'launcher' } as RobotSpec);
+        const packed = packTouchControls(visibleTouchButtons(g, ctx(spec)), DEFAULT_MOBILE_LAYOUT, vp);
+        const all = [packed.drive, packed.turn, ...packed.buttons];
+        check(
+          `touch: ${g} · ${vp.name} — every control is fully on screen`,
+          all.every((c) => c.x - c.size / 2 >= 0 && c.x + c.size / 2 <= vp.w && c.y - c.size / 2 >= 0 && c.y + c.size / 2 <= vp.h),
+          all.filter((c) => c.x - c.size / 2 < 0 || c.x + c.size / 2 > vp.w || c.y - c.size / 2 < 0 || c.y + c.size / 2 > vp.h).length + ' off',
+        );
+        let clash = 0;
+        for (let i = 0; i < all.length; i++) {
+          for (let j = i + 1; j < all.length; j++) {
+            if (Math.hypot(all[i].x - all[j].x, all[i].y - all[j].y) < (all[i].size + all[j].size) / 2) clash++;
+          }
+        }
+        check(`⚠️ touch: ${g} · ${vp.name} — no two controls overlap`, clash === 0, `${clash} overlapping pairs`);
+        // the top-left block is MENU / RESET / the sponsor mark, measured at 212×102; the
+        // top-right is the status chip row. A button landing on either is a control the
+        // driver cannot press, which is how the connection chip lost its clicks for months.
+        check(
+          `touch: ${g} · ${vp.name} — no button lands on the top-left MENU stack`,
+          packed.buttons.every((c) => c.x - c.size / 2 > 218 || c.y - c.size / 2 > 108),
+        );
+        check(
+          `touch: ${g} · ${vp.name} — none lands on the top-right status chips`,
+          packed.buttons.every((c) => c.x + c.size / 2 < vp.w - 218 || c.y - c.size / 2 > 64),
+        );
+      }
+    }
+    // a DRAGGED control keeps exactly where the player put it; an untouched one arranges itself
+    const dragged = { ...DEFAULT_MOBILE_LAYOUT, shoot: { x: 0.4, y: 0.6 } };
+    const out = packTouchControls(visibleTouchButtons('decode', ctx(DEFAULT_SPEC as RobotSpec)), dragged, { w: 400, h: 800 });
+    const shoot = out.buttons.find((b) => b.button.action === 'fire')!;
+    check(
+      '⚠️ touch: a stored position is honoured the moment it differs from the default, and only then',
+      shoot.stored && Math.abs(shoot.x - 160) < 1 && Math.abs(shoot.y - 480) < 1,
+      `${shoot.x},${shoot.y},stored=${shoot.stored}`,
+    );
+    check(
+      'touch: the untouched sticks still arrange themselves around it',
+      !out.buttons.filter((b) => b.button.action !== 'fire').some((b) => b.stored),
+    );
+    // determinism: the arrangement is a pure function, so a re-render cannot move a button
+    const a = packTouchControls(visibleTouchButtons('biobuzz', ctx(mech('twinturret', true, 'ramp'))), DEFAULT_MOBILE_LAYOUT, { w: 375, h: 812 });
+    const b2 = packTouchControls(visibleTouchButtons('biobuzz', ctx(mech('twinturret', true, 'ramp'))), DEFAULT_MOBILE_LAYOUT, { w: 375, h: 812 });
+    check('touch: the arrangement is deterministic', JSON.stringify(a) === JSON.stringify(b2));
+  }
+
+  // the smallest layout scale the settings allow must still leave a finger-sized target
+  {
+    const small = { ...DEFAULT_MOBILE_LAYOUT, scale: 0.7 };
+    const packed = packTouchControls(visibleTouchButtons('biobuzz', ctx(mech('twinturret', true, 'ramp'))), small, { w: 375, h: 812 });
+    check(
+      '⚠️ touch: at the smallest layout scale every button is still at least 44px',
+      packed.buttons.every((c) => c.size >= 44),
+      String(Math.min(...packed.buttons.map((c) => c.size))),
+    );
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

@@ -67,6 +67,20 @@ export interface RobotCommand {
    * other intake. Protocol bit 256 — the first button past the old uint8 (`src/net/protocol.ts`).
    * Optional; absent reads false. */
   bbRamp?: boolean;
+  /**
+   * BIOBUZZ, PASS TO YOUR PARTNER: launch the held element at a POINT ON THE FIELD rather than
+   * at your own hive. Edge-triggered like `fire`, and it needs a launcher — an intake-only build
+   * has nothing to throw with.
+   *
+   * ⚠️ **THE TARGET IS A POINT, NOT YOUR PARTNER.** Owner, 2026-09-21: "in real life, you can't
+   * know where your opponent is accurately. So, people should be able to choose a point to shoot
+   * towards, but there should also be a simple preset." A pass that TRACKED the partner's robot
+   * would be an aimbot for a thing a real driver has to eyeball, so the sim never reads the
+   * partner's pose: it solves to `RobotSpec.bbPassTarget` if the player set one, and otherwise to
+   * their own alliance's LOADING ZONE, which is a fixed, named, point-symmetric spot
+   * that both halves of an alliance already know. Protocol bit 512 — the next one past `bbRamp`. Optional; absent reads false.
+   */
+  bbPass?: boolean;
 }
 
 /** menu-configured driver assists */
@@ -214,6 +228,21 @@ export interface RobotSpec {
    * server (which drops fields it does not know) returns as the nearest hardware it can name.
    */
   bbMech?: BbMechSpec;
+  /**
+   * BIOBUZZ, WHERE `bbPass` THROWS — a field point in inches, or ABSENT for the preset.
+   *
+   * It is on the SPEC and not in `GameSettings` for the reason every other sim input is: the
+   * sim may not read a preference. A setup crosses the wire and seeds the world, so the server
+   * and every client solve the same arc from the same number; a value read out of localStorage
+   * at launch time would make one client's pass land somewhere else and reconcile with a snap.
+   *
+   * ABSENT IS THE PRESET, and absent is the default: `bbPassPoint` (`games/biobuzz/play.ts`)
+   * answers the alliance's own LOADING ZONE when this is unset. So a player who never opens the
+   * setting still has a working pass, which is the "simple preset" half of the request, and the
+   * field stays off the wire for everyone who has not moved it. Clamped into the field (and
+   * dropped when either component is not finite) by `coerceBiobuzzSpec`.
+   */
+  bbPassTarget?: Vec2;
   /**
    * BIOBUZZ 3D PHYSICS ONLY (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.4/§3.3): the robot's
    * height in inches (12..29, absent 18) — see `BB3_HEIGHT_MIN`/`_DEFAULT`/`_MAX` in

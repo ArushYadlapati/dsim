@@ -76,13 +76,39 @@ const getter = (table, themeName) => (name) => {
 const FIELD = '#14161a'; // the dark tiles the robots drive on
 const MAT = '#23262b'; // COLORS.mat, the lightest thing a HUD card can sit on
 const TILE = '#2c3038'; // COLORS.tile, the lightest ground an on-field LABEL crosses
+/**
+ * ⚠️ **THE 3D MAT IS ITS OWN GROUND, AND IT IS MUCH LIGHTER THAN THE 2D ONE.**
+ * `TILE_MAT` (`games/biobuzz/scene/renderTiles.ts`) — a real FTC tile is grey EVA foam
+ * (AndyMark am-2499, spec “Gray”), not the near-black the 2D board uses, so the 3D field was
+ * lifted to one. `COLORS.mat`/`COLORS.tile` above are UNCHANGED: those are the 2D canvas
+ * board for all three games, and repainting DECODE's was never the ask.
+ *
+ * This constant exists so the lift cannot go further without the suite saying so. The
+ * binding pair is `--ds-on-field-dim` — canvas text over the field — which at #585858 read
+ * 3.77 and was backed out for it; #454545 is the lightest grey where every on-field TEXT
+ * token still clears AA.
+ */
+const TILE3D = '#454545';
+/* `TILE_LINE`, the seam's light lip — LIGHTER than the mat, so it is the tighter cap of the
+   two and it is measured on its own. #565656 read 3.89 here and was backed out for it. */
+const TILE3D_LIP = '#4c4c4c';
 const BACKDROP = '#f9faf7'; // COLORS.backdrop — the LIGHT letterbox a far-wall robot's label lands on
 // the driver-name labels over remote robots (src/render/renderer.ts, COLORS.*Label)
 const LABEL_RED = '#f87171';
 const LABEL_BLUE = '#60a5fa';
 // their outline, composited over each of the two grounds it has to work on
-const LABEL_STROKE_ON_TILE = composite('#14161a', 0.8, TILE);
-const LABEL_STROKE_ON_BACKDROP = composite('#14161a', 0.8, BACKDROP);
+/**
+ * ⚠️ **THE LABEL STROKE IS OPAQUE SINCE 2026-09-21, AND THAT IS WHY IT IS NO LONGER A
+ * COMPOSITE.** At `rgba(20,22,26,0.8)` the ground showed through the halo, so a glyph's
+ * effective surround was part stroke and part FIELD — which is why the fill had to be
+ * measured against the lightest ground a label crosses, and why that pair was the ceiling on
+ * how light the field could ever be. Opaque, the halo is a known colour under every glyph
+ * whatever it is over, so the governing pair is fill-against-stroke and it does not move when
+ * the field does. `render/renderer.ts`'s `LABEL_STROKE` carries the same note.
+ */
+const LABEL_STROKE_SOLID = '#14161a';
+const LABEL_STROKE_ON_TILE = LABEL_STROKE_SOLID;
+const LABEL_STROKE_ON_BACKDROP = LABEL_STROKE_SOLID;
 // the ranked-intro scrim, and the results/net scrim: dark in BOTH themes
 const INTRO_SCRIM = composite('#080a0e', 0.72, FIELD);
 
@@ -278,6 +304,20 @@ const hudPairs = (t) => {
        the stroke is measured against the light BACKDROP, because that is the case the fill
        cannot cover: a robot pinned to the far wall pushes its label off the mat entirely, and
        the outline is the only thing holding the text there. */
+    /* THE 3D MAT. These are what cap how light the field may go — see `TILE3D`. The
+       `-accent` one is a FOCUS RING (the pad-navigation ring over the field), which is
+       non-text and takes 1.4.11's 3:1 rather than 4.5. */
+    ['canvas countdown on the 3D mat', t('--ds-on-field'), TILE3D, AA],
+    ['canvas on-field text on the 3D mat', t('--ds-on-field-dim'), TILE3D, AA],
+    ['canvas on-field text on the 3D seam lip', t('--ds-on-field-dim'), TILE3D_LIP, AA],
+    ['pad focus ring on the 3D mat', t('--ds-on-field-accent'), TILE3D, NON_TEXT],
+    /* ⚠️ THERE IS DELIBERATELY NO “STROKE vs 3D MAT” PAIR, AND IT WAS TRIED. It reads
+       1.89:1, and asserting it at 1.4.11's 3:1 is inventing a requirement: the halo's OUTER
+       edge blending into the ground is cosmetic, not a legibility failure. What makes a
+       12-px bold glyph readable over ANY ground is the same thing that makes a subtitle
+       readable — an opaque outline directly around it — and that is the fill-against-stroke
+       pair below, at 6.55/7.12. The pair that would matter if the halo ever stopped doing
+       its job is stroke-against-the-light-BACKDROP, which is already here. */
     ['canvas driver label (red) on the tiles', LABEL_RED, TILE, AA],
     ['canvas driver label (blue) on the tiles', LABEL_BLUE, TILE, AA],
     ['canvas driver label (red) on the mat', LABEL_RED, MAT, AA],
@@ -326,6 +366,9 @@ const serverPairs = (t) => {
     // point: the assertion is that the PAIR stays legible, not that the hex does.
     ['SupporterBadge owner glyph', t('--ds-accent-ink'), t('--ds-accent'), AA],
     ['SupporterBadge admin glyph', '#ffffff', t('--ds-blue-chip'), AA],
+    // The SEASON-AWARD badge (0045). Like gold it does NOT invert, so one pair covers
+    // both themes; the rank numeral is the glyph, and it is what has to stay readable.
+    ['AwardBadge rank numeral', t('--ds-award-ink'), t('--ds-award'), AA],
     // .legal-warn paints --ds-warn as TEXT on a 9% tint of itself over the page
     ['Legal unfinished-terms warning', t('--ds-warn'), composite(t('--ds-warn'), 0.09, bg), AA],
     ['Leaderboard .lb-standing.placing text', t('--ds-warn'), composite(t('--ds-gold'), 0.09, panel), AA],

@@ -148,6 +148,18 @@
      the light panel; use --ds-warn there, which is the same idea, themed. */
   --ds-gold: #f5a623;
   --ds-gold-ink: #04222a;
+  /* THE SEASON-AWARD BADGE. CATEGORY 2 (a fill with fixed ink), so it is declared HERE
+     ONLY and does NOT invert — exactly like --ds-gold above and for the same reason.
+     ⚠️ GOLD/SILVER/BRONZE WAS THE OBVIOUS ANSWER AND IS THE TRAP: gold already means
+     SUPPORTER, and silver and bronze are desaturated BY DEFINITION, which is precisely
+     the failure docs/area/accounts.md records (a lavender pastel cleared `contrast`,
+     which checks the glyph against its own FILL, while being invisible on the dark
+     panel). One saturated hue carrying the rank as a NUMERAL instead: it stays legible
+     on both grounds, it is one pair rather than three, and it extends to a fourth rank
+     for free. The badge is distinguished from ★ owner / ◆ admin / ♥ supporter by SHAPE
+     as well (a hexagon), which that guide also requires. */
+  --ds-award: #a78bfa;
+  --ds-award-ink: #2a1065;
 
   /* Discord blurple — a FILL with fixed white ink (4.86:1), so it does NOT invert
      (same category as the alliance chips). Used only by the in-activity
@@ -6937,4 +6949,179 @@ button.ds-key:active {
   font-weight: 600;
   line-height: 1;
   color: var(--ds-mut);
+}
+
+/* ====================================================================================
+   SEASON-AWARD BADGE — `src/ui/AwardBadge.tsx`. A SIBLING of `.sup-badge`, never a
+   variant of it: that one renders exactly one of owner/admin/supporter by precedence,
+   and an award is a different claim, so a champion who also pays shows both.
+   ==================================================================================== */
+.award-badge {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  /* decoration BESIDE a name, never part of it — the same two reasons `.sup-badge`
+     gives: it must not be swept into a selection, and `vertical-align` is ignored on a
+     flex item, so it centres on the line instead of dropping to the baseline. */
+  user-select: none;
+  align-self: center;
+  vertical-align: middle;
+  color: var(--ds-award-ink);
+}
+.award-badge svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: var(--ds-award);
+}
+/* the numeral sits ON the hexagon, so it is absolutely placed rather than laid out —
+   a flex sibling would push the shape aside instead of labelling it */
+.award-rank {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--ds-font-mono);
+  font-size: 0.62em;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--ds-award-ink);
+}
+.award-badge.award-sm {
+  width: 1.05em;
+  height: 1.05em;
+  margin-left: 0.42em;
+}
+/* ...except in a flex name row that already spaces its children with `gap`, where the
+   margin would be added on top of it — the same exception `.sup-badge` needs. */
+.lb-name > .award-badge,
+.award-list > li > .award-badge {
+  margin-left: 0;
+}
+.award-badge.award-md {
+  width: 1.5em;
+  height: 1.5em;
+  margin-left: 0.3em;
+}
+
+/* the trophy case on a profile */
+.award-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.award-list > li {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+}
+.award-text {
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-t-md);
+  line-height: 1;
+  color: var(--ds-ink);
+}
+
+/* the title picker's radio list (`src/ui/TitlePicker.tsx`) — the rows are `.ds-checkline`
+   like every other choice on the Account page; this only removes the list chrome and
+   spaces them on the grid. */
+.title-pick {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ── A LEDGER TITLE BESIDE A NAME (`ui/TitleChip.tsx`) ──────────────────────────────────────
+   The sibling of `.award-badge`, and it takes the same `--ds-award` hue on purpose: the two
+   are the same KIND of claim (earned, as against paid for), and one hue is ONE measured
+   `contrast.mjs` pair rather than a new one per reward.
+   ⚠️ IT CARRIES ITS NAME AS TEXT, not a glyph. An award badge can be a bare hexagon because
+   the RANK is the whole message; a ledger title's message is its NAME, so there is nothing
+   for a silhouette to say. It also must not wear a ★ — that glyph beside a name already
+   means OWNER (`.sup-badge`), and a stargazer chip would read as staff at a glance. */
+.title-chip {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  /* decoration BESIDE a name, never part of it — the same two reasons `.award-badge` gives:
+     it must not be swept into a selection, and `vertical-align` is ignored on a flex item so
+     it centres on the line instead of dropping to the baseline. */
+  user-select: none;
+  align-self: center;
+  vertical-align: middle;
+  padding: 0 6px;
+  border-radius: var(--ds-round-sm);
+  font-family: var(--ds-font-mono);
+  /* 11px, one step under `.lb-at`: a title is quieter than the @handle, which is quieter
+     than the name. Set as a length rather than an `em` because this chip appears in rows at
+     two different name sizes and an em would make it two different chips. */
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  color: var(--ds-award-ink);
+  background: var(--ds-award);
+}
+/* ...in a flex name row that already spaces its children with `gap`; the same exception
+   `.award-badge` needs, kept here so the two stay in step. */
+.title-pick > li > .title-chip {
+  margin-right: 2px;
+}
+
+/* ── THE STAR REWARD PANEL (`ui/StarReward.tsx`) ────────────────────────────────────────────
+   Shown once, on the bounce back from a completed GitHub link. `.on` is the version that
+   actually granted something; without it the panel is the quiet "you have not starred yet"
+   sentence and takes no emphasis at all. */
+.star-reward.on {
+  /* the award family's hue, as an EDGE rather than a fill: this sits in a column of
+     `.ds-panel`s and a violet card would shout over the account's own settings. The left
+     edge is the same device the ranked-standing strip uses. */
+  border-left: 3px solid var(--ds-award);
+}
+.star-reward-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* A GRID, NOT A FLEX ROW, and that is the only way the two rows line up: the markers are
+   different WIDTHS by nature — one is a text chip as wide as its label, the other a fixed
+   disc — so a flex row left the two sentences starting at different x. A fixed marker
+   column puts the text on one edge whatever the chip says. */
+.star-reward-list > li {
+  display: grid;
+  grid-template-columns: 5.5em 1fr;
+  align-items: center;
+  gap: 12px;
+}
+/* centred in that column, so a short chip and a round disc both sit on its axis */
+.star-reward-list > li > :first-child {
+  justify-self: center;
+}
+/* the decal preview: the award hue on a dark disc, so the shape reads as the thing that goes
+   ON a robot rather than as another chip. Sized in `em` because it sits beside body text. */
+.star-reward-decal {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 2em;
+  height: 2em;
+  padding: 4px;
+  border-radius: var(--ds-round-full);
+  background: var(--ds-stage-bg);
+}
+.star-reward-decal svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: var(--ds-award);
 }

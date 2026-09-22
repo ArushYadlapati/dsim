@@ -1,4 +1,5 @@
 import type { Replay } from '../sim/replay';
+import type { AwardRow } from '../awards';
 import type { LiveRoom, StaffRole } from './protocol';
 import type { ReportedUser, ReportRow } from '../report';
 import type { AssistConfig, GameId, RobotSpec } from '../types';
@@ -45,6 +46,13 @@ export interface BadgeFields {
   supporter?: boolean;
   /** 'owner' | 'admin' — renders the staff badge in place of the supporter one */
   role?: StaffRole;
+  /**
+   * the EQUIPPED TITLE id, or null. It rides `badgeCols` for the same reason the two
+   * above do — every surface that prints a name prints this beside it, and writing the
+   * column out by hand per query is how a board ends up quietly missing it.
+   * `parseAwardTitleId` turns it back into an award without touching `season_awards`.
+   */
+  title?: string | null;
 }
 
 export interface RecordConfig {
@@ -66,6 +74,8 @@ export interface RecordRow extends BadgeFields {
   /** the partner's own badge — a duo row prints two names, so it carries two */
   partnerSupporter?: boolean;
   partnerRole?: StaffRole;
+  /** ...and the partner's equipped title, for the same reason. */
+  partnerTitle?: string | null;
   score: number;
   replayId: string | null;
   createdAt: string;
@@ -219,6 +229,11 @@ export interface UserStats {
   /** LIFETIME playtime + games played: this game, and the total across all of them.
    *  Absent from a server older than the tracker, which renders as nothing at all. */
   activity?: { games: number; seconds: number; allGames: number; allSeconds: number };
+  /** every SEASON AWARD this account holds — account-wide, never season-scoped, or a
+   *  trophy case would empty itself the moment a new season opened. */
+  awards?: AwardRow[];
+  /** the equipped title id, or null. */
+  title?: string | null;
 }
 
 /** One round-trip: a user's whole competitive profile for the current season
@@ -568,6 +583,48 @@ export function fetchReplay(id: string): Promise<Replay> {
 
 /** may anyone watch your versus match replays? Default FALSE, and retroactively so — see
  * migration 0037. A match is released only when EVERY player in it has this on. */
+/** the providers a DSIM account can link. */
+export type LinkProvider = 'github' | 'discord';
+
+/** which providers this server has credentials for, and which you have linked. */
+export function fetchLinks(): Promise<{ linked: LinkProvider[]; available: LinkProvider[] }> {
+  return authedJson('/api/user/links');
+}
+
+/**
+ * Ask for the authorize URL. ⚠️ The browser is then SENT there — the client never learns or
+ * asserts the external account id; the server reads it from the provider over the back
+ * channel (`server/oauthLink.ts`), because a self-declared link is forgeable.
+ */
+export function startLink(provider: LinkProvider): Promise<{ url: string }> {
+  return authedJson(`/api/link/${provider}/start`);
+}
+
+/** disconnect. For GitHub the server also takes the star title back. */
+export function unlinkProvider(provider: LinkProvider): Promise<{ unlinked: boolean }> {
+  return authedJson(`/api/link/${provider}/unlink`, { method: 'POST' });
+}
+
+/** your equipped title and the ids you have earned (0045/0046). */
+export function fetchTitle(): Promise<{ title: string | null; earned: string[] }> {
+  return authedJson('/api/user/title');
+}
+
+/**
+ * EQUIP a title, or clear it with `null`.
+ *
+ * ⚠️ The server re-validates against what you have actually earned and answers 403
+ * otherwise — this call is the UI's convenience, never the authority. A title the client
+ * could assert would be the same impersonation primitive the staff role is server-authored
+ * to prevent.
+ */
+export function saveTitle(title: string | null): Promise<{ title: string | null }> {
+  return authedJson('/api/user/title', {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  });
+}
+
 export function fetchReplaysPublic(): Promise<{ replaysPublic: boolean }> {
   return authedJson('/api/user/privacy');
 }

@@ -30,6 +30,8 @@ import { BALANCE_VERSION } from '../src/config';
 import { periodLabel } from '../src/seasons';
 import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
+import { runStarSweep, warnNoToken, STAR_SWEEP_MS } from './stargazers';
+import { runBoostSweep, BOOST_SWEEP_MS } from './boosts';
 import { dbEnabled } from './db/pool';
 import {
   currentSeasonNumber,
@@ -3741,6 +3743,67 @@ if (dbEnabled) {
   const hb = setInterval(beat, 5_000);
   hb.unref();
 }
+
+/**
+ * THE GITHUB STAR REWARD's hourly sweep (`server/stargazers.ts`).
+ *
+ * `unref()` like every other interval here, so it never holds the process open. It is a
+ * no-op with no database and a no-op until somebody has actually linked a GitHub account
+ * — which is the state this sits in until the provider is enabled in the Neon Auth
+ * project, so switching the feature on takes no code change here.
+ *
+ * ⚠️ IT NEVER THROWS INTO THE TIMER. An unhandled rejection from a scheduled task is an
+ * `uncaughtException` the process-level hook only logs, and a sweep that dies quietly is
+ * indistinguishable from one that ran and found nothing.
+ */
+const STAR_REPO = process.env.GITHUB_STAR_REPO ?? 'genius0412/dsim';
+/* ⚠️ SAID AT BOOT, NOT AT THE FIRST SWEEP. The sweep is HOURLY, so a warning raised inside it
+   arrives an hour after the deploy that got the configuration wrong — long after whoever ran
+   the deploy has stopped reading the log. `warnNoToken` is once-per-process, so this is the
+   only place it actually prints. */
+if (dbEnabled && !process.env.GITHUB_TOKEN) warnNoToken();
+/**
+ * ⚠️ **ONE SWEEP SHORTLY AFTER BOOT, BECAUSE `setInterval` IS CREATED AT BOOT AND ITS FIRST
+ * FIRE IS A WHOLE HOUR AWAY.** On a day with several deploys the hourly pass may never run at
+ * all — measured: after an afternoon of alpha deploys the live log had no `[rewards]` line of
+ * any kind, and a star nobody had swept for looks exactly like a reward that does not work.
+ *
+ * It is also the only thing that catches a star made while the process was DOWN. The link
+ * route sweeps on its own now, but that only helps somebody who links from here on.
+ *
+ * 30 s of delay so it is not competing with Rapier's WASM init and the first rooms for a cold
+ * machine's single shared CPU, and `unref` like every other timer here so it never holds the
+ * process open. With no links it returns before making a request at all, which is the state
+ * every satellite is in.
+ */
+const starBoot = setTimeout(() => {
+  if (!dbEnabled) return;
+  void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN, fetch, 'boot').catch((e) =>
+    console.error('[rewards] the boot star sweep failed:', e),
+  );
+}, 30_000);
+starBoot.unref();
+const starSweeper = setInterval(() => {
+  if (!dbEnabled) return;
+  void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN, fetch, 'hourly').catch((e) =>
+    console.error('[rewards] star sweep failed:', e),
+  );
+}, STAR_SWEEP_MS);
+starSweeper.unref();
+
+/**
+ * THE DISCORD BOOST SWEEP. Same shape as the star sweep above, and a no-op until the guild
+ * and bot token are configured AND somebody has linked a Discord account — which is the
+ * state it sits in until the owner creates the application.
+ */
+const BOOST_GUILD = process.env.DISCORD_GUILD_ID ?? '';
+const boostSweeper = setInterval(() => {
+  if (!dbEnabled || !BOOST_GUILD || !process.env.DISCORD_BOT_TOKEN) return;
+  void runBoostSweep(BOOST_GUILD, process.env.DISCORD_BOT_TOKEN).catch((e) =>
+    console.error('[rewards] boost sweep failed:', e),
+  );
+}, BOOST_SWEEP_MS);
+boostSweeper.unref();
 
 // WS heartbeat — reap ghost sockets (see socketAlive above). Every interval:
 // terminate any socket that didn't pong since the last ping (fires 'close' → the

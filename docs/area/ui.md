@@ -286,6 +286,20 @@ four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow no
   be clicked re-enables them ON ITSELF (`.game-btn`, `.sponsor-chip`, `.mobile-btn`,
   `.pred-panel`). The connection chip did not, for months: its `onClick` opened a ping graph
   and the click never arrived. **Before adding a control to the HUD, add the rule.**
+- ⚠️ **THE TOUCH PAD'S BUTTON SET IS DERIVED FROM `ACTION_GAMES`** (`src/ui/mobileActions.ts`
+  + each game's `src/games/<id>/mobile.ts`), and `npm test` asserts the coverage per game: every
+  action a season uses is either a button, a stick, on-screen chrome, or a written entry in
+  `TOUCH_OTHER_ACTIONS`. It was a hand-written list of four, so BIOBUZZ shipped `bbPlace`,
+  `bbPlaceNectar`, `bbRamp` and `bbPass` with a keybind, a pad button and nothing at all on a
+  phone — three of its own handoffs recorded that and none of them could fail a build.
+  Two rules fall out of it. **An ASSISTED action is ghosted, never hidden**: hiding them left a
+  default DECODE phone with NO action buttons, because auto intake and auto fire are both on by
+  default and they were the only two the pad had. And **positions are computed, not stored** —
+  a `mobileLayout` fraction cannot be right in both orientations (the shipped default overlapped
+  SHOOT with INTAKE in portrait and hung the drive stick off the left edge), so the pad packs
+  itself into two thumb columns against the live viewport and reads a stored position only once
+  the player has dragged that control. In LANDSCAPE the score bar and the breakdown chips are in
+  the left and right gutters, and the packer treats both as obstacles.
 - **ONE performance read-out**, `PerfHud` in the top-right under the status chips, driven by
   `GameSettings.perfDisplay` alone (off · simple · detailed · graphs, default simple = fps +
   ping). It is NOT interactive and NOT a `[data-hud-band]`: a band reserves an edge and the 3D

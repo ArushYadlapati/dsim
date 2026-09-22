@@ -22,6 +22,7 @@ export type KeyAction =
   | 'bbPlace'
   | 'bbNectar'
   | 'bbRamp'
+  | 'bbPass'
   | 'driveMode'
   | 'flipFront'
   | 'park'
@@ -37,6 +38,7 @@ export type PadAction =
   | 'bbPlace'
   | 'bbNectar'
   | 'bbRamp'
+  | 'bbPass'
   | 'driveMode'
   | 'flipFront'
   | 'park'
@@ -195,6 +197,7 @@ export const ACTION_GAMES: Readonly<Record<KeyAction, readonly GameId[]>> = {
   bbPlace: ['biobuzz'],
   bbNectar: ['biobuzz'],
   bbRamp: ['biobuzz'],
+  bbPass: ['biobuzz'],
   driveMode: ALL,
   flipFront: ALL,
   park: ALL,
@@ -243,6 +246,7 @@ export const KEY_ACTIONS: KeyAction[] = [
   'bbPlace',
   'bbNectar',
   'bbRamp',
+  'bbPass',
   'driveMode',
   'flipFront',
   'park',
@@ -259,6 +263,7 @@ export const PAD_ACTIONS: PadAction[] = [
   'bbPlace',
   'bbNectar',
   'bbRamp',
+  'bbPass',
   'driveMode',
   'flipFront',
   'park',
@@ -309,6 +314,10 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     // fixture the bindings smoke lane reuses across independent tests, and a real default there
     // makes an unrelated conflict test grow a stray per-game override.
     bbRamp: ['l'],
+    // BIOBUZZ: PASS to your partner — launch the held element at a field POINT rather than at
+    // your own hive. 't' for toss; free on the default map, and NOT 'g'/'h'/'j'/'y' for the
+    // reason the ramp's own comment above gives.
+    bbPass: ['t'],
     // BUTTERFLY: drop the other wheel set. 'b' for butterfly; free on the default map.
     driveMode: ['b'],
     flipFront: ['f'],
@@ -339,6 +348,20 @@ export const DEFAULT_BINDINGS: ControlBindings = {
       // RS (11) — the right-stick click was the last free button; a ramp toggle is a MOMENTARY
       // press like the d-pad pair above, so costing the stick for an instant is the same trade.
       bbRamp: [11],
+      /**
+       * ⚠️ PASS SHIPS UNBOUND ON THE PAD, because there is no button left to give it. The
+       * standard mapping's 0..15 are all spoken for — fire 7/0, intake 6/1, catalyst 4, fling
+       * 10, place 13/12, nectar 14, ramp 11, driveMode 5, flip 3, park 2, start 9, restart 8,
+       * and 15 is the in-match MENU button (`PAD_MENU_BUTTON`). 16 is the guide button, which
+       * a browser often does not report at all.
+       *
+       * A default COMBO was the other option and is deliberately NOT taken: `padChords.ts`'s
+       * fast path is “no combo bound ⇒ the old any-button test, no state”, so shipping the
+       * first default combo would move EVERY player onto the resolver's stateful path to give
+       * one season one button. Binding it is one row in Controls, and the keyboard default
+       * ('t') means the action is never unreachable.
+       */
+      bbPass: [],
       driveMode: [5], // RB — the only unused face/shoulder button
       flipFront: [3], // Y
       park: [2], // X

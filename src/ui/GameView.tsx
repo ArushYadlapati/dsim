@@ -656,12 +656,11 @@ export function GameView({
         <MobileControls
           inputManager={controllerRef.current.getInputManager()}
           game={hud?.game}
+          spec={settings.spec}
           layout={settings.mobileLayout}
           editing={editingLayout}
           autoIntake={hud?.autoIntake ?? false}
           autoFire={hud?.autoFire ?? false}
-          hasFling={hud?.catalystFling ?? false}
-          gameHud={hud?.gameHud}
           onLayoutChange={(l) => onSettingsChange?.({ ...settings, mobileLayout: l })}
         />
       )}
