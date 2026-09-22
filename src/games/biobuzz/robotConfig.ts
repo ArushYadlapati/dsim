@@ -1,12 +1,11 @@
 import type { RobotSpec } from '../../types';
-import { massLimits } from '../../sim/drivetrain';
 import { coerceSpec } from '../../sim/spawn';
 import { BB_DEFAULT_SPEC } from './coerce';
 import {
   BB_HOOD_MAX_DEG,
   BB_HOOD_MIN_DEG,
   BB_STORAGE_MIN,
-  bbMassFloorBump,
+  bbMassLimits,
   bbSizeLimits,
   bbStorageMax,
 } from './config';
@@ -85,7 +84,7 @@ export function bbDials(spec: RobotSpec): {
   hood: { min: number; max: number };
 } {
   const size = bbSizeLimits(spec);
-  const mass = massLimits(spec.drivetrain, spec.flywheelInertia, bbMassFloorBump(spec));
+  const mass = bbMassLimits(spec);
   return {
     length: { min: size.minLength, max: Math.max(size.minLength, size.maxLength) },
     width: { min: size.minWidth, max: Math.max(size.minWidth, size.maxWidth) },

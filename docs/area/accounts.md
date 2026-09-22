@@ -167,6 +167,27 @@ Tests: covered in `npm run dbtest` (which prints its own count — an exact numb
 into this file goes stale the first time anyone adds a check, as the three that said 36 and
 ~61 had).
 
+**AND THE EQUIPPED TITLE GOES WITH IT (2026-09-22).** The badge rule above had spread to every
+surface; the TITLE had not — it rendered on the leaderboard alone, so the one thing the title
+picker promises ("shows beside your name") was true on exactly one screen out of nine. The
+one-of-two (an award hexagon for an id `parseAwardTitleId` recognises, the ledger chip
+otherwise) is now **`TitleMark` (`src/ui/TitleChip.tsx`)**, a component for the same reason the
+badge is one: a surface that simply omits the chip still compiles and still renders, only bare.
+`<SupporterBadge …/><TitleMark title={…}/>`, in that order, as siblings of the name element.
+Covered: both leaderboards, career, profile header, match history, friends + the request toast,
+the lobby roster, and the ranked strategy reveal (which printed no badge either).
+Server side, this is additive and backward compatible: `getProfile` projects `title` (one more
+column off the profile row the room join already reads), so `LobbyPlayer.title` is
+server-authored beside `supporter`/`role` and on the same terms — a title is something EARNED,
+so a self-declared one is a claim to have earned it. `sanitizePlayer` is an allowlist and
+`PlayerPatch` is a `Pick`, neither of which names it, so a client cannot put it on the wire.
+`MatchDriver` carries `supporter`/`role` for the results roster but deliberately **not**
+`title`: that row is one line with a marqueeing name, and a variable-width text chip takes its
+width from the name — see the note beside `.resx-roster-name` in `src/ui/styles.css`.
+Two surfaces print no badge because they print no person: `DiscordLobbyList` (room codes and
+seat counts) and `ChallengePicker` (a `@username` in its own dialog title, reached from a
+friends row that already carries both).
+
 **COSMETICS — TWO SEPARATE LEDGERS, DONE** (`docs/cosmetics-plan.md`). `chassisColor` /
 `accent` / `decal` / `plate` (`src/cosmetics.ts`) are four closed-set axes on `RobotSpec`;
 `coerceSpec` clamps their SHAPE only (see `docs/area/physics.md`). Entitlement is enforced

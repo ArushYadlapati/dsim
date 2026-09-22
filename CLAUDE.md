@@ -1,7 +1,7 @@
 
-# CLAUDE.md — DSIM, a 2D FTC driver-practice simulator
+# CLAUDE.md — DSIM, an FTC driver-practice simulator
 
-2D top-down driver-practice sim hosting **more than one game**:
+An FTC driver-practice sim hosting **more than one game**:
 
 | id | game | status |
 |----|------|--------|

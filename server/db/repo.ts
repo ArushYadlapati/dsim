@@ -393,6 +393,12 @@ export interface PublicProfile {
    */
   role?: StaffRole;
   /**
+   * the EQUIPPED TITLE id (`profiles.title`), or null — the award hexagon / ledger chip a
+   * client draws beside this name. Optional for the same "not asked / older server" reason
+   * as `supporter`/`role`: only the callers that project it set it.
+   */
+  title?: string | null;
+  /**
    * EARNED, PERMANENT cosmetic unlocks (`profiles.cosmetics`, migration 0044) — `"<axis>:<key>"`
    * ids, `src/cosmetics.ts`. Separate ledger from `supporter`: these survive a lapsed
    * membership, so the server's entitlement strip (`server/index.ts`/`server/room.ts`, run
@@ -516,9 +522,13 @@ export async function getProfile(userId: string): Promise<PublicProfile | null> 
     username: string | null;
     supporter: boolean;
     role: string | null;
+    title: string | null;
     cosmetics: string[];
   }>(
-    `select handle, username, role, cosmetics, ${SUPPORTER_COL} from profiles where user_id = $1`,
+    // `title` rides along for the reason `badgeCols` gives: this is the one profile read
+    // the room join already makes, and a roster that shows the badge but not the title
+    // reads as the title having been lost.
+    `select handle, username, role, title, cosmetics, ${SUPPORTER_COL} from profiles where user_id = $1`,
     [userId],
   );
   return rows[0]
@@ -528,6 +538,7 @@ export async function getProfile(userId: string): Promise<PublicProfile | null> 
         username: rows[0].username,
         supporter: !!rows[0].supporter,
         role: asRole(rows[0].role),
+        title: rows[0].title,
         cosmetics: rows[0].cosmetics ?? [],
       }
     : null;

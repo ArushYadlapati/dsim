@@ -699,7 +699,16 @@ export class Room {
       const rid = this.robotOf.get(c.id);
       // `player.name` and not `spec.name`: the person, not the chassis. Already moderated —
       // `sanitizePlayer` scrubs it at join, so nothing here is a second gate on it.
-      if (rid !== undefined) out.push({ robotId: rid, name: c.player.name });
+      // The badge fields come off the SAME player object the roster broadcasts, resolved once
+      // at join: the results roster names the same people the lobby did, so it must not read
+      // them from anywhere else and arrive at a different answer.
+      if (rid !== undefined)
+        out.push({
+          robotId: rid,
+          name: c.player.name,
+          supporter: c.player.supporter,
+          role: c.player.role,
+        });
     }
     // A BOT IS A DRIVER, named as its roster row is. `botPlayer` builds the same string, but
     // off `bots` — the LOBBY list, keyed by seat id and carrying no robot id. `botTiers` is the

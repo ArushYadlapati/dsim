@@ -248,14 +248,14 @@ learn to drive it, set up the session, then the two output sections.
   it is one row; open it is exactly where it was, so nothing is hidden from somebody who knows
   it exists. `.ds-fold.inset` is the variant for inside a panel body, where a second card would
   be nesting. The marker rotates and `[open]` changes a border COLOUR, never a width.
-- **THE ROBOT PREVIEW STAYS ON SCREEN.** `.ds-robot-rail` pins the hero in a 260px column past
-  1320px; below that it is back at the top of the page, which is why it is FIRST in the DOM.
-  ⚠️ **Do not make it a sticky strip across the top again** — that shipped, and it held 26% of a
-  720px viewport even compact, because the two rows of stat tiles set the height rather than the
-  sprite. The rail costs nothing vertically. It needs the widened page
-  (`.ds-main:has(.ds-subnav-layout)`, 1280) to exist at all: at 1080 the section body is 824 and
-  a rail leaves 500, which is not a build column. The rail ITEM stretches and the CARD inside it
-  sticks — a rail sized to its own content pins to nothing.
+- **THE ROBOT PREVIEW STAYS ON SCREEN, AT THE TOP.** Owner ruling, 2026-09-22: the 260px rail is
+  gone — it kept the robot on screen but read as a widget parked beside the build — and `.ds-hero`
+  is a pinned strip again, flush under the app bar from 1100px up. ⚠️ **The strip that was reverted
+  before held 26% of a 720px viewport, and the cause was `.ds-stats`**, an auto-fit grid of 96px
+  two-line tiles wrapping to two rows — never the sprite. **The budget is 105px**, set by the 96px
+  sprite box: the tiles are ONE-LINE chips that wrap inside that box, so another game's stat tile
+  cannot grow the card. Under 1100px wide it is the ordinary stacked card at the top of the page,
+  and at 720px tall or less it keeps the strip shape but stops pinning.
 
 **Configure copy.** No decorative glyph (the `🎯` on preset cards and the `＋` on the add cards
 are gone), no sentence whose content is where another screen is, and no sub-line naming a KEY —
@@ -337,7 +337,8 @@ same arguments are not had again:
   FTC scoring display is uppercase), `ds-cta` (14/14), and the admin console (29/34).
 - **`.ds-empty` for an empty list** (`.big` headline, no period, then one sentence with
   one), **`.ds-loading` for a loading state** (9/10 already did).
-- **A name always gets `SupporterBadge`, as a SIBLING** — see the badge rules above.
+- **A name always gets `SupporterBadge`, as a SIBLING** — see the badge rules above — and,
+  since 2026-09-22, **`TitleMark` beside it**: see `docs/area/accounts.md` for the surfaces.
 - **Terminology.** DSIM is the app; DECODE and Chain Reaction are seasons. DECODE has
   ARTIFACTS, CR has PARTICLES, and a leak either way is a bug. CR's ring is a **CATALYST**
   — the **RING STAND** is a different object in the same game, so the HUD chips that said
@@ -416,3 +417,27 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   rebound keys and a connected pad.
 
 
+
+## Dialog titles, and the phone sweep (2026-09-22)
+
+- **A SHELL DIALOG'S TITLE IS `ds-dialog-title`.** `.overlay-panel h2` is a bare element rule
+  carrying the MATCH overlay's 3px all-caps tracking, and exactly one element wants it
+  (`GameView`'s `RED ALLIANCE`). The six sentence-case dialogs in `App.tsx` inherited it and
+  came out as 20px of plain ink spaced like a sign — no chosen weight (the browser's `bold`
+  stood in), no token colour, no line-height, and the one heading in the app that belonged to
+  no design system. `.ds-dialog-title` puts them on `.ds-h2`'s type, and the same class fixes
+  `.net-overlay-card h3` ("Connection lost", "Reconnecting…"), a bare `h3` for the same reason.
+  It pairs with `.ds-dialog-actions`, which made exactly this split for the BUTTONS already.
+- **`.ds-title h1` is `.ds-h1`'s type.** It was 26→40 against 26→38 — the same heading on two
+  page shells, two clamps, visible only by navigating between them.
+- **A NAME CLAMPS; IT DOES NOT BREAK ITS ROW.** `.lb-name-h` / `.lb-at` are nowrap ellipses
+  with `ch` caps, and `.lb-scroll .ds-table` has a 520px floor so the board SCROLLS instead of
+  squeezing the one column with prose in it (`.mh-table` has had that floor since its own
+  sweep). Without both, a 24-character handle came apart one word per line and a duo row stood
+  five lines tall beside one-line rank and score cells.
+- **`.ds-player` WRAPS.** The lobby/strategy roster row was one non-wrapping flex line, so on a
+  phone READY — the chip a driver actually watches — was off the right edge of a `.ds-panel`
+  that clips. It wraps at `row-gap: --ds-s-1` now: name line, then the chips.
+- **`.ds-segs.even`** is the modifier for a strip that cannot fit: under 640px it becomes an
+  `auto-fit` grid, so the six drivetrain filters read as a deliberate 3 + 3 rather than a
+  ragged 4 + 2. Not a scroller — a filter must not hide how many options there are.

@@ -1809,7 +1809,7 @@ export function App() {
       {showChainDisclaimer && (
         <div className="overlay">
           <div className="overlay-panel">
-            <h2>About this simulation</h2>
+            <h2 className="ds-dialog-title">About this simulation</h2>
             <p className="ds-sub overlay-sub">
               Chain Reaction is a game for the <b>Unofficial FTC Discord’s CAD Competition</b>.
               This simulator is a rough, for-fun approximation of it. <b>The simulation is
@@ -1840,7 +1840,7 @@ export function App() {
       {blockedByActive && (
         <div className="overlay">
           <div className="overlay-panel">
-            <h2>You’re already in a game</h2>
+            <h2 className="ds-dialog-title">You’re already in a game</h2>
             <p className="ds-sub overlay-sub">
               You can only be in one game at a time.
             </p>
@@ -1868,7 +1868,7 @@ export function App() {
       {rejoinGone && (
         <div className="overlay">
           <div className="overlay-panel">
-            <h2>That match is over</h2>
+            <h2 className="ds-dialog-title">That match is over</h2>
             <p className="ds-sub overlay-sub">
               It finished, or it was held open too long for you to get back into. Start a new one
               when you’re ready.
@@ -1882,7 +1882,7 @@ export function App() {
       {badStart && (
         <div className="overlay">
           <div className="overlay-panel">
-            <h2>Start position invalid</h2>
+            <h2 className="ds-dialog-title">Start position invalid</h2>
             <p className="ds-sub overlay-sub">
               Your saved start position isn’t legal for the selected chassis. Fix it (or pick a
               preset) before starting.
@@ -1906,7 +1906,7 @@ export function App() {
       {startBlocked && (
         <div className="overlay">
           <div className="overlay-panel">
-            <h2>{lockedOut ? 'Down for maintenance' : 'Server restarting soon'}</h2>
+            <h2 className="ds-dialog-title">{lockedOut ? 'Down for maintenance' : 'Server restarting soon'}</h2>
             <p className="ds-sub overlay-sub">
               {lockedOut
                 ? maintenanceLine(maintenance) ??
@@ -1922,7 +1922,7 @@ export function App() {
       {pendingStart && (
         <div className="overlay">
           <div className="overlay-panel">
-            <h2>Update required</h2>
+            <h2 className="ds-dialog-title">Update required</h2>
             <p className="ds-sub overlay-sub">
               A newer version has shipped. Refresh to update before starting.
             </p>

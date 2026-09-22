@@ -13,6 +13,7 @@ import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
 import { SupporterBadge } from './SupporterBadge';
+import { TitleMark } from './TitleChip';
 import { Menu } from './Menu';
 import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
 import { gameServers, lanActive, multiServer, roomServerUrl, roomServerUrlWith, selectedServer } from '../net/env';
@@ -882,6 +883,7 @@ export function Lobby({
                     {p.name}
                     {isMe ? ' (you)' : ''}
                     <SupporterBadge supporter={p.supporter} role={p.role} />
+                    <TitleMark title={p.title} />
                   </span>
                   <span className="ptm">
                     {p.spec.name} · {p.teamNumber || '-'}

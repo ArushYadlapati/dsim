@@ -9,6 +9,8 @@ import { ChainStartEditor } from './ChainStartEditor';
 import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory, startSelectionLegal } from './startPositions';
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
+import { SupporterBadge } from './SupporterBadge';
+import { TitleMark } from './TitleChip';
 import type { LobbyClient } from '../net/lobbyClient';
 import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
 import { RobotPreview } from './RobotPreview';
@@ -233,7 +235,14 @@ export function MatchStrategy({
               {opponents.map((p) => (
                 <div key={p.clientId} className={`ds-player ${p.alliance}`}>
                   <span className="pdot" />
-                  <span className="pnm">{p.name}</span>
+                  {/* the roster composition the lobby uses, because this IS the lobby roster
+                      for a ranked room — the reveal named an opponent with no badge and no
+                      title while the same person's row in a custom room carried both. */}
+                  <span className="pnm">
+                    {p.name}
+                    <SupporterBadge supporter={p.supporter} role={p.role} />
+                    <TitleMark title={p.title} />
+                  </span>
                   <span className="ptm">Team {p.teamNumber || '-'}</span>
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
                   <span className="ds-chip">ELO {eloOf(p)}</span>
@@ -269,6 +278,8 @@ export function MatchStrategy({
                     <span className="pnm">
                       {pl.name}
                       {isMe ? ' (you)' : ''}
+                      <SupporterBadge supporter={pl.supporter} role={pl.role} />
+                      <TitleMark title={pl.title} />
                     </span>
                     <span className="ptm">
                       {spec.name} · Team {pl.teamNumber || '-'}

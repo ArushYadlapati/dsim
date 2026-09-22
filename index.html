@@ -28,19 +28,19 @@
       once React is up (for Googlebot, which does render). Keep the two in sync:
       the values here ARE the home-route values in that module.
     -->
-    <title>DSIM: Online 2D FTC Driving Simulator</title>
+    <title>DSIM: Online FTC Driving Simulator</title>
     <meta
       name="description"
-      content="An online 2D driving simulator for FIRST Tech Challenge. Build a robot, drive DECODE, Chain Reaction or BIOBUZZ, and play solo or ranked."
+      content="An online driving simulator for FIRST Tech Challenge. Build a robot, drive DECODE, Chain Reaction or BIOBUZZ, and play solo or ranked."
     />
     <link rel="canonical" href="https://www.playdsim.com/" />
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="DSIM" />
-    <meta property="og:title" content="DSIM: Online 2D FTC Driving Simulator" />
+    <meta property="og:title" content="DSIM: Online FTC Driving Simulator" />
     <meta
       property="og:description"
-      content="An online 2D driving simulator for FIRST Tech Challenge. Build a robot, drive DECODE, Chain Reaction or BIOBUZZ, and play solo or ranked."
+      content="An online driving simulator for FIRST Tech Challenge. Build a robot, drive DECODE, Chain Reaction or BIOBUZZ, and play solo or ranked."
     />
     <meta property="og:url" content="https://www.playdsim.com/" />
     <!--
@@ -58,20 +58,20 @@
     <meta property="og:image:type" content="image/png" />
     <meta
       property="og:image:alt"
-      content="DSIM: online 2D FTC driving simulator. Presented by Offset Robotics."
+      content="DSIM: online FTC driving simulator. Presented by Offset Robotics."
     />
     <meta property="og:locale" content="en_US" />
 
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="DSIM: Online 2D FTC Driving Simulator" />
+    <meta name="twitter:title" content="DSIM: Online FTC Driving Simulator" />
     <meta
       name="twitter:description"
-      content="An online 2D driving simulator for FIRST Tech Challenge. Build a robot, drive DECODE, Chain Reaction or BIOBUZZ, and play solo or ranked."
+      content="An online driving simulator for FIRST Tech Challenge. Build a robot, drive DECODE, Chain Reaction or BIOBUZZ, and play solo or ranked."
     />
     <meta name="twitter:image" content="https://www.playdsim.com/og.png" />
     <meta
       name="twitter:image:alt"
-      content="DSIM: online 2D FTC driving simulator. Presented by Offset Robotics."
+      content="DSIM: online FTC driving simulator. Presented by Offset Robotics."
     />
     <!--
       Google AdSense site verification. This has to sit in the served HTML of EVERY
@@ -115,9 +115,9 @@
         "@context": "https://schema.org",
         "@type": "WebSite",
         "name": "DSIM",
-        "alternateName": "DSIM: Online 2D FTC Driving Simulator",
+        "alternateName": "DSIM: Online FTC Driving Simulator",
         "url": "https://www.playdsim.com/",
-        "description": "An online 2D driving simulator for FIRST Tech Challenge. Build a robot, drive DECODE, Chain Reaction or BIOBUZZ, and play solo or ranked.",
+        "description": "An online driving simulator for FIRST Tech Challenge. Build a robot, drive DECODE, Chain Reaction or BIOBUZZ, and play solo or ranked.",
         "inLanguage": "en",
         "publisher": { "@type": "Organization", "name": "DSIM", "url": "https://www.playdsim.com/" }
       }
@@ -196,7 +196,7 @@
          Electron build's `file://` base. The rendered home menu draws the real
          mark a beat later (src/ui/Sponsor.tsx). */
       #seo-home .sh-presents {
-        margin: 0 0 14px;
+        margin: 0 0 22px;
         font-family: 'Space Grotesk Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 11px;
         font-weight: 700;
@@ -207,13 +207,6 @@
       #seo-home .sh-presents a {
         color: var(--sh-ink);
         text-decoration: none;
-      }
-      #seo-home .sh-lead {
-        margin: 0 0 22px;
-        max-width: 460px;
-        font-size: 15px;
-        line-height: 1.55;
-        color: var(--sh-mut);
       }
       #seo-home .sh-menu {
         width: 100%;
@@ -285,7 +278,7 @@
   <body>
     <div id="root">
       <div id="seo-home">
-        <p class="sh-eyebrow">FIRST Tech Challenge · 2D Driver Practice</p>
+        <p class="sh-eyebrow">FIRST Tech Challenge</p>
         <h1>DSIM</h1>
         <!-- THIS IS THE LOADING SCREEN. React clears #root on mount, so everything
              here is what a visitor looks at while the bundle parses and the Rapier
@@ -307,7 +300,6 @@
             >Offset Robotics</a
           >
         </p>
-        <p class="sh-lead">An online 2D driving simulator for FIRST Tech Challenge.</p>
         <!-- The two games, as real links. Each is its own indexable page with its
              own title and description (see applyRouteMeta), and these are the only
              thing pointing a crawler at them. -->

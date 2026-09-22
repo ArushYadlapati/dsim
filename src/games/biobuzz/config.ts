@@ -38,10 +38,10 @@
  * empty field, because it would look finished.
  */
 
-import type { Alliance, AssistConfig, RobotSpec, StartCat, Vec2, World } from '../../types';
-import { INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
-import { datan2, dcos, dsin, hyp, wrapAngle } from '../../math';
-import { lengthLimits, massLimits, widthLimits } from '../../sim/drivetrain';
+import type { Alliance, AssistConfig, DrivetrainType, RobotSpec, StartCat, Vec2, World } from '../../types';
+import { DRIVETRAIN_LIMITS, INERTIA_MASS_FLOOR, INTAKE_PRESETS, ROBOT_MAX_SIZE } from '../../config';
+import { clamp, datan2, dcos, dsin, hyp, wrapAngle } from '../../math';
+import { lengthLimits, widthLimits } from '../../sim/drivetrain';
 import {
   BB_DEFAULT_INTAKE_MOUNT,
   type BbIntakeMount,
@@ -1490,9 +1490,6 @@ export function bbArchetypeWallExtra(kind: BbIntakeKind): number {
   return kind === 'siderollers' ? BB_SIDE_ROLLER_PROTRUDE : 0;
 }
 
-/** extra lb on the chassis mass FLOOR for carrying a Box Tube. APPROX. */
-export const BB_LIFT_MASS_FLOOR = 2.0;
-
 /**
  * NEW. THE BOX TUBE'S OWN HARDWARE GEOMETRY — named here, not in the renderer, because the
  * RENDER lane forbids `renderRobots.ts` naming a mechanism constant of its own (the same rule
@@ -1509,8 +1506,11 @@ export const BB_LIFT_MASS_FLOOR = 2.0;
  * boxtube extension should be reaching towards the opening in the flower, not extending
  * horizontally"). The tip has to arrive at a FLOWER's top plate, `BB_FLOWER_TOP_Z` 21.404 in up,
  * from a shoulder at `BB_BOX_TUBE_Z` 5.55 — 16.854 in of rise against 1.08…8.08 in of horizontal
- * run, so the arm needs **17.6…18.7 in of length**, where three sections gave it `bbTubeReach`
- * (3.08…6.08) and pointed it flat at the wall. The section LENGTH is also how far back into the
+ * run, so the arm needs **17.1…17.9 in of length** (it was 17.6…18.7 until the 2026-09-22 rim
+ * change below took one opening radius off every horizontal run; the cradle came down with it,
+ * 5.65…5.92 → 5.53…5.72, so four moving stages is still the first count that fits the shortest
+ * legal chassis and nothing about the paragraph below moved), where three sections gave it
+ * `bbTubeReach` (3.08…6.08) and pointed it flat at the wall. The section LENGTH is also how far back into the
  * frame the stowed stack runs, and that is what fixes the count: over the 128 legal (mount ×
  * intake × size-extreme) builds, 2 moving stages want an **8.8…9.3-in** cradle, 3 want 5.9…6.2,
  * and **4 want 5.65…5.92**, which is the first count that fits inside the shortest legal chassis
@@ -1524,14 +1524,36 @@ export const BB_BOX_TUBE_WALL = 0.125;
  * two boxes with a visible gap between them; it is the difference between a section's LENGTH and
  * its per-stage TRAVEL, which is what `bbBoxTubeStages` solves for. */
 export const BB_BOX_TUBE_STAGE_OVERLAP = 1.25;
-/** seconds for the Box Tube to fully extend or retract, in the RENDERER only. APPROX — a RENDER
- * rate with NO sim consequence: the Box Tube has no sim travel (placement is a proximity action,
- * not a raise — see `BB_PLACE_REACH`'s header), so this can never change what scores.
+/** seconds for the Box Tube to fully extend, in the RENDERER only. APPROX — a RENDER rate with
+ * NO sim consequence: the Box Tube has no sim travel (placement is a proximity action, not a
+ * raise — see `BB_PLACE_REACH`'s header), so this can never change what scores.
  *
- * WAS 0.35, which the owner called out on 2026-09-20 ("it should also be a lot faster"). One
- * ease drives the whole pose — pitch, base swivel and the four stages together — so the deploy
- * is 0.12 s end to end, about 7 frames at 60 Hz. */
-export const BB_BOX_TUBE_EXTEND_S = 0.12;
+ * ⚠️ **0.12 s WAS TOO FAST, AND THE OWNER SAID SO ABOUT THE SAME MECHANISM TWICE** — "it should
+ * also be a lot faster" (2026-09-20, against the 0.35 this started at) and then "it also moves
+ * way too quickly in animation and in a violent way" (2026-09-22). 0.12 s is SEVEN FRAMES at
+ * 60 Hz for a pose that sweeps 64–86° of pitch and 17–19 in of arm: the tube was not seen
+ * moving, it teleported. 0.40 is the middle of the band the second report asks for and back
+ * inside the first one's complaint only because the EASE changed with it — the ramp is a
+ * `smoothstep`, so it leaves and arrives at zero rate and the fast part is the middle, which is
+ * what "not violent" actually means. A linear 0.40 reads slower than a smoothstepped 0.40. */
+export const BB_BOX_TUBE_EXTEND_S = 0.4;
+/** retraction as a FRACTION of the deploy time. APPROX. Coming home is the uninteresting half —
+ * nothing is being aimed at any more — so it is a touch quicker, 0.32 s. It is not much quicker:
+ * a snap-back is the same complaint as a snap-out. */
+export const BB_BOX_TUBE_RETRACT_F = 0.8;
+/** how fast the AIM the ease is steering toward may itself move (rad/s, and in/s for the per-stage
+ * extension). RENDER-only, APPROX.
+ *
+ * ⚠️ **WITHOUT THESE THE POSE SNAPPED WHILE THE ARM WAS FULLY OUT.** `bbFlowerInReach` names ONE
+ * flower, and a robot sitting between two of them (or crossing the `BB_PLACE_TOL` boundary as it
+ * drives) changes which one it names in a single tick. The old code assigned the new yaw/pitch/
+ * extension straight onto the entry, so an 18-in arm jumped to a new bearing in one frame with
+ * `tubeEase` already at 1 — the other half of the owner's "violent". The targets SLEW now, so a
+ * change of flower sweeps. 3 rad/s covers the full 86° of pitch in 0.50 s, which is the deploy's
+ * own order; 60 in/s covers the whole 4.7-in per-stage travel in 0.08 s, so a pure reach change
+ * (same bearing, nearer ring) still feels instant. */
+export const BB_BOX_TUBE_SLEW = 3.0;
+export const BB_BOX_TUBE_EXT_SLEW = 60;
 /** how far above a FLOWER's TOP PLATE (`BB_FLOWER_TOP_Z`) the extended tip parks (in). APPROX —
  * a tube that stops level with the plate reads as resting ON it; `flower3d.ts` drops a placed
  * element at the top ring, so the tip belongs just clear of the hole it drops through. */
@@ -1556,12 +1578,21 @@ export const BB_BOX_TUBE_TIP_CLEAR = 1.0;
  * BB_BOX_TUBE_Z` up, and `moving · travel` has to cover the far end of that. So the drawn tip
  * meets the opening BY CONSTRUCTION at every legal build rather than by a tolerance — the same
  * bargain the tip already made with the placement point when it only had to reach horizontally.
+ *
+ * ⚠️ **THE TARGET IS THE NEAR RIM, SO THE ARM IS `BB_FLOWER_OPEN_R` SHORTER THAN IT WAS** (owner,
+ * 2026-09-22: "make the boxtube in-game not go through the flower when it extends"). The worst
+ * pose's horizontal run stops one opening radius short of the ring CENTRE — see `bbBoxTubeAim` —
+ * so sizing to the centre would leave every stage 2.09 in of travel it can never be asked for,
+ * and `short` (the RENDER lane's "never asked for more length than the stages have") would stop
+ * being the tight bound it is. Retracted length falls with it, which is the cradle that has to
+ * fit inside a 13.5-in chassis.
  */
 export function bbBoxTubeStages(reach: number): { sectionLen: number; travel: number; moving: number; full: number } {
   const n = BB_BOX_TUBE_SECTIONS.length - 1;
   const k = BB_BOX_TUBE_STAGE_OVERLAP;
   const dz = BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR - BB_BOX_TUBE_Z;
-  const travel = hyp(reach + BB_PLACE_TOL, dz) / n;
+  const run = Math.max(0, reach + BB_PLACE_TOL - BB_FLOWER_OPEN_R);
+  const travel = hyp(run, dz) / n;
   return { sectionLen: travel + k, travel, moving: n, full: n * travel };
 }
 
@@ -1575,11 +1606,33 @@ export function bbBoxTubeStages(reach: number): { sectionLen: number; travel: nu
  * the shoulder. The length is CLAMPED to what the stages can give, so no stage can ever leave its
  * parent even for a pose the sizing did not anticipate (an airborne robot, say) — it falls short
  * instead of coming apart.
+ *
+ * ⚠️ **`rim` IS WHY THE ARM NO LONGER GOES THROUGH THE FLOWER** (owner, 2026-09-22: "make the
+ * boxtube in-game not go through the flower when it extends. It should be extending towards the
+ * top lip instead of through it"). `target` is the ring CENTRE at tip height, and aiming a
+ * STRAIGHT telescoping tube at it means the line from the shoulder to that point passes through
+ * the column: MEASURED over the RENDER lane's own sweep, **48,048 of 48,048 in-reach poses** put
+ * the drawn axis inside the top ring's bore below the top plate, by up to **2.014 in** of a
+ * 2.086-in radius — i.e. the mast came out of the flower's axis, having passed through the plate
+ * that is the hole's own edge.
+ *
+ * Backing the aim point off by `rim` along the horizontal direction the arm approaches from puts
+ * the tip on the NEAR LIP instead. It is not a fudge factor, it is the geometry: the horizontal
+ * distance from the shoulder falls MONOTONICALLY along the segment and now stops at `rim`, which
+ * it reaches at `BB_BOX_TUBE_TIP_CLEAR` ABOVE the plate — so everything below the plate is
+ * strictly outside the cylinder, by construction rather than by a tolerance.
+ *
+ * The backoff is clamped to the horizontal distance itself, for the degenerate pose where the
+ * shoulder is already inside the bore's own footprint: there is no straight arm out of a point
+ * inside a cylinder that stays outside it, so the aim goes VERTICAL rather than reversing
+ * through the robot. A flower foot is a collider 2.384 in deep in front of the ring, so a real
+ * match cannot produce that pose — only a teleporting test can, and the RENDER lane says which.
  */
 export function bbBoxTubeAim(
   pivot: { x: number; y: number; z: number },
   target: { x: number; y: number; z: number },
   stages: { travel: number; moving: number },
+  rim = 0,
 ): { yaw: number; pitch: number; ext: number; len: number } {
   const dx = target.x - pivot.x;
   const dy = target.y - pivot.y;
@@ -1587,8 +1640,9 @@ export function bbBoxTubeAim(
   // `hyp`/`datan2`, not `Math.hypot`/`Math.atan2`: this file is under `src/games/`, which the
   // determinism source guard greps, and the rule is "don't write the engine-defined call here".
   const flat = hyp(dx, dy);
-  const len = Math.min(stages.moving * stages.travel, hyp(flat, dz));
-  return { yaw: datan2(dy, dx), pitch: datan2(dz, flat), ext: len / stages.moving, len };
+  const run = Math.max(0, flat - rim);
+  const len = Math.min(stages.moving * stages.travel, hyp(run, dz));
+  return { yaw: datan2(dy, dx), pitch: datan2(dz, run), ext: len / stages.moving, len };
 }
 
 /**
@@ -2151,12 +2205,6 @@ export const BB_HOOD_PATH_R = BB_HEAD_POLLEN.pathR; // 2.51732
  * header, which carries the table.
  */
 export const BB_TURRET_SOLVE_PASSES = 4;
-/** the mass floor a DOUBLE turret's second turret assembly adds (lb on the chassis mass FLOOR).
- * Its two turrets share one hopper and one cadence BEAT (`BB_FIRE_INTERVAL`), and since
- * 2026-09-19 both fire on that beat (owner item 5) — so a double CAN put two elements out where
- * a single puts one, when it is holding one of each kind. It is still not a faster stream of
- * POLLEN: turret 0's own rate is unchanged. */
-export const BB_TWIN_MASS_FLOOR = 2.5;
 
 /** shooter cadence (s between shots) — 13 elements/s PER TURRET EXIT. The clock is one beat
  * shared by both turrets of a double (one `fireReadyAt`, one wire field, one hopper), and every
@@ -2320,8 +2368,15 @@ function bbEnvelope(spec: RobotSpec): {
   const ext = bbEnvelopeReach(spec);
   const shL = lengthLimits(spec.intake);
   const shW = widthLimits(spec.intake, spec.drivetrain);
-  const minLength = Math.max(BB_MIN_LENGTH, shL.min);
-  const minWidth = Math.max(BB_MIN_WIDTH, shW.min);
+  // ⚠️ THE GAME'S OWN FLOOR NEVER RISES ABOVE THE INTAKE'S OWN CEILING. `BB_MIN_LENGTH` (13.5)
+  // is BIOBUZZ's APPROX floor and the TRIANGLE preset's shared ceiling is 13, so the raw
+  // `Math.max` handed back an INVERTED length range for every triangle build — which made
+  // `bbMountFits` false at every mount, so the coercer silently reset a SIDE or FRONT+BACK
+  // sweeper to `front`, and then pinned the chassis to a 13.5 that is half an inch over the
+  // ceiling the intake actually allows. Nothing errored and the builder has no intake-style
+  // picker, so it only ever reached a spec carried over from DECODE or Chain Reaction.
+  const minLength = Math.min(Math.max(BB_MIN_LENGTH, shL.min), shL.max);
+  const minWidth = Math.min(Math.max(BB_MIN_WIDTH, shW.min), shW.max);
   const candidate = (lengthLong: boolean) => {
     const capL = lengthLong ? BB_PRISM : BB_PRISM_NARROW;
     const capW = lengthLong ? BB_PRISM_NARROW : BB_PRISM;
@@ -2453,21 +2508,111 @@ export function bbHopperCap(spec: RobotSpec): number {
   return Math.max(BB_STORAGE_MIN, Math.min(bbStorageMax(spec), want));
 }
 
-/** extra lb on the chassis MASS FLOOR from the BIOBUZZ scoring mechanism. Only the twin
- * turret carries one (a whole second flywheel assembly); every other archetype is already
- * priced into the base chassis. Threaded into `massLimits` by the coercer and by the
- * builder's mass slider, so the floor the UI offers is the floor the sim enforces. */
-export function bbMassFloorBump(spec: RobotSpec): number {
+// ─────────────────────────────────────────────────────────────────────────────
+// ROBOT — MASS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ⚠️ **THE MASS FLOOR IS A BUILD-UP OF THIS GAME'S OWN HARDWARE, NOT DECODE'S PLUS A BUMP**
+ * (owner, 2026-09-22: "Focus on the mass of each component... Single intake single turret
+ * should weigh like 18lbs minimum").
+ *
+ * What it replaces: `massLimits(drivetrain, inertia, bbMassFloorBump(spec))`, whose base was
+ * DECODE's `DRIVETRAIN_LIMITS` (mecanum 18, tank 22, swerve 21.5, butterfly 24) and whose bump
+ * priced exactly two things — a second turret and a Box Tube. So a SWEEPER weighed nothing, a
+ * TURRET weighed nothing, a DUMPER weighed nothing, and a second sweeper edge weighed nothing:
+ * a bare mecanum chassis and a mecanum chassis carrying a turret and two sweepers had the same
+ * floor, 18 lb. And DECODE's 18 is not a bare chassis at all — it already prices in DECODE's
+ * own shooter, which is why every BASE below is LIGHTER than the number it replaces.
+ *
+ * Every constant here is APPROX with its reason on its own line. R104 sets NO ROBOT weight
+ * limit in BIOBUZZ, so none of this is a rules clamp: it is the sim's model of what a given
+ * pile of hardware has to weigh, and the CEILING is the shared drivetrain envelope (what that
+ * drivetrain can still move), not a rule.
+ */
+
+/**
+ * BARE CHASSIS (lb) — frame, wheels, drive motors, battery and the two hubs, and NOTHING that
+ * touches an element. One line of reasoning each:
+ *  • mecanum   four motors, four mecanum wheels, rails, battery, two hubs. THE CALIBRATION
+ *              POINT: 11.5 + one sweeper + one turret + the default inertia term = 18.00 lb.
+ *  • xdrive    the same four motors and four roller wheels, turned 45° — a wash, so the same.
+ *  • tank      6WD: two more wheels, the sprockets and the chain runs between them.
+ *  • swerve    four steering modules and four more motors on top of the four drive ones.
+ *  • butterfly both wheel sets plus the actuators that swap them — the heaviest archetype, and
+ *              the literal cost of it (the same ordering the shared model has).
+ */
+export const BB_MASS_BASE: Readonly<Record<DrivetrainType, number>> = {
+  mecanum: 11.5,
+  xdrive: 11.5,
+  tank: 13,
+  swerve: 15.5,
+  butterfly: 17,
+};
+
+/** one SWEEPER edge (lb): a roller bar, its motor and gearbox, and the two side plates that
+ * carry it. Charged PER MOUNTED EDGE, so `frontback` and `side` pay twice — which is the point:
+ * the second edge is a second whole assembly and it used to be free. APPROX. */
+export const BB_MASS_SWEEPER_EDGE = 1.5;
+/** a SINGLE TURRET (lb): the flywheel and its hood, the rotor ring the head yaws on, and the
+ * two motors. The heaviest single mechanism in the game — it is a whole aiming assembly, not a
+ * chute. APPROX. */
+export const BB_MASS_TURRET = 4;
+/** the SECOND turret of a DOUBLE (lb), on top of `BB_MASS_TURRET`. A whole second assembly —
+ * its own flywheel, hood, ring and motors — but it shares the hopper and the feed the first one
+ * already pays for, so it is a little under a first turret. APPROX. */
+export const BB_MASS_TURRET2 = 3.5;
+/** a DUMPER (lb): a tilting hopper on a pivot and one motor to heave it. No stored energy and
+ * no aiming hardware, so it is well under a turret — which is the archetype's real tradeoff.
+ * APPROX. */
+export const BB_MASS_DUMPER = 2.5;
+/** a BOX TUBE (lb): the five nested sections (`BB_BOX_TUBE_SECTIONS`), the cradle, the spool
+ * and its motor. APPROX. */
+export const BB_MASS_BOX_TUBE = 2.5;
+/** lb of flywheel added at `flywheelInertia` 1 — the shared `INERTIA_MASS_FLOOR`, kept rather
+ * than re-spelled, because it describes the same part in both games. BIOBUZZ has no inertia
+ * DIAL (`bbDials`), so in practice this is `BB_INERTIA_DEFAULT` for anything built here and a
+ * carried-over value for a spec that arrived from another game. */
+export const BB_MASS_INERTIA = INERTIA_MASS_FLOOR;
+/**
+ * the `flywheelInertia` every BIOBUZZ preset carries.
+ *
+ * ⚠️ IT IS NOT A DIAL IN THIS GAME. `bbDials` offers no inertia slider and no BIOBUZZ sim code
+ * reads the field — its ONLY effect here is `BB_MASS_INERTIA · inertia` lb on the floor. Pinning
+ * every preset to one value is what makes their masses comparable to each other; a build that
+ * arrives from DECODE or Chain Reaction keeps whatever it had, which is why the term is in the
+ * model at all rather than folded into the bases.
+ */
+export const BB_INERTIA_DEFAULT = 0.25;
+
+/**
+ * THE MASS RANGE THIS BUILD MAY BE DIALLED TO (lb) — the ONE model, read by the coercer
+ * (`coerce.ts`), by the builder's slider (`bbDials`) and by both preset lists.
+ *
+ * The FLOOR is the sum of what the build is made of; the CEILING is the shared per-drivetrain
+ * envelope, which is a statement about what that drivetrain can still move and NOT a rules
+ * limit — R104 sets no robot weight limit, so there is no legal number to use here.
+ *
+ * ROUNDED TO 0.01, for the reason `massLimits` documents at length: the floor is a sum of
+ * decimal constants and binary floating point turns e.g. 15.5 + 1.5 + 1.5 into something ending
+ * in ...0000003, which then becomes the robot's actual clamped mass and is printed as-is.
+ *
+ * Read through `bbLauncherOf` / `bbLiftOf` / `bbIntakeMountOf` rather than off the flat mirror
+ * fields: the container is authoritative.
+ */
+export function bbMassLimits(spec: RobotSpec): { min: number; max: number } {
   const launcher = bbLauncherOf(spec, BB_HOOD_DEFAULT_DEG);
-  // A SECOND FLYWHEEL ASSEMBLY, and now A MAST — both are hardware bolted to the chassis, and
-  // both were previously invisible to the mass model. `BB_LIFT_MASS_FLOOR` existed as a
-  // constant with no reader, which is the same shape of bug `BB_TURRET_SLEW` was: a number
-  // documenting an intention nothing implemented.
-  //
-  // Read through `bbLauncherOf` rather than off `spec.scoreMode`: the container is authoritative.
-  const twin = launcher.kind === 'twinturret' ? BB_TWIN_MASS_FLOOR : 0;
-  const lift = bbLiftOf(spec) ? BB_LIFT_MASS_FLOOR : 0;
-  return twin + lift;
+  const mount = bbIntakeMountOf(spec);
+  const edges = mount === 'frontback' || mount === 'side' ? 2 : 1;
+  const raw =
+    (BB_MASS_BASE[spec.drivetrain] ?? BB_MASS_BASE.mecanum) +
+    edges * BB_MASS_SWEEPER_EDGE +
+    (launcher.kind === 'dumper' ? BB_MASS_DUMPER : BB_MASS_TURRET) +
+    (launcher.kind === 'twinturret' ? BB_MASS_TURRET2 : 0) +
+    (bbLiftOf(spec) ? BB_MASS_BOX_TUBE : 0) +
+    BB_MASS_INERTIA * clamp(spec.flywheelInertia, 0, 1);
+  const max = DRIVETRAIN_LIMITS[spec.drivetrain]?.maxMass ?? DRIVETRAIN_LIMITS.mecanum.maxMass;
+  return { min: Math.min(Math.round(raw * 100) / 100, max), max };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2523,9 +2668,18 @@ export interface BbStartAnchor {
  * opposite ends of the field — so two robots of one alliance cannot reach each other at the
  * buzzer, which is the whole reason there are two.
  */
-/** the default build's chassis half-extent along its own facing axis (in) — what seats an anchor
- * against the wall it names. `bbSnapStart` re-seats per spec; this only has to be close. */
-const START_CHASSIS_HALF = 10.5;
+/**
+ * the default build's half-extent on its WALL side (in) — what seats an anchor against the wall
+ * it names. `bbSnapStart` re-seats per spec; this only has to be close.
+ *
+ * ⚠️ IT IS A MEASUREMENT OF `BB_DEFAULT_SPEC`, so it moves when the default preset does. Every
+ * anchor is written facing INTO the field, so the wall side is the BACK of the robot: 7.5 is the
+ * Pollinator's own half-length, its front sweeper being on the other end. It was 10.5 while the
+ * default was a FRONT+BACK build, where the sweeper on the wall side counted too. The FIELD lane
+ * asserts the four anchors are legal AS WRITTEN and snap to themselves byte for byte on the
+ * default chassis, which is what catches this the day the default changes again.
+ */
+const START_CHASSIS_HALF = 7.5;
 const START_SEAT_X = BB_HALF_X - START_CHASSIS_HALF;
 const START_SEAT_Y = BB_HALF_Y - START_CHASSIS_HALF;
 export const BB_START_POSES: readonly BbStartAnchor[] = [
@@ -2637,44 +2791,77 @@ const BB_PRESET_ASSISTS: AssistConfig = {
 };
 
 /**
- * BIOBUZZ ARCHETYPE DEMOS — one card per launcher, so a single click sets a coherent playstyle
- * and the three cards between them show every launcher, both kinds of mount and a Box Tube.
+ * BIOBUZZ ARCHETYPE DEMOS — four builds a player would actually pick, between them covering
+ * every launcher, both kinds of intake mount, a Box Tube, and — with the StarterBot's tank —
+ * all five drivetrains, including the only one with two rpm sets to pick between.
  *
  * DEMOS, and they say so. The one real kit robot (the StarterBot) is defined in `presets.ts`
  * and leads the builder's list; these follow it.
  *
- * ⚠️ `BB_PRESETS[0]` MUST STAY SNIPER, AS A LITERAL WITH NO `bbMech` CONTAINER. `coerce.ts`
- * builds `BB_DEFAULT_SPEC` from it and is a leaf of the spawn chokepoint, so the default robot
- * is whatever this first literal migrates to. Sniper's Box Tube is therefore attached at the
- * display boundary instead (`BB_DEMO_LIFT`, `presets.ts`). Skimmer carries no container either:
- * a double turret's NECTAR-turret cell resolves from the POLLEN turret's (`bbResolveMount2`),
- * so `shooterMount: 'right'` alone coerces to a right + left pair.
+ * ⚠️ `BB_PRESETS[0]` MUST BE A LITERAL WITH NO `bbMech` CONTAINER. `coerce.ts` builds
+ * `BB_DEFAULT_SPEC` from it and is a leaf of the spawn chokepoint, so the default robot is
+ * whatever this first literal migrates to — which is why the Pollinator's Box Tube is attached
+ * at the display boundary instead (`BB_DEMO_LIFT`, `presets.ts`): a launcher migrates from the
+ * flat `scoreMode`/`shooterMount` mirror, a tube has no such path. Skimmer carries no container
+ * either — a double turret's NECTAR-turret cell resolves from the POLLEN turret's
+ * (`bbResolveMount2`), so `shooterMount: 'right'` alone coerces to a right + left pair.
+ *
+ * ── THE MASSES ARE DECLARED, NOT FLOORED ────────────────────────────────────
+ * `bbMassLimits` says what a build has to weigh AT LEAST; these say what one like it really
+ * does, which is a different number and a more useful one — four cards all sitting on their own
+ * floor would tell a player nothing about the tradeoff between them. Each is its own floor plus
+ * a whole number of pounds, so it is a position the 1-lb mass slider can return to.
+ *
+ * ── THE RPMs ARE PER DRIVETRAIN ─────────────────────────────────────────────
+ * `driveRpm` is normalised to a 104 mm reference wheel (`presets.ts` carries the conversion) and
+ * each drivetrain has its own envelope (`rpmLimits`): tank tops out at 560 and swerve at 500,
+ * both torque-biased, against 600 for the two roller drives. Every value below sits inside its
+ * own range and matches the build's job — the Forager is geared for push, the Skimmer for a
+ * wall-to-wall strafe. BUTTERFLY is the one that needs `tankRpm` as well: it carries two
+ * independently geared wheel sets and `coerceSpec` writes that field for that drivetrain and
+ * STRIPS it otherwise, so a card that declared one on any other drivetrain would not be a
+ * coercer fixed point and would never highlight as selected.
  *
  * All numbers stay inside the coercer's ranges, so applying a card is a no-op through the
  * coercer and the card highlights as selected — smoke asserts this.
  */
 const BB_PRESET_BUILDS: readonly RobotSpec[] = [
   {
-    // long-range precision: a turret aims itself, so the chassis never has to face anything —
-    // which is exactly the build that can afford FRONT+BACK sweepers and collect while
-    // driving in either direction. A single turret feeds POLLEN only, so its FLOWER half is the
-    // Box Tube `BB_DEMO_LIFT` gives it.
-    name: 'Sniper', teamName: 'Single turret · shoots and collects anywhere', teamNumber: 0,
-    length: 15, width: 17, intake: 'sloped', massLb: 24, drivetrain: 'swerve',
-    driveRpm: 500, flywheelInertia: 0.2, canSort: false,
+    // THE DEFAULT, and the build that plays the whole game: a centre turret scores the HIVE from
+    // anywhere on the field while the Box Tube (`BB_DEMO_LIFT`) fills a FLOWER, which is the one
+    // thing nothing launched can ever do. A front sweeper feeds both. Mecanum because an
+    // all-rounder wants to strafe up to a FLOWER without giving up its heading and without
+    // paying for swerve, and 435 rpm because this robot spends the match crossing the field
+    // rather than winning a shove.
+    //   mass: 20.5 lb of hardware, built properly, is 24.5.
+    name: 'Pollinator', teamName: 'Turret and Box Tube · the HIVE and the FLOWERS', teamNumber: 0,
+    length: 15, width: 17, intake: 'sloped', massLb: 24.5, drivetrain: 'mecanum',
+    driveRpm: 435, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
     scoreMode: 'turret',
-    intakeMount: 'frontback', shooterMount: 'center',
+    intakeMount: 'front', shooterMount: 'center',
     assists: BB_PRESET_ASSISTS,
   },
   {
-    // volume hauler: a REAR dumper makes the whole cycle one straight line — drive forward to
-    // fill the hopper, reverse into range, unload. No turning around at either end. The hopper
-    // is capped at 4 for every build, so what it offers is the cycle SHAPE, and it carries NECTAR too.
-    name: 'Hauler', teamName: 'Dumper · fill forward, reverse and unload', teamNumber: 0,
-    length: 15, width: 17, intake: 'sloped', massLb: 38, drivetrain: 'tank',
-    driveRpm: 340, flywheelInertia: 0.2, canSort: false,
+    // the heavy collector: FRONT+BACK sweepers fill the hopper driving in either direction and a
+    // FRONT dumper unloads without ever reversing into range, so the cycle has no turn and no
+    // backing up in it. BUTTERFLY because that is the one drivetrain with two gearings to pick
+    // between — 420 on the mecanum set to cross the field, 300 on the traction set to hold a
+    // lane — and this is the only card heavy enough for the second half of that to mean
+    // anything. The hopper is capped at 4 for every build, so what this offers is the cycle
+    // SHAPE and the weight behind it; it carries NECTAR too.
+    //   mass: the heaviest card on purpose. Weight costs cycles in this sim and buys a shove,
+    //   which is the trade the card exists to offer.
+    //
+    // ⚠️ IT REPLACED A REAR-DUMPER TANK CALLED "HAULER" (2026-09-22), which was the weakest
+    // card on the list by a distance — MEASURED at 25.8 against the StarterBot's 43.0, and the
+    // StarterBot is the same drivetrain and archetype at 18 lb. It also carried Chain
+    // Reaction's Hauler card verbatim, name and team line both. This build scores 63.6 over
+    // eight seeds, the second best on the list.
+    name: 'Forager', teamName: 'Dumper · sweeps both ends, shifts to push', teamNumber: 0,
+    length: 15, width: 17, intake: 'sloped', massLb: 30.5, drivetrain: 'butterfly',
+    driveRpm: 420, tankRpm: 300, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
     scoreMode: 'dumper',
-    intakeMount: 'front', shooterMount: 'back',
+    intakeMount: 'frontback', shooterMount: 'front',
     assists: BB_PRESET_ASSISTS,
   },
   {
@@ -2682,11 +2869,26 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     // of its turrets itself — POLLEN out of the right flank, NECTAR out of the left — so it
     // scores either element on the move without ever turning. The two cells are partners
     // (grid distance 2), which is what a double turret requires.
+    //   mass: two whole flywheel assemblies, and it shows.
     name: 'Skimmer', teamName: 'Double turret · both elements on the strafe', teamNumber: 0,
-    length: 15, width: 16, intake: 'sloped', massLb: 26, drivetrain: 'xdrive',
-    driveRpm: 520, flywheelInertia: 0.1, canSort: false,
+    length: 15, width: 16, intake: 'sloped', massLb: 27.5, drivetrain: 'xdrive',
+    driveRpm: 520, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
     scoreMode: 'twinturret',
     intakeMount: 'front', shooterMount: 'right',
+    assists: BB_PRESET_ASSISTS,
+  },
+  {
+    // the HIVE specialist, and the one build that earns a swerve: a turret aims itself, so the
+    // chassis never has to face anything — which is what lets this one carry FRONT AND BACK
+    // sweepers and collect driving in either direction, never turning round at either end of a
+    // cycle. A single turret feeds POLLEN only and it carries no tube: it does one half of the
+    // game, at the highest rate on the list.
+    //   mass: four steering modules and two sweeper assemblies is a genuinely heavy chassis.
+    name: 'Sniper', teamName: 'Single turret · collect driving either way', teamNumber: 0,
+    length: 15, width: 17, intake: 'sloped', massLb: 26.5, drivetrain: 'swerve',
+    driveRpm: 480, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
+    scoreMode: 'turret',
+    intakeMount: 'frontback', shooterMount: 'center',
     assists: BB_PRESET_ASSISTS,
   },
 ] as const;
@@ -2701,7 +2903,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
  */
 export const BB_PRESETS: readonly RobotSpec[] = BB_PRESET_BUILDS.map((s) => ({
   ...s,
-  massLb: Math.max(s.massLb, massLimits(s.drivetrain, s.flywheelInertia, bbMassFloorBump(s)).min),
+  massLb: Math.max(s.massLb, bbMassLimits(s).min),
   ballStorage: bbStorageMax(s),
 }));
 

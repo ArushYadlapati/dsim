@@ -10,6 +10,7 @@ import { APP_NAME } from '../seasons';
 import { CareerView } from './CareerView';
 import { ShareButton } from './ShareButton';
 import { SupporterBadge } from './SupporterBadge';
+import { TitleMark } from './TitleChip';
 import { ProfileFriendActions } from './ProfileFriendActions';
 import { useFriendsCtx } from './friendsContext';
 import type { CareerNav } from './Stats';
@@ -56,6 +57,10 @@ export function Profile({
       <h1 className="ds-h1">
         {stats?.handle ?? `@${username}`}
         <SupporterBadge supporter={stats?.supporter} role={stats?.role} size="md" />
+        {/* the equipped title, beside the badge and never inside it — the same composition
+            the leaderboard uses, so the row that sent you here and the header you land on
+            say the same thing about the same person. */}
+        <TitleMark title={stats?.title} />
       </h1>
       <p className="ds-sub">
         {stats?.username ? `@${stats.username} · ` : ''}

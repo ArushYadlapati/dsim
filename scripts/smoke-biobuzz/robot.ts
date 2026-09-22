@@ -7,8 +7,17 @@ import { defaultSettings, switchGame } from '../../src/settings';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
   BB_HIVE_CELL_LEN,
+  BB_INERTIA_DEFAULT,
+  BB_MASS_BASE,
+  BB_MASS_BOX_TUBE,
+  BB_MASS_DUMPER,
+  BB_MASS_INERTIA,
+  BB_MASS_SWEEPER_EDGE,
+  BB_MASS_TURRET,
+  BB_MASS_TURRET2,
   BB_PRESETS,
   BB_SIZE_STEP,
+  bbMassLimits,
   bbSizeLimits,
   BB_AIM_TOL,
   BB_DEG,
@@ -470,6 +479,185 @@ export function robotChecks(check: Check): void {
       BB_PRESET_LIST.slice(0, BB_REAL_PRESETS).every((p, i) => p.name === BB_STARTER_BOTS[i].name),
       BB_PRESET_LIST.slice(0, BB_REAL_PRESETS).map((p) => p.name).join(', '),
     );
+  }
+
+  // ── THE MASS MODEL (`bbMassLimits`) ───────────────────────────────────────
+  /**
+   * BIOBUZZ OWNS ITS MASS FLOOR, AND EVERY PART OF THE BUILD PAYS FOR ITSELF.
+   *
+   * What this replaced (owner, 2026-09-22): DECODE's per-drivetrain floor plus a bump that
+   * priced exactly two things, a second turret and a Box Tube. A sweeper weighed nothing, a
+   * turret weighed nothing, a dumper weighed nothing and a second sweeper edge weighed nothing,
+   * so a bare mecanum chassis and one carrying a turret and two sweepers both floored at 18 lb.
+   * Every check below is a thing that was silently untrue then.
+   */
+  {
+    const mech = (kind: string, mount: string, tube: boolean): Partial<RobotSpec> =>
+      ({
+        bbMech: {
+          launcher: { kind, mount, hoodDeg: BB_HOOD_DEFAULT_DEG },
+          lift: tube ? { kind: 'vslide', mount: 'back' } : null,
+        },
+      }) as unknown as Partial<RobotSpec>;
+    /** a build, THROUGH the coercer, so what is measured is what would spawn. */
+    const build = (o: Partial<RobotSpec>): RobotSpec =>
+      bbCoerce({ ...BB_DEFAULT_SPEC, flywheelInertia: BB_INERTIA_DEFAULT, ...o });
+    const floor = (o: Partial<RobotSpec>): number => bbMassLimits(build(o)).min;
+    const ONE_TURRET = { intakeMount: 'front', ...mech('turret', 'center', false) } as Partial<RobotSpec>;
+
+    // THE CALIBRATION POINT, stated by the owner in pounds: "single intake single turret should
+    // weigh like 18lbs minimum". EXACTLY 18.00 rather than "about 18" — it is the one number the
+    // five drivetrain bases were solved against, so an inexact assertion would let the whole
+    // table drift a pound at a time.
+    check(
+      'mass: mecanum + ONE sweeper + ONE turret floors at exactly 18.00 lb',
+      floor({ drivetrain: 'mecanum', ...ONE_TURRET }) === 18,
+      `${floor({ drivetrain: 'mecanum', ...ONE_TURRET })}`,
+    );
+    // ...and the drivetrains are ORDERED, which is the only part of the table that is a claim
+    // about the world rather than a chosen number: more wheels and more modules weigh more.
+    const dtFloor = (dt: RobotSpec['drivetrain']): number => floor({ drivetrain: dt, ...ONE_TURRET });
+    check(
+      'mass: the drivetrain floors are ordered mecanum = xdrive < tank < swerve < butterfly',
+      dtFloor('mecanum') === dtFloor('xdrive') &&
+        dtFloor('mecanum') < dtFloor('tank') &&
+        dtFloor('tank') < dtFloor('swerve') &&
+        dtFloor('swerve') < dtFloor('butterfly'),
+      `mec ${dtFloor('mecanum')} x ${dtFloor('xdrive')} tank ${dtFloor('tank')} swerve ${dtFloor('swerve')} bfly ${dtFloor('butterfly')}`,
+    );
+    // ...and every BASE is under the shared one it replaced. The shared floors price in DECODE's
+    // own shooter; this model builds the shooter separately, so a base that was not lighter would
+    // be double-charging for it.
+    {
+      const over = (Object.keys(BB_MASS_BASE) as (keyof typeof BB_MASS_BASE)[]).filter(
+        (dt) => BB_MASS_BASE[dt] >= C.DRIVETRAIN_LIMITS[dt].minMass,
+      );
+      check('mass: every BARE chassis base is lighter than the shared floor it replaced', over.length === 0, over.join(', '));
+    }
+
+    // EVERY COMPONENT COSTS ITS OWN CONSTANT, and none of them is zero. Each row is a pair of
+    // builds differing by exactly one part, so the delta can only be that part.
+    const deltas: [string, number, number][] = [
+      [
+        'a SECOND sweeper edge',
+        floor({ drivetrain: 'mecanum', ...mech('turret', 'center', false), intakeMount: 'frontback' }) -
+          floor({ drivetrain: 'mecanum', ...ONE_TURRET }),
+        BB_MASS_SWEEPER_EDGE,
+      ],
+      [
+        'a TURRET over a DUMPER',
+        floor({ drivetrain: 'mecanum', ...ONE_TURRET }) -
+          floor({ drivetrain: 'mecanum', intakeMount: 'front', ...mech('dumper', 'back', false) }),
+        BB_MASS_TURRET - BB_MASS_DUMPER,
+      ],
+      [
+        'the SECOND turret of a double',
+        floor({ drivetrain: 'mecanum', intakeMount: 'front', ...mech('twinturret', 'right', false) }) -
+          floor({ drivetrain: 'mecanum', ...ONE_TURRET }),
+        BB_MASS_TURRET2,
+      ],
+      [
+        'a BOX TUBE',
+        floor({ drivetrain: 'mecanum', intakeMount: 'front', ...mech('turret', 'center', true) }) -
+          floor({ drivetrain: 'mecanum', ...ONE_TURRET }),
+        BB_MASS_BOX_TUBE,
+      ],
+      [
+        'the FLYWHEEL at full inertia',
+        floor({ drivetrain: 'mecanum', ...ONE_TURRET, flywheelInertia: 1 }) -
+          floor({ drivetrain: 'mecanum', ...ONE_TURRET, flywheelInertia: 0 }),
+        BB_MASS_INERTIA,
+      ],
+    ];
+    for (const [what, got, want] of deltas) {
+      check(`mass: ${what} costs ${want} lb and nothing else moves`, Math.abs(got - want) < 1e-9 && want > 0, `${got}`);
+    }
+
+    // THE HEAVY END LANDS SOMEWHERE PLAUSIBLE. Not a chosen number — a sanity band on the sum,
+    // so a constant that grows by a factor rather than a pound is caught.
+    {
+      const heavy = floor({
+        drivetrain: 'swerve',
+        intakeMount: 'frontback',
+        ...mech('twinturret', 'right', true),
+      });
+      check('mass: swerve + two sweepers + a double turret + a tube lands in 27..30 lb', heavy >= 27 && heavy <= 30, `${heavy}`);
+    }
+
+    // ROUNDED TO 0.01, the same reason `massLimits` documents: the floor is a sum of decimal
+    // constants and it becomes the robot's ACTUAL clamped mass, which the builder then prints.
+    {
+      let worst = '';
+      for (const s2 of everyBuild()) {
+        const m = bbMassLimits(s2).min;
+        if (Math.abs(m * 100 - Math.round(m * 100)) > 1e-9) worst = `${s2.scoreMode}/${s2.intakeMount}: ${m}`;
+      }
+      check('mass: every build’s floor is a clean 0.01 lb (no 15-digit slider bound)', worst === '', worst);
+    }
+
+    // THE BUILDER AND THE COERCER READ ONE MODEL. A slider bound from anywhere else is a slider
+    // that offers a value the chokepoint immediately rewrites.
+    {
+      let bad = '';
+      for (const s2 of everyBuild()) {
+        const d = bbDials(s2).mass;
+        const m = bbMassLimits(s2);
+        if (d.min !== m.min || d.max !== m.max) bad = `${s2.scoreMode}/${s2.intakeMount}`;
+      }
+      check('mass: `bbDials` offers exactly `bbMassLimits`', bad === '', bad);
+    }
+
+    // ⚠️ AND THE CHOKEPOINT ENFORCES *THIS* FLOOR, NOT DECODE'S. `coerceSpec`'s own mass pass
+    // runs before the BIOBUZZ arm and its floor is HIGHER for every drivetrain, so without the
+    // raw carry-across in `src/sim/spawn.ts` a legal light build is lifted before this model is
+    // ever consulted: a tank turret build would come back at 22 lb (DECODE's tank floor) rather
+    // than at its own 19.50. NON-VACUOUS by construction — the check names both numbers.
+    {
+      const light = bbCoerce({
+        ...BB_DEFAULT_SPEC,
+        drivetrain: 'tank',
+        flywheelInertia: BB_INERTIA_DEFAULT,
+        massLb: 1,
+        ...ONE_TURRET,
+      });
+      const own = bbMassLimits(light).min;
+      check(
+        'mass: a light build is clamped to the BIOBUZZ floor, not to the shared one',
+        light.massLb === own && own < C.DRIVETRAIN_LIMITS.tank.minMass,
+        `got ${light.massLb}, biobuzz floor ${own}, shared floor ${C.DRIVETRAIN_LIMITS.tank.minMass}`,
+      );
+    }
+
+    // THE CEILING IS THE SHARED DRIVETRAIN ENVELOPE. R104 sets NO robot weight limit in BIOBUZZ
+    // (`docs/biobuzz-reference.md` §6), so there is no rules number to clamp to: what is left is
+    // the sim's own statement of what that drivetrain can still move.
+    {
+      let bad = '';
+      for (const s2 of everyBuild()) {
+        if (bbMassLimits(s2).max !== C.DRIVETRAIN_LIMITS[s2.drivetrain].maxMass) bad = s2.drivetrain;
+      }
+      check('mass: the ceiling is the shared per-drivetrain envelope (R104 sets none)', bad === '', bad);
+    }
+
+    // THE PRESET CARDS. Each declares a mass ABOVE its own floor -- a card sitting on the floor
+    // says nothing about the tradeoff between the cards -- except the StarterBot, which is on it
+    // on purpose (no kit publishes a weight). And each is a position the 1-lb mass SLIDER can
+    // return to, or a player who nudges the dial can never get the card back.
+    {
+      const onGrid: string[] = [];
+      const atFloor: string[] = [];
+      for (const p of BB_PRESET_LIST) {
+        const f = bbMassLimits(p).min;
+        if (Math.abs((p.massLb - f) - Math.round(p.massLb - f)) > 1e-9) onGrid.push(`${p.name} ${p.massLb} vs floor ${f}`);
+        if (p.massLb <= f) atFloor.push(p.name);
+      }
+      check('mass: every preset mass sits on the slider’s own 1-lb grid from its floor', onGrid.length === 0, onGrid.join(' · '));
+      check(
+        'mass: only the StarterBot sits ON its floor; every demo declares a heavier real weight',
+        atFloor.length === BB_REAL_PRESETS && atFloor.every((n) => BB_STARTER_BOTS.some((b) => b.name === n)),
+        atFloor.join(', '),
+      );
+    }
   }
 
   // ── MECHANISM COMPOSITION: THE LAUNCHER IS MANDATORY ──────────────────────

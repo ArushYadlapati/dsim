@@ -137,12 +137,12 @@ const HTML = `<!doctype html><html><head><meta charset="utf-8"><style>
   .pres img { width: ${SPONSOR_W}px; height: ${SPONSOR_H}px; display: block; }
 </style></head><body>
   <div class="glow"></div>
-  <p class="eyebrow">FIRST Tech Challenge &middot; 2D Driver Practice</p>
+  <p class="eyebrow">FIRST Tech Challenge</p>
   <div class="row"><img src="${logo}" alt=""><b>DSIM</b></div>
   <!-- APP_BLURB (src/seasons.ts) verbatim, then the three games, in SEASONS order.
        Same sentence the homepage and the meta description use — keep them identical. -->
   <p class="lead">
-    An online 2D driving simulator for FIRST Tech Challenge.<br>
+    An online driving simulator for FIRST Tech Challenge.<br>
     <b>DECODE</b> &middot; <b>Chain Reaction</b> &middot; <b>BIOBUZZ</b>
   </p>
   <p class="foot">playdsim.com</p>

@@ -367,7 +367,13 @@ const BASELINE = {
   // on 45° axles, two staggered omni rows, a crowned traction tyre — where there was a painted
   // 64×64 canvas of diagonal lines. There is no cheaper way to draw a mecanum that is a mecanum,
   // and the owner's report was that the painted one read as the wrong machine.
-  scene: { gzip: 216.61 * 1000, budgetCeiling: 250 * 1000 },
+  //
+  // 2026-09-22, FRONT/BACK MARKS + THE BOX TUBE RIM AIM: 216.61 -> 221.06 (+4.45), just past the
+  // 4.20 KB tolerance. All of it is renderRobots.ts/parts.ts geometry: `bbFrontMarks` (the light
+  // bar, the deck arrow, the ribbed hazard bar, one emissive material), the tube's smoothstep ease
+  // and yaw/pitch/extension slew, and the rim-aim backoff. Nothing new is imported into the chunk;
+  // the route list is unchanged. 29 KB of ceiling left.
+  scene: { gzip: 221.06 * 1000, budgetCeiling: 250 * 1000 },
   // 2026-09-21, THE EIGHT PAINTED ENVIRONMENTS: 4.01 -> 5.56 (+1.55), well inside the 4 KB
   // tolerance, so the number below is deliberately NOT moved — recorded here for the same reason
   // the `scene` note above records its own under-tolerance creep. The growth is DATA:

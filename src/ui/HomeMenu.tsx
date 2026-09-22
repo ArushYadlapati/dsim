@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { GameSettings } from '../game';
-import type { DrivetrainType, GameId } from '../types';
-import { APP_BLURB, APP_NAME, APP_TAGLINE, LINKS, seasonFor } from '../seasons';
+import type { GameId } from '../types';
+import { APP_NAME, LINKS, seasonFor } from '../seasons';
 import { visibleGames } from '../seasonVisibility';
 import { fetchGlobalStats, type GlobalStats } from '../net/api';
 import { RAIL_ITEMS } from './NavRail';
@@ -10,23 +10,16 @@ import { SponsorPresents } from './Sponsor';
 import type { ShellNav } from './AppShell';
 import { discordAvatarUrl, discordDisplayName, type DiscordParticipant } from '../net/discordActivity';
 
-const DRIVETRAIN_LABELS: Record<DrivetrainType, string> = {
-  mecanum: 'Mecanum',
-  tank: 'Tank',
-  swerve: 'Swerve',
-  xdrive: 'X-Drive',
-  butterfly: 'Butterfly',
-};
-
 /**
  * The main menu. The four top-level destinations sit CENTERED as chunky keycaps
  * — on every other screen the same four live in the left rail (`NavRail`), and
  * both read from `RAIL_ITEMS` so they can never drift apart.
  *
- * It is also the site's landing page, so it states what DSIM is exactly once
- * (`APP_BLURB`) — a first-time visitor and a crawler both arrive here with no
- * other context. One sentence, no pitch. The static fallback in `index.html`
- * says the same sentence for clients that never run the bundle.
+ * It is also the site's landing page — a first-time visitor and a crawler both
+ * arrive here with no other context — so the season, the app name, the
+ * presenting sponsor and the game switcher have to carry that on their own.
+ * The `<meta name="description">` (`src/seo.ts`, `APP_BLURB`) is what a search
+ * result or a pasted link shows instead of a lead sentence on the page itself.
  */
 export function HomeMenu({
   settings,
@@ -45,7 +38,6 @@ export function HomeMenu({
   /** switch the selected game (DECODE / Chain Reaction) */
   onGame: (g: GameId) => void;
 }) {
-  const spec = settings.spec;
   // only the games whose modules are registered AND whose season is visible on
   // this release channel are selectable; the switcher hides itself until there are
   // ≥2 to choose between.
@@ -110,8 +102,6 @@ export function HomeMenu({
             <span className="ds-brand">{season.presenter}</span>
           </>
         )}
-        <br />
-        {APP_TAGLINE}
       </p>
       <h1 className="ds-home-title">{APP_NAME}</h1>
 
@@ -120,8 +110,6 @@ export function HomeMenu({
           eyebrow above already says who presents the GAME (RTX presents BIOBUZZ;
           that is FIRST's, not ours to sell), and the two are different facts. */}
       <SponsorPresents />
-
-      <p className="ds-home-lead">{APP_BLURB}</p>
 
       {games.length > 1 && (
         <div className="ds-segs ds-home-games" role="tablist" aria-label="Game">
@@ -187,11 +175,6 @@ export function HomeMenu({
           </button>
         ))}
       </nav>
-
-      <p className="ds-home-loadout">
-        Driving <b>{spec.name}</b> · {DRIVETRAIN_LABELS[spec.drivetrain]} ·{' '}
-        {spec.teamNumber ? `#${spec.teamNumber}` : 'no team'}
-      </p>
 
       {stats && (
         <div className="ds-homestats">

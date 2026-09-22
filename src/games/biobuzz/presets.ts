@@ -1,7 +1,6 @@
 import type { RobotSpec } from '../../types';
-import { massLimits } from '../../sim/drivetrain';
 import { DRIVETRAIN_LABELS } from '../../ui/labelData';
-import { BB_DEFAULT_SCORE_MODE, BB_HOOD_DEFAULT_DEG, BB_PRESETS, BB_STORAGE_MAX, bbMassFloorBump } from './config';
+import { BB_DEFAULT_SCORE_MODE, BB_HOOD_DEFAULT_DEG, BB_INERTIA_DEFAULT, BB_PRESETS, BB_STORAGE_MAX, bbMassLimits } from './config';
 import { bbIntakeMountOf, bbShooterMountOf } from './mounts';
 import { type BbMechSpec, bbLauncherOf, bbLiftOf } from './mechs';
 import {
@@ -21,7 +20,7 @@ import { bbCoerceSpec } from './robotConfig';
  * `BB_DEFAULT_SPEC`, and `coerce.ts` is a LEAF — it is a dependency of `src/sim/spawn.ts`'s
  * `coerceSpec`, so it may not import anything that reaches back to the spawn chokepoint.
  * Everything in THIS file does reach it (the match test and the card lines are UI-side, and
- * `massLimits` pulls in the drivetrain model), so the display list lives here and the
+ * `bbCoerceSpec` reaches the spawn chokepoint), so the display list lives here and the
  * coercer's base stays where the leaf can see it.
  *
  * ── ONE STARTERBOT, AND NO VENDOR NAMES ─────────────────────────────────────
@@ -34,7 +33,9 @@ import { bbCoerceSpec } from './robotConfig';
  *
  * ⚠️ WHAT IS SOURCED AND WHAT IS NOT. Kit documentation publishes drivetrain topology, motors
  * and wheel sizes; it does not publish an overall footprint, a height or a weight. So the
- * footprint below is `APPROX` and the mass is the sim's own floor (see `BB_STARTER_BOTS`).
+ * footprint below is `APPROX` and the mass is the sim's own floor (see `BB_STARTER_BOTS`) —
+ * the only card on the list that sits on it, which is the honest answer for a robot nobody
+ * publishes a weight for.
  *
  * ── HOW `driveRpm` IS DERIVED (this is not a gearmotor's RPM) ───────────────
  * `RobotSpec.driveRpm` is not a real wheel RPM: `SPEED_PER_RPM` is normalised to a 104 mm
@@ -82,12 +83,16 @@ const BB_STARTER_BUILDS: readonly RobotSpec[] = [
     // over the front, fed by a front sweeper. No Box Tube — the kit has no placement mechanism.
     //   driveRpm: a 96 mm wheel on a ~312 rpm drive gearmotor,
     //             π·(96/25.4)·312/60 = 61.7 in/s ÷ (0.20367 · 1.06 tank) = 286
+    // flywheelInertia is `BB_INERTIA_DEFAULT` like every other card: a dumper has no flywheel at
+    // all, this game's builder offers no dial for the field, and its only effect here is a term
+    // in the mass floor (`bbMassLimits`) — so one value across the list is what makes the cards'
+    // masses comparable. It was 0.5, which quietly bought this robot two pounds of nothing.
     // The launcher is modelled as a front DUMPER at the default hood: chassis-fixed, so the
     // robot turns to aim, and it carries both POLLEN and NECTAR.
     name: 'StarterBot', teamName: 'Kit robot · 6WD tank', teamNumber: 0,
     length: 15, width: 16, // APPROX — kit side rails are ~15"; no kit publishes a width
     intake: 'sloped', massLb: 0, drivetrain: 'tank',
-    driveRpm: 286, flywheelInertia: 0.5, canSort: false, // inertia APPROX: a direct-drive flywheel
+    driveRpm: 286, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
     scoreMode: 'dumper',
     intakeMount: 'front', shooterMount: 'front',
     ballStorage: BB_G407_CAP,
@@ -101,9 +106,11 @@ const BB_STARTER_BUILDS: readonly RobotSpec[] = [
  * coercion chokepoint.
  *
  * MASS. No kit publishes a weight, so a typed number would be a guess with a decimal point. The
- * mass FLOOR is the honest answer instead: it is what the sim already believes a given
- * drivetrain plus its mechanisms has to weigh, it moves when those constants move, and it is the
- * same choice Chain Reaction makes for its real robots.
+ * mass FLOOR is the honest answer instead: `bbMassLimits` is what the sim already believes this
+ * pile of hardware — a 6WD frame, one sweeper edge and a dumper — has to weigh, it moves when
+ * those constants move, and it is the same choice Chain Reaction makes for its real robots. The
+ * archetype demos DECLARE their masses instead, because for those the tradeoff between the cards
+ * is the point.
  *
  * COERCION. A card must be a fixed point of `coerceSpec` or it can never read as selected —
  * the builder compares against a spec that has been through the coercer, so a card carrying
@@ -113,7 +120,7 @@ const BB_STARTER_BUILDS: readonly RobotSpec[] = [
  * makes this sound, and smoke asserts both halves.
  */
 export const BB_STARTER_BOTS: readonly RobotSpec[] = BB_STARTER_BUILDS.map((s) =>
-  bbCoerceSpec({ ...s, massLb: massLimits(s.drivetrain, s.flywheelInertia, bbMassFloorBump(s)).min }),
+  bbCoerceSpec({ ...s, massLb: bbMassLimits(s).min }),
 );
 
 /** how many leading entries of `BB_PRESET_LIST` are real, buildable kit robots. The builder rules
@@ -124,29 +131,32 @@ export const BB_REAL_PRESETS = BB_STARTER_BOTS.length;
 /**
  * A BOX TUBE for exactly one archetype demo, keyed by NAME.
  *
- * The demos (Sniper / Hauler / Skimmer) are DEFINED in `config.ts`, not here — `BB_PRESETS` is a
- * dependency of the leaf `coerce.ts` (it reads `BB_PRESETS[0]` to build `BB_DEFAULT_SPEC`), so it
- * cannot move into this file without dragging a spawn-chokepoint import into a leaf. A tube is
- * therefore attached at THIS boundary instead — the display list this file already owns. A
- * launcher needs nothing here: a bare `scoreMode` + `shooterMount` already migrates to the
- * matching launcher (`bbLauncherOf`'s legacy path). A Box Tube has no such path — `bbLiftOf`
- * never migrates one into existence — which is why this map exists and has exactly one entry.
+ * The demos (Pollinator / Forager / Skimmer / Sniper) are DEFINED in `config.ts`, not here —
+ * `BB_PRESETS` is a dependency of the leaf `coerce.ts` (it reads `BB_PRESETS[0]` to build
+ * `BB_DEFAULT_SPEC`), so it cannot move into this file without dragging a spawn-chokepoint import
+ * into a leaf. A tube is therefore attached at THIS boundary instead — the display list this file
+ * already owns. A launcher needs nothing here: a bare `scoreMode` + `shooterMount` already
+ * migrates to the matching launcher (`bbLauncherOf`'s legacy path). A Box Tube has no such path —
+ * `bbLiftOf` never migrates one into existence — which is why this map exists.
  *
- * SNIPER is the one that gets it. A single turret launches POLLEN into the HIVE by itself, and
- * nothing launched ever enters a FLOWER, so the tube is what gives that build its FLOWER half.
- * Keyed by NAME rather than array index so a reordering of `BB_PRESETS` cannot silently hand the
- * tube to the wrong card.
+ * THE POLLINATOR is the one that gets it, and it is `BB_PRESETS[0]`: nothing launched ever enters
+ * a FLOWER, so the tube is the whole of that card's FLOWER half and the reason it is the
+ * all-rounder. Keyed by NAME rather than array index so a reordering of `BB_PRESETS` cannot
+ * silently hand the tube to the wrong card — which now matters more than it did, because the
+ * entry sits on the card the default spec is taken from.
  */
 const BB_DEMO_LIFT: Partial<Record<string, BbMechSpec['lift']>> = {
-  Sniper: { kind: 'vslide', mount: 'back' }, // a Box Tube at the back: FLOWER placement beside a HIVE turret
+  // a Box Tube at the BACK: the turret is on `center` and a placement point has to sit past a
+  // chassis edge, so the back cell is free and puts the tube opposite the sweeper that feeds it.
+  Pollinator: { kind: 'vslide', mount: 'back' },
 };
 
 /**
  * What the builder's `Presets` section offers: the StarterBot, then the archetype demos in
  * `config.ts`.
  *
- * The demos exist to show every launcher and a Box Tube in one click, which the StarterBot
- * cannot: it is a front-sweeper, front-launcher tank, because that is what a rookie kit builds.
+ * The demos exist to set a whole coherent playstyle in one click, which the StarterBot cannot:
+ * it is a front-sweeper, front-launcher tank, because that is what a rookie kit builds.
  *
  * The demos are coerced here too, for the same reason the StarterBot is: `BB_PRESETS` is built
  * for `coerce.ts` to take its default from, not for a picker to compare against, and it carries
@@ -227,7 +237,11 @@ export function bbPresetLines(preset: RobotSpec): { meta: string; zone?: string 
   const meta = [
     DRIVETRAIN_LABELS[preset.drivetrain],
     `${preset.massLb} lb`,
-    `${preset.driveRpm} rpm`,
+    // BUTTERFLY prints BOTH gearings. It is the one drivetrain that carries two independently
+    // geared wheel sets and two sliders, and a card that showed only the first would describe
+    // half of the reason to pick it. Every other drivetrain has no `tankRpm` at all — the
+    // coercer strips it — so this reads as one number for them without a branch on the name.
+    preset.tankRpm ? `${preset.driveRpm}/${preset.tankRpm} rpm` : `${preset.driveRpm} rpm`,
     `${BB_INTAKE_MOUNT_LABELS[bbIntakeMountOf(preset)]} sweeper`,
     // POLLEN, never "balls" — `docs/biobuzz-contract.md` §6.
     `${preset.ballStorage ?? 0} pollen`,

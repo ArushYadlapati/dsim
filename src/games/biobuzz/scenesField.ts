@@ -114,6 +114,11 @@ const AT_WALL_Y = BB_HALF_Y - BB_POLLEN_R;
  * run, and flat out. Named because a feedback dump refers to them by name. */
 const PILE_SPEEDS = { slow: 20, med: 50, fast: 80 } as const;
 
+/** the build the PARK cell's four poses are measured on: the 21 x 17 footprint a FRONT+BACK
+ * sweeper gives a 15-in chassis (`robotExtents`, a reach off each end). Stated rather than
+ * inherited from the default preset — see the note on that cell. */
+const PARK_BUILD = { intakeMount: 'frontback' } as const;
+
 /**
  * The three pile scenes share EVERYTHING but the speed, including their stills — which is the
  * point: the gallery puts `pile-slow@60`, `pile-med@60` and `pile-fast@60` in a row and the
@@ -698,10 +703,16 @@ export const BB_FIELD_SCENES: readonly Scene[] = [
       const world = bbWorld(
         seed,
         [
-          bbSetup(0, 'red', { x: 61, y: -22, headingDeg: 180 }),
-          bbSetup(1, 'red', { x: 48, y: -47, headingDeg: 225 }),
-          bbSetup(2, 'blue', { x: 48, y: -47, headingDeg: 0 }),
-          bbSetup(3, 'blue', { x: 61, y: -22, headingDeg: 180 }),
+          // ⚠️ THE FOOTPRINT IS STATED, NOT INHERITED. Every pose above is drawn against the
+          // 21 x 17 the note names, which is a FRONT+BACK sweeper build — it was the default
+          // preset's own footprint until 2026-09-22, when the default became a front-only
+          // sweeper. Robot 1 is the corner-over-the-tape case and it is the one that stops
+          // parking when the footprint loses 3 in off one end, which is a cell that quietly
+          // draws the opposite of what its caption says.
+          bbSetup(0, 'red', { x: 61, y: -22, headingDeg: 180 }, PARK_BUILD),
+          bbSetup(1, 'red', { x: 48, y: -47, headingDeg: 225 }, PARK_BUILD),
+          bbSetup(2, 'blue', { x: 48, y: -47, headingDeg: 0 }, PARK_BUILD),
+          bbSetup(3, 'blue', { x: 61, y: -22, headingDeg: 180 }, PARK_BUILD),
         ],
         [],
       );

@@ -96,11 +96,20 @@ import {
 import type { RobotSpec, RobotState } from '../../src/types';
 import { bbFlowerInReach, bbFootprint, bbMouths, bbPlacePointLocal, bbRobotSolids } from '../../src/games/biobuzz/robot';
 import { chassis3dShapes } from '../../src/games/biobuzz/sim3d/bodies';
-import { bbBoxTubeGlyph } from '../../src/games/biobuzz/parts';
+import {
+  BB_END_BAR_INSET,
+  BB_FRONT_INK,
+  BB_HAZARD_INK,
+  BB_HAZARD_TICKS,
+  BB_REAR_INK,
+  bbBoxTubeGlyph,
+  bbFrontMarks,
+} from '../../src/games/biobuzz/parts';
 import { BB_INTAKE_KINDS, bbIntakeKindOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
 import { drawBiobuzzIntakeReach } from '../../src/games/biobuzz/drawRobot';
 import {
   BB_BOX_TUBE_EXTEND_S,
+  BB_BOX_TUBE_RETRACT_F,
   BB_BOX_TUBE_SECTIONS,
   BB_BOX_TUBE_STAGE_OVERLAP,
   BB_BOX_TUBE_TIP_CLEAR,
@@ -111,8 +120,11 @@ import {
   BB_BRACE_PROUD,
   BB_DECK_Z,
   BB_FLOWERS,
+  BB_FLOWER_D,
+  BB_FLOWER_FOOT,
   BB_FLOWER_OPEN_R,
   BB_FLOWER_TOP_Z,
+  FLOWER_MOUTH,
   BB_PLACE_TOL,
   BB_FEED_WALL_T,
   BB_FLYWHEEL_CLEAR,
@@ -187,6 +199,7 @@ import {
   buildDriveWheel,
   buildEndPlates,
   buildFrame,
+  buildFrontMarks,
   buildIntake,
   buildRobotGroup,
   buildSwervePod,
@@ -1464,9 +1477,190 @@ export function renderChecks(check: Check): void {
   cosmeticsChecks(check);
   drawnHeightChecks(check);
   endPlateChecks(check);
+  frontBackChecks(check);
   hoodPlateChecks(check);
   freeCamChecks(check);
   driverEyeChecks(check);
+}
+
+/**
+ * WHICH END IS THE FRONT (owner, 2026-09-22: "somehow make it clearer fundamentally which side is
+ * front and which is back in game. This is especially confusing in a symmetric robot in 3D").
+ *
+ * `bbFrontMarks`' header (`parts.ts`) is the design; this proves the two renderers actually draw
+ * it and draw the SAME thing. The case the report is about is the one this sweeps: a `frontback`
+ * sweeper with a `center` turret is mirror-symmetric, so nothing else on the robot says which way
+ * it points.
+ *
+ * ⚠️ IT ASSERTS THE MARKS ARE NOT COLLIDERS, the same way `endPlateChecks` does: they sit inside
+ * the chassis box in x/y and only stand above the deck, so neither solve grows for them.
+ */
+function frontBackChecks(check: Check): void {
+  const ID = 5;
+  const SYMMETRIC = { intakeMount: 'frontback', drivetrain: 'mecanum' } as const;
+  const ALLIANCE_INKS = ['#ef4444', '#3b82f6', '#007be1'];
+
+  check(
+    'front/back: the marks are neither alliance colour — "red end" must not compete with "red team"',
+    !ALLIANCE_INKS.includes(BB_FRONT_INK.toLowerCase()) &&
+      !ALLIANCE_INKS.includes(BB_HAZARD_INK.toLowerCase()) &&
+      !ALLIANCE_INKS.includes(BB_REAR_INK.toLowerCase()),
+    `${BB_FRONT_INK} / ${BB_HAZARD_INK} / ${BB_REAR_INK}`,
+  );
+
+  // ---- 3D: the nodes exist, they are on the ends they name, and they grow nothing -----------
+  for (const [L, W] of [[13.5, 13.5], [18, 18], [17.5, 13.5]] as const) {
+    for (const mount of ['front', 'back', 'side', 'frontback'] as const) {
+      const spec: RobotSpec = { ...BB_DEFAULT_SPEC, ...SYMMETRIC, intakeMount: mount, length: L, width: W };
+      const tag = `${L}x${W}/${mount}`;
+      const nodes = buildFrontMarks(spec, ID);
+      for (const n of nodes) n.updateMatrixWorld(true);
+      const names = nodes.map((n) => n.name).sort();
+      check(
+        `front/back 3D ${tag}: exactly the four mark nodes exist, and no legacy nose box`,
+        JSON.stringify(names) ===
+          JSON.stringify([`robot:${ID}:front:arrow`, `robot:${ID}:front:bar`, `robot:${ID}:rear:bar`, `robot:${ID}:rear:hazard`]),
+        names.join(','),
+      );
+
+      const boxOf = (name: string) => {
+        const n = nodes.find((x) => x.name === `robot:${ID}:${name}`);
+        return n ? new THREE.Box3().setFromObject(n) : null;
+      };
+      const front = boxOf('front:bar');
+      const rear = boxOf('rear:bar');
+      const hazard = boxOf('rear:hazard');
+      const arrow = boxOf('front:arrow');
+      if (!front || !rear || !hazard || !arrow) continue;
+
+      const hl = L / 2;
+      check(
+        `front/back 3D ${tag}: the light bar is at +x and flush with the front rail`,
+        front.min.x > 0 && Math.abs(front.max.x - hl) < 1e-6,
+        `x[${front.min.x.toFixed(3)}, ${front.max.x.toFixed(3)}] vs hl ${hl}`,
+      );
+      // the rear MARK is the dark core plus its ribs; the core is inset so the ribs stand proud,
+      // so it is their ENVELOPE that has to be flush with the rail
+      const rearAll = rear.clone().union(hazard);
+      check(
+        `front/back 3D ${tag}: the hazard bar is at −x and flush with the rear rail`,
+        rearAll.max.x < 0 && Math.abs(rearAll.min.x + hl) < 1e-6,
+        `x[${rearAll.min.x.toFixed(3)}, ${rearAll.max.x.toFixed(3)}]`,
+      );
+      // FULL WIDTH is the property that survives occlusion — a mark narrow enough to hide behind
+      // a turret is the nose box this replaced.
+      for (const [name, b] of [['light bar', front], ['hazard bar', rearAll]] as const) {
+        check(
+          `front/back 3D ${tag}: the ${name} spans most of the chassis width`,
+          b.max.y - b.min.y >= W - 2 * BB_END_BAR_INSET - 1e-6,
+          `${(b.max.y - b.min.y).toFixed(2)} in of ${W}`,
+        );
+      }
+      check(
+        `front/back 3D ${tag}: the deck arrow POINTS FORWARD — apex ahead of its own base`,
+        arrow.max.x > arrow.min.x && Math.abs(arrow.max.x - bbFrontMarks(spec).arrow.apex) < 1e-6,
+        `x[${arrow.min.x.toFixed(3)}, ${arrow.max.x.toFixed(3)}]`,
+      );
+      check(
+        `front/back 3D ${tag}: the amber ticks sit ON the hazard bar, not beside it`,
+        hazard.min.x <= rear.min.x + 1e-6 && hazard.max.x >= rear.max.x - 1e-6 && hazard.max.y <= rear.max.y + 1e-6 &&
+          hazard.min.z <= rear.min.z + 1e-6 && hazard.max.z >= rear.max.z - 1e-6,
+        `ticks x[${hazard.min.x.toFixed(3)}, ${hazard.max.x.toFixed(3)}]`,
+      );
+      // NOT A COLLIDER — inside the frame box both solves already treat as solid, and above the
+      // deck. Same ruling as the end plates.
+      const frame3d = chassis3dShapes(spec, BB3_HEIGHT_DEFAULT)[0];
+      for (const n of nodes) {
+        const b = new THREE.Box3().setFromObject(n);
+        check(
+          `front/back 3D ${tag}: ${n.name} stays inside the chassis compound's own frame box`,
+          b.min.x >= -frame3d.hx - 1e-6 && b.max.x <= frame3d.hx + 1e-6 &&
+            b.min.y >= -frame3d.hy - 1e-6 && b.max.y <= frame3d.hy + 1e-6 &&
+            b.min.z >= BB_DECK_Z - 1e-6 && b.max.z <= BB3_HEIGHT_DEFAULT + 1e-6,
+          `x[${b.min.x.toFixed(2)},${b.max.x.toFixed(2)}] y[${b.min.y.toFixed(2)},${b.max.y.toFixed(2)}] z[${b.min.z.toFixed(2)},${b.max.z.toFixed(2)}]`,
+        );
+      }
+    }
+  }
+  check(
+    'front/back 3D: the light bar is EMISSIVE — a matte white bar goes grey in the hive’s shadow',
+    /emissive: BB_FRONT_INK,/.test(readFileSync(join(SCENE_DIR, 'renderRobots.ts'), 'utf8')),
+  );
+  check(
+    'front/back 3D: the 0.7-in nose box is GONE (it is what the report was about)',
+    !/robot:\$\{id\}:nose/.test(readFileSync(join(SCENE_DIR, 'renderRobots.ts'), 'utf8')),
+  );
+
+  // ---- 2D: the sprite hits a recording context with the same three marks --------------------
+  //
+  // A permissive recording ctx, the `strokesOf` technique one block down: every call is a no-op,
+  // and what is kept is the `fillStyle` in force at each `fillRect`, plus the path the one filled
+  // TRIANGLE is built from.
+  {
+    type Rect = { style: string; x: number; y: number; w: number; h: number };
+    const record = (draw: (c: CanvasRenderingContext2D) => void): { rects: Rect[]; tris: { style: string; pts: number[][] }[] } => {
+      const rects: Rect[] = [];
+      const tris: { style: string; pts: number[][] }[] = [];
+      let style = '';
+      let pts: number[][] = [];
+      const sink: unknown = new Proxy(function () {}, { get: () => sink, apply: () => sink });
+      const ctx = new Proxy(
+        {},
+        {
+          get: (_t, k) => {
+            if (k === 'fillStyle') return style;
+            if (k === 'fillRect') return (x: number, y: number, w: number, h: number) => { rects.push({ style: String(style).toLowerCase(), x, y, w, h }); };
+            if (k === 'beginPath') return () => { pts = []; };
+            if (k === 'moveTo' || k === 'lineTo') return (x: number, y: number) => { pts.push([x, y]); };
+            if (k === 'fill') return () => { if (pts.length === 3) tris.push({ style: String(style).toLowerCase(), pts: pts.slice() }); };
+            return sink;
+          },
+          set: (_t, k, v) => {
+            if (k === 'fillStyle') style = v;
+            return true;
+          },
+        },
+      ) as unknown as CanvasRenderingContext2D;
+      draw(ctx);
+      return { rects, tris };
+    };
+
+    for (const mount of ['front', 'back', 'side', 'frontback'] as const) {
+      const world = createBiobuzzWorld('free', 5, [
+        { id: 0, alliance: 'red', spec: { ...BB_DEFAULT_SPEC, ...SYMMETRIC, intakeMount: mount } as RobotSpec, assists: {} as never, startIndex: 0 },
+      ]);
+      const r = world.robots[0];
+      const m = bbFrontMarks(r.spec);
+      const { rects, tris } = record((c) => drawBiobuzzRobot(c, r, false, [], { x: 0, y: 1 }, world));
+      const ink = BB_FRONT_INK.toLowerCase();
+
+      const bar = rects.find((q) => q.style === ink && Math.abs(q.x - m.front.x0) < 1e-6 && Math.abs(q.w - (m.front.x1 - m.front.x0)) < 1e-6);
+      check(`front/back 2D ${mount}: the light bar is filled at the FRONT rail, full width`, !!bar && bar.x > 0 && Math.abs(bar.h - m.front.halfY * 2) < 1e-6, bar ? `x ${bar.x.toFixed(2)} w ${bar.w.toFixed(2)} h ${bar.h.toFixed(2)}` : 'no such rect');
+
+      const hazardRects = rects.filter((q) => q.style === BB_HAZARD_INK.toLowerCase());
+      check(
+        `front/back 2D ${mount}: the rear bar carries ${BB_HAZARD_TICKS} amber ticks, all at −x`,
+        hazardRects.length === BB_HAZARD_TICKS && hazardRects.every((q) => q.x < 0 && Math.abs(q.x - m.rear.x0) < 1e-6),
+        `${hazardRects.length} ticks`,
+      );
+      check(
+        `front/back 2D ${mount}: and a near-black bar under them at the REAR rail`,
+        rects.some((q) => q.style === BB_REAR_INK.toLowerCase() && Math.abs(q.x + r.spec.length / 2) < 1e-6),
+      );
+
+      const arrow = tris.find((t) => t.style === ink);
+      check(
+        `front/back 2D ${mount}: the deck arrow is filled, and its apex points at the light bar`,
+        !!arrow && Math.abs(arrow.pts[0][0] - m.arrow.apex) < 1e-6 && arrow.pts[0][1] === 0 &&
+          arrow.pts[1][0] < arrow.pts[0][0] && arrow.pts[2][0] < arrow.pts[0][0],
+        arrow ? `apex ${arrow.pts[0][0].toFixed(2)} base ${arrow.pts[1][0].toFixed(2)}` : 'no filled triangle in the front ink',
+      );
+      check(
+        `front/back 2D ${mount}: no mark is filled in an alliance colour`,
+        !rects.some((q) => ALLIANCE_INKS.includes(q.style)) && !tris.some((t) => ALLIANCE_INKS.includes(t.style)),
+      );
+    }
+  }
 }
 
 /**
@@ -6601,16 +6795,54 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       // opening, that no stage leaves its parent doing it, and that the retracted arm is still
       // the segment the old drawing occupied.
       {
+        // ⚠️ **THE DEPLOY RATE HAS NOW BEEN COMPLAINED ABOUT IN BOTH DIRECTIONS, AND THE SECOND
+        // REPORT IS NOT A REVERSAL OF THE FIRST.** 0.35 s linear was "it should also be a lot
+        // faster" (2026-09-20); the 0.12 s that answered it was "it also moves way too quickly in
+        // animation and in a violent way" (2026-09-22). What changed with the duration is the
+        // SHAPE — a `smoothstep` leaves and arrives at zero rate — so this asserts the pair, not
+        // the number on its own. A linear 0.40 would pass a bare duration check and be exactly
+        // the animation the first report rejected.
         check(
-          `the deploy is ${BB_BOX_TUBE_EXTEND_S} s, not the 0.35 the owner called slow`,
-          BB_BOX_TUBE_EXTEND_S >= 0.1 && BB_BOX_TUBE_EXTEND_S <= 0.15,
+          `the deploy is ${BB_BOX_TUBE_EXTEND_S} s — not the 0.12 the owner called violent, not the 0.35 called slow`,
+          BB_BOX_TUBE_EXTEND_S >= 0.35 && BB_BOX_TUBE_EXTEND_S <= 0.45,
           `${BB_BOX_TUBE_EXTEND_S}`,
+        );
+        check(
+          '...and the ease is a SMOOTHSTEP of it, so the start and the stop are at zero rate',
+          /const e = smoothstep01\(entry\.tubeEase\);/.test(robotsCode),
+        );
+        check(
+          '...and the retraction is a fraction of the deploy, never a snap home',
+          robotsCode.includes('step / BB_BOX_TUBE_RETRACT_F') &&
+            BB_BOX_TUBE_RETRACT_F >= 0.5 && BB_BOX_TUBE_RETRACT_F <= 1,
+          `retract ${(BB_BOX_TUBE_EXTEND_S * BB_BOX_TUBE_RETRACT_F).toFixed(2)} s`,
+        );
+        // the OTHER half of "violent": `bbFlowerInReach` names ONE flower and the name can change
+        // in a tick, which used to assign a new yaw/pitch/extension onto a FULLY EXTENDED arm.
+        check(
+          '...and a change of target flower SLEWS the pose rather than assigning it',
+          /entry\.tubeYaw \+= clampAbs\(wrapPi\(yaw - entry\.tubeYaw\), slew\);/.test(robotsCode) &&
+            /entry\.tubePitch \+= clampAbs\(aim\.pitch - entry\.tubePitch, slew\);/.test(robotsCode) &&
+            /entry\.tubeExt \+= clampAbs\(aim\.ext - entry\.tubeExt, BB_BOX_TUBE_EXT_SLEW \* dt\);/.test(robotsCode),
+        );
+        check(
+          '...but a STOWED arm still takes its first target whole, so the first deploy does not lag its own ease',
+          /if \(entry\.tubeEase <= 0\) \{/.test(robotsCode),
+        );
+        check(
+          '...and the slew goes the SHORT way round the wrap (a bearing difference is folded first)',
+          /function wrapPi\(a: number\): number \{/.test(robotsCode) &&
+            robotsCode.includes('const yaw = wrapPi(aim.yaw - rig.baseYaw);'),
         );
         check(
           'the arm is posed from the SIM’s flower, not a canned angle — one solver, two drawings',
           robotsCode.includes('const aim = bbBoxTubeAim(') &&
             robotsCode.includes('const f = BB_FLOWERS[flower];') &&
             robotsCode.includes('BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR'),
+        );
+        check(
+          '...at the flower’s NEAR RIM, not its centre — the one argument that keeps it out of the column',
+          /rig\.stages,\s*\n\s*BB_FLOWER_OPEN_R,/.test(robotsCode),
         );
         check(
           '...pitching about a SHOULDER at the frame rail, with a drawn bracket on it',
@@ -6631,9 +6863,63 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         );
 
         // ARITHMETIC, over the whole legal build space and a grid of in-reach poses.
+        //
+        // ⚠️ **IT MEASURES THE OLD AIM TOO, AND THAT IS THE POINT OF THE BLOCK.** The tip check
+        // below has passed to 4e-8 in since 2026-09-20 while the arm went straight through the
+        // flower on every single pose, because a check on the ENDPOINT says nothing about the
+        // segment. `pen` is the deepest the drawn axis gets inside the top ring's bore BELOW the
+        // top plate, walked at 1/400 of the arm, and it is computed for both aims from the same
+        // poses so the report is a comparison and not an assertion.
+        //
+        // The POSE SET is filtered to what the FIELD's own collider can produce: a robot whose
+        // footprint overlaps the flower's FOOT rect is a pose only a teleport can reach, and 1,080
+        // of those put the SHOULDER itself inside the bore — where no straight arm out of it can
+        // stay outside the cylinder, so an unfiltered sweep would be asserting something
+        // geometrically impossible. Filtered, the nearest the shoulder ever gets is 3.084 in
+        // against a 2.086-in bore.
+        //
+        // `bbFlowerInReach` is ALLIANCE-BLIND (it is a distance to the nearer of four rings), so
+        // sweeping both alliances would sweep the same arithmetic twice; the four FLOWERS already
+        // cover both halves of the field and every wall normal.
         const TIP_Z = BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR;
         const tubeMounts = ['front', 'back', 'left', 'right', 'frontleft', 'frontright', 'backleft', 'backright'] as const;
+        // the OLD stage table, kept here rather than in `config.ts`: it is what this block is
+        // measuring AGAINST, and nothing ships it any more
+        const oldStages = (reach: number) => {
+          const n = BB_BOX_TUBE_SECTIONS.length - 1;
+          const travel = Math.hypot(reach + BB_PLACE_TOL, TIP_Z - BB_BOX_TUBE_Z) / n;
+          return { sectionLen: travel + BB_BOX_TUBE_STAGE_OVERLAP, travel, moving: n, full: n * travel };
+        };
+        const footRect = (f: (typeof BB_FLOWERS)[number]) => {
+          const n = FLOWER_MOUTH[f.wall];
+          const wx = f.x - n.x * BB_FLOWER_D;
+          const wy = f.y - n.y * BB_FLOWER_D;
+          const half = BB_FLOWER_FOOT.along / 2;
+          const deep = BB_FLOWER_FOOT.deep / 2;
+          return { hx: n.x === 0 ? half : deep, hy: n.y === 0 ? half : deep, cx: wx + n.x * deep, cy: wy + n.y * deep };
+        };
+        // SAT between the robot's rotated footprint and the axis-aligned foot
+        const onFoot = (
+          px: number, py: number, hd: number,
+          fx: { front: number; rear: number; half: number },
+          rect: { hx: number; hy: number; cx: number; cy: number },
+        ): boolean => {
+          const c = Math.cos(hd);
+          const s = Math.sin(hd);
+          const cx = px + (c * (fx.front - fx.rear)) / 2;
+          const cy = py + (s * (fx.front - fx.rear)) / 2;
+          const hl2 = (fx.front + fx.rear) / 2;
+          for (const [ax, ay] of [[1, 0], [0, 1], [c, s], [-s, c]] as const) {
+            const rA = Math.abs(ax) * rect.hx + Math.abs(ay) * rect.hy;
+            const rB = Math.abs(ax * c + ay * s) * hl2 + Math.abs(-ax * s + ay * c) * fx.half;
+            if (Math.abs((cx - rect.cx) * ax + (cy - rect.cy) * ay) > rA + rB) return false;
+          }
+          return true;
+        };
         let poses = 0;
+        let skipped = 0;
+        let shoulderInBore = 0;
+        let shoulderMin = Infinity;
         let worstTip = 0;
         let worstOverlap = Infinity;
         let pitchLo = Infinity;
@@ -6642,72 +6928,124 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         let short = 0;
         let restOff = 0;
         let lowTail = Infinity;
+        let newPen = 0;
+        let newBad = 0;
+        let newClear = Infinity;
+        let oldPen = 0;
+        let oldBad = 0;
         for (const mount of tubeMounts) {
           for (const intakeMount of ['front', 'side', 'frontback'] as const) {
-            const spec = bbCoerceSpec({
-              ...BB_DEFAULT_SPEC,
-              bbMech: { lift: { kind: 'boxtube', mount } },
-              intakeMount,
-            } as unknown as RobotSpec);
-            const lift = bbLiftOf(spec);
-            const place = bbPlacePointLocal(spec);
-            if (!lift || !place) continue;
-            const glyph = bbBoxTubeGlyph(spec, lift.mount, place);
-            const reach = Math.hypot(place.x - glyph.outer.x, place.y - glyph.outer.y);
-            const st = bbBoxTubeStages(reach);
-            // THE RETRACTED ARM IS THE OLD REST POSE: every section spans [−sectionLen, 0] from
-            // `glyph.outer` along the glyph's own unit vector, which is where the pre-2026-09-20
-            // stack sat. Nothing pokes past the rail and nothing leaves the frame.
-            const tail = { x: glyph.outer.x - glyph.ux * st.sectionLen, y: glyph.outer.y - glyph.uy * st.sectionLen };
-            if (Math.abs(tail.x) > spec.length / 2 + 1e-9 || Math.abs(tail.y) > spec.width / 2 + 1e-9) restOff++;
+            // SIZE EXTREMES too (2026-09-22): the shoulder's reach, and therefore the whole stage
+            // table, is a function of the chassis, and a square 18 and a square 13.5 are the two
+            // ends of what the builder allows.
+            for (const [L, W] of [[13.5, 13.5], [18, 18], [17.5, 13.5]] as const) {
+              const spec = bbCoerceSpec({
+                ...BB_DEFAULT_SPEC,
+                length: L,
+                width: W,
+                bbMech: { lift: { kind: 'boxtube', mount } },
+                intakeMount,
+              } as unknown as RobotSpec);
+              const lift = bbLiftOf(spec);
+              const place = bbPlacePointLocal(spec);
+              if (!lift || !place) continue;
+              const glyph = bbBoxTubeGlyph(spec, lift.mount, place);
+              const reach = Math.hypot(place.x - glyph.outer.x, place.y - glyph.outer.y);
+              const st = bbBoxTubeStages(reach);
+              const stOld = oldStages(reach);
+              // THE RETRACTED ARM IS THE OLD REST POSE: every section spans [−sectionLen, 0] from
+              // `glyph.outer` along the glyph's own unit vector, which is where the pre-2026-09-20
+              // stack sat. Nothing pokes past the rail and nothing leaves the frame.
+              const tail = { x: glyph.outer.x - glyph.ux * st.sectionLen, y: glyph.outer.y - glyph.uy * st.sectionLen };
+              if (Math.abs(tail.x) > spec.length / 2 + 1e-9 || Math.abs(tail.y) > spec.width / 2 + 1e-9) restOff++;
 
-            const world = mkWorld('match', 11, spec);
-            const r = world.robots[0];
-            const pivot = { x: glyph.outer.x, y: glyph.outer.y, z: BB_BOX_TUBE_Z };
-            const baseYaw = Math.atan2(glyph.uy, glyph.ux);
-            for (let fi = 0; fi < BB_FLOWERS.length; fi++) {
-              const f = BB_FLOWERS[fi];
-              for (let h = 0; h < 12; h++) {
-                const heading = (h * Math.PI * 2) / 12;
-                const c = Math.cos(heading);
-                const s = Math.sin(heading);
-                const px = place.x * c - place.y * s;
-                const py = place.x * s + place.y * c;
-                for (const off of [0, 0.9, 1.9]) {
-                  for (let a = 0; a < 6; a++) {
-                    const th = (a * Math.PI * 2) / 6;
-                    r.heading = heading;
-                    r.pos.x = f.x + Math.cos(th) * off - px;
-                    r.pos.y = f.y + Math.sin(th) * off - py;
-                    if (bbFlowerInReach(world, r) !== fi) continue;
-                    poses++;
-                    // the opening in the ROBOT's frame — the frame the drawn nodes live in
-                    const dx = f.x - r.pos.x;
-                    const dy = f.y - r.pos.y;
-                    const ci = Math.cos(-heading);
-                    const si = Math.sin(-heading);
-                    const target = { x: dx * ci - dy * si, y: dx * si + dy * ci, z: TIP_Z - (r.z ?? 0) };
-                    const aim = bbBoxTubeAim(pivot, target, st);
-                    const need = Math.hypot(target.x - pivot.x, target.y - pivot.y, target.z - pivot.z);
-                    if (aim.len < need - 1e-9) short++;
-                    pitchLo = Math.min(pitchLo, aim.pitch);
-                    pitchHi = Math.max(pitchHi, aim.pitch);
-                    swivelHi = Math.max(swivelHi, Math.abs(((aim.yaw - baseYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI));
-                    // the DRAWN tip at full ease: the last stage's front face, `moving · ext` out
-                    const L = st.moving * aim.ext;
-                    const tip = {
-                      x: pivot.x + Math.cos(aim.pitch) * Math.cos(aim.yaw) * L,
-                      y: pivot.y + Math.cos(aim.pitch) * Math.sin(aim.yaw) * L,
-                      z: pivot.z + Math.sin(aim.pitch) * L,
-                    };
-                    worstTip = Math.max(worstTip, Math.hypot(tip.x - target.x, tip.y - target.y, tip.z - target.z));
-                    // NO STAGE LEAVES ITS PARENT, at any ease: consecutive stages are one `ext`
-                    // apart and each is `sectionLen` long, so the capture is `sectionLen − ext`.
-                    // The same walk measures the TAIL DIP — stage 1's back end is behind the
-                    // shoulder while it is still retracted, so it swings down toward the deck.
-                    for (let e = 0; e <= 1.0001; e += 0.05) {
-                      worstOverlap = Math.min(worstOverlap, st.sectionLen - e * aim.ext);
-                      lowTail = Math.min(lowTail, BB_BOX_TUBE_Z + (e * aim.ext - st.sectionLen) * Math.sin(e * aim.pitch));
+              const world = mkWorld('match', 11, spec);
+              const r = world.robots[0];
+              const fx = bbFootprint(spec);
+              const pivot = { x: glyph.outer.x, y: glyph.outer.y, z: BB_BOX_TUBE_Z };
+              const baseYaw = Math.atan2(glyph.uy, glyph.ux);
+              for (let fi = 0; fi < BB_FLOWERS.length; fi++) {
+                const f = BB_FLOWERS[fi];
+                const rect = footRect(f);
+                for (let h = 0; h < 12; h++) {
+                  const heading = (h * Math.PI * 2) / 12;
+                  const c = Math.cos(heading);
+                  const s = Math.sin(heading);
+                  const px = place.x * c - place.y * s;
+                  const py = place.x * s + place.y * c;
+                  for (const off of [0, 0.9, 1.9]) {
+                    for (let a = 0; a < 6; a++) {
+                      const th = (a * Math.PI * 2) / 6;
+                      r.heading = heading;
+                      r.pos.x = f.x + Math.cos(th) * off - px;
+                      r.pos.y = f.y + Math.sin(th) * off - py;
+                      if (bbFlowerInReach(world, r) !== fi) continue;
+                      // the opening in the ROBOT's frame — the frame the drawn nodes live in
+                      const dx = f.x - r.pos.x;
+                      const dy = f.y - r.pos.y;
+                      const ci = Math.cos(-heading);
+                      const si = Math.sin(-heading);
+                      const target = { x: dx * ci - dy * si, y: dx * si + dy * ci, z: TIP_Z - (r.z ?? 0) };
+                      const flat = Math.hypot(target.x - pivot.x, target.y - pivot.y);
+                      if (onFoot(r.pos.x, r.pos.y, heading, fx, rect)) {
+                        skipped++;
+                        if (flat < BB_FLOWER_OPEN_R) shoulderInBore++;
+                        continue;
+                      }
+                      poses++;
+                      shoulderMin = Math.min(shoulderMin, flat);
+                      const aim = bbBoxTubeAim(pivot, target, st, BB_FLOWER_OPEN_R);
+                      // the arm only ever has to span the RIM, which is one opening radius short
+                      const need = Math.hypot(Math.max(0, flat - BB_FLOWER_OPEN_R), target.z - pivot.z);
+                      if (aim.len < need - 1e-9) short++;
+                      pitchLo = Math.min(pitchLo, aim.pitch);
+                      pitchHi = Math.max(pitchHi, aim.pitch);
+                      swivelHi = Math.max(swivelHi, Math.abs(((aim.yaw - baseYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI));
+                      // the DRAWN tip at full ease: the last stage's front face, `moving · ext` out
+                      const L2 = st.moving * aim.ext;
+                      const tip = {
+                        x: pivot.x + Math.cos(aim.pitch) * Math.cos(aim.yaw) * L2,
+                        y: pivot.y + Math.cos(aim.pitch) * Math.sin(aim.yaw) * L2,
+                        z: pivot.z + Math.sin(aim.pitch) * L2,
+                      };
+                      // ...ON THE LIP: one opening radius out from the ring centre, at tip height
+                      worstTip = Math.max(
+                        worstTip,
+                        Math.abs(Math.hypot(tip.x - target.x, tip.y - target.y) - BB_FLOWER_OPEN_R) + Math.abs(tip.z - target.z),
+                      );
+                      // THE SEGMENT vs THE COLUMN, for the shipped aim and for the old one
+                      for (const [rim, stg] of [[BB_FLOWER_OPEN_R, st], [0, stOld]] as const) {
+                        const am = bbBoxTubeAim(pivot, target, stg, rim);
+                        const len = stg.moving * am.ext;
+                        let pen = 0;
+                        let clear = Infinity;
+                        for (let t = 0; t <= 1.0001; t += 1 / 400) {
+                          const d = t * len;
+                          const x = pivot.x + Math.cos(am.pitch) * Math.cos(am.yaw) * d;
+                          const y = pivot.y + Math.cos(am.pitch) * Math.sin(am.yaw) * d;
+                          const z = pivot.z + Math.sin(am.pitch) * d;
+                          if (z >= BB_FLOWER_TOP_Z - (r.z ?? 0)) continue; // at or above the top plate
+                          const rad = Math.hypot(x - target.x, y - target.y);
+                          if (rad < BB_FLOWER_OPEN_R) pen = Math.max(pen, BB_FLOWER_OPEN_R - rad);
+                          else clear = Math.min(clear, rad - BB_FLOWER_OPEN_R);
+                        }
+                        if (rim > 0) {
+                          newPen = Math.max(newPen, pen);
+                          if (pen > 0) newBad++;
+                          else if (clear < Infinity) newClear = Math.min(newClear, clear);
+                        } else {
+                          oldPen = Math.max(oldPen, pen);
+                          if (pen > 0) oldBad++;
+                        }
+                      }
+                      // NO STAGE LEAVES ITS PARENT, at any ease: consecutive stages are one `ext`
+                      // apart and each is `sectionLen` long, so the capture is `sectionLen − ext`.
+                      // The same walk measures the TAIL DIP — stage 1's back end is behind the
+                      // shoulder while it is still retracted, so it swings down toward the deck.
+                      for (let e = 0; e <= 1.0001; e += 0.05) {
+                        worstOverlap = Math.min(worstOverlap, st.sectionLen - e * aim.ext);
+                        lowTail = Math.min(lowTail, BB_BOX_TUBE_Z + (e * aim.ext - st.sectionLen) * Math.sin(e * aim.pitch));
+                      }
                     }
                   }
                 }
@@ -6717,7 +7055,25 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         }
         check('box tube pose sweep: it found in-reach poses to measure at all', poses > 2000, `${poses} poses`);
         check(
-          'box tube: at full ease the drawn TIP is the flower opening, for every in-reach pose',
+          'box tube pose sweep: the poses it DROPPED are the ones a flower foot forbids, and only those',
+          shoulderInBore > 0 && shoulderMin > BB_FLOWER_OPEN_R,
+          `${skipped} on the foot (${shoulderInBore} with the shoulder inside the bore); nearest legal shoulder ${shoulderMin.toFixed(3)} in vs bore ${BB_FLOWER_OPEN_R.toFixed(3)}`,
+        );
+        // ⚠️ **THE CHECK THE 2026-09-20 PASS DID NOT HAVE** (owner, 2026-09-22: "make the boxtube
+        // in-game not go through the flower when it extends"). RUN AGAINST THE OLD CENTRE AIM IT
+        // FAILS ON EVERY POSE — the numbers in the second argument are from this same sweep.
+        check(
+          'box tube: the drawn arm stays OUTSIDE the flower column everywhere below its top plate',
+          newBad === 0,
+          `rim aim ${newBad}/${poses} inside (worst ${newPen.toFixed(3)} in); the OLD centre aim was ${oldBad}/${poses}, worst ${oldPen.toFixed(3)} in of a ${BB_FLOWER_OPEN_R.toFixed(3)} bore`,
+        );
+        check(
+          '...with real clearance at the plate, not a tangency that rounds the right way',
+          newClear > 0.02,
+          `worst clearance ${newClear === Infinity ? 'n/a' : newClear.toFixed(4)} in`,
+        );
+        check(
+          'box tube: at full ease the drawn TIP is on the flower’s LIP, for every in-reach pose',
           worstTip < 1e-6,
           `worst ${worstTip.toExponential(2)} in over ${poses} poses`,
         );

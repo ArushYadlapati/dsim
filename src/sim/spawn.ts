@@ -529,6 +529,17 @@ export function coerceSpec(raw: unknown, base: RobotSpec = DEFAULT_SPEC, game?: 
     // click handler fires and the patch reaches this function correctly.
     out.bbPassTarget = sp.bbPassTarget as RobotSpec['bbPassTarget'];
     out.bbPassPreset = sp.bbPassPreset as RobotSpec['bbPassPreset'];
+    // ⚠️ AND THE MASS, RAW — this one is a carry-across of a SHARED field, for the opposite
+    // reason to the four above: the shared pass DID read it, and that is the problem. BIOBUZZ
+    // owns its own mass model (`bbMassLimits`: a bare chassis per drivetrain plus every
+    // mechanism bolted to it), and `massLimits`' per-drivetrain floor prices in a DECODE
+    // shooter, so it sits ABOVE that model for every drivetrain — a mecanum turret build floors
+    // at 18.00 in this game and the shared pass had already lifted it to 18 + 4·inertia, a tank
+    // one at 19.50 against 22. Step 4 above would therefore raise a legal light build before the
+    // game's own clamp could see it, and a preset the coercer moves is a card that can never
+    // read as selected. Unvalidated like the fields above: `coerceBiobuzzSpec` re-clamps it
+    // (through `clampFinite`, so NaN / Infinity / absent all still fall back to `base`).
+    out.massLb = sp.massLb as RobotSpec['massLb'];
     return coerceBiobuzzSpec(out, base);
   }
   return out;

@@ -730,6 +730,24 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   `t`. Looking at a robot close up also found the TURRET and the BOX TUBE built INSIDE the chassis
   box, `specKey` missing `drivetrain`, and a discarded group never disposed — all three were the
   MATCH's bugs and all three are fixed there.
+- ⚠️ **WHICH END IS THE FRONT IS ONE LANGUAGE, DRAWN IN BOTH RENDERERS** (owner, 2026-09-22:
+  "somehow make it clearer fundamentally which side is front and which is back in game. This is
+  especially confusing in a symmetric robot in 3D"). `bbFrontMarks` (`parts.ts`) is the geometry
+  and its header is the design; `drawFrontBack` fills it in 2D and `buildFrontMarks` builds it in
+  3D. Three marks, none in an alliance colour: a near-white **LIGHT BAR** across the full front
+  rail (emissive in 3D — a matte white bar goes grey in the hive's shadow, which is where a driver
+  needs it most), a near-white **ARROW** on the deck pointing at it, and a near-black **HAZARD
+  BAR** with amber ribs across the full rear rail. The pair is what carries it: the arrow points
+  away from the striped end. What this replaces is a 0.7-in white block on the front cross member
+  (3D) and a rear chevron in the ALLIANCE colour (2D) — the block was four screen pixels at match
+  distance and behind the intake from the one angle you would look for it, and the chevron made
+  "red at that end" compete with "red team". None of the three is a collider: they sit inside the
+  frame box in x/y and only stand above the deck, the same ruling the end plates got, and the
+  RENDER lane measures it off the built meshes.
+  **It follows the SIM's front, never the driver's REVERSED.** Flip-front is an input transform, it
+  never touches `r.heading`, the HUD already says REVERSED — and in 3D the robot is one group in a
+  scene four other people and every replay viewer are looking at, so there is no per-viewer variant
+  of a mesh to give them. REVERSED is a property of a stick, not of the machine.
 - ⚠️ **THE DRIVE WHEELS ARE CATALOGUE PARTS, AND NOTHING ABOUT THEM IS PAINTED** (owner,
   2026-09-21: "Make the wheels be rendered accurately. Gobilda 104mm gripforce mecanum wheel,
   gobilda omni wheel"; then, on the shipped picture, "it makes no sense for the wheel to have slant
@@ -835,7 +853,8 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     predictor making one, and `noteElementCorrection` folds the error into a visual offset that is
     applied whether or not the draw used it. Kinematic rather than skipped, so the local chassis
     still feels a flower column as a solid — the same call the header makes for a remote robot.
-    Client-only: no wire change, and the authority is untouched. Pinned by NET3D §15.  - ⚠️ **`bbTurretSolution` IS A FIXED POINT** — the elevation moves the release and the release
+    Client-only: no wire change, and the authority is untouched. Pinned by NET3D §15.
+  - ⚠️ **`bbTurretSolution` IS A FIXED POINT** — the elevation moves the release and the release
     moves the elevation. `BB_TURRET_SOLVE_PASSES` (4) passes ALWAYS, with no early exit and no
     tolerance, because a trip count that depends on a float comparison can differ between a client's
     prediction and the server's authority. Measured over 7,688 field poses, a fifth pass moves the
@@ -910,6 +929,32 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     turret's ring on every legal chassis, and the mast then rose straight through the head: its
     axis came within **0.000 in** of the drawn turret belt. Section 0 is a CRADLE bolted to the base
     node and never posed, so the retracted arm is byte-identical to the drawing that shipped.
+  - ⚠️ **AND IT AIMS AT THE NEAR LIP, NOT THE RING CENTRE** (owner, 2026-09-22: "make the boxtube
+    in-game not go through the flower when it extends. It should be extending towards the top lip
+    instead of through it. It also moves way too quickly in animation and in a violent way"). The
+    2026-09-20 pass above checked the TIP and nothing else, and a check on an endpoint says nothing
+    about the segment: aiming a straight tube at the ring centre put the drawn axis INSIDE the top
+    ring's bore below the top plate on **13,104 of 13,104** collision-legal in-reach poses, up to
+    **1.900 in** of a 2.086-in bore — the mast came out of the flower's own axis. `bbBoxTubeAim`
+    takes a `rim` argument now and backs the aim point off `BB_FLOWER_OPEN_R` along the approach;
+    the horizontal distance then falls monotonically to the rim and reaches it one
+    `BB_BOX_TUBE_TIP_CLEAR` ABOVE the plate, so everything below the plate is outside the column by
+    construction. After: **0 of 13,104**, worst clearance at the plate **0.0599 in**, tip still on
+    the lip to 5.3e-8. The RENDER lane runs both aims over the same poses, so the failure is in the
+    check's own output rather than in a commit message. It sweeps only poses the flower FOOT
+    collider permits — 1,800 of the unfiltered set put the SHOULDER itself inside the bore, where
+    no straight arm can stay outside, and a real chassis never gets nearer than 3.084 in.
+    Knock-on: the arm is 17.1–17.9 in rather than 17.6–18.7, and the cradle 5.53–5.72.
+  - ⚠️ **AND 0.12 s WAS THE WRONG ANSWER TO "A LOT FASTER"** (same report: "way too quickly … in a
+    violent way"). Seven frames at 60 Hz for 64–86° of pitch and 18 in of arm is a teleport.
+    `BB_BOX_TUBE_EXTEND_S` is **0.40** and the ease is a `smoothstep`, which is the half that
+    matters — a LINEAR 0.40 is the animation the 2026-09-20 report rejected, and a smoothstepped
+    one leaves and arrives at zero rate. Retraction is `BB_BOX_TUBE_RETRACT_F` (0.8) of it.
+    The other half of "violent" was not the ramp at all: `bbFlowerInReach` names ONE flower and the
+    name changes in a single tick, and the pose was ASSIGNED, so a fully extended arm jumped to a
+    new bearing in one frame. The targets slew at `BB_BOX_TUBE_SLEW` / `BB_BOX_TUBE_EXT_SLEW` now;
+    a STOWED arm (`tubeEase` 0) still takes its first target whole, because a snap nothing is
+    drawn at is invisible and seeding it is what keeps the first deploy from lagging its own ease.
   - **The hood's own feed mouth rotates away from the feed at elevation**, which is why the wrap is
     0.556 rad and not the 1.05 it was: a FIXED feed shoe at `BB_FEED_SHOE_R` spans 146°–202° and
     takes over the entry. It bolts to both side plates, so it is also the rear tie.
@@ -1414,6 +1459,28 @@ KINEMATICALLY and must stay that way: `state.kind` is DERIVED from height and mo
 so a driven fixture that hand-tags a row `flight` has it re-tagged before the next penalty pass
 reads it, and the run then measures the tagger instead of the rule.
 
+## 2026-09-22 — NEITHER G402 NOR G407 IS CAPPED PER MATCH ANY MORE
+
+Owner ruling, superseding both "per MATCH" readings of Table 10-4: "right now you can only get
+penalized once for crossing and tapping a robot in auto. Fix that. Also overpossession
+penalties." Both per-robot latches are gone from `penalties.ts`.
+
+- **G407** bills every STRATEGIC instance: each 6+ streak sustained past `BB_MOMENTARY_S`, and
+  each 5+ instance from the second onward. Nothing debounces it — the two `qualified` flags are
+  the single tick a streak crosses MOMENTARY, so a pile has to drop below the count and climb
+  back to qualify again. `bb.held[robot].g407billed` is still written, as the HUD's
+  `controlMajor` marker and nothing else.
+- **G402** bills every crossing, and what makes two ticks one instance is a RE-ARM WINDOW
+  (`BB_G402_REARM_S`, 1 s) kept on `world.penalties.episodes` — DECODE's own episode debounce,
+  not `foulEdge`, which this rule no longer uses. It is there because the contact test flickers:
+  measured over a 908-duel sweep, head-on rams never flicker, but angled and offset ones go clear
+  for up to **0.78 s** mid-hit while the two footprints stay within **3.4 in**. That band drifts
+  with the chassis — an earlier sweep, one dimension different, peaked at 1.53 s — so the window
+  is sized to the flicker rather than to the widest thing ever seen: too long swallows the genuine
+  second hit the owner reported, which is the worse direction to be wrong in.
+- The rules lane's `bill()` now advances `world.time`, because `step.ts` does and the window is
+  measured against it. A fixture with a frozen clock holds every window open forever.
+
 ---
 
 # AI DRIVERS (`src/games/biobuzz/ai/`) — Day 3, plan §6
@@ -1474,3 +1541,137 @@ The RULE refuses, at `GameSimModule.startLegal`; the builder says so first. Depl
 `world.match` (`bbDeployed`), never a stored latch, and `sim3d/engineImpl.ts` rebuilds the chassis
 collider at that edge, recording the height it built (`Engine3d.robotHeights`) so READBACK subtracts
 the same half-height it added — get that wrong and the robot's `z` jumps on the deploy tick.
+
+---
+
+# THE MASS MODEL AND THE PRESET LIST — 2026-09-22
+
+⚠️ **BIOBUZZ OWNS ITS MASS FLOOR NOW, AND EVERY PART OF THE BUILD PAYS FOR ITSELF** (owner:
+"Review all configuration options for biobuzz... Focus on the mass of each component... Single
+intake single turret should weigh like 18lbs minimum"). What it replaced was
+`massLimits(drivetrain, inertia, bbMassFloorBump(spec))` — DECODE's per-drivetrain floor plus a
+bump that priced exactly TWO things, a second turret (2.5) and a Box Tube (2.0). A sweeper
+weighed nothing, a turret weighed nothing, a dumper weighed nothing and a SECOND sweeper edge
+weighed nothing, so a bare mecanum chassis and one carrying a turret and two sweepers had the
+same floor: 18 lb, which is also not a bare chassis — DECODE's 18 already prices in DECODE's own
+shooter.
+
+`bbMassLimits(spec)` (`config.ts`) is the one model, read by the coercer, by `bbDials` (the
+builder's slider) and by both preset lists. `bbMassFloorBump`, `BB_TWIN_MASS_FLOOR` and
+`BB_LIFT_MASS_FLOOR` are gone. Floor = BARE CHASSIS + one `BB_MASS_SWEEPER_EDGE` per mounted
+edge + the launcher + a Box Tube + `BB_MASS_INERTIA · flywheelInertia`, rounded to 0.01 for the
+reason `massLimits` documents. Every constant is APPROX with its reason on its own line:
+
+| part | lb | | drivetrain (bare) | lb |
+|---|---|---|---|---|
+| sweeper edge (`frontback`/`side` pay twice) | 1.5 | | mecanum / xdrive | 11.5 |
+| single turret | 4.0 | | tank | 13.0 |
+| second turret of a double | +3.5 | | swerve | 15.5 |
+| dumper | 2.5 | | butterfly | 17.0 |
+| Box Tube | 2.5 | | | |
+| flywheel at inertia 1 | 4.0 (`INERTIA_MASS_FLOOR`) | | | |
+
+Resulting floors at `BB_INERTIA_DEFAULT` (0.25): mecanum one sweeper one turret **18.00**
+(the calibration point, asserted EXACTLY), xdrive 18.00, tank 19.50, swerve 22.00, butterfly
+23.50; mecanum + dumper 16.50; + a tube 20.50; swerve + two sweepers + a double + a tube 29.50.
+The CEILING is the shared per-drivetrain envelope (42, swerve 40) because **R104 sets no robot
+weight limit in BIOBUZZ** (`docs/biobuzz-reference.md` §6) — there is no rules number to use, so
+what is left is the sim's own statement of what a drivetrain can still move.
+
+⚠️ **AND IT ONLY BINDS BECAUSE THE RAW MASS IS CARRIED ACROSS.** `coerceSpec`'s own mass pass
+(`src/sim/spawn.ts`, step 4) runs BEFORE the BIOBUZZ arm and its floor is HIGHER than this model
+for every drivetrain, so it would lift a legal light build before the model was ever consulted —
+a tank turret build would come back at DECODE's 22 rather than at its own 19.50, and a preset the
+coercer moves is a card that can never read as selected. `out.massLb = sp.massLb` sits with the
+`bbMech` / `heightIn` / pass-target carry-across lines in that arm and the game's own clamp does
+the work. Nothing outside `game === 'biobuzz'` is touched.
+
+⚠️ **`flywheelInertia` IS NOT A DIAL IN THIS GAME AND NOTHING IN THE SIM READS IT** — its only
+effect is that term. `BB_INERTIA_DEFAULT` is what every preset carries so their masses are
+comparable; a spec arriving from DECODE or Chain Reaction keeps its own value and can therefore
+be up to 4 lb heavier at the floor than any build made here.
+
+**THE PRESETS** are the StarterBot (`presets.ts`, the one real kit robot, still alone in front of
+the rule-off) and four demos in `config.ts`. Scored head-to-head against the StarterBot with HARD
+bots, 3D, a full 150-s match: **Sniper 70.4 · Skimmer 68.0 · Forager 63.6 · Pollinator 55.0 ·
+StarterBot 43.0.**
+
+| card | build | mass | rpm | floor | score |
+|---|---|---|---|---|---|
+| StarterBot | tank · front sweeper · front dumper | 18 (ON its floor — no kit publishes a weight) | 286 | 18.00 | 43.0 |
+| **Pollinator** (`BB_PRESETS[0]`) | mecanum · front sweeper · centre turret · back Box Tube | 24.5 | 435 | 20.50 | 55.0 |
+| Forager | butterfly · FRONT+BACK sweepers · front dumper | 30.5 | 420 / 300 | 23.50 | 63.6 |
+| Skimmer | xdrive · front sweeper · right+left double turret | 27.5 | 520 | 21.50 | 68.0 |
+| Sniper | swerve · FRONT+BACK sweepers · centre turret | 26.5 | 480 | 23.50 | 70.4 |
+
+⚠️ **THE FORAGER REPLACED A CARD CALLED "HAULER" THAT NOBODY SHOULD HAVE PICKED** (2026-09-22).
+The Hauler was a 32-lb tank with a REAR dumper and it MEASURED **25.8** against the StarterBot's
+43.0 — and the StarterBot is the same drivetrain and the same archetype at 18 lb. Five seeds per
+variant: front dumper 34.4, side sweeper 21.8, side sweeper behind a rear dumper 4.0 (the bot
+cannot drive that at all). About half the gap was the rear mount, which costs a reverse into
+range, and half the 32 lb, which costs cycles. It was also Chain Reaction's Hauler card copied
+verbatim, name and team line both, which is its own reason to stop shipping it.
+
+What replaced it keeps the "heavy, no turning" idea and drops the reversing: FRONT+BACK sweepers
+fill driving either way, a FRONT dumper unloads without backing up, and BUTTERFLY is the one
+drivetrain with two gearings to choose between — 420 on the mecanum set to cross the field, 300
+on the traction set to hold a lane. It is the only card heavy enough for the second half of that
+to mean anything, and it is the only butterfly on the list, so the five cards now cover all five
+drivetrains. MEASURED **63.6 over eight seeds**, second on the list.
+
+⚠️ **AND THE SPREAD IS WIDE — DO NOT READ THESE MEANS AS PRECISE.** The same build at 29.5 lb
+scores 57.6 and at 30.5 lb 63.6 over the same eight seeds, and single seeds range 40…108. Half a
+pound does not really move a robot 6 points; a 150-s 3D match with two bots is chaotic and five
+seeds is a coarse instrument. The numbers are here to separate 25.8 from 63.6, which they do
+comfortably, and not to rank 63.6 against 68.0.
+
+⚠️ **`tankRpm` IS PART OF BEING A FIXED POINT.** `coerceSpec` writes that field for BUTTERFLY and
+STRIPS it for every other drivetrain, so the Forager must declare one (300) and no other card may.
+`bbSpecMatches` compares it, and `bbPresetLines` prints BOTH gearings for a card that has one —
+a butterfly card showing a single rpm would describe half of the reason to pick it.
+
+Each demo declares a mass ABOVE its floor (four cards on their own floors say nothing about the
+tradeoff between them) and each is its own floor plus a WHOLE number of pounds, so it is a
+position the 1-lb mass slider can return to. `BB_DEMO_LIFT`'s keyed-by-name map is unchanged and
+now has the Pollinator as its one entry: `BB_PRESETS[0]` must stay a literal with no `bbMech`
+container (`coerce.ts` builds `BB_DEFAULT_SPEC` from it), a launcher migrates from the flat
+mirror and a Box Tube has no such path.
+
+⚠️ **CHANGING `BB_PRESETS[0]` MOVES `BB_DEFAULT_SPEC`, AND SIX FIXTURES WERE MEASURED ON THE OLD
+ONE.** The default build is the chassis every `mkWorld3d`, `bbSetup` and `bare()` gets when it
+does not say otherwise, and the old default (the Sniper) had a SYMMETRIC 21 × 17 footprint —
+FRONT+BACK sweepers, 10.5 in off the centre either way. The Pollinator's front-only sweeper is
+21 × 17 too but ASYMMETRIC (10.5 front, 7.5 rear), and that moved, in order of how well they were
+hidden:
+- `START_CHASSIS_HALF` (`config.ts`) is a MEASUREMENT of the default build — the half-extent on
+  its WALL side, every anchor being written facing into the field. 10.5 → **7.5**, or all four
+  anchors float 3 in off their own wall and G304.C refuses them as written.
+- the G304 clause probes (`field.ts`) seated two poses at the footprint's MIDPOINT, which is only
+  on the wall for a symmetric build. `e.rear` now.
+- the G421 pin lane and the `park-examples` gallery cell are both drawn against the 21 × 17 in as
+  many words in their own headers, so they STATE that build (`PIN_BUILD`, `PARK_BUILD`) instead of
+  inheriting it. Eighteen pin checks read as "the detector bills nothing" when the pairs stopped
+  touching.
+- the SIM3D dumper close-limit fixture pins `intakeMount: 'frontback'`, because a dumper fires
+  over the BACK edge and the 24-in table was measured with a sweeper bolted there: on a front-only
+  build 4 of 4 clear at 24 in.
+- the corner-graze scene pins `drivetrain: 'swerve'`. MEASURED both ways on one rig: swerve slides
+  past a 0.35-in graze at 1.00 of a free run and 0° of yaw, **MECANUM HOOKS AT 0.30 AND 94°**, and
+  neither width nor intake mount changes either answer. The edge break's band is a drivetrain fact
+  that check never claimed to cover, and the mecanum case is OPEN — it is the owner's original
+  "I can get stuck on a corner" for what is now the DEFAULT build.
+
+⚠️ **THE TRIANGLE INTAKE WAS NOT BUILDABLE AT ALL.** `BB_MIN_LENGTH` is 13.5 and that preset's
+shared ceiling is 13, so `bbEnvelope` handed back an INVERTED length range, `bbMountFits` was
+false at every mount, and the coercer silently reset a SIDE or FRONT+BACK sweeper to `front` and
+pinned the chassis half an inch over the ceiling. The game's own floor is capped to the intake's
+own ceiling now. It only ever reached a spec carried over from another game, because the BIOBUZZ
+builder has no intake-STYLE picker.
+
+**STILL OPEN, stated rather than fixed:** `BB_MAX_LENGTH` (17) is DEAD — `src/sim/spawn.ts` still
+sizes a BIOBUZZ spec with DECODE's per-intake `lengthLimits`, so the real ceiling is 15 (sloped),
+14.5 (vector) or 13 (triangle). `bbSizeLimits`' header says term 2 stops binding "the moment the
+BIOBUZZ arm lands"; the arm landed and the size clamp was never switched over with it. Doing so
+is the same one-line shape as the mass carry-across above, but it widens every chassis and moves
+footprints, start poses and hopper volume with it. And the HOPPER slider is 1–4 for every build in
+the legal envelope, so it still tells no two builds apart (`BB_STORAGE_MAX`, owner ruling).

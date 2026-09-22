@@ -238,13 +238,18 @@ export function coreChecks(check: Check): void {
   // inside `SPONSOR.term` — so the expected strings are built from `bbLiftKindLabel` rather than
   // typing either spelling; both spellings are pinned against the term further down.
   const TUBE = bbLiftKindLabel('vslide');
+  // ⚠️ THE `line` STRINGS CARRY `BB_DEFAULT_SPEC`'S OWN INTAKE MOUNT, because `rawOf` below
+  // builds each loadout on top of that spec and only replaces the mechanism. They say FRONT
+  // because the default preset (`BB_PRESETS[0]`, the Pollinator) carries a front sweeper; they
+  // said FRONT+BACK while it was the Sniper. A sentence that drifts from the build is exactly
+  // what this fixture exists to catch, so the strings stay literal rather than being derived.
   const LOADOUTS: { name: string; mech: BbMechSpec; tiles: string[]; line: string }[] = [
     {
       name: 'single turret',
       mech: { launcher: { kind: 'turret', mount: 'center', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null },
       // a TURRET solves its own elevation per shot, so it has no hood to report
       tiles: ['Single turret / launcher / CENTER', 'No box tube / flower scoring'],
-      line: 'Single turret · FRONT+BACK sweeper · CENTER launcher · 4 pollen',
+      line: 'Single turret · FRONT sweeper · CENTER launcher · 4 pollen',
     },
     {
       name: 'single turret + Box Tube',
@@ -253,7 +258,7 @@ export function coreChecks(check: Check): void {
         lift: { kind: 'vslide', mount: 'back' },
       },
       tiles: ['Single turret / launcher / CENTER', `${TUBE} / flower scoring / BACK`],
-      line: `Single turret · FRONT+BACK sweeper · CENTER launcher · ${TUBE} · BACK · 4 pollen`,
+      line: `Single turret · FRONT sweeper · CENTER launcher · ${TUBE} · BACK · 4 pollen`,
     },
     {
       name: 'double turret',
@@ -262,7 +267,7 @@ export function coreChecks(check: Check): void {
         lift: null,
       },
       tiles: ['Double turret / launcher / RIGHT + LEFT', 'No box tube / flower scoring'],
-      line: 'Double turret · FRONT+BACK sweeper · RIGHT + LEFT launcher · 4 pollen',
+      line: 'Double turret · FRONT sweeper · RIGHT + LEFT launcher · 4 pollen',
     },
     {
       name: 'dumper + Box Tube',
@@ -271,7 +276,7 @@ export function coreChecks(check: Check): void {
         lift: { kind: 'vslide', mount: 'back' },
       },
       tiles: ['Dumper / launcher / FRONT', `${TUBE} / flower scoring / BACK`],
-      line: `Dumper · FRONT+BACK sweeper · FRONT launcher · ${TUBE} · BACK · 4 pollen`,
+      line: `Dumper · FRONT sweeper · FRONT launcher · ${TUBE} · BACK · 4 pollen`,
     },
   ];
   /** the raw build for a loadout — the flat mirror is set to agree with the container, the way

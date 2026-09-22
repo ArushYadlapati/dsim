@@ -77,9 +77,13 @@ const BASELINE = {
   // not the 31 first measured. The other two start where they stand: paying them down needs a
   // visual decision per site, and a baseline is how that gets paid off in any order without
   // being able to grow back.
-  'off-scale-font-size': 46,
+  // 46 → 45, 2026-09-22: `.ds-home-lead`'s `15px` went with the home page's lead sentence,
+  // removed once the homepage no longer needed a line saying DSIM is "2D".
+  'off-scale-font-size': 45,
   // 14 → 13, 2026-09-19: `.perf-readout`'s `border-radius: 6px` went with the `?perf=1` line.
-  'literal-radius': 13,
+  // 13 → 12, 2026-09-22: `.net-overlay-card`'s `14px` is `--ds-round-lg`, which is what it was
+  // approximating — it sat beside `.overlay-panel`, which already used the token.
+  'literal-radius': 12,
   'shadow-sprawl': 14,
   'stale-component-index': 0,
 };

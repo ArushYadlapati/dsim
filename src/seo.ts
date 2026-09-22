@@ -32,7 +32,7 @@ const indexable = (game: GameId): boolean => INDEXABLE.some((s) => s.key === gam
 /** the deployed origin — canonical/og:url must be absolute for scrapers */
 export const SITE_URL = 'https://www.playdsim.com';
 
-const HOME_TITLE = 'DSIM: Online 2D FTC Driving Simulator';
+const HOME_TITLE = 'DSIM: Online FTC Driving Simulator';
 // the on-page sentence plus what you can do here. Descriptions are what shows
 // under the link in a search result — say what the page IS, don't sell it.
 // "DECODE or Chain Reaction" — named from the registry, so a hidden season cannot

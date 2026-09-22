@@ -680,7 +680,7 @@ export function GameView({
           <div className="net-overlay-card">
             {hud.net.failed ? (
               <>
-                <h3>Connection lost</h3>
+                <h3 className="ds-dialog-title">Connection lost</h3>
                 <p>The server may have restarted. Refresh the page to reconnect.</p>
                 <div className="overlay-buttons">
                   <button onClick={() => window.location.reload()}>REFRESH</button>
@@ -692,7 +692,7 @@ export function GameView({
             ) : (
               <>
                 <div className="net-spinner" />
-                <h3>Reconnecting…</h3>
+                <h3 className="ds-dialog-title">Reconnecting…</h3>
                 <p>Your run keeps going.</p>
               </>
             )}
@@ -878,6 +878,9 @@ export function GameView({
           /* marks the "YOU" row in the results roster (built from the match's own
              recorded setups) — slot 0 in solo, the lobby-assigned id in multiplayer. */
           localRobotId={controllerRef.current?.localRobotId}
+          /* who was in each seat — the roster's badge/title source. Empty in solo and
+             against a server older than the fields, where a row simply renders bare. */
+          drivers={session?.drivers}
         />
       )}
       </div>

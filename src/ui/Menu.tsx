@@ -591,14 +591,12 @@ export function Menu({ settings, onChange }: Props) {
       {/* the page heading is owned by the Configure host */}
       <div className="ds-robot">
         {/* ---------- robot hero ----------
-            PINNED AGAIN, as a 260px RAIL rather than a strip across the top (`.ds-robot-rail`).
-            The sticky strip this replaces held 26% of a 720px viewport even once compact,
-            because the two rows of stat tiles set its height, not the sprite — so it was
-            reverted and the robot then left the screen after the first slider. A column beside
-            the builder costs no vertical space at all, so that trade does not arise.
-            Below 1124px there is no width for a rail and the card goes back to the top of the
-            page, unpinned, which is why it is FIRST in the DOM. */}
-        <div className="ds-robot-rail">
+            BACK AT THE TOP, pinned, as ONE compact row (owner, 2026-09-22 — the 260px rail it
+            replaces read as a widget parked beside the build). The sticky strip that shipped
+            before the rail held 26% of a 720px viewport, and the reason was the STAT TILES, not
+            the sprite: two wrapped rows of a 96px grid. The height is budgeted in the CSS
+            instead — the 96px sprite box sets it, the tiles are one-line chips that wrap inside
+            that box, and the card lands at 105px. See `.ds-hero` in shell.css. */}
         <div className="ds-hero">
           <div className="ds-hero-view">
             {/* TWO components, not one with a `chain` flag: DECODE's schematic is
@@ -711,9 +709,6 @@ export function Menu({ settings, onChange }: Props) {
           </div>
         </div>
 
-        </div>
-
-        <div className="ds-robot-wide">
         {/* ---------- START FROM: the player's own garage, then the presets ----------
             ONE panel, and the garage is in it only when there is something in it. It used to be
             the FIRST section on the page in every state, so a new player's first screen was an
@@ -867,9 +862,7 @@ export function Menu({ settings, onChange }: Props) {
             </div>
           </div>
         </section>
-        </div>
 
-        <div className="ds-robot-main">
         {/* ---------- builder ----------
             SAVE IS THE PANEL'S ACTION, not a card at the top of the page: you are here when
             you have finished building, and this is the one button on the screen that adds
@@ -1420,10 +1413,14 @@ export function Menu({ settings, onChange }: Props) {
               label="Drive style"
               value={settings.assists.fieldCentric}
               cols="two"
+              // neither side carries a sub-line any more, so these are chip-height tiles —
+              // `ToggleRow`'s rule, for the same reason: two 62px slabs for one pick is a lot
+              // of screen for nothing to sit in.
+              mini
               onPick={(fieldCentric) => setAssist({ fieldCentric })}
               options={[
-                { v: false, t: 'Robot-centric', d: 'Forward is where the robot points' },
-                { v: true, t: 'Field-centric', d: 'Forward is away from you, whichever way it faces' },
+                { v: false, t: 'Robot-centric' },
+                { v: true, t: 'Field-centric' },
               ]}
             />
             {spec.drivetrain === 'tank' && (
@@ -1431,14 +1428,15 @@ export function Menu({ settings, onChange }: Props) {
                 label="Tank sticks"
                 value={settings.tankControlMode}
                 cols="two"
+                mini
                 onPick={(tankControlMode) => set({ tankControlMode })}
                 options={[
-                  // NO KEY NAMES in these sub-lines any more. Every control in this app is
-                  // rebindable, so "L-stick/W-S: Fwd/Back" is a claim that goes stale the
-                  // moment somebody uses the Controls screen — the same reason the tutorial's
-                  // hints are functions of the bindings rather than strings.
-                  { v: 'normal', t: 'One stick each', d: 'Drive on one, turn on the other' },
-                  { v: 'traditional', t: 'One side each', d: 'Each stick drives its own side' },
+                  // NO SUB-LINES, and no key names. Both of these said their own label back
+                  // ("One stick each · Drive on one, turn on the other"), and a key name is a
+                  // claim that goes stale the moment somebody opens Controls — the same reason
+                  // the tutorial's hints are functions of the bindings rather than strings.
+                  { v: 'normal', t: 'One stick each' },
+                  { v: 'traditional', t: 'One side each' },
                 ]}
               />
             )}
@@ -1474,7 +1472,6 @@ export function Menu({ settings, onChange }: Props) {
             </label>
           </div>
         </section>
-        </div>
       </div>
     </>
   );

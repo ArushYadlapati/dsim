@@ -112,7 +112,7 @@ export type RecordMode = 'solo' | 'duo';
 export type EloMode = '1v1' | '2v2';
 /** a record board: a specific drivetrain or the cross-drivetrain 'overall'.
  * RANKED (ELO) is NOT split by drivetrain — only the record boards are. */
-export type Board = 'mecanum' | 'tank' | 'swerve' | 'xdrive' | 'overall';
+export type Board = 'mecanum' | 'tank' | 'swerve' | 'xdrive' | 'butterfly' | 'overall';
 
 async function getJson<T>(path: string): Promise<T> {
   const base = gameServerHttpUrl();

@@ -3,6 +3,7 @@ import { AwardList } from './AwardBadge';
 import { compareAwards } from '../awards';
 import { type UserStats } from '../net/api';
 import { SupporterBadge } from './SupporterBadge';
+import { TitleMark } from './TitleChip';
 import { averageMatch, playtimeLong, playtimeText } from '../playtime';
 
 /**
@@ -56,6 +57,10 @@ export function CareerPanel({
         <span className="ds-chip">
           <b>{name}</b>
           <SupporterBadge supporter={stats?.supporter} role={stats?.role} />
+          {/* and the equipped title, for the same reason: this chip is the whole of "who
+              you are" on this screen, and a title that shows on the board but not here
+              reads as having been lost. */}
+          <TitleMark title={stats?.title} />
         </span>
         {headerAction}
       </div>

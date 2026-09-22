@@ -21,10 +21,12 @@ import {
   type BbScoreMode,
   bbIntakeMountOf,
   mountsClash,
+  occupiedCells,
 } from './mounts';
 import {
   BB_INTAKE_KINDS,
   BB_LIFT_KINDS,
+  BB_LIFT_POSITIONS,
   type BbIntakeKind,
   type BbLauncherSpec,
   type BbLiftKind,
@@ -121,38 +123,133 @@ function twinCellBlock(m: BbMountPos, at: BbMountPos, other: BbMountPos, otherNa
   return undefined;
 }
 
-/** one 3x3 chassis map for a double turret's POLLEN or NECTAR turret. The other turret's cell,
- * its neighbours and the centre are disabled: two turret rings in neighbouring cells overlap on
- * every legal chassis (`BB_TWIN_PARTNER`, `mechs.ts`). */
-function TwinTurretGrid(props: {
+/** what a chassis-map cell carries on top of its own name: the mechanism already bolted there. */
+type BbCellMark = 'turret' | 'nectar' | 'dumper' | 'tube';
+
+/**
+ * ONE mounted mechanism, as a 16x16 glyph.
+ *
+ * NOSE-UP, like everything else that draws this robot: the top of a cell is the FRONT of the
+ * chassis (`ROBOT_FRAME` in `RobotPreview.tsx`), so a turret's barrel points at the top of the
+ * cell and a dumper's tray lies across the side it throws over. The shapes are the preview's,
+ * cut down — a ring with a barrel, a tray on two arms, a hollow section with a placement ring.
+ */
+function BbMountGlyph({ mark }: { mark: BbCellMark }) {
+  const s = 'currentColor';
+  return (
+    <svg className="bb-cell-g" viewBox="0 0 16 16" aria-hidden="true">
+      {mark === 'dumper' ? (
+        <>
+          <rect x="2" y="3" width="12" height="3" rx="1.2" fill={s} />
+          <line x1="4" y1="6" x2="4" y2="12" stroke={s} strokeWidth="1.4" strokeLinecap="round" />
+          <line x1="12" y1="6" x2="12" y2="12" stroke={s} strokeWidth="1.4" strokeLinecap="round" />
+        </>
+      ) : mark === 'tube' ? (
+        <>
+          <rect x="6" y="5" width="4" height="10" fill="none" stroke={s} strokeWidth="1.5" />
+          <circle cx="8" cy="2.4" r="2" fill="none" stroke={s} strokeWidth="1.4" />
+        </>
+      ) : (
+        <>
+          <circle cx="8" cy="9" r="4.4" fill="none" stroke={s} strokeWidth="1.5" />
+          {mark === 'nectar' ? <circle cx="8" cy="9" r="1.8" fill={s} /> : null}
+          <line x1="8" y1="9" x2="8" y2="1.5" stroke={s} strokeWidth="1.8" strokeLinecap="round" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+/**
+ * THE CHASSIS MAP — where a mechanism is bolted, as a picture of the robot instead of a list of
+ * nine words.
+ *
+ * ── WHY IT REPLACED THE 3x3 BUTTON GRID (owner, 2026-09-22) ─────────────────
+ * The grid it replaces was already in map ORDER — `BB_MOUNT_POSITIONS` has been since Chain
+ * Reaction — but nothing on screen said so. No frame around it, no front, and no sign of what
+ * was already bolted to the robot, so nine cells reading `F·LEFT … B·RIGHT` were nine words you
+ * had to hold the chassis in your head to read. Three things fix that and all three are here:
+ * the cells sit INSIDE a chassis outline, the FRONT is named and marked at the top of it, and
+ * every cell shows the mechanism sitting on it.
+ *
+ * ⚠️ FRONT IS UP AND THE ROBOT'S LEFT IS THE SCREEN'S LEFT — `BB_MOUNT_POSITIONS` order, the
+ * same nose-up frame the 2D preview draws in (`ROBOT_FRAME`; CLAUDE.md Gotchas). A mirrored map
+ * is invisible on a symmetric build and wrong on every asymmetric one.
+ *
+ * A cell this particular map cannot pick is still DRAWN, as inert frame. That is the context the
+ * old grid had no way to show: a dumper spans a whole side, so the tube's map draws three
+ * blocked cells for one launcher, and the corners of a dumper's own map are frame.
+ */
+function BbChassisMap({
+  caption,
+  cells,
+  at,
+  marks,
+  blocked,
+  onPick,
+}: {
+  /** the map's LABEL — a `.ds-field` `.cap`, so it reads as the same kind of row as every other
+   * pick on the screen. */
   caption: string;
+  /** the positions this map can pick. Everything else is drawn as frame. */
+  cells: readonly BbMountPos[];
   at: BbMountPos;
-  other: BbMountPos;
-  otherName: string;
+  /** what the OTHER mechanisms occupy, so a placement is made against the whole robot. */
+  marks: Partial<Record<BbMountPos, BbCellMark>>;
+  /** why this cell cannot take the mechanism. An ENABLED cell gets none — its label names it. */
+  blocked?: (m: BbMountPos) => string | undefined;
   onPick(m: BbMountPos): void;
 }) {
-  const { caption, at, other, otherName, onPick } = props;
   return (
-    // A `.ds-field` with a `.cap`, not a `.ds-hint` over a loose grid: "POLLEN turret" is the
-    // grid's LABEL, and a hint is for the thing a label cannot say. Both maps then read as the
-    // same kind of row as every other pick on the screen.
     <div className="ds-field">
       <span className="cap">{caption}</span>
-      <div className="ds-opts three">
-        {BB_MOUNT_POSITIONS.map((m) => {
-          const why = twinCellBlock(m, at, other, otherName);
-          return (
-            <button
-              key={m}
-              className={`ds-opt mini ${at === m ? 'on' : ''}`}
-              disabled={why !== undefined}
-              title={why}
-              onClick={() => onPick(m)}
-            >
-              <span className="ot">{BB_MOUNT_POS_LABELS[m]}</span>
-            </button>
-          );
-        })}
+      <div className="bb-map">
+        <span className="bb-map-front">
+          <svg className="bb-map-nose" viewBox="0 0 12 6" aria-hidden="true">
+            <path
+              d="M1 5 L6 1 L11 5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          Front
+        </span>
+        <div className="bb-map-grid">
+          {BB_MOUNT_POSITIONS.map((m) => {
+            const mark = marks[m];
+            const body = (
+              <>
+                {mark ? <BbMountGlyph mark={mark} /> : null}
+                <span className="bb-cell-l">{BB_MOUNT_POS_LABELS[m]}</span>
+              </>
+            );
+            if (!cells.includes(m)) {
+              return (
+                <span className="bb-cell dead" key={m}>
+                  {body}
+                </span>
+              );
+            }
+            const why = blocked?.(m);
+            const on = at === m;
+            return (
+              <button
+                key={m}
+                type="button"
+                className={`bb-cell${on ? ' on' : ''}`}
+                disabled={why !== undefined}
+                title={why}
+                aria-pressed={on}
+                onClick={() => onPick(m)}
+              >
+                {body}
+              </button>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -204,7 +301,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
   /** LAUNCHER pick. The mount and hood survive the swap. A corner a turret was bolted to folds
    * to its nearest edge for a dumper on the next coercion. A DOUBLE turret cannot use `center`,
    * so its POLLEN turret folds off it here, and its NECTAR turret is placed at once, so the second
-   * grid below opens already agreeing with the coercer. */
+   * map below opens already agreeing with the coercer. */
   function pickLauncher(kind: BbScoreMode) {
     if (kind === 'twinturret') {
       const mount = bbFoldTwinMount(launcher.mount);
@@ -215,7 +312,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
   }
 
   /** the launcher's (POLLEN turret's) cell. A double turret's NECTAR cell is re-resolved against
-   * it, which is a no-op for any cell the grid lets you click. */
+   * it, which is a no-op for any cell the map lets you click. */
   function pickLauncherMount(m: BbMountPos) {
     send(
       launcher.kind === 'twinturret'
@@ -229,8 +326,6 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
   function pickMount2(m: BbMountPos) {
     send({ ...launcher, mount2: m }, lift);
   }
-
-  /** HOOD angle — a dumper's only dial. */
 
   /** BOX TUBE pick: none, or a tube. A new tube starts at the back when that is free, else at
    * the first free perimeter cell — the same fallback `coerceBbMech` itself uses. Re-picking the
@@ -250,6 +345,18 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
   }
 
   const blockers = bbLauncherBlocker(launcher);
+  // WHAT IS ALREADY ON THE CHASSIS, for the maps below. Each map draws the OTHER mechanisms so a
+  // placement is made against the whole robot rather than against nine bare words.
+  // A dumper spans its whole side (`occupiedCells`), which is why this is a set of cells and not
+  // one cell: the tube's map has to show all three as taken, and it is the same expansion
+  // `bbResolveLiftMount` folds around.
+  const launcherMarks: Partial<Record<BbMountPos, BbCellMark>> = {};
+  for (const c of occupiedCells(launcher.mount, launcher.kind === 'dumper')) {
+    launcherMarks[c] = launcher.kind === 'dumper' ? 'dumper' : 'turret';
+  }
+  if (launcher.kind === 'twinturret' && launcher.mount2) launcherMarks[launcher.mount2] = 'nectar';
+  const tubeMarks: Partial<Record<BbMountPos, BbCellMark>> = lift ? { [lift.mount]: 'tube' } : {};
+  const mount2 = launcher.mount2 ?? bbResolveMount2(launcher.mount, undefined);
 
   return (
     <>
@@ -279,48 +386,48 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
           NO CELL IS GATED against the sweeper: the launcher sits ABOVE the deck and the sweeper
           on the floor, so a front sweeper feeding a front dumper is a legal build. */}
       {launcher.kind === 'turret' && (
-        <div className="ds-opts three">
-          {BB_MOUNT_POSITIONS.map((m) => (
-            <button
-              key={m}
-              className={`ds-opt mini ${launcher.mount === m ? 'on' : ''}`}
-              onClick={() => pickLauncherMount(m)}
-            >
-              <span className="ot">{BB_MOUNT_POS_LABELS[m]}</span>
-            </button>
-          ))}
-        </div>
+        <BbChassisMap
+          caption="Turret position"
+          cells={BB_MOUNT_POSITIONS}
+          at={launcher.mount}
+          marks={tubeMarks}
+          onPick={pickLauncherMount}
+        />
       )}
       {launcher.kind === 'twinturret' && (
-        <>
-          <TwinTurretGrid
+        // SIDE BY SIDE in a `.ds-fields` row, not stacked: the two turrets are picked against
+        // each other — each map greys out where the other one is — and stacked they were two
+        // screens apart on a narrow build column.
+        <div className="ds-fields">
+          <BbChassisMap
             caption="POLLEN turret"
+            cells={BB_MOUNT_POSITIONS}
             at={launcher.mount}
-            other={launcher.mount2 ?? bbResolveMount2(launcher.mount, undefined)}
-            otherName="NECTAR"
+            marks={{ ...tubeMarks, [mount2]: 'nectar' }}
+            blocked={(m) => twinCellBlock(m, launcher.mount, mount2, 'NECTAR')}
             onPick={pickLauncherMount}
           />
-          <TwinTurretGrid
+          <BbChassisMap
             caption="NECTAR turret"
-            at={launcher.mount2 ?? bbResolveMount2(launcher.mount, undefined)}
-            other={launcher.mount}
-            otherName="POLLEN"
+            cells={BB_MOUNT_POSITIONS}
+            at={mount2}
+            marks={{ ...tubeMarks, [launcher.mount]: 'turret' }}
+            blocked={(m) => twinCellBlock(m, mount2, launcher.mount, 'POLLEN')}
             onPick={pickMount2}
           />
-        </>
+        </div>
       )}
       {launcher.kind === 'dumper' && (
-        <div className="ds-opts four">
-          {BB_SHOOTER_EDGES.map((m) => (
-            <button
-              key={m}
-              className={`ds-opt mini ${launcher.mount === m ? 'on' : ''}`}
-              onClick={() => pickLauncherMount(m)}
-            >
-              <span className="ot">{BB_MOUNT_POS_LABELS[m]}</span>
-            </button>
-          ))}
-        </div>
+        // FOUR targets on the same nine-cell chassis. The corners and the centre are drawn as
+        // frame rather than left out: a dumper's launch line spans a whole side, so a corner is
+        // not a place it can be built, and showing the frame is what says so.
+        <BbChassisMap
+          caption="Firing edge"
+          cells={BB_SHOOTER_EDGES}
+          at={launcher.mount}
+          marks={tubeMarks}
+          onPick={pickLauncherMount}
+        />
       )}
       {/* NO ELEVATION DIAL FOR EITHER. A turret solves its own elevation per shot, and a dumper
           lobs each dump for its distance (owner, 2026-09-13 — `bbLobThrow`), so a Hood slider
@@ -349,28 +456,23 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
         ))}
       </div>
       {lift && (
-        /* The same 3x3 chassis map. A tube and a launcher both sit ABOVE the deck, so this grid
-           CAN clash with the launcher — both turrets of a double turret, or a dumper's whole
-           edge (`bbLauncherBlocker`). The centre is never offered: the placement point has to
-           sit past a chassis edge to reach a FLOWER. No height dial — a tube places at a point. */
-        <div className="ds-opts three">
-          {BB_MOUNT_POSITIONS.map((m) => {
-            const centre = m === 'center';
-            const clash =
-              !centre && lift.mount !== m && blockers.some((b) => mountsClash({ pos: m, spansEdge: false }, b));
-            return (
-              <button
-                key={m}
-                className={`ds-opt mini ${lift.mount === m ? 'on' : ''}`}
-                disabled={centre || clash}
-                title={centre ? 'The tube sits on the frame edge' : clash ? 'The launcher is mounted here' : undefined}
-                onClick={() => pickLiftMount(m)}
-              >
-                <span className="ot">{BB_MOUNT_POS_LABELS[m]}</span>
-              </button>
-            );
-          })}
-        </div>
+        /* The same chassis map. A tube and a launcher both sit ABOVE the deck, so this one CAN
+           clash with the launcher — both turrets of a double turret, or a dumper's whole edge
+           (`bbLauncherBlocker`), which is why the map draws where the launcher is. The centre is
+           frame, never a target: the placement point has to sit past a chassis edge to reach a
+           FLOWER. No height dial — a tube places at a point. */
+        <BbChassisMap
+          caption="Tube position"
+          cells={BB_LIFT_POSITIONS}
+          at={lift.mount}
+          marks={launcherMarks}
+          blocked={(m) =>
+            lift.mount !== m && blockers.some((b) => mountsClash({ pos: m, spansEdge: false }, b))
+              ? 'The launcher is mounted here'
+              : undefined
+          }
+          onPick={pickLiftMount}
+        />
       )}
 
       {/* ---- INTAKE ---- */}

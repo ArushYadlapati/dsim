@@ -1,4 +1,6 @@
+import { parseAwardTitleId } from '../awards';
 import { titleLabel } from '../cosmetics';
+import { AwardBadge } from './AwardBadge';
 
 /**
  * A LEDGER TITLE beside a name — `title:stargazer` and whatever the rewards ledger grants
@@ -35,4 +37,26 @@ export function TitleChip({ id }: { id: string }) {
       {label}
     </span>
   );
+}
+
+/**
+ * THE ONE-OF-TWO, in one place.
+ *
+ * An equipped title is a single id and it renders as EITHER an `AwardBadge` (a season award,
+ * whose id encodes its own board and rank) or a `TitleChip` (everything the rewards ledger
+ * grants) — never both, and never neither when the id is set. Every surface that prints a
+ * name has to make that choice, and `Leaderboard.tsx` made it inline in two places while the
+ * other seven surfaces did not make it at all.
+ *
+ * That is the `badgeCols` failure mode one layer up (`docs/area/accounts.md`): a surface that
+ * simply omits the chip still compiles and still renders, only bare — so the rule is a
+ * component, the way the badge itself is, rather than three lines copied per row type.
+ *
+ * It is a SIBLING of `SupporterBadge`, never nested in it: a champion who also pays shows
+ * both, and a badge is decoration beside a name rather than part of one.
+ */
+export function TitleMark({ title }: { title?: string | null }) {
+  if (!title) return null;
+  const award = parseAwardTitleId(title);
+  return award ? <AwardBadge award={award} /> : <TitleChip id={title} />;
 }

@@ -4,7 +4,19 @@ import { clamp } from '../../math';
 import { robotsEnabled } from '../../sim/match';
 import { drawDecal, ROBOT_TRIM, roundRect, tintColor } from '../../render/drawRobot';
 import { accentFill, clampCosmetics } from '../../cosmetics';
-import { BB_BOX_TUBE_OVERLAP, BB_PLACE_MARK_R, bbBoxTubeGlyph, drawChassisBody, drawChassisOutline, drawWheels } from './parts';
+import {
+  BB_BOX_TUBE_OVERLAP,
+  BB_FRONT_INK,
+  BB_HAZARD_INK,
+  BB_HAZARD_TICKS,
+  BB_PLACE_MARK_R,
+  BB_REAR_INK,
+  bbBoxTubeGlyph,
+  bbFrontMarks,
+  drawChassisBody,
+  drawChassisOutline,
+  drawWheels,
+} from './parts';
 import {
   BB_HOOD_DEFAULT_DEG,
   BB_LAUNCH_LINE_FRAC,
@@ -47,8 +59,9 @@ import { BB_ALLIANCE_BLUE, ELEMENT_FILL, ELEMENT_LINE } from './draw';
  * published terrain, so there is nothing for any of them to depict. What is left is the part
  * that matters: A BUILD READS AT A GLANCE. The mounted sweeper, this build's LAUNCHER (one turret
  * on top · two individual turrets · a chassis-wide dumper tray), its BOX TUBE (a short tube at its
- * mount plus the placement-point marker), the ELEMENTS it is holding, and a heading chevron.
- * Front = robot +x.
+ * mount plus the placement-point marker), the ELEMENTS it is holding, and the FRONT/BACK marks —
+ * a near-white light bar at the front rail, a deck arrow pointing at it and an amber hazard bar
+ * at the rear (`bbFrontMarks`, `parts.ts`, carries the design). Front = robot +x.
  *
  * ── A BUILD IS A MANDATORY LAUNCHER PLUS AN OPTIONAL BOX TUBE ───────────────
  * `bbLauncherOf`/`bbLiftOf` (`mechs.ts`) are the one place that reads `RobotSpec.bbMech` and
@@ -209,25 +222,18 @@ export function drawBiobuzzRobot(
   // The BOX TUBE — bolted flat to the frame at its mount, no independent heading and no raise.
   if (lift) drawBoxTube(ctx, r.spec, lift);
 
+  // WHICH END IS THE FRONT — light bar, deck arrow, hazard bar. Drawn LAST inside the clip, over
+  // every mechanism, because a cue that a sweeper can cover is not a cue. `bbFrontMarks`'
+  // header (`parts.ts`) is the language and the reason it is not the alliance colour.
+  drawFrontBack(ctx, r.spec);
+
   drawChassisOutline(ctx, r, ROBOT_TRIM); // the silhouette line — neutral; the alliance is the name label + the fills
 
   ctx.restore(); // ...end of the footprint clip
 
   // THE INTAKE'S REACH PAST THE FRAME — siderollers/ramp only, and only out here, unclipped
-  // (see the function header). Drawn before the chevron so the chevron still reads on top.
+  // (see the function header).
   drawBiobuzzIntakeReach(ctx, r, intaking, world);
-
-  // HEADING CHEVRON, near the REAR so it does not fight the front mechanisms. A top-down
-  // rectangle has no front, and on a robot whose sweeper is mounted at the BACK the
-  // mechanisms actively lie about which way it faces — so the chevron is the only thing that
-  // tells you which end is forward.
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(-hl + 4.6, 0);
-  ctx.lineTo(-hl + 1.8, 1.9);
-  ctx.lineTo(-hl + 1.8, -1.9);
-  ctx.closePath();
-  ctx.fill();
 
   // WHAT IT IS HOLDING, at fixed slots on the deck — before the turrets, which sit on top.
   drawHeldElements(ctx, r, launcher, lift);
@@ -262,6 +268,47 @@ export function drawBiobuzzRobot(
       drawTurret(ctx, r, launcher.mount, r.turretHeading, r.bbTurretPitch ?? 0, loaded, null);
     }
   }
+}
+
+/**
+ * THE FRONT/BACK LANGUAGE, 2D half. `bbFrontMarks` (`parts.ts`) is the geometry and the header
+ * there is the design; this only fills it. In the ROBOT frame, already translated and rotated,
+ * and inside the footprint clip.
+ *
+ * The bars are drawn with a thin dark LIP on their inboard edge. Without it a near-white bar on a
+ * light cosmetic chassis (`chassisFill('white')`) has no boundary at all, and the whole point of
+ * the mark is that it reads against whatever the player painted the robot.
+ */
+function drawFrontBack(ctx: CanvasRenderingContext2D, spec: RobotSpec): void {
+  const m = bbFrontMarks(spec);
+
+  // 1. THE LIGHT BAR, full width at the front edge
+  ctx.fillStyle = BB_FRONT_INK;
+  ctx.fillRect(m.front.x0, -m.front.halfY, m.front.x1 - m.front.x0, m.front.halfY * 2);
+  ctx.fillStyle = 'rgba(17,21,27,0.55)';
+  ctx.fillRect(m.front.x0, -m.front.halfY, 0.18, m.front.halfY * 2);
+
+  // 2. THE HAZARD BAR, full width at the rear edge — near-black with amber ticks
+  ctx.fillStyle = BB_REAR_INK;
+  ctx.fillRect(m.rear.x0, -m.rear.halfY, m.rear.x1 - m.rear.x0, m.rear.halfY * 2);
+  ctx.fillStyle = BB_HAZARD_INK;
+  const span = m.rear.halfY * 2;
+  const tick = span / (BB_HAZARD_TICKS * 2);
+  for (let i = 0; i < BB_HAZARD_TICKS; i++) {
+    ctx.fillRect(m.rear.x0, -m.rear.halfY + i * tick * 2, m.rear.x1 - m.rear.x0, tick);
+  }
+
+  // 3. THE DECK ARROW, pointing at the light bar and away from the ticks
+  ctx.fillStyle = BB_FRONT_INK;
+  ctx.beginPath();
+  ctx.moveTo(m.arrow.apex, 0);
+  ctx.lineTo(m.arrow.base, m.arrow.half);
+  ctx.lineTo(m.arrow.base, -m.arrow.half);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(17,21,27,0.55)';
+  ctx.lineWidth = 0.22;
+  ctx.stroke();
 }
 
 /**
@@ -799,7 +846,7 @@ const heldLayoutCache = new Map<string, Vec2[]>();
  * double), a Box Tube at any of eight, and on a 13.5 in chassis there is no one place that clears
  * all of those. So this searches a small grid of centres for each arrangement in
  * `HELD_LAYOUTS` and keeps the one with the most CLEARANCE from what the discs must not cover —
- * the turret rings, the Box Tube and the heading chevron — while staying inside the
+ * the turret rings, the Box Tube and the deck ARROW — while staying inside the
  * frame rail. Pure arithmetic over the spec, so it is deterministic and costs nothing after the
  * first frame.
  */
@@ -826,7 +873,12 @@ export function bbHeldSlots(spec: RobotSpec, launcher: BbLauncherSpec, lift: BbL
     circles.push({ ...turretLocal(spec, launcher.mount), r: ring });
     if (launcher.kind === 'twinturret' && launcher.mount2) circles.push({ ...turretLocal(spec, launcher.mount2), r: ring });
   }
-  circles.push({ x: -hl + 3.2, y: 0, r: 1.6 }); // the heading chevron
+  // the DECK ARROW's own keep-out, read off `bbFrontMarks` rather than typed: the arrow grew
+  // when the front/back language landed (2026-09-22) and a stale literal here would have let a
+  // held disc sit on top of the one mark that says which way the robot faces. The end BARS are
+  // not in this list — they are at the rails, where `hl - 1.2` already keeps a disc out.
+  const arrow = bbFrontMarks(spec).arrow;
+  circles.push({ x: (arrow.apex + arrow.base) / 2, y: 0, r: Math.max((arrow.apex - arrow.base) / 2, arrow.half) });
   // NOT the wheels: on a 13.5 in chassis with a centre turret there is no spot that clears both
   // the ring and all four wheels, and a disc over a tyre still reads — a disc over a ring does not.
   const tube = lift ? bbBoxTubeGlyph(spec, lift.mount, bbPlacePointLocal(spec)) : null;

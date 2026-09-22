@@ -92,7 +92,7 @@ function AdminHeader({ tab, setTab }: { tab: AdminTab; setTab: (t: AdminTab) => 
 }
 
 type RecMode = 'solo' | 'duo';
-const DRIVETRAINS = ['overall', 'mecanum', 'tank', 'swerve', 'xdrive'] as const;
+const DRIVETRAINS = ['overall', 'mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'] as const;
 const ANN_KINDS: { value: AnnouncementKind; label: string }[] = [
   { value: 'patch', label: 'Patch notes / bug fixes' },
   { value: 'season', label: 'New season (cinematic)' },

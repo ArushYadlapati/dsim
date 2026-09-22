@@ -299,6 +299,17 @@ export interface LobbyPlayer {
    */
   role?: StaffRole;
   /**
+   * the EQUIPPED TITLE id, or null — the award hexagon / ledger chip beside this
+   * driver's name, resolved client-side by `parseAwardTitleId` without a second query.
+   *
+   * Server-authored on exactly the same terms as the two above, and for the same reason:
+   * a title is something earned, so a self-declared one is a claim to have earned it.
+   * Read once at join from the account (`getProfile`), like the badge fields, so a roster
+   * broadcast still costs no database read. Optional, so an older server that never sets
+   * it and an older client that ignores it both keep working against this build.
+   */
+  title?: string | null;
+  /**
    * THIS SEAT IS A BOT, and the string is its TIER (plan §6).
    *
    * Server-authored on exactly the same terms as `supporter` and `role` — `sanitizePlayerPatch`
@@ -349,6 +360,20 @@ export interface MatchDriver {
   robotId: number;
   /** the driver's username, already moderated (`scrubName` at join) */
   name: string;
+  /**
+   * The BADGE FIELDS, carried so the results roster can name a driver the way every other
+   * surface does. Copied from the same `LobbyPlayer` the lobby roster renders — never read
+   * a second time, and never accepted from a client, for the reasons stated there. Both are
+   * optional: an older server sends neither and the roster row renders bare, which is
+   * exactly what it drew before this existed.
+   *
+   * NO `title` here, unlike `LobbyPlayer`. The results roster is a one-line broadcast row
+   * whose name marquees rather than wraps, and a variable-width title chip takes its width
+   * from the name — see the note beside `.resx-roster-name` in styles.css. A field nothing
+   * renders is a field that goes stale, so it is not on the wire.
+   */
+  supporter?: boolean;
+  role?: StaffRole;
 }
 
 /** one driver's overall-ELO change, sent after a ranked match is scored so the

@@ -18,9 +18,7 @@ import { moduleFor } from '../games';
 import { serverPhysics } from '../games/types';
 import { PeriodPicker } from './PeriodPicker';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
-import { AwardBadge } from './AwardBadge';
-import { parseAwardTitleId } from '../awards';
-import { TitleChip } from './TitleChip';
+import { TitleMark } from './TitleChip';
 import { PLACEMENT_GAMES } from '../config';
 import {
   CHAIN_MODE_LABELS,
@@ -47,6 +45,7 @@ const BOARDS: { id: Board; label: string }[] = [
   { id: 'tank', label: 'Tank' },
   { id: 'swerve', label: 'Swerve' },
   { id: 'xdrive', label: 'X-Drive' },
+  { id: 'butterfly', label: 'Butterfly' },
 ];
 
 const DT_LABEL: Record<DrivetrainType, string> = {
@@ -83,13 +82,6 @@ function DriverName({
   onOpenProfile?: (username: string) => void;
 }) {
   const label = handle ?? (username ? `@${username}` : 'Player');
-  /* THE AWARD CHIP. `title` is an id that encodes its own award, so a board prints one
-     without reading `season_awards` at all.
-     ⚠️ A `title:` grant from the cosmetics ledger parses to NULL here, and for a while that
-     meant it drew nothing — so the GitHub star's title was granted, equippable, and invisible
-     on the one surface the title picker promises it shows up on. `TitleChip` is that other
-     path; exactly one of the two renders, because a title is one id. */
-  const award = title ? parseAwardTitleId(title) : null;
   if (username && onOpenProfile) {
     return (
       <button
@@ -106,7 +98,7 @@ function DriverName({
             part of it. */}
         <span className="lb-name-h">{label}</span>
         <SupporterBadge supporter={supporter} role={role} />
-        {award ? <AwardBadge award={award} /> : title ? <TitleChip id={title} /> : null}
+        <TitleMark title={title} />
         <span className="lb-at">@{username}</span>
       </button>
     );
@@ -115,9 +107,9 @@ function DriverName({
     <>
       <span className="lb-name-h">{label}</span>
       <SupporterBadge supporter={supporter} role={role} />
-      {/* the same one-of-two as the linked path above — a row without a username (an
-          anonymous or unclaimed run) still shows whatever title it is wearing */}
-      {award ? <AwardBadge award={award} /> : title ? <TitleChip id={title} /> : null}
+      {/* a row without a username (an anonymous or unclaimed run) still shows whatever
+          title it is wearing */}
+      <TitleMark title={title} />
     </>
   );
 }
@@ -270,9 +262,8 @@ export function Leaderboard({
    * history; a season was NOT reset over this (the owner's standing rule), and the column
    * migration 0039 added is what makes hiding them possible without wiping anything.
    *
-   * `threeD` is what `twoEras` became: it no longer gates a filter, only the one line of copy
-   * that says which solve the board is made of, which is worth saying for a game whose players
-   * can also practise on the other one.
+   * `threeD` is what `twoEras` became: it filters an older server's mixed response down to the
+   * rows this board is actually made of (see the `physics` filter below).
    */
   const threeD = serverPhysics(moduleFor(game)) === '3d';
 
@@ -399,7 +390,9 @@ export function Leaderboard({
         {isRecords && (
           <div className="ds-panel-h">
             <span className="ds-panel-title">Drivetrain</span>
-            <div className="ds-segs">
+            {/* `.even` — six entries never fit a phone, so this one wraps into an even grid
+                rather than a ragged 4 + 2. See the rule in shell.css for why not a scroller. */}
+            <div className="ds-segs even">
               {BOARDS.map((b) => (
                 <button key={b.id} className={`ds-seg ${board === b.id ? 'on' : ''}`} onClick={() => setBoard(b.id)}>
                   {b.label}
@@ -407,10 +400,6 @@ export function Leaderboard({
               ))}
             </div>
           </div>
-        )}
-
-        {isRecords && threeD && (
-          <p className="ds-panel-foot ds-hint">Record runs are played on the 3D physics.</p>
         )}
 
         {!isRecords && status === 'ok' && me && <MyStanding me={me} />}

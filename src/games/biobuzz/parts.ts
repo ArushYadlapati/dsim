@@ -331,3 +331,97 @@ export function bbBoxTubeGlyph(
     outer,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WHICH END IS THE FRONT — the one language, read by BOTH renderers
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ⚠️ **A SYMMETRIC ROBOT HAS NO FRONT, AND THE PICTURE HAS TO GIVE IT ONE** (owner, 2026-09-22:
+ * "somehow make it clearer fundamentally which side is front and which is back in game. This is
+ * especially confusing in a symmetric robot in 3D").
+ *
+ * What was there: 2D drew a small chevron at the rear in the ALLIANCE colour, and 3D drew a
+ * 0.7 × 22%-width white block on the front cross member. Both fail the case that prompted this —
+ * a `frontback` sweeper with a `center` turret is mirror-symmetric, so the only asymmetric thing
+ * on it was a 0.7-in block that is invisible at match camera distance and behind the intake from
+ * the one angle you would look for it. The 2D chevron had the second problem: it was drawn in the
+ * alliance colour, so "red at that end" competed with "red team" for the same cue.
+ *
+ * ── THE LANGUAGE ────────────────────────────────────────────────────────────
+ * Three marks, the same three in both renderers, none of them in an alliance colour:
+ *  1. a **LIGHT BAR** across the FULL front edge, near-white (`BB_FRONT_INK`) — headlights, the
+ *     most-read "this end goes first" signal there is, and full-width so it survives being
+ *     partly occluded by whatever is mounted up front;
+ *  2. a **CHEVRON** on the deck pointing forward, in the same near-white, sitting just ahead of
+ *     the rear bar where no mechanism is ever drawn (the front third belongs to the intake and
+ *     the turret; an arrow there is under something on half the builds);
+ *  3. a **HAZARD BAR** across the FULL rear edge, near-black with amber ticks — the back of a
+ *     truck. The pair is what carries it: the arrow points AWAY from the striped end.
+ *
+ * Colours are CATEGORY 3 (CLAUDE.md THEMING: the ground is the canvas and the field is hardcoded
+ * dark), so none of them themes. Amber rather than a second white because the rear has to read as
+ * a different KIND of mark, not a dimmer one; it is a ticked pattern on near-black and never a
+ * disc, so it does not compete with a POLLEN (`#f2d14b`).
+ *
+ * ── IT FOLLOWS THE SIM'S FRONT, NOT THE DRIVER'S "REVERSED" ─────────────────
+ * Flip-front is an INPUT transform (`GameController`); it rotates the stick, never `r.heading`,
+ * and the HUD already says REVERSED. The mark stays on the sim's +x for three reasons: the sim's
+ * front is what the intake, the shooter and every collider are measured from, so a mark that
+ * moved would disagree with the hardware it is drawn next to; a match has four other people
+ * looking at the same robot (and a replay has any number), and only one of them pressed the
+ * button; and in 3D the robot is ONE group in a shared scene graph — there is no per-viewer
+ * variant of a mesh. REVERSED is a property of a driver's stick, not of the machine.
+ */
+export const BB_FRONT_INK = '#f8fafc';
+export const BB_REAR_INK = '#11151b';
+export const BB_HAZARD_INK = '#f59e0b';
+/** bar thickness along the robot's own x (in), and how far in from each rail the bars stop so
+ *  they never fight `C.CHASSIS_CORNER`'s rounding. DRAWING sizes. */
+export const BB_END_BAR_T = 0.9;
+export const BB_END_BAR_INSET = 1.0;
+/** the deck chevron (in): how far ahead of the rear bar its base sits, its length and its
+ *  half-width. Sized to read at the ~8 px/in the match camera gives a 2D sprite — and kept SHORT
+ *  and WIDE, tucked against the rear bar, because a `center` turret's ring covers the middle of
+ *  the deck on every chassis and a longer arrow disappeared under it in the first captures. */
+export const BB_FRONT_ARROW_GAP = 0.6;
+export const BB_FRONT_ARROW_LEN = 2.8;
+export const BB_FRONT_ARROW_HALF = 3.0;
+/** how many amber ticks the rear bar carries */
+export const BB_HAZARD_TICKS = 5;
+/** 3D ONLY: how far the two end bars stand above the deck, and how thick the extruded deck arrow
+ *  is (in). The bars are deliberately TALL enough to break the chassis silhouette from a chase
+ *  camera — flush with the deck they were invisible from behind, which is the view a driver
+ *  spends the match in. 1.8 puts the top at 6.4, clear of the 5.3 (`BB3_CHASSIS_TOP_Z`) the whole
+ *  LOW BODY is drawn under, so a sweeper roller at either end cannot hide the mark on that end —
+ *  measured from offscreen captures, 1.1 sat inside the roller's own envelope and a `frontback`
+ *  build, which is the symmetric case the report is about, hid BOTH marks from a chase camera.
+ *  Neither is a collider; see `buildFrontMarks`. */
+export const BB_END_BAR_H = 1.8;
+export const BB_FRONT_ARROW_T = 0.12;
+/** 3D ONLY: how far the rear bar's amber ribs stand proud of its dark core (in). The CORE is
+ *  inset by it rather than the ribs raised, so the pair's envelope is exactly the bar and the
+ *  ribs never poke past the rail or under the deck. */
+export const BB_HAZARD_PROUD = 0.06;
+
+/**
+ * The three marks in the ROBOT frame (+x forward), as plain numbers — no canvas, no three.js.
+ * ONE derivation, so the 2D sprite and the 3D chassis cannot drift apart about which end is
+ * which, the same bargain `bbBoxTubeGlyph` already makes for the tube.
+ *
+ * `front`/`rear` are bars `[x0, x1] × [−halfY, halfY]`; `arrow` is the chevron's three points.
+ */
+export function bbFrontMarks(spec: Pick<RobotSpec, 'length' | 'width'>): {
+  front: { x0: number; x1: number; halfY: number };
+  rear: { x0: number; x1: number; halfY: number };
+  arrow: { apex: number; base: number; half: number };
+} {
+  const hl = spec.length / 2;
+  const halfY = Math.max(0.5, spec.width / 2 - BB_END_BAR_INSET);
+  const base = -hl + BB_END_BAR_T + BB_FRONT_ARROW_GAP;
+  return {
+    front: { x0: hl - BB_END_BAR_T, x1: hl, halfY },
+    rear: { x0: -hl, x1: -hl + BB_END_BAR_T, halfY },
+    arrow: { apex: base + BB_FRONT_ARROW_LEN, base, half: Math.min(BB_FRONT_ARROW_HALF, halfY) },
+  };
+}

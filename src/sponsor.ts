@@ -7,7 +7,7 @@
  * sell. This module is the OTHER thing: who presents DSIM, the application. The
  * home menu therefore reads
  *
- *     BIOBUZZ presented by RTX · 2D Driver Practice      (the season eyebrow)
+ *     BIOBUZZ presented by RTX                           (the season eyebrow)
  *     DSIM                                               (the app)
  *     …presented by Offset Robotics                      (this module)
  *

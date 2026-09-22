@@ -1,6 +1,81 @@
+# HANDOFF — 2026-09-22d (repeat fouls, the BIOBUZZ mass model, presets, builder strip, box tube, front marks, copy)
+
+**State: green.** `npm test` (2288 + 4972, ALL PASS, no flakes hit), `npm run build`, `server:check`,
+`uiaudit` (baselines: `literal-radius` 13→12, `off-scale-font-size` 46→45), `docaudit`, `contrast`
+(247), `bundleaudit` (`scene` baseline 216.61→221.06, real geometry, note in the file), `test:mm`,
+`dbtest`. One commit on `claude/biobuzz-ui-physics-fixes-2745b9`, branched from alpha.
+
+⚠️ **THIS IS A SERVER CHANGE** — G402/G407 billing, `bbMassLimits` in the coercer, the new default
+spec, and `LobbyPlayer.title` / `MatchDriver.supporter|role` on the wire. Deploy the game server
+with the client. Additive protocol fields only; old clients ignore them.
+
+Owner requests, and where each landed:
+
+- **Fouls bill per instance, not once per match.** `penalties.ts`: G402's `g402billed` latch is gone;
+  a (crosser, victim) pair bills on each rising edge of "crossed and in contact", debounced by
+  `BB_G402_REARM_S` = 1 s via `world.penalties.episodes` (DECODE's own debounce idiom). The window
+  is sized to MEASURED contact chatter: head-on hits never flicker; angled grinds flicker up to
+  0.783 s with the chassis never separating (`scratch/g402sweep.ts`, 908 duels). G407's
+  `g407billed` no longer gates the STRATEGIC MAJOR (every sustained 6+, every 5+ from the second);
+  the flag is still WRITTEN because `hud.ts` reads it for the chip. `robotsContact` →
+  `bbRobotsContact`, exported for the chatter checks. Checks in `rules.ts`.
+- **BIOBUZZ owns its mass model.** `bbMassLimits(spec)` (`config.ts`): bare chassis (mecanum/xdrive
+  11.5, tank 13, swerve 15.5, butterfly 17) + 1.5 per sweeper edge + turret 4 (+3.5 second) +
+  dumper 2.5 + Box Tube 2.5 + inertia term. Mecanum + one sweeper + one turret = **18.00** exactly
+  (asserted). `bbMassFloorBump`/`BB_TWIN_MASS_FLOOR`/`BB_LIFT_MASS_FLOOR` are gone. ⚠️ One line in
+  `src/sim/spawn.ts` (`out.massLb = sp.massLb` inside the existing biobuzz arm) so the shared floor
+  no longer lifts a light build before this model is consulted. R104 sets NO weight limit; the 42
+  ceiling is the sim's drivetrain envelope and says so. The triangle intake was unbuildable
+  (inverted length range) — `bbEnvelope` caps the game floor to the intake ceiling. Not done, flagged:
+  `BB_MAX_LENGTH` (17) is dead — `spawn.ts` still sizes with DECODE's `lengthLimits` (15/14.5/13).
+- **Presets** (all coercer fixed points, all scored with HARD bots, 3D, 5 seeds vs StarterBot):
+  StarterBot 43 · **Pollinator** (`BB_PRESETS[0]`, the new DEFAULT: mecanum, front sweeper, centre
+  turret, back tube, 24.5 lb) 55 · **Forager** (butterfly, front+back sweepers, front dumper,
+  30.5 lb, 420/300) 64 · Skimmer 68 · Sniper 70. The Hauler (25.8, and Chain Reaction's card
+  copied verbatim) is gone. ⚠️ **THE DEFAULT SPEC CHANGED**: 21×17 but asymmetric (front 10.5,
+  rear 7.5). Six fixtures measured on the old symmetric one were retuned: `START_CHASSIS_HALF`
+  10.5→7.5, G304 probes, `PIN_BUILD`/`PARK_BUILD` (they now STATE their 21×17), the dumper
+  close-limit fixture pins `frontback`, the corner-graze scene pins `swerve`. Open: on the
+  corner-graze rig mecanum hooks at 0.30 / 94° where swerve slides — the owner's "stuck on a
+  corner" for what is now the default drivetrain. 3D-lane work.
+- **Robot builder.** The preview is a pinned TOP strip again (owner: the right rail "looks way
+  worse"), one row, 105–106 px at every width (the sprite sets the height, not the tiles); static
+  at ≤720 tall; off under 1100. `.ds-robot-rail` and the `:has(.ds-subnav-layout)` widening are
+  deleted. Placement is a picture: `BbChassisMap` (front up, robot-left = screen-left) replaces all
+  four mount pickers with one glyph-labelled chassis diagram; blocked cells are disabled with the
+  reason as `title`. Four self-explanatory `d:` sub-lines removed from Menu.tsx.
+- **Box tube.** Aims at the NEAR RIM of the top lip (`bbBoxTubeAim` takes `rim`), so the arm stays
+  outside the flower column below the plate — 0/13104 poses inside vs 13104/13104 for the centre
+  aim (check in `render.ts`). Smoothstep ease at `BB_BOX_TUBE_EXTEND_S` 0.40 s (was linear 0.12),
+  retract 0.32, targets slewed at 3 rad/s / 60 in/s so a change of flower sweeps instead of snapping.
+- **Front/back.** `bbFrontMarks` (`parts.ts`) is one geometry for both renderers: near-white
+  light bar across the front rail (emissive in 3D), a short deck arrow, an amber-ribbed hazard bar
+  across the rear. Not alliance colours. Does NOT echo REVERSED (input-level, shared scene).
+- **Copy.** "2D" no longer describes the app anywhere (title/meta/manifest/README/CLAUDE.md, the OG
+  card regenerated). `APP_TAGLINE` deleted; the home lead sentence, the "Driving X · no team" line
+  and "Record runs are played on the 3D physics." removed. Butterfly on the record boards (client
+  `BOARDS`, `Board` type, Admin list; server needed nothing).
+- **UI consistency / mobile / badges.** The "large plain white text" was `.overlay-panel h2` — a
+  bare in-match rule inherited by six shell dialogs and two `.net-overlay-card h3`s; they take
+  `.ds-dialog-title` now. Leaderboard rows: table `min-width` 520, nowrap ellipsis names (20ch /
+  16ch), fixed score column; lobby roster wraps; the six-entry drivetrain filter is an even 3+3
+  under 640 (`.ds-segs.even`). `TitleMark` (award else ledger title) now renders wherever the badge
+  did: Profile, Career, MatchHistory, Friends, Lobby, MatchStrategy (which had no badge at all);
+  Results roster gets the BADGE only (a title chip clipped a long name to "M." on a 340 px half).
+
+Gotchas found on the way: `@discord/embedded-app-sdk` was not installed in this worktree (a bare
+`npm install` fixed the build). `scripts/smoke-biobuzz/sim3d.ts` and `docs/area/biobuzz.md` are
+stored with CRLF in the repo (everything else is LF); they were staged with `core.autocrlf=false`
+so this commit does not rewrite every line of both. Normalize them in a commit of their own.
+
+Next: deploy alpha (`./scripts/fly-deploy.sh --alpha` from an alpha tree) and check a match's
+foul log; decide `BB_MAX_LENGTH`; the mecanum corner hook.
+
+---
+
 # HANDOFF — 2026-09-22c (the solo breakdown sits on the page's own centre line)
 
-**State: green.** `npm run build`, `npm run uiaudit` (all rules at baseline) and the measured
+**State at the time: green.** `npm run build`, `npm run uiaudit` (all rules at baseline) and the measured
 harness below all pass. `npm test` has the TWO known machine-load perf flakes and nothing else
 (`perf: bot-driven 2v2 step3d p95 <= 1.5ms`, `FULL reconciles 40 ticks inside
 PREDICT_FULL_BUDGET_MS`) — see 2026-09-22b's note; this change is CSS and a comment, and the

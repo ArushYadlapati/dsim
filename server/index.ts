@@ -3148,6 +3148,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         if (p?.handle) client.player.name = p.handle;
         if (p?.supporter) client.player.supporter = true;
         if (p?.role) client.player.role = p.role;
+        if (p?.title) client.player.title = p.title;
         client.earnedCosmetics = p?.cosmetics ?? [];
       }
       markAuthed(user.userId);

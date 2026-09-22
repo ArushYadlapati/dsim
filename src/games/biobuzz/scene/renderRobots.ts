@@ -12,7 +12,10 @@ import type { GraphicsSettings, GraphicsTier } from '../graphics/settings';
 import {
   BB3_MOUTH_SLOT_Z,
   BB_BOX_TUBE_EXTEND_S,
+  BB_BOX_TUBE_EXT_SLEW,
+  BB_BOX_TUBE_RETRACT_F,
   BB_BOX_TUBE_SECTIONS,
+  BB_BOX_TUBE_SLEW,
   BB_BOX_TUBE_TIP_CLEAR,
   BB_BOX_TUBE_WALL,
   BB_BOX_TUBE_Z,
@@ -20,6 +23,7 @@ import {
   bbBoxTubeStages,
   BB_DECK_Z,
   BB_FLOWERS,
+  BB_FLOWER_OPEN_R,
   BB_FLOWER_TOP_Z,
   BB_DUMP_RELOAD_S,
   BB_DUMP_SEAT_PITCH,
@@ -68,7 +72,17 @@ import {
   type BbHeadDims,
 } from '../config';
 import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, type BbLauncherSpec } from '../mechs';
-import { bbBoxTubeGlyph } from '../parts';
+import {
+  BB_END_BAR_H,
+  BB_FRONT_ARROW_T,
+  BB_HAZARD_PROUD,
+  BB_FRONT_INK,
+  BB_HAZARD_INK,
+  BB_HAZARD_TICKS,
+  BB_REAR_INK,
+  bbBoxTubeGlyph,
+  bbFrontMarks,
+} from '../parts';
 import { bbFlowerInReach, bbMouths, bbMuzzleLocal, bbPlacePointLocal } from '../robot';
 import { bbSpecKey } from '../specKey';
 import {
@@ -140,6 +154,28 @@ function solidMat(color: string, roughness = 0.6, metalness = 0.1): THREE.MeshSt
   return m;
 }
 
+/**
+ * THE FRONT LIGHT BAR'S MATERIAL — the ONE emissive on a robot, and the only reason it is not
+ * `solidMat`. A matte white bar is the same grey as the deck under the hive's shadow, which is
+ * where a driver most needs to know which end is the front; `emissive` at full strength makes it
+ * a light rather than a painted stripe, and it needs no light of its own to do it. Cached and
+ * SHARED like every other material here, so `disposeRobotGroup` leaves it alone.
+ */
+let FRONT_BAR_MAT: THREE.MeshStandardMaterial | null = null;
+function frontBarMat(): THREE.MeshStandardMaterial {
+  if (!FRONT_BAR_MAT) {
+    FRONT_BAR_MAT = new THREE.MeshStandardMaterial({
+      color: BB_FRONT_INK,
+      emissive: BB_FRONT_INK,
+      emissiveIntensity: 0.85,
+      roughness: 0.35,
+      metalness: 0,
+    });
+    SHARED_MAT.add(FRONT_BAR_MAT);
+  }
+  return FRONT_BAR_MAT;
+}
+
 /** every mesh this module builds casts a shadow; nothing here receives one back onto itself
  * (the field floor/hive/flowers do that — see `renderScene.ts`'s `applyShadowFlags`). One call
  * per part rather than a post-hoc traversal, so a group rebuilt mid-match (`specKey` changing)
@@ -154,7 +190,6 @@ const RED = '#ef4444';
  * OKLCH hue 259.8°). Owner bug 12, 2026-09-19 — `draw.ts`'s `ELEMENT_FILL` header has the
  * measurement and the reason the CAD's own rib colour was NOT taken. */
 const BLUE = '#007be1';
-const NOSE = '#e5e7eb';
 /** the one rubber tone on the robot: a mecanum's roller barrels, an omni's, a traction tyre's
  *  band. (`WHEEL`, a second near-identical dark, is gone with the roller-stripe texture that was
  *  its only reader — see `BB_WHEEL_PARTS`.) */
@@ -1830,6 +1865,17 @@ function smoothstep01(t: number): number {
   return t * t * (3 - 2 * t);
 }
 
+/** an angle folded into (−π, π]. Any bearing DIFFERENCE that is going to be slewed has to go
+ *  through this first, or a target 1° the other side of the wrap slews the long way round. */
+function wrapPi(a: number): number {
+  return ((a + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+}
+
+/** `d`, limited to ±`max` — the one step of a rate limiter, in whatever unit `d` is in. */
+function clampAbs(d: number, max: number): number {
+  return d > max ? max : d < -max ? -max : d;
+}
+
 /**
  * THE OVER-THE-BUMPER INTAKE (owner playtest #14), one assembly per mounted edge.
  *
@@ -3014,12 +3060,10 @@ export function buildRobotGroup(
   // outline, the robot now just has a black outline. fix this"): a lit, shaded body has its own
   // edges, and a drawn line round it only ever existed to carry the alliance colour.
 
-  // the NOSE — a small white block on the front cross member, so the forward end of a symmetric
-  // drivetrain is readable from any angle
-  const nose = new THREE.Mesh(new THREE.BoxGeometry(0.7, spec.width * 0.22, 0.5), solidMat(NOSE, 0.3, 0));
-  nose.name = `robot:${id}:nose`;
-  nose.position.set(spec.length / 2 - 0.55, 0, BB_DECK_Z + 0.25);
-  group.add(cast(nose));
+  // WHICH END IS THE FRONT. `bbFrontMarks` (`parts.ts`) is the geometry AND the design note —
+  // read that header before changing anything here, including why it does not follow the
+  // driver's REVERSED. The 2D sprite fills the identical three rectangles.
+  for (const part of buildFrontMarks(spec, id)) group.add(part);
 
   // THE DECAL — a baked CanvasTexture on the deck (the `getSignTexture` technique), cached per
   // decal key × accent colour. `'none'` adds no node, matching a default-cosmetic build's node
@@ -3107,6 +3151,108 @@ export function buildRobotGroup(
 }
 
 /**
+ * THE FRONT/BACK LANGUAGE, 3D half — three nodes, the same three rectangles the 2D sprite fills.
+ *
+ * ⚠️ **IT REPLACES THE `robot:<id>:nose` BOX, AND THE BOX WAS THE BUG** (owner, 2026-09-22: "make
+ * it clearer fundamentally which side is front and which is back in game. This is especially
+ * confusing in a symmetric robot in 3D"). That was 0.7 in long and 22% of the width, sitting on
+ * the front cross member — behind the intake from the one angle you would look for it, and about
+ * four screen pixels from the match camera. A cue you have to already know about is not a cue.
+ *
+ *  • `front:bar` — the full-width light bar, its outer face FLUSH with the front rail and
+ *    standing `BB_END_BAR_H` above the deck, so it breaks the chassis silhouette from a chase
+ *    camera and is still a bright full-width line from directly overhead. It is `emissive` at full strength: the field is lit for aluminium
+ *    and a matte white bar goes grey in the hive's shadow, which is exactly where a driver is
+ *    when they most need to know which way they are pointing.
+ *  • `front:arrow` — the deck chevron, extruded a hair so it takes an edge highlight rather than
+ *    reading as a decal sticker.
+ *  • `rear:bar` — the hazard bar, near-black with `BB_HAZARD_TICKS` amber ribs standing on it.
+ *
+ * ⚠️ NONE OF THE THREE IS A COLLIDER AND NONE GROWS THE FOOTPRINT. The bars sit INSIDE the
+ * chassis box in x (`bbFrontMarks` puts them within the rail) and only stand above the deck,
+ * which is the same bargain `buildEndPlates` made — the RENDER lane asserts it for both.
+ */
+export function buildFrontMarks(spec: RobotSpec, id: number): THREE.Object3D[] {
+  const m = bbFrontMarks(spec);
+  const out: THREE.Object3D[] = [];
+  const barZ = BB_DECK_Z + BB_END_BAR_H / 2;
+
+  const front = cast(
+    new THREE.Mesh(
+      framePart(`front:bar|${m.front.x0.toFixed(3)}|${m.front.halfY.toFixed(3)}`, () => [
+        boxAt(m.front.x1 - m.front.x0, m.front.halfY * 2, BB_END_BAR_H, (m.front.x0 + m.front.x1) / 2, 0, 0),
+      ]),
+      frontBarMat(),
+    ),
+  );
+  front.name = `robot:${id}:front:bar`;
+  front.position.set(0, 0, barZ);
+  out.push(front);
+
+  const arrow = cast(
+    new THREE.Mesh(
+      framePart(`front:arrow|${m.arrow.apex.toFixed(3)}|${m.arrow.base.toFixed(3)}|${m.arrow.half.toFixed(3)}`, () => {
+        const shape = new THREE.Shape();
+        shape.moveTo(m.arrow.apex, 0);
+        shape.lineTo(m.arrow.base, m.arrow.half);
+        shape.lineTo(m.arrow.base, -m.arrow.half);
+        shape.closePath();
+        return [new THREE.ExtrudeGeometry(shape, { depth: BB_FRONT_ARROW_T, bevelEnabled: false })];
+      }),
+      solidMat(BB_FRONT_INK, 0.45, 0.05),
+    ),
+  );
+  arrow.name = `robot:${id}:front:arrow`;
+  arrow.position.set(0, 0, BB_DECK_Z + 0.02);
+  out.push(arrow);
+
+  const rear = cast(
+    new THREE.Mesh(
+      // the dark core is INSET by `BB_HAZARD_PROUD` on its exposed faces so the amber ribs stand
+      // proud of it without the ribs themselves poking past the rail or under the deck — the
+      // envelope of the pair is exactly the bar, which is what the RENDER lane measures
+      framePart(`rear:bar|${m.rear.x1.toFixed(3)}|${m.rear.halfY.toFixed(3)}`, () => [
+        boxAt(
+          m.rear.x1 - m.rear.x0 - BB_HAZARD_PROUD,
+          m.rear.halfY * 2,
+          BB_END_BAR_H - BB_HAZARD_PROUD * 2,
+          (m.rear.x0 + m.rear.x1) / 2 + BB_HAZARD_PROUD / 2,
+          0,
+          0,
+        ),
+      ]),
+      solidMat(BB_REAR_INK, 0.75, 0.05),
+    ),
+  );
+  rear.name = `robot:${id}:rear:bar`;
+  rear.position.set(0, 0, barZ);
+  out.push(rear);
+
+  // the amber ribs, standing a hair proud of the dark bar on all three exposed faces — one mesh
+  // for the set, so the rear costs two draw calls whatever the tick count is
+  const ticks = cast(
+    new THREE.Mesh(
+      framePart(`rear:hazard|${m.rear.x1.toFixed(3)}|${m.rear.halfY.toFixed(3)}`, () => {
+        const span = m.rear.halfY * 2;
+        const t = span / (BB_HAZARD_TICKS * 2);
+        const parts: THREE.BufferGeometry[] = [];
+        for (let i = 0; i < BB_HAZARD_TICKS; i++) {
+          const y = -m.rear.halfY + i * t * 2 + t / 2;
+          parts.push(boxAt(m.rear.x1 - m.rear.x0, t, BB_END_BAR_H, (m.rear.x0 + m.rear.x1) / 2, y, 0));
+        }
+        return parts;
+      }),
+      solidMat(BB_HAZARD_INK, 0.6, 0.05),
+    ),
+  );
+  ticks.name = `robot:${id}:rear:hazard`;
+  ticks.position.set(0, 0, barZ);
+  out.push(ticks);
+
+  return out;
+}
+
+/**
  * THE BOX TUBE — A TELESCOPING EXTRUSION THAT REACHES WHAT THE SIM REACHES.
  *
  * ⚠️ IT USED TO BE ONE SOLID `BoxGeometry(3, 1.4, 1.4)` AT `turretLocal(...)`, AND EVERY ONE OF
@@ -3138,6 +3284,13 @@ export function buildRobotGroup(
  * flower `bbFlowerInReach` actually returned, per frame; the ranges are measured in the RENDER
  * lane, which sweeps every in-reach pose of every legal build and asserts the tip lands on the
  * opening rather than assuming it.
+ *
+ * ⚠️ **AND IT REACHES THE NEAR LIP, NOT THE CENTRE** (owner, 2026-09-22: "make the boxtube
+ * in-game not go through the flower when it extends. It should be extending towards the top lip
+ * instead of through it"). Aiming a straight tube at the ring CENTRE put the drawn axis inside
+ * the column on EVERY in-reach pose the lane sweeps — 48,048 of 48,048, up to 2.014 in inside a
+ * 2.086-in bore. The `rim` argument is the fix and `bbBoxTubeAim`'s header is the derivation;
+ * the lane measures the segment against the cylinder now rather than only measuring the tip.
  *
  * ⚠️ **THE SHOULDER IS AT THE FRAME RAIL, AND THAT IS WHAT KEEPS THE ARM OUT OF THE TURRET.** The
  * first pass at this rotated the WHOLE stack about its inboard end, which lands 4.9…5.3 in inside
@@ -3452,25 +3605,52 @@ export function buildBiobuzzRobots(): BbRobots {
           const dy = f.y - r.pos.y;
           const c = Math.cos(-r.heading);
           const s = Math.sin(-r.heading);
+          // ⚠️ `BB_FLOWER_OPEN_R` IS THE WHOLE OF "TOWARDS THE TOP LIP INSTEAD OF THROUGH IT"
+          // (owner, 2026-09-22). The target passed in is the ring CENTRE; `bbBoxTubeAim` backs the
+          // aim point off one opening radius along the approach, so the tip lands on the NEAR RIM
+          // and the segment below the top plate is outside the column. See that function's header
+          // for the measurement this replaced (48,048 of 48,048 poses, up to 2.014 in inside).
           const aim = bbBoxTubeAim(
             rig.pivot,
             { x: dx * c - dy * s, y: dx * s + dy * c, z: BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR - (r.z ?? 0) },
             rig.stages,
+            BB_FLOWER_OPEN_R,
           );
           // KEPT so the retraction runs back down the path it came up, rather than snapping to
-          // a rest bearing the moment the predicate goes false
-          entry.tubeYaw = aim.yaw - rig.baseYaw;
-          entry.tubePitch = aim.pitch;
-          entry.tubeExt = aim.ext;
+          // a rest bearing the moment the predicate goes false.
+          //
+          // ⚠️ AND SLEWED, NOT ASSIGNED, ONCE THE ARM IS OUT. `bbFlowerInReach` names ONE flower
+          // and the name can change in a single tick (a robot between two of them, or crossing
+          // the `BB_PLACE_TOL` boundary), which used to snap a fully extended 18-in arm onto a new
+          // bearing in one frame — the second half of the owner's "violent". While the arm is
+          // STOWED (`tubeEase` 0) the target is taken whole: nothing is drawn out of place yet, so
+          // a snap there is invisible, and seeding it is what keeps the first deploy from lagging
+          // its own ease.
+          const yaw = wrapPi(aim.yaw - rig.baseYaw);
+          if (entry.tubeEase <= 0) {
+            entry.tubeYaw = yaw;
+            entry.tubePitch = aim.pitch;
+            entry.tubeExt = aim.ext;
+          } else {
+            const slew = BB_BOX_TUBE_SLEW * dt;
+            entry.tubeYaw += clampAbs(wrapPi(yaw - entry.tubeYaw), slew);
+            entry.tubePitch += clampAbs(aim.pitch - entry.tubePitch, slew);
+            entry.tubeExt += clampAbs(aim.ext - entry.tubeExt, BB_BOX_TUBE_EXT_SLEW * dt);
+          }
         }
+        // ⚠️ THE RATE IS ON THE CLAMPED WORLD CLOCK, AND THE SHAPE IS A SMOOTHSTEP. Keeping the
+        // linear ramp and only lengthening it would have traded one complaint for the other: what
+        // reads as "violent" is the instantaneous start and stop, not the duration. `smoothstep01`
+        // leaves and arrives at zero rate, which is why 0.40 s here is calmer than 0.35 s was and
+        // still not the crawl the 2026-09-20 report rejected. Retraction is `RETRACT_F` of it.
         const step = BB_BOX_TUBE_EXTEND_S > 0 ? dt / BB_BOX_TUBE_EXTEND_S : 1;
         entry.tubeEase =
           want > entry.tubeEase
             ? Math.min(want, entry.tubeEase + step)
-            : Math.max(want, entry.tubeEase - step);
+            : Math.max(want, entry.tubeEase - step / BB_BOX_TUBE_RETRACT_F);
         // ONE ease drives the whole pose, so the tip travels a straight-ish line from the rest
         // stack to the opening instead of pitching and extending on two schedules
-        const e = entry.tubeEase;
+        const e = smoothstep01(entry.tubeEase);
         rig.swivel.rotation.z = e * entry.tubeYaw;
         rig.pitch.rotation.y = -e * entry.tubePitch;
         for (let i = 0; i < stages.length; i++) stages[i].position.x = e * entry.tubeExt * (i + 1);
@@ -3552,7 +3732,7 @@ export function buildBiobuzzRobots(): BbRobots {
 /**
  * Free what ONE robot group owns, and nothing that is shared.
  *
- * The per-robot half is every mesh built inline in `buildRobotGroup` — the nose box, the two
+ * The per-robot half is every mesh built inline in `buildRobotGroup` — the two
  * ROBOT SIGN planes and their one shared material (their TEXTURE is cached per team number and
  * alliance, is shared with every other robot carrying it, and is not touched), the turret ring,
  * axle, motor and feed chute. The Box Tube's sections, the shooter's belt and the swerve

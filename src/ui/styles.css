@@ -1037,6 +1037,9 @@ button {
   -webkit-overflow-scrolling: touch;
 }
 
+/* THE MATCH OVERLAY'S TITLE — `RED ALLIANCE`, all caps, tracked like the HUD chips it
+   sits over. Exactly one element wears it (`GameView`'s pre-match panel); every other
+   `.overlay-panel` is a SHELL dialog and takes `.ds-dialog-title` below. */
 .overlay-panel h2 {
   letter-spacing: 3px;
   font-size: 20px;
@@ -1052,6 +1055,23 @@ button {
    in sentence case, so it is relaxed here only. */
 .overlay-buttons.ds-dialog-actions button {
   letter-spacing: 0.01em;
+}
+/* ⚠️ AND THE SAME SPLIT THE LINE ABOVE MAKES FOR THE BUTTONS, FOR THE TITLE.
+   `.overlay-panel h2` was a bare element rule carrying the match overlay's 3px caps
+   tracking and NOTHING else — no weight (so the browser's `bold` stood in), no colour,
+   no line-height — and the six sentence-case SHELL dialogs in `App.tsx` inherited it.
+   "You’re already in a game" came out as 20px of plain ink spaced like a sign, which is
+   the one heading in the app that looks like it belongs to no design system: every other
+   one is `.ds-h1`/`.ds-h2` at -0.02em. The same rule covers `.net-overlay-card`'s
+   "Connection lost" / "Reconnecting…", which were bare `h3`s for the same reason.
+   Compound with the container because a plain class loses to `.overlay-panel h2`. */
+.overlay-panel h2.ds-dialog-title,
+.net-overlay-card h3.ds-dialog-title {
+  font-size: var(--ds-t-xl);
+  font-weight: 800;
+  letter-spacing: -0.015em;
+  line-height: 1.2;
+  color: var(--ds-ink);
 }
 /* the mobile pre-match panel stacks: `stretch` so both buttons are the same width,
    where the inline `alignItems: center` it replaces sized each to its own text */
@@ -1596,6 +1616,15 @@ button {
   min-width: 0;
   font-weight: 700;
 }
+/* ⚠️ NO TITLE CHIP ON THIS ROW, DELIBERATELY — the badge only.
+   Every other surface that prints a name prints badge THEN title, and this one does not,
+   because the roster row is ONE LINE by contract: `.resx-roster-row` is `flex-wrap: nowrap`
+   and `DriverName` marquees rather than wrapping, precisely so the two alliance halves'
+   rows stay level with each other. The chips beside the name are `flex: 0 0 auto`, so the
+   name is what shrinks — and a variable-width TEXT chip costs about four times what the
+   badge disc does. Measured on a 340px half, "Maximiliano Featherstone" clipped to "M."
+   with a title chip beside it. The badge is ~1em and fixed, so it fits; a title belongs
+   here only with a second line to put it on, which is a layout decision, not a chip. */
 /* ---- a long name MARQUEES rather than wrapping (`DriverName` measures it) ----
    It used to `overflow-wrap: anywhere` onto a second line, which on a versus board put the
    two halves' rows at different heights. `.scroll` is only ever set when the text genuinely
@@ -2591,12 +2620,14 @@ button {
 .net-overlay-card {
   background: var(--panel);
   border: 1px solid var(--ds-hud-line);
-  border-radius: 14px;
+  border-radius: var(--ds-round-lg);
   padding: 24px 32px;
   text-align: center;
   max-width: 340px;
 }
-.net-overlay-card h3 { margin: 10px 0 6px; font-size: 20px; }
+/* the SIZE comes from `.ds-dialog-title` above, shared with the shell dialogs; only the
+   margin is this card's own (it is not a flex column, so it cannot own the gap). */
+.net-overlay-card h3 { margin: var(--ds-s-2) 0 var(--ds-s-1); }
 .net-overlay-card p { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
 .net-spinner {
   width: 34px;

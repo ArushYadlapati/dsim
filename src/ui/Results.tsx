@@ -6,13 +6,14 @@ import { ResultsAd } from './AdSlot';
 import { ReportDialog } from './ReportDialog';
 import { ScoreReportDialog } from './ScoreReportDialog';
 import type { MatchResultInfo } from '../net/session';
-import type { RecordRankInfo } from '../net/protocol';
+import type { MatchDriver, RecordRankInfo, StaffRole } from '../net/protocol';
 import type { Replay, ReplayResult } from '../sim/replay';
 import type { RobotSetup } from '../sim/spawn';
 import { moduleFor } from '../games';
 import { recordBanner } from './recordBanner';
 import type { ResultBanner } from './recordBanner';
 import { seasonFor } from '../seasons';
+import { SupporterBadge } from './SupporterBadge';
 import type { Alliance, ScoreBreakdown } from '../types';
 
 /**
@@ -231,6 +232,17 @@ function usePhase(revealed: boolean): { phase: Phase; skip: () => void } {
 interface RosterEntry {
   robotId: number;
   name: string;
+  /**
+   * The badge fields for this seat, from `matchStart.drivers` (`MatchDriver`).
+   *
+   * They are NOT on `RobotSetup` and must not be: a setup is replay input, re-simulated
+   * verbatim years later, and a membership that lapses afterwards would change what an old
+   * replay claims. The roster reads them off the LIVE room instead, so a solo run, a replay
+   * and an older server all land on `undefined` and the row renders bare — which is what it
+   * drew before this existed.
+   */
+  supporter?: boolean;
+  role?: StaffRole;
   /** `0` is UNSET, not team zero (`RobotSpec.teamNumber`) — every bot and every stock preset
    *  is 0, so the row tests truthiness and prints the app's usual `-` for the rest. */
   teamNumber: number;
@@ -243,16 +255,22 @@ function rosterFor(
   alliance: Alliance,
   localRobotId: number | undefined,
   eloResults: EloResultRow[] | null,
+  drivers: readonly MatchDriver[] = [],
 ): RosterEntry[] {
   return setups
     .filter((s) => s.alliance === alliance && !s.passive)
-    .map((s) => ({
-      robotId: s.id,
-      name: s.spec.name || `Driver ${s.id}`,
-      teamNumber: s.spec.teamNumber,
-      isLocal: s.id === localRobotId,
-      elo: eloResults?.find((r) => r.robotId === s.id) ?? null,
-    }));
+    .map((s) => {
+      const d = drivers.find((x) => x.robotId === s.id);
+      return {
+        robotId: s.id,
+        name: s.spec.name || `Driver ${s.id}`,
+        teamNumber: s.spec.teamNumber,
+        isLocal: s.id === localRobotId,
+        elo: eloResults?.find((r) => r.robotId === s.id) ?? null,
+        supporter: d?.supporter,
+        role: d?.role,
+      };
+    });
 }
 
 /** the small "Updating ELO…" line for a ranked match whose per-driver deltas have not
@@ -359,6 +377,12 @@ function RosterList({
           {order(
             <span className="resx-roster-name">
               <DriverName name={p.name} />
+              {/* A SIBLING of the clip, never inside it: `DriverName` MEASURES its text
+                  against the clip to decide whether to marquee, so anything else in there
+                  would widen the thing being measured and scroll a name that fits.
+                  Badge ONLY here — no title chip. See the note in styles.css beside
+                  `.resx-roster-name` for the measurement that decided it. */}
+              <SupporterBadge supporter={p.supporter} role={p.role} />
               {p.isLocal && <span className="resx-you">YOU</span>}
             </span>,
             <span className="resx-roster-meta">
@@ -639,6 +663,7 @@ export function Results({
   onReportScore,
   onSignIn,
   localRobotId,
+  drivers,
 }: {
   hud: HudSnapshot;
   /** the score is FINALIZED (see `HudSnapshot.resultFinal`) — the reveal lands then, not on a timer */
@@ -688,6 +713,9 @@ export function Results({
    *  in a roster built from `matchResult`/`practiceRun`'s recorded setups. Optional so
    *  an older caller still renders (just without the marker). */
   localRobotId?: number;
+  /** who is in each seat (`matchStart.drivers`) — the roster's badge/title source. Empty in
+   *  solo, in a replay, and against a server older than the fields. */
+  drivers?: readonly MatchDriver[];
 }) {
   const [reporting, setReporting] = useState(false);
   const [scoreReporting, setScoreReporting] = useState(false);
@@ -739,8 +767,8 @@ export function Results({
   // `Replay.setups` already has to exist for the run to be reproducible.
   const replay = matchResult?.replay ?? practiceRun?.replay ?? null;
   const setups = replay?.setups ?? [];
-  const redRoster = rosterFor(setups, 'red', localRobotId, ranked ? eloResults : null);
-  const blueRoster = rosterFor(setups, 'blue', localRobotId, ranked ? eloResults : null);
+  const redRoster = rosterFor(setups, 'red', localRobotId, ranked ? eloResults : null, drivers);
+  const blueRoster = rosterFor(setups, 'blue', localRobotId, ranked ? eloResults : null, drivers);
 
   if (isRecord) {
     return (

@@ -6,6 +6,7 @@ import {
   type MatchHistoryPlayer,
 } from '../net/api';
 import { SupporterBadge } from './SupporterBadge';
+import { TitleMark } from './TitleChip';
 import { fmtDayTime } from './fmtDate';
 
 type TypeFilter = NonNullable<MatchHistoryOpts['type']>;
@@ -45,7 +46,15 @@ function PlayerLink({
   onOpenProfile?: (username: string) => void;
 }) {
   const cls = `mh-player ${p.alliance ? `al-${p.alliance}` : ''}`;
-  const badge = <SupporterBadge supporter={p.supporter} role={p.role} />;
+  /* badge THEN title, exactly as `Leaderboard`'s `DriverName` composes them — a row here
+     and a row there name the same people, and the two must not disagree about what they
+     are wearing. Both are siblings of the link for the underline reason above. */
+  const badge = (
+    <>
+      <SupporterBadge supporter={p.supporter} role={p.role} />
+      <TitleMark title={p.title} />
+    </>
+  );
   if (p.username && onOpenProfile) {
     return (
       <>

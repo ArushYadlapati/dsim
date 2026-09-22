@@ -28,9 +28,11 @@ import { biobuzzPhysics } from './state';
  *
  * `bb.foulEdge` IS last tick's condition set. Each tick builds a fresh `seen` map, `fire()`
  * awards only for a key that was absent from `foulEdge`, and `foulEdge = seen` at the end.
- * There are NO COOLDOWN TIMERS anywhere in this file, on purpose: a cooldown is a second,
- * weaker edge trigger that disagrees with the first one about what "again" means, and the
- * manual's own repeat clauses are counted in VIOLATIONS, not in seconds (§10.6).
+ * A rule gets a COOLDOWN only where its own condition flickers under the solver, and then it
+ * gets ONE memory rather than two: **G402** is billed off a re-arm window (`BB_G402_REARM_S`,
+ * measured) and does not use `foulEdge` at all, because two memories that disagree about what
+ * "again" means is worse than one blunt one. Everything else is the plain edge — the manual's
+ * repeat clauses are counted in VIOLATIONS, not in seconds (§10.6).
  *
  * ── KEYS NAME THE INSTANCE, NOT THE RULE ────────────────────────────────────
  * `g402-<offender>-<victim>`, `g410-<element id>`, `g407-<robot>`. Two simultaneous
@@ -50,6 +52,10 @@ import { biobuzzPhysics } from './state';
  *
  * G407'S STRATEGIC BRANCH is dated 2026-09-19 and supersedes the 2026-09-12 "warning and
  * nothing else" ruling — see the rule's own block below for the manual test it now follows.
+ *
+ * ⚠️ **NEITHER G402 NOR G407 IS CAPPED PER MATCH ANY MORE** (owner ruling 2026-09-22). Both
+ * used to carry a per-robot latch read off Table 10-4's "per MATCH"; every distinct instance
+ * now bills. See each rule's own block.
  *
  * NOT HERE, each for a stated reason rather than an oversight:
  *  • **G405 / G411 / G418 / G419 / G420 / G426 / G427** are structural (nothing leaves the
@@ -366,6 +372,12 @@ export function updateBiobuzzPenalties(
     // "already fired" when play resumes, or the first real instance of it goes unbilled.
     bb.foulEdge = {};
     /**
+     * ...and G402's RE-ARM CLOCKS with it. `pen.episodes` has one user on a BIOBUZZ world (the
+     * G402 window below), so the whole map goes: a crossing that was live at the AUTO buzzer
+     * must not still be counted as "the same instance" if AUTO ever resumes.
+     */
+    world.penalties.episodes = {};
+    /**
      * ...and the PIN CLOCKS go with it, which is a DELIBERATE DIVERGENCE from DECODE: its
      * `updatePenalties` returns from this same guard without touching `pen.pins`, so a pin
      * live at the AUTO buzzer resumes at the TELEOP one with 2.9 s already on it and bills a
@@ -465,11 +477,16 @@ export function updateBiobuzzPenalties(
    * world already stores. None of the three is cleared at a phase boundary — a clock is live
    * state and a tally is history, and the HUD chip counts the match.
    *
-   * The MAJOR is a separate per-robot LATCH, `bb.held[robot].g407billed` — the same idiom the
-   * old G417 code used for "per MATCH" — because "MAJOR FOUL ... per MATCH" (Table 10-4) means
-   * a robot pays ONCE however many qualifying instances it racks up, whichever of (A) or (B)
-   * gets there first. `bb.held` is plain JSON on `world.biobuzz` and rides every snapshot and
-   * every reconcile exactly like the flags G402 keeps there.
+   * ── EVERY STRATEGIC INSTANCE BILLS (owner ruling 2026-09-22) ─────────────
+   * The MAJOR used to sit behind a per-robot LATCH, `bb.held[robot].g407billed`, read off "MAJOR
+   * FOUL ... per MATCH" (Table 10-4), so a robot paid once however many qualifying instances it
+   * racked up. The owner overruled that reading: each time 6+ is sustained past MOMENTARY, and
+   * each 5+ instance from the second onward, is its own MAJOR.
+   *
+   * Nothing debounces it, because nothing needs to: `qualified5`/`qualified6` are the single
+   * tick a streak CROSSES `BB_MOMENTARY_S`, so a held pile qualifies once and then has to drop
+   * below the count and climb back to qualify again. The flag is still SET, as a HUD marker —
+   * `hud.ts`'s `controlMajor` chip reads it to show the escalation — but nothing reads it here.
    */
   /**
    * The clock sweep runs ONCE, before the per-robot loop, because it is keyed on every
@@ -510,14 +527,12 @@ export function updateBiobuzzPenalties(
     pen.possession[r.id] = now6;
     const qualified6 = six && prev6 < BB_MOMENTARY_S && now6 >= BB_MOMENTARY_S;
 
-    // THE MAJOR — (A) OR (B), latched per MATCH, and never for a passive prop.
+    // THE MAJOR — (A) OR (B), once per qualifying instance, and never for a passive prop.
     const strategic = qualified6 || (qualified5 && (pen.possessionBilled[r.id] ?? 0) >= 2);
     if (!r.passive && strategic) {
-      const flags = (bb.held[r.id] ??= {});
-      if (!flags.g407billed) {
-        flags.g407billed = true;
-        bbAwardFoul(world, r.alliance, 'major', `G407 STRATEGIC CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements`);
-      }
+      // a HUD marker, not a gate: `hud.ts` reads it for the `controlMajor` chip.
+      (bb.held[r.id] ??= {}).g407billed = true;
+      bbAwardFoul(world, r.alliance, 'major', `G407 STRATEGIC CONTROL of ${BB_CONTROL_LIMIT + 1}+ elements`);
     }
 
     if (r.passive) continue;
@@ -534,7 +549,7 @@ export function updateBiobuzzPenalties(
   // Every pair of OPPOSING robots in contact. Same-alliance pairs are skipped: no FTC contact
   // rule has ever penalised touching your own partner.
   //
-  // ⚠️ THE PHASE TEST COMES FIRST. It used to sit AFTER `robotsContact`, so every opposing pair
+  // ⚠️ THE PHASE TEST COMES FIRST. It used to sit AFTER `bbRobotsContact`, so every opposing pair
   // paid two `robotCorners` allocations and a four-axis SAT on every tick of the two-minute
   // TELEOP for an answer the next line threw away. G421 asks the same question for itself.
   for (let i = 0; isAuto && i < world.robots.length; i++) {
@@ -546,7 +561,7 @@ export function updateBiobuzzPenalties(
       // the pin accumulator skip them. Billing a MAJOR to whichever colour a dummy was spawned
       // as is a foul awarded to nobody. This loop was the one place that did not skip them.
       if (A.passive || B.passive) continue;
-      if (!robotsContact(A, B)) continue;
+      if (!bbRobotsContact(A, B)) continue;
       /**
        * G402: during AUTO, red plays columns A–C (x < 0) and blue D–F (x > 0). The foul is on
        * the robot that CROSSED — reaching into the opponent's half, in contact with an opponent.
@@ -578,21 +593,28 @@ export function updateBiobuzzPenalties(
        * actually crossed, and it keeps a robot wholly on its own side — depth 0 — unbillable no
        * matter how hard it is rammed. Both crossing at once (equal depth, the head-on meeting
        * at the line) is two fouls, which is still correct: two CROSSERS are two offenders, and
-       * the cap below is per offender.
+       * each carries its own pair key.
        *
-       * ── "PER MATCH", WHICH THIS RULE ALSO CARRIES — AND USED TO IGNORE ──────
-       * Table 10-4's G402 row reads "**MAJOR FOUL per MATCH.** MAJOR FOUL and YELLOW CARD per
-       * MATCH, if STRATEGIC" (manual-distilled §3.3, p106) — the same two-clause shape as
-       * G407's MAJOR two sections above, and the same word doing the same work. This used to
-       * bill per rising edge of a (crosser, victim) pair, so a robot that crossed once and
-       * brushed BOTH opponents paid 40, and one that bumped, backed off and bumped again paid
-       * 40 — where the manual says a team pays 20 for AUTO interference, once, however much of
-       * it there was. The tariff audit against §3.1 caught it.
+       * ── EVERY CROSS-AND-HIT IS BILLED (owner ruling 2026-09-22) ────────────
+       * This used to sit behind a per-MATCH latch (`bb.held[x.id].g402billed`), read off Table
+       * 10-4's "MAJOR FOUL per MATCH", so a robot that crossed, backed off and crossed again
+       * paid 20 once. The owner overruled that reading: every distinct instance bills, and the
+       * latch is gone.
        *
-       * So the EDGE stays (it is what stops a two-second brush billing 120) and a per-MATCH
-       * LATCH sits behind it, exactly G407's `bb.held[robot].g407billed` flag. The subject of
-       * the sentence is "a TEAM", and an FTC team is one robot, so the latch is per ROBOT —
-       * which is also why two crossers still pay separately.
+       * So the only question left is what ONE instance is, and that is the RE-ARM WINDOW below
+       * rather than `foulEdge`: the pair key is refreshed on every qualifying tick and re-arms
+       * only after `BB_G402_REARM_S` with no qualifying tick at all. A continuous shove is one
+       * foul; backing off and hitting again is two; and the contact test going quiet for a few
+       * ticks in the middle of one hit is still one. It is the same episode debounce DECODE's
+       * own G402 runs on (`src/sim/penalties.ts`, `PENALTY_CLEAR`), and it replaces the edge
+       * trigger here rather than sitting behind it — two memories of "again" that disagree is
+       * worse than one that is a little blunt.
+       *
+       * THE CLOCK IS `world.penalties.episodes`, whose documented meaning is exactly this
+       * ("last `world.time` the rule was active for that subject"). It is plain JSON, rides
+       * every snapshot and reconcile, and is otherwise unused on a BIOBUZZ world — the same
+       * argument that put G407's clocks on `world.penalties` rather than a second bag in
+       * `state.ts`.
        */
       const depthA = bbIntrusion(A);
       const depthB = bbIntrusion(B);
@@ -602,28 +624,26 @@ export function updateBiobuzzPenalties(
       ] as const) {
         // NOT ACROSS, or not the one who came over.
         if (dx <= BB_G402_CROSS_IN || dx < dy) continue;
+        /**
+         * ...AND A ROBOT SHOVED ACROSS BY ITS OPPONENT HAS NOT CROSSED.
+         *
+         * G402's own notes say elements "deflected across the line by another object will
+         * likely not be penalized", and the subject of the rule is a TEAM disrupting AUTO — a
+         * robot bulldozed into the opponent's half by the opponent disrupted nothing. It is
+         * asked here rather than above so the window records CROSSINGS only: an excused tick
+         * must not refresh the clock, or a shove that turns into a genuine drive-in a second
+         * later is swallowed by the shove.
+         *
+         * Measured before this: blue driving a parked, command-less red 30 in into blue's
+         * own half billed RED a MAJOR at tick 51, on top of blue's own (correct) one.
+         */
+        if (bbShovedAcross(x, y, commands)) continue;
         const key = `g402-${x.id}-${y.id}`;
-        if (!bb.held[x.id]?.g402billed) {
-          /**
-           * ...AND A ROBOT SHOVED ACROSS BY ITS OPPONENT HAS NOT CROSSED.
-           *
-           * G402's own notes say elements "deflected across the line by another object will
-           * likely not be penalized", and the subject of the rule is a TEAM disrupting AUTO —
-           * a robot bulldozed into the opponent's half by the opponent disrupted nothing. It
-           * is asked here rather than above so the edge trigger records CROSSINGS only: an
-           * excused tick must not mark the key seen, or a shove that turns into a genuine
-           * drive-in a second later is swallowed by its own edge.
-           *
-           * Measured before this: blue driving a parked, command-less red 30 in into blue's
-           * own half billed RED a MAJOR at tick 51, on top of blue's own (correct) one.
-           */
-          if (bbShovedAcross(x, y, commands)) continue;
-          if (!bb.foulEdge[key]) {
-            (bb.held[x.id] ??= {}).g402billed = true;
-            bbAwardFoul(world, x.alliance, 'major', 'G402 crossing into the opponent’s half in AUTO');
-          }
+        const last = pen.episodes[key];
+        if (last === undefined || world.time - last > BB_G402_REARM_S) {
+          bbAwardFoul(world, x.alliance, 'major', 'G402 crossing into the opponent’s half in AUTO');
         }
-        seen[key] = true;
+        pen.episodes[key] = world.time;
       }
     }
   }
@@ -690,7 +710,7 @@ export function updateBiobuzzPenalties(
  * ── TWO HONEST DEVIATIONS, BOTH WORTH READING ───────────────────────────────
  * 1. **CONTACT IS THIS FILE'S OBB TEST, NOT `world.rrContacts`.** DECODE feeds `isPinning` the
  *    solver's contact record. This file already answers "are these two robots touching?" for
- *    G402 with `robotsContact`, which carries `BB_FOUL_SLOP` because two chassis are in
+ *    G402 with `bbRobotsContact`, which carries `BB_FOUL_SLOP` because two chassis are in
  *    contact well before their idealised rectangles share a point. Using both would mean one
  *    file with two disagreeing definitions of contact — and the rules smoke, which drives
  *    hand-built worlds with no solver behind them, could not reach the rule at all.
@@ -727,7 +747,7 @@ function bbUpdatePins(world: World, dt: number, commands: Map<number, RobotComma
         isPinning(
           pinner,
           pinned,
-          robotsContact(pinner, pinned),
+          bbRobotsContact(pinner, pinned),
           commands.get(pinned.id),
           commands.get(pinner.id),
           // THIS field's solids. Left to its default the test reads DECODE's goal wedges and
@@ -890,7 +910,7 @@ function bbEscapeDir(pinner: RobotState, pinned: RobotState): Vec2 | null {
  * band in which the sim declines to have an opinion. Two reasons it cannot be zero, and both
  * are measurements rather than taste:
  *
- *  · `robotsContact` calls two frames touching while they are still `BB_FOUL_SLOP` apart, so a
+ *  · `bbRobotsContact` calls two frames touching while they are still `BB_FOUL_SLOP` apart, so a
  *    robot can be RECORDED in contact with its own frame an inch short of the other's, and the
  *    solver's resting penetration moves the same boundary the other way;
  *  · a chassis on the diagonal reaches `hypot`-far from its centre, not half-length — 11.3 in
@@ -903,6 +923,33 @@ function bbEscapeDir(pinner: RobotState, pinned: RobotState): Vec2 | null {
  * about crossing the field rather than about grazing a line.
  */
 export const BB_G402_CROSS_IN = 2; // APPROX
+
+/**
+ * HOW LONG A (CROSSER, VICTIM) PAIR MUST GO QUIET BEFORE IT CAN BE BILLED AGAIN (s).
+ *
+ * Owner ruling 2026-09-22 removed G402's per-MATCH cap, so a second crossing is a second
+ * MAJOR — which makes "when is it a second crossing?" load-bearing. Without a window it is
+ * "the tick the condition rose again", and the condition is not stable across one hit: the
+ * contact test carries `BB_FOUL_SLOP`, and two chassis grinding on each other cross that
+ * boundary back and forth while nothing that matters changes.
+ *
+ * `APPROX`, and MEASURED (a 908-duel sweep: victim depth 2–30 in, lateral offset 0–16 in,
+ * approach heading −30°–45°, three mass ratios, spin, a feathered stick and a victim shoving
+ * back, both pipelines). The head-on shapes the rule is really about — the five scenes of
+ * `g402DrivenChecks` — flicker **not at all**. The angled and offset ones do: **9 gaps, the
+ * longest 0.78 s** (3D, a 20° approach on a victim 6 in deep), and in every one of them the two
+ * footprints stayed within **3.4 in**, i.e. nobody ever disengaged. 1.0 s covers the worst with
+ * 28% to spare, and it is still short of a real back-off-and-re-ram: a robot that gives up a
+ * hit and comes back spends over a second driving each way.
+ *
+ * ⚠️ IT IS A BAND, NOT A THRESHOLD, AND IT DRIFTS WITH THE CHASSIS. The flicker is the contact
+ * test crossing `BB_FOUL_SLOP`, so it moves whenever the footprint does — an earlier sweep, on
+ * a chassis one dimension different, put the longest gap at 1.53 s. The direction of the error
+ * matters more than the number: too SHORT bills one grinding engagement twice, too LONG swallows
+ * a genuine second hit, and the second is the failure the owner reported. So the window is sized
+ * to the flicker rather than to the widest thing ever seen.
+ */
+export const BB_G402_REARM_S = 1; // APPROX, s
 
 export function bbIntrusion(r: RobotState): number {
   const want = r.alliance === 'red' ? 1 : -1; // the sign of x that is the OPPONENT's half
@@ -949,8 +996,12 @@ function bbShovedAcross(x: RobotState, y: RobotState, commands: Map<number, Robo
  *
  * Four axes suffice rather than eight because a rectangle's two edge normals are perpendicular,
  * so the other two are the same lines.
+ *
+ * Exported for the rules lane: G402's re-arm window is sized against how much this test
+ * flickers during one hit, and a check that measured the flicker with its own copy of the SAT
+ * would be measuring the copy.
  */
-function robotsContact(A: RobotState, B: RobotState): boolean {
+export function bbRobotsContact(A: RobotState, B: RobotState): boolean {
   const ca = robotCorners(A);
   const cb = robotCorners(B);
   const axes = [

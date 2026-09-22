@@ -1,7 +1,6 @@
 import type { RobotSpec } from '../../types';
 import { clamp } from '../../math';
 import { isBbPassPreset } from './passTargets';
-import { massLimits } from '../../sim/drivetrain';
 import { DEFAULT_SPEC } from '../../sim/specDefaults';
 import {
   BB3_HEIGHT_MAX,
@@ -13,7 +12,7 @@ import {
   BB_PRESETS,
   BB_STORAGE_DEFAULT,
   BB_STORAGE_MIN,
-  bbMassFloorBump,
+  bbMassLimits,
   bbMountFits,
   bbSizeLimits,
   bbSnapSize,
@@ -105,7 +104,7 @@ export const BB_DEFAULT_SPEC: RobotSpec = { ...DEFAULT_SPEC, ...BB_PRESETS[0] };
  *   3. MASS                     → drivetrain × inertia × the loadout's mechanism floor
  *   4. HOPPER                   → footprint × launcher × mount (`bbStorageMax`)
  *
- * ⚠️ WHY THE LOADOUT IS STEP 0. Mass (`bbMassFloorBump`) and storage (`bbStorageMax`) both read
+ * ⚠️ WHY THE LOADOUT IS STEP 0. Mass (`bbMassLimits`) and storage (`bbStorageMax`) both read
  * the launcher through `bbLauncherOf`. They used to run BEFORE the loadout was validated, so they
  * read whatever raw, unvalidated `bbMech` the spec arrived with; the validated container was
  * written afterwards from `raw` separately. Resolving it first means every later step reads the
@@ -179,10 +178,17 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   out.length = bbSnapSize(clampFinite(out.length, size.minLength, Math.max(size.minLength, size.maxLength), base.length));
   out.width = bbSnapSize(clampFinite(out.width, size.minWidth, Math.max(size.minWidth, size.maxWidth), base.width));
 
-  // 3) MASS, from drivetrain × flywheel inertia × whatever heavy mechanism the loadout carries.
-  // R104 says there is NO ROBOT weight limit in BIOBUZZ, so this is the sim's own model of what
-  // a given drivetrain can actually move, not a rules clamp.
-  const mass = massLimits(out.drivetrain, out.flywheelInertia, bbMassFloorBump(out));
+  // 3) MASS, from the BUILD — a bare chassis per drivetrain plus every mechanism bolted to it
+  // (`bbMassLimits`). R104 says there is NO ROBOT weight limit in BIOBUZZ, so this is the sim's
+  // own model of what a given pile of hardware weighs and what that drivetrain can still move,
+  // not a rules clamp.
+  //
+  // ⚠️ IT CLAMPS THE RAW MASS, NOT A CLAMPED ONE. `coerceSpec`'s own mass pass (`src/sim/spawn.ts`)
+  // is skipped for this game and the raw field carried across instead, because the shared floor
+  // prices in a DECODE shooter — it is ABOVE this model's floor for every drivetrain, so it would
+  // raise a light BIOBUZZ build before this line ever saw it and a preset it moved would be a card
+  // that never reads as selected.
+  const mass = bbMassLimits(out);
   out.massLb = clampFinite(out.massLb, mass.min, mass.max, base.massLb);
 
   // 4) HOPPER, from the footprint and the launcher and the mount — so it runs last.

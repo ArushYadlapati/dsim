@@ -961,8 +961,18 @@ export function sim3dChecks(check: Check): void {
       const FACE_X = -65.83; // the column's field-side face, `cadStatics()`
       const POST_Y0 = -25.62; // its low-y end
       const DRIVE = cmd({ driveY: 1, leftDrive: 1, rightDrive: 1 });
+      /**
+       * ⚠️ THE DRIVETRAIN IS PINNED, because this scene is about the EDGE BREAK and not about the
+       * drive model, and the default preset stopped being a swerve on 2026-09-22 (the Pollinator).
+       * MEASURED both ways on the same rig, one field, one column, one 0.35-in graze: SWERVE slides
+       * by at 1.00 of a free run and 0 degrees of yaw; MECANUM hooks at 0.30 and 94 degrees, and
+       * the width and the intake mount change neither answer (1.00 / 0 at width 16.5, 17 and
+       * FRONT+BACK on swerve; 0.30 / 94 on all three with mecanum). So the break's band is a
+       * drivetrain fact this check never claimed to cover — the mecanum case is an OPEN finding
+       * for this lane, not something the preset list can fix.
+       */
       const graze = (overlap: number | null): { frac: number; yaw: number } => {
-        const w = mkWorld3d('free', 75);
+        const w = mkWorld3d('free', 75, { drivetrain: 'swerve' });
         const r = w.robots[0];
         r.heading = Math.PI / 2;
         r.pos.x = overlap === null ? -40 : FACE_X + r.spec.width / 2 - overlap;
@@ -1417,7 +1427,13 @@ export function sim3dChecks(check: Check): void {
      * of 80 over the three-archetype stand sweep (`scratch/shotsweep.ts`), nothing ever unlaunched.
      */
     {
-      const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', DUMPER)], undefined, '3d');
+      // ⚠️ THE INTAKE MOUNT IS PINNED TO WHAT THE RANGE TABLE WAS MEASURED ON. The dumper fires
+      // over the BACK edge, so a sweeper bolted there is in front of the release — and the table
+      // above was taken on a FRONT+BACK build, which was the default preset until 2026-09-22.
+      // MEASURED on the new default's front-only sweeper, same seed and stand: 4 of 4 clear at
+      // 24 in, i.e. the close limit is a build fact and this fixture states its build rather than
+      // inheriting one. (Nothing else moves it: swerve/mecanum and width 16.5/17 all score 4.)
+      const w = createBiobuzzWorld('free', 44, [setup(0, 'blue', { ...DUMPER, intakeMount: 'frontback' })], undefined, '3d');
       const r = w.robots[0];
       r.pos = { x: BB_HIVE_X, y: BB_HIVE_CELL_DY + 24 };
       r.heading = Math.PI / 2;
@@ -3947,7 +3963,8 @@ export function sim3dChecks(check: Check): void {
         `18in apart -> deployed ${near.out} blocked ${near.blocked}; 40in apart -> deployed ${far.out} blocked ${far.blocked}`,
       );
     }
-    check(
+
+    check(
       'archetype 3d: determinism holds with a RAMP press in the script — hash equal every 40 ticks',
       // `rampScript` presses twice (phase 1 deploys, phase 3 folds), so `bbRampAt` being stamped
       // at all is the proof a press actually landed — the script's own design folds it again

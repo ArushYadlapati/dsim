@@ -41,11 +41,14 @@ import {
 import {
   BB_CONTROL_LIMIT,
   BB_CONTROL_SKITTER_Z,
+  BB_G402_CROSS_IN,
+  BB_G402_REARM_S,
   BB_MOMENTARY_S,
   bbAwardFoul,
   bbFootprintGap,
   bbIntrusion,
   bbNectarLocked,
+  bbRobotsContact,
   updateBiobuzzPenalties,
 } from '../../src/games/biobuzz/penalties';
 import { biobuzzFieldHud } from '../../src/games/biobuzz/hud';
@@ -88,11 +91,11 @@ const readRepo = (p: string): string => readFileSync(join(root, p), 'utf8');
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** a BIOBUZZ world with the given robots and NO elements — every check here stages its own. */
-function bare(robots: { id: number; alliance: Alliance }[]): World {
+function bare(robots: { id: number; alliance: Alliance }[], spec: Partial<RobotSpec> = {}): World {
   const world = createBiobuzzWorld(
     'match',
     1234,
-    robots.map((r) => setup(r.id, r.alliance)),
+    robots.map((r) => setup(r.id, r.alliance, spec)),
   );
   world.balls = [];
   const bb = world.biobuzz;
@@ -938,7 +941,14 @@ function bill(
   n = 1,
   held: Map<number, RobotCommand> = NO_CMD,
 ): { major: Record<Alliance, number>; minor: Record<Alliance, number>; pts: Record<Alliance, number> } {
-  for (let i = 0; i < n; i++) updateBiobuzzPenalties(world, SIM_DT, held);
+  // ⚠️ THE CLOCK ADVANCES, because `step.ts` advances it (`world.time += dt`) and G402's
+  // re-arm window is measured against it. A fixture that leaves `world.time` at 0 freezes
+  // every window open, so a check that a second crossing bills again would pass or fail for
+  // reasons that have nothing to do with the rule.
+  for (let i = 0; i < n; i++) {
+    updateBiobuzzPenalties(world, SIM_DT, held);
+    world.time += SIM_DT;
+  }
   return {
     major: { red: world.match.fouls.red.major, blue: world.match.fouls.blue.major },
     minor: { red: world.match.fouls.red.minor, blue: world.match.fouls.blue.minor },
@@ -1000,6 +1010,12 @@ type DuelOut = {
   contactTicks: number;
   redFoulAt: number;
   blueFoulAt: number;
+  /** ticks on which RED qualified as the crosser against BLUE — the engine's own predicate */
+  qualTicks: number;
+  /** the longest run of NON-qualifying ticks BETWEEN two qualifying ones: the chatter */
+  worstGap: number;
+  /** the widest the two footprints ever got during that gap (in) — proof it was one hit */
+  worstGapSep: number;
 };
 
 /**
@@ -1052,7 +1068,17 @@ function duel(opts: {
     contactTicks: 0,
     redFoulAt: -1,
     blueFoulAt: -1,
+    qualTicks: 0,
+    worstGap: 0,
+    worstGapSep: 0,
   };
+  /**
+   * RED's side of the pair condition, read the way the engine reads it — `bbRobotsContact` and
+   * `bbIntrusion` are the engine's own, so this series is the thing the re-arm window debounces
+   * rather than a re-derivation of it.
+   */
+  const qual: boolean[] = [];
+  const sep: number[] = [];
   const n = Math.round(opts.seconds / SIM_DT);
   for (let i = 0; i < n; i++) {
     const before = w.events.length;
@@ -1068,6 +1094,24 @@ function duel(opts: {
       out.contactTicks++;
       if (out.contactAt < 0) out.contactAt = i;
     }
+    const [R, B] = w.robots;
+    const dR = bbIntrusion(R);
+    const dB = bbIntrusion(B);
+    qual.push(bbRobotsContact(R, B) && dR > BB_G402_CROSS_IN && dR >= dB);
+    sep.push(bbFootprintGap(R, B));
+  }
+  out.qualTicks = qual.filter(Boolean).length;
+  const last = qual.lastIndexOf(true);
+  for (let i = qual.indexOf(true); i >= 0 && i <= last; i++) {
+    if (qual[i]) continue;
+    let j = i;
+    let widest = 0;
+    while (j <= last && !qual[j]) widest = Math.max(widest, sep[j++]);
+    if (j - i > out.worstGap) {
+      out.worstGap = j - i;
+      out.worstGapSep = widest;
+    }
+    i = j - 1;
   }
   out.redMajor = w.match.fouls.red.major;
   out.blueMajor = w.match.fouls.blue.major;
@@ -1180,6 +1224,79 @@ function g402DrivenChecks(check: Check): void {
       });
       check(`G402 ${p}: the same ram in TELEOP bills nothing`,
         d.redMajor === 0 && d.blueMajor === 0, `${d.redMajor}/${d.blueMajor}`);
+    }
+
+    /**
+     * 6. HIT, BACK OFF, HIT AGAIN — TWO MAJORs (owner ruling 2026-09-22: "right now you can
+     *    only get penalized once for crossing and tapping a robot in auto"). The retreat is
+     *    held past `BB_G402_REARM_S`, which is what makes this a second instance rather than
+     *    the same one seen twice; scenario 1 above is the other half of the pair — a single
+     *    two-second shove, billed once.
+     */
+    {
+      const away = ticks(BB_G402_REARM_S + 0.15);
+      const d = duel({
+        physics,
+        phase: 'auto',
+        red: [-40, DUEL_Y],
+        blue: [10, DUEL_Y],
+        seconds: 5,
+        cmds: (t, contactAt) => {
+          const since = contactAt < 0 ? -1 : t - contactAt;
+          const back = since >= 10 && since < 10 + away;
+          return new Map([[0, driveX(back ? -1 : 1)]]);
+        },
+      });
+      check(`G402 ${p}: hit, back off past the re-arm window, hit again — TWO MAJORs`,
+        d.redMajor === 2, `${d.redMajor} major, ${d.qualTicks} qualifying ticks`);
+      check(`G402 ${p}: ...and the victim still pays nothing for being hit twice`,
+        d.blueMajor === 0, String(d.blueMajor));
+    }
+
+    /**
+     * 7. CHATTER — ONE hit whose pair condition flickers, billed ONCE.
+     *
+     * The five scenes above are head-on and do not flicker at all; the angled and offset ones
+     * do, because `bbRobotsContact` carries `BB_FOUL_SLOP` and two chassis grinding past each
+     * other cross that boundary back and forth. Measured over 908 duels (`BB_G402_REARM_S`'s
+     * own note): 9 such gaps, the longest 0.78 s, and in all of them the two footprints stayed
+     * within 3.4 in — nobody disengaged.
+     *
+     * ⚠️ WHICH SHAPES FLICKER MOVES WITH THE CHASSIS, so this walks a list of measured ones and
+     * STOPS at the first that still does. Every scene it runs is asserted to bill ONE MAJOR;
+     * the last two checks then say the flicker was real and that it was one hit, which is what
+     * keeps the first assertion from passing for nothing. If they ever fail together, re-measure
+     * the sweep and refresh the list rather than deleting the checks.
+     */
+    {
+      const shapes = physics === '2d'
+        ? [{ bx: 2, lat: 16, deg: 35 }, { bx: 30, lat: 0, deg: 15 }, { bx: 4, lat: 12, deg: 30 },
+           { bx: 12, lat: 16, deg: 30 }, { bx: 30, lat: 14, deg: 25 }]
+        : [{ bx: 6, lat: 0, deg: 20 }, { bx: 2, lat: 0, deg: -30 }, { bx: 4, lat: 0, deg: -30 },
+           { bx: 30, lat: 12, deg: 25 }, { bx: 12, lat: 16, deg: 0 }];
+      let worst = 0;
+      let worstSep = 0;
+      for (const s of shapes) {
+        const d = duel({
+          physics,
+          phase: 'auto',
+          red: [-40, DUEL_Y - s.lat, s.deg],
+          blue: [s.bx, DUEL_Y],
+          seconds: 4,
+          cmds: () => new Map([[0, driveX(1)]]),
+        });
+        check(`G402 ${p}: a grinding hit (victim ${s.bx}in deep, ${s.deg}deg approach) is ONE MAJOR`,
+          d.redMajor === 1, `${d.redMajor} major, worst gap ${d.worstGap}t, ${d.qualTicks} qualifying ticks`);
+        if (d.worstGap > worst) {
+          worst = d.worstGap;
+          worstSep = d.worstGapSep;
+        }
+        if (worst >= 2) break;
+      }
+      check(`G402 ${p}: ...and the chatter is REAL — the pair condition went clear mid-hit`,
+        worst >= 2 && worst < ticks(BB_G402_REARM_S), `worst gap ${worst}t of ${ticks(BB_G402_REARM_S)}t`);
+      check(`G402 ${p}: ...while the two chassis never separated — one hit, not two`,
+        worst > 0 && worstSep <= 4, `${worstSep.toFixed(2)} in`);
     }
   }
 }
@@ -1626,17 +1743,18 @@ function penaltyChecks(check: Check): void {
     check('G410: nothing is billed after the cue', after.major.red === 2 && after.major.blue === 0);
   }
 
-  // ── G402: crossing into the opponent's half in AUTO — MAJOR *per MATCH* ───
+  // ── G402: crossing into the opponent's half in AUTO — MAJOR *per instance* ─
   /**
-   * The tariff is the interesting half. Table 10-4 reads "**MAJOR FOUL per MATCH.** MAJOR FOUL
-   * and YELLOW CARD per MATCH, if STRATEGIC" (manual-distilled §3.3, p106), so a team pays 20
-   * for AUTO interference ONCE however much of it there was — the same shape as G417, and the
-   * reason this rule now carries G417's per-MATCH latch behind its edge trigger. It used to
-   * bill per (crosser, victim) rising edge, so one crosser brushing both opponents paid 40.
+   * The tariff is the interesting half, and it CHANGED on 2026-09-22: the owner overruled the
+   * per-MATCH reading of Table 10-4 ("you can only get penalized once for crossing and tapping
+   * a robot in auto. Fix that"), so the per-robot latch is gone and every distinct instance
+   * bills.
    *
-   * The EDGE is still checked underneath the latch, because the latch is per MATCH and the edge
-   * is per tick: delete the edge and a two-second brush bills 120 before the latch is consulted
-   * at all. Both are driven below.
+   * What stops a two-second shove billing 120 is now the RE-ARM WINDOW (`BB_G402_REARM_S`), not
+   * an edge: the pair key is refreshed on every qualifying tick and re-arms only after the
+   * window with no qualifying tick at all. So this block drives all three cases — hold it
+   * (one), break it briefly and come back (still one), break it for longer than the window and
+   * come back (two).
    */
   {
     const w = bare([
@@ -1655,33 +1773,43 @@ function penaltyChecks(check: Check): void {
       w.events.some((e) => e === `MAJOR FOUL - BLUE +${BB_PTS.foulMajor} (G402 crossing into the opponent\u2019s half in AUTO)`),
       w.events.filter((e) => e.includes('G402')).join(' | '));
 
-    // separate, then touch again: a SECOND instance, and the manual charges for neither
+    // separate and come STRAIGHT back, inside the window: one hit, still one MAJOR. This is
+    // the half that stops a shove that stutters across the contact slop billing twice.
     place(w, 0, -20, 0);
-    const apart = bill(w, 10);
+    const apart = bill(w, ticks(BB_G402_REARM_S / 2));
     check('G402: separating bills nothing', apart.major.red === 1);
     place(w, 0, 20, 0);
+    const soon = bill(w, 10);
+    check('G402: ...and re-touching INSIDE the re-arm window is the same instance, not a second',
+      soon.major.red === 1, String(soon.major.red));
+
+    // now stay away for longer than the window and cross again: a SECOND instance, and after
+    // the 2026-09-22 ruling a second MAJOR. This used to be capped at one for the whole match.
+    place(w, 0, -20, 0);
+    bill(w, ticks(BB_G402_REARM_S) + 2);
+    place(w, 0, 20, 0);
     const again = bill(w, 10);
-    check('G402: re-crossing is NOT billed again — the tariff is per MATCH (Table 10-4)',
-      again.major.red === 1, String(again.major.red));
-    check('G402: ...so a repeat crosser still owes exactly one MAJOR',
-      again.pts.blue === BB_PTS.foulMajor, String(again.pts.blue));
+    check('G402: re-crossing after the re-arm window IS billed again (owner ruling 2026-09-22)',
+      again.major.red === 2, String(again.major.red));
+    check('G402: ...so a repeat crosser owes two MAJORs, not one per MATCH',
+      again.pts.blue === 2 * BB_PTS.foulMajor, String(again.pts.blue));
 
     // A robot on its OWN side, in contact, is not a G402 — but the one that came to it is.
-    // The footprint is 21 in long (a sweeper on each end), so FULLY crossed needs the centre
-    // more than 10.5 in past the line; a robot straddling it is not across at all.
-    place(w, 0, -34, 0);
+    // 18 in of centre gap rather than 20: the default chassis is 15 in long with a 3-in
+    // sweeper, so 20 in leaves daylight and the fixture proves nothing about contact.
+    place(w, 0, -32, 0);
     place(w, 1, -14, 0);
     const own = bill(w, 10);
-    check('G402: contact on the CROSSER\'s own side is not a foul', own.major.red === 1, String(own.major.red));
+    check('G402: contact on the CROSSER\'s own side is not a foul', own.major.red === 2, String(own.major.red));
     check('G402: but the BLUE robot that crossed IS billed', own.major.blue === 1, String(own.major.blue));
 
     /**
-     * ONE OFFENDER, TWO VICTIMS — the regression the per-MATCH latch exists for. Red 0 crosses
-     * ONCE and ends up against both blues; that used to be two rising edges of two (crosser,
-     * victim) keys and 40 points for a single act of AUTO interference. Both blues are head-on,
-     * one ahead and one behind, at the same proven 12-in centre gap the check above uses — a
-     * flank placement was tried first and does NOT make contact at this footprint, which would
-     * have left this check passing for the wrong reason.
+     * ONE OFFENDER, TWO VICTIMS — TWO MAJORs, after the 2026-09-22 ruling. The key names the
+     * (crosser, victim) pair, so crossing into two opponents at once is two instances of
+     * interference and is billed twice; the per-MATCH latch that used to collapse them to one
+     * is gone. Both blues are head-on, one ahead and one behind, at the same proven 12-in
+     * centre gap the check above uses — a flank placement was tried first and does NOT make
+     * contact at this footprint, which would have left this check passing for the wrong reason.
      */
     const twoVictims = bare([
       { id: 0, alliance: 'red' },
@@ -1693,15 +1821,15 @@ function penaltyChecks(check: Check): void {
     place(twoVictims, 1, 32, 0);
     place(twoVictims, 2, 8, 0);
     const vv = bill(twoVictims, 30);
-    check('G402: one crosser against TWO opponents is still ONE MAJOR (per MATCH)',
-      vv.major.red === 1, String(vv.major.red));
-    check('G402: ...so the victims are +20 between them, not +40',
-      vv.pts.blue === BB_PTS.foulMajor, String(vv.pts.blue));
+    check('G402: one crosser against TWO opponents is TWO MAJORs — one per victim',
+      vv.major.red === 2, String(vv.major.red));
+    check('G402: ...so the victims are +40 between them',
+      vv.pts.blue === 2 * BB_PTS.foulMajor, String(vv.pts.blue));
 
     /**
-     * ...and the cap is per OFFENDER, which the latch must not over-reach into: "a TEAM may not
-     * disrupt AUTO", and an FTC team is one robot. Two crossers on opposite alliances, in their
-     * own corners of the field, are two teams and two MAJORs.
+     * ...and an instance belongs to ONE offender: "a TEAM may not disrupt AUTO", and an FTC
+     * team is one robot. Two crossers on opposite alliances, in their own corners of the field,
+     * are two teams and one MAJOR each.
      */
     const twoOffenders = bare([
       { id: 0, alliance: 'red' },
@@ -1717,7 +1845,7 @@ function penaltyChecks(check: Check): void {
     const oo = bill(twoOffenders, 30);
     check('G402: two crossers are two teams and two MAJORs',
       oo.major.red === 1 && oo.major.blue === 1, `${oo.major.red}/${oo.major.blue}`);
-    check('G402: ...20 each way, and neither latch swallowed the other',
+    check('G402: ...20 each way, and neither offender window swallowed the other',
       oo.pts.red === BB_PTS.foulMajor && oo.pts.blue === BB_PTS.foulMajor,
       `${oo.pts.red}/${oo.pts.blue}`);
 
@@ -1865,10 +1993,16 @@ function penaltyChecks(check: Check): void {
       hud.controlMajor.red === true && hud.controlMajor.blue === false,
       `red=${hud.controlMajor.red} blue=${hud.controlMajor.blue}`);
 
-    // a THIRD instance, after the MAJOR already billed: latched PER MATCH, no second MAJOR.
+    /**
+     * ...and a THIRD instance draws a THIRD MAJOR. Owner ruling 2026-09-22: the per-robot
+     * `g407billed` latch is gone and every STRATEGIC instance bills. Under clause (B) the
+     * second and each one after it qualifies, so three instances are two MAJORs.
+     */
     hold(4, 1);
     hold(5, BB_MOMENTARY_S + 0.5);
-    check('G407 STRATEGIC: a third instance draws no second MAJOR (per MATCH)', majors() === 1, String(majors()));
+    check('G407 STRATEGIC: a third instance draws a SECOND MAJOR — no per-MATCH cap (2026-09-22)',
+      majors() === 2 && w.match.scores.blue.foulPoints === 2 * BB_PTS.foulMajor,
+      `major=${majors()} pts=${w.match.scores.blue.foulPoints}`);
   }
 
   {
@@ -1883,6 +2017,21 @@ function penaltyChecks(check: Check): void {
     check('G407 STRATEGIC: 6+ held past MOMENTARY MAJORS on the first instance',
       held.major.blue === 1 && held.pts.red === BB_PTS.foulMajor,
       `major=${held.major.blue} pts=${held.pts.red}`);
+
+    /**
+     * ...and a SECOND sustained 6+ instance is a SECOND MAJOR (owner ruling 2026-09-22). The
+     * pile has to drop below six and climb back: `qualified6` is the tick the streak crosses
+     * `BB_MOMENTARY_S`, so holding six for a minute stays one instance.
+     */
+    w.robots[0].hopper = Array(4).fill('yellow');
+    bill(w, ticks(1));
+    w.robots[0].hopper = Array(6).fill('yellow');
+    const twice = bill(w, ticks(BB_MOMENTARY_S + 0.5));
+    check('G407 STRATEGIC: a SECOND sustained 6+ instance bills a second MAJOR (2026-09-22)',
+      twice.major.blue === 2 && twice.pts.red === 2 * BB_PTS.foulMajor,
+      `major=${twice.major.blue} pts=${twice.pts.red}`);
+    check('G407 STRATEGIC: ...and holding it there bills no third',
+      bill(w, ticks(2)).major.blue === 2, String(w.match.fouls.blue.major));
 
     // 6, for a SINGLE tick: not sustained, so no MAJOR — "a referee could not see it".
     const w2 = bare([{ id: 0, alliance: 'blue' }]);
@@ -1906,7 +2055,7 @@ function penaltyChecks(check: Check): void {
   }
 
   {
-    // the two robots of ONE alliance latch INDEPENDENTLY — a per-ROBOT flag, not per-alliance.
+    // the two robots of ONE alliance bill INDEPENDENTLY — the clocks are per ROBOT.
     const w = bare([
       { id: 0, alliance: 'red' },
       { id: 1, alliance: 'red' },
@@ -1920,7 +2069,7 @@ function penaltyChecks(check: Check): void {
       String(w.match.fouls.red.major));
     w.robots[1].hopper = Array(6).fill('yellow');
     bill(w, ticks(BB_MOMENTARY_S + 0.5));
-    check('G407 STRATEGIC: robot 1 MAJORS independently of robot 0’s latch',
+    check('G407 STRATEGIC: robot 1 MAJORS independently of robot 0’s streak',
       w.match.fouls.red.major === 2, String(w.match.fouls.red.major));
   }
 
@@ -2220,12 +2369,21 @@ function penaltyChecks(check: Check): void {
  * written against the chassis put the robots a clear four inches apart and the rule simply
  * never fires — which reads exactly like a broken detector.
  *
+ * ⚠️ WHICH IS WHY `PIN_BUILD` IS STATED AND NOT INHERITED. 21 × 17 is a FRONT+BACK sweeper
+ * build — it was the default preset's own footprint until 2026-09-22, when the default became
+ * a front-only sweeper (the Pollinator) and every pose here quietly started describing a robot
+ * 3 in shorter at one end, asymmetric about its own centre. Nothing failed loudly: the pairs
+ * simply stopped touching and eighteen checks read as "the detector bills nothing".
+ *
  * The pin fixture is deliberately NOT a driven match. `isPinning` asks who is PRESSING and
  * the accumulator measures how far the victim actually got, so a hand-built world with static
  * poses is the only way to hold "pressed, going nowhere" for an exact number of seconds. What
  * a real chassis does when shoved is the physics lane's question, not this one's.
  */
 function pinChecks(check: Check): void {
+  /** the build every pose in this lane is measured against — see the header. */
+  const PIN_BUILD: Partial<RobotSpec> = { intakeMount: 'frontback' };
+
   /**
    * ONE PINNER, ONE IDLE VICTIM, HELD AGAINST THE HIVE FRAME.
    *
@@ -2248,7 +2406,7 @@ function pinChecks(check: Check): void {
     const w = bare([
       { id: 0, alliance: 'red' },
       { id: 1, alliance: 'blue' },
-    ]);
+    ], PIN_BUILD);
     w.match.phase = 'teleop';
     w.match.phaseTimeLeft = 90;
     place(w, 1, 24 - 10.5, 0); // blue, flat against the +x HIVE frame bar
@@ -2287,7 +2445,7 @@ function pinChecks(check: Check): void {
     const w = bare([
       { id: 0, alliance: 'red' },
       { id: 1, alliance: 'blue' },
-    ]);
+    ], PIN_BUILD);
     w.match.phase = 'teleop';
     w.match.phaseTimeLeft = 90;
     // rear probe = centre + footprint reach (10.5) + PIN_WALL_SLOP, straight away from the victim
@@ -2362,7 +2520,7 @@ function pinChecks(check: Check): void {
     const w = bare([
       { id: 0, alliance: 'red' },
       { id: 1, alliance: 'blue' },
-    ]);
+    ], PIN_BUILD);
     w.match.phase = 'teleop';
     w.match.phaseTimeLeft = 90;
     place(w, 0, -10, 0);
@@ -2439,7 +2597,7 @@ function pinChecks(check: Check): void {
     const probe = bare([
       { id: 0, alliance: 'red' },
       { id: 1, alliance: 'blue' },
-    ]);
+    ], PIN_BUILD);
     const ext = footprintExtents(probe.robots[0].spec);
     const span = { len: ext.front + ext.rear, half: ext.half }; // one footprint, along / across its heading
     const [A, B] = probe.robots;

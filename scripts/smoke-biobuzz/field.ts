@@ -540,16 +540,24 @@ export function fieldChecks(check: Check): void {
     const cases: { name: string; pose: StartPose; want: keyof typeof probe }[] = [];
     // E -- dead centre of blue's LOADING ZONE, against the side wall it backs onto. Heading
     // 180 puts the footprint's half-length along x, which is how a robot actually sits there.
+    //
+    // ⚠️ SEATED ON `e.rear`, NOT ON THE FOOTPRINT'S MIDPOINT. At heading 180 the robot faces
+    // -x, so the face against the +x wall is its REAR, and only a SYMMETRIC footprint has its
+    // midpoint there. This read `(e.front + e.rear) / 2` while the default build carried
+    // FRONT+BACK sweepers and was symmetric; the day the default became a front-sweeper build
+    // both poses floated 1.5 in off the wall, clause C failed first, and the two checks that
+    // name a clause named the wrong one -- the same trap the G304.A case below documents.
+    const seatX = BB_HALF_X - e.rear;
     cases.push({
       name: 'in the LOADING ZONE (G304.E)',
-      pose: { x: BB_HALF_X - (e.front + e.rear) / 2, y: (lz.y0 + lz.y1) / 2, headingDeg: 180 },
+      pose: { x: seatX, y: (lz.y0 + lz.y1) / 2, headingDeg: 180 },
       want: 'outOfLZ',
     });
     // D -- against the same side wall, at F3's y. F3 stands on +x at y = 24, so a robot seated
     // there is in its foot and its scoring volume.
     cases.push({
       name: 'touching a FLOWER (G304.D)',
-      pose: { x: BB_HALF_X - (e.front + e.rear) / 2, y: BB_FLOWERS[2].y, headingDeg: 180 },
+      pose: { x: seatX, y: BB_FLOWERS[2].y, headingDeg: 180 },
       want: 'clearFlower',
     });
     // C -- open floor on blue's own half. NOT the field centre, which is the obvious choice
