@@ -10,7 +10,7 @@ new class is what gets written when the grep is inconclusive.
 `used 0` means the CSS is dead, or the class is composed at runtime from string pieces
 this scan cannot see. Both are worth a look.
 
-269 classes · 112 families · 0 with no reference found.
+265 classes · 110 families · 0 with no reference found.
 
 Composition rules — page/panel/row/dialog/list skeletons — are `docs/ui-standard.md` §6.
 The look and the depth model are `DESIGN.md`. This file is only the inventory.
@@ -19,84 +19,48 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-replay` | src/ui/shell.css:2153 | 16 |
-| `.ds-replay-actions` | src/ui/shell.css:2925 | 1 |
-| `.ds-replay-canvas` | src/ui/shell.css:2975 | 1 |
-| `.ds-replay-controls` | src/ui/shell.css:2986 | 1 |
-| `.ds-replay-drift` | src/ui/shell.css:2901 | 1 |
-| `.ds-replay-pen` | src/ui/shell.css:3187 | 1 |
-| `.ds-replay-rail` | src/ui/shell.css:3236 | 1 |
-| `.ds-replay-rec` | src/ui/shell.css:3658 | 1 |
-| `.ds-replay-saving` | src/ui/shell.css:3710 | 1 |
-| `.ds-replay-score` | src/ui/shell.css:2933 | 2 |
-| `.ds-replay-seek` | src/ui/shell.css:2999 | 1 |
-| `.ds-replay-stage` | src/ui/shell.css:3230 | 1 |
-| `.ds-replay-time` | src/ui/shell.css:3008 | 1 |
-| `.ds-replay-top` | src/ui/shell.css:2914 | 1 |
-| `.ds-replay-viewport` | src/ui/shell.css:2977 | 1 |
-=======
-| `.ds-replay` | src/ui/shell.css:2137 | 16 |
-| `.ds-replay-actions` | src/ui/shell.css:2909 | 1 |
-| `.ds-replay-canvas` | src/ui/shell.css:2959 | 1 |
-| `.ds-replay-controls` | src/ui/shell.css:2970 | 1 |
-| `.ds-replay-drift` | src/ui/shell.css:2885 | 1 |
-| `.ds-replay-pen` | src/ui/shell.css:3171 | 1 |
-| `.ds-replay-rail` | src/ui/shell.css:3220 | 1 |
-| `.ds-replay-rec` | src/ui/shell.css:3642 | 1 |
-| `.ds-replay-saving` | src/ui/shell.css:3694 | 1 |
-| `.ds-replay-score` | src/ui/shell.css:2917 | 2 |
-| `.ds-replay-seek` | src/ui/shell.css:2983 | 1 |
-| `.ds-replay-stage` | src/ui/shell.css:3214 | 1 |
-| `.ds-replay-time` | src/ui/shell.css:2992 | 1 |
-| `.ds-replay-top` | src/ui/shell.css:2898 | 1 |
-| `.ds-replay-viewport` | src/ui/shell.css:2961 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-replay` | src/ui/shell.css:2087 | 16 |
+| `.ds-replay-actions` | src/ui/shell.css:2859 | 1 |
+| `.ds-replay-canvas` | src/ui/shell.css:2909 | 1 |
+| `.ds-replay-controls` | src/ui/shell.css:2920 | 1 |
+| `.ds-replay-drift` | src/ui/shell.css:2835 | 1 |
+| `.ds-replay-pen` | src/ui/shell.css:3121 | 1 |
+| `.ds-replay-rail` | src/ui/shell.css:3170 | 1 |
+| `.ds-replay-rec` | src/ui/shell.css:3592 | 1 |
+| `.ds-replay-saving` | src/ui/shell.css:3644 | 1 |
+| `.ds-replay-score` | src/ui/shell.css:2867 | 2 |
+| `.ds-replay-seek` | src/ui/shell.css:2933 | 1 |
+| `.ds-replay-stage` | src/ui/shell.css:3164 | 1 |
+| `.ds-replay-time` | src/ui/shell.css:2942 | 1 |
+| `.ds-replay-top` | src/ui/shell.css:2848 | 1 |
+| `.ds-replay-viewport` | src/ui/shell.css:2911 | 1 |
 
 ## `ds-startpos` — 14
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-startpos` | src/ui/shell.css:5298 | 46 |
-| `.ds-startpos-canvas` | src/ui/shell.css:5743 | 6 |
-| `.ds-startpos-del` | src/ui/shell.css:5898 | 3 |
-| `.ds-startpos-inputs` | src/ui/shell.css:5802 | 3 |
-| `.ds-startpos-presets` | src/ui/shell.css:5880 | 3 |
-| `.ds-startpos-role` | src/ui/shell.css:5874 | 3 |
-| `.ds-startpos-side` | src/ui/shell.css:5757 | 3 |
-| `.ds-startpos-stage` | src/ui/shell.css:5734 | 4 |
-| `.ds-startpos-status` | src/ui/shell.css:5764 | 3 |
-| `.ds-startpos-tab` | src/ui/shell.css:5312 | 3 |
-| `.ds-startpos-tabs` | src/ui/shell.css:5850 | 3 |
-| `.ds-startpos-toggle` | src/ui/shell.css:2050 | 3 |
-| `.ds-startpos-tools` | src/ui/shell.css:5830 | 3 |
-| `.ds-startpos-where` | src/ui/shell.css:5787 | 1 |
-=======
-| `.ds-startpos` | src/ui/shell.css:5282 | 46 |
-| `.ds-startpos-canvas` | src/ui/shell.css:5727 | 6 |
-| `.ds-startpos-del` | src/ui/shell.css:5882 | 3 |
-| `.ds-startpos-inputs` | src/ui/shell.css:5786 | 3 |
-| `.ds-startpos-presets` | src/ui/shell.css:5864 | 3 |
-| `.ds-startpos-role` | src/ui/shell.css:5858 | 3 |
-| `.ds-startpos-side` | src/ui/shell.css:5741 | 3 |
-| `.ds-startpos-stage` | src/ui/shell.css:5718 | 4 |
-| `.ds-startpos-status` | src/ui/shell.css:5748 | 3 |
-| `.ds-startpos-tab` | src/ui/shell.css:5296 | 3 |
-| `.ds-startpos-tabs` | src/ui/shell.css:5834 | 3 |
-| `.ds-startpos-toggle` | src/ui/shell.css:2034 | 3 |
-| `.ds-startpos-tools` | src/ui/shell.css:5814 | 3 |
-| `.ds-startpos-where` | src/ui/shell.css:5771 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-startpos` | src/ui/shell.css:5232 | 46 |
+| `.ds-startpos-canvas` | src/ui/shell.css:5677 | 6 |
+| `.ds-startpos-del` | src/ui/shell.css:5832 | 3 |
+| `.ds-startpos-inputs` | src/ui/shell.css:5736 | 3 |
+| `.ds-startpos-presets` | src/ui/shell.css:5814 | 3 |
+| `.ds-startpos-role` | src/ui/shell.css:5808 | 3 |
+| `.ds-startpos-side` | src/ui/shell.css:5691 | 3 |
+| `.ds-startpos-stage` | src/ui/shell.css:5668 | 4 |
+| `.ds-startpos-status` | src/ui/shell.css:5698 | 3 |
+| `.ds-startpos-tab` | src/ui/shell.css:5246 | 3 |
+| `.ds-startpos-tabs` | src/ui/shell.css:5784 | 3 |
+| `.ds-startpos-toggle` | src/ui/shell.css:1984 | 3 |
+| `.ds-startpos-tools` | src/ui/shell.css:5764 | 3 |
+| `.ds-startpos-where` | src/ui/shell.css:5721 | 1 |
 
 ## `ds-profile` — 11
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
 | `.ds-profile-actions` | src/ui/shell.css:608 | 1 |
-| `.ds-profile-friend-actions` | src/ui/shell.css:2663 | 3 |
-| `.ds-profile-guest` | src/ui/shell.css:2150 | 1 |
+| `.ds-profile-friend-actions` | src/ui/shell.css:2597 | 3 |
+| `.ds-profile-guest` | src/ui/shell.css:2084 | 1 |
 | `.ds-profile-id` | src/ui/shell.css:559 | 1 |
 | `.ds-profile-label` | src/ui/shell.css:600 | 1 |
 | `.ds-profile-name` | src/ui/shell.css:582 | 1 |
@@ -105,47 +69,21 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-profile-section` | src/ui/shell.css:593 | 1 |
 | `.ds-profile-sub` | src/ui/shell.css:589 | 1 |
 | `.ds-profile-who` | src/ui/shell.css:576 | 1 |
-=======
-| `.ds-profile-actions` | src/ui/shell.css:591 | 1 |
-| `.ds-profile-friend-actions` | src/ui/shell.css:2647 | 3 |
-| `.ds-profile-guest` | src/ui/shell.css:2134 | 1 |
-| `.ds-profile-id` | src/ui/shell.css:542 | 1 |
-| `.ds-profile-label` | src/ui/shell.css:583 | 1 |
-| `.ds-profile-name` | src/ui/shell.css:565 | 1 |
-| `.ds-profile-pop` | src/ui/shell.css:476 | 1 |
-| `.ds-profile-root` | src/ui/shell.css:490 | 1 |
-| `.ds-profile-section` | src/ui/shell.css:576 | 1 |
-| `.ds-profile-sub` | src/ui/shell.css:572 | 1 |
-| `.ds-profile-who` | src/ui/shell.css:559 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
 
 ## `ds-dl` — 10
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-dl` | src/ui/shell.css:2992 | 18 |
-| `.ds-dl-get` | src/ui/shell.css:5697 | 1 |
-| `.ds-dl-hero` | src/ui/shell.css:5673 | 1 |
-| `.ds-dl-note` | src/ui/shell.css:3644 | 2 |
-| `.ds-dl-opt` | src/ui/shell.css:3526 | 2 |
-| `.ds-dl-plat` | src/ui/shell.css:5682 | 1 |
-| `.ds-dl-pop` | src/ui/shell.css:3510 | 1 |
-| `.ds-dl-row` | src/ui/shell.css:3592 | 2 |
-| `.ds-dl-seg` | src/ui/shell.css:3605 | 2 |
-| `.ds-dl-sponsor` | src/ui/shell.css:6663 | 1 |
-=======
-| `.ds-dl` | src/ui/shell.css:2976 | 18 |
-| `.ds-dl-get` | src/ui/shell.css:5681 | 1 |
-| `.ds-dl-hero` | src/ui/shell.css:5657 | 1 |
-| `.ds-dl-note` | src/ui/shell.css:3628 | 2 |
-| `.ds-dl-opt` | src/ui/shell.css:3510 | 2 |
-| `.ds-dl-plat` | src/ui/shell.css:5666 | 1 |
-| `.ds-dl-pop` | src/ui/shell.css:3494 | 1 |
-| `.ds-dl-row` | src/ui/shell.css:3576 | 2 |
-| `.ds-dl-seg` | src/ui/shell.css:3589 | 2 |
-| `.ds-dl-sponsor` | src/ui/shell.css:6647 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-dl` | src/ui/shell.css:2926 | 18 |
+| `.ds-dl-get` | src/ui/shell.css:5631 | 1 |
+| `.ds-dl-hero` | src/ui/shell.css:5607 | 1 |
+| `.ds-dl-note` | src/ui/shell.css:3578 | 2 |
+| `.ds-dl-opt` | src/ui/shell.css:3460 | 2 |
+| `.ds-dl-plat` | src/ui/shell.css:5616 | 1 |
+| `.ds-dl-pop` | src/ui/shell.css:3444 | 1 |
+| `.ds-dl-row` | src/ui/shell.css:3526 | 2 |
+| `.ds-dl-seg` | src/ui/shell.css:3539 | 2 |
+| `.ds-dl-sponsor` | src/ui/shell.css:6597 | 1 |
 
 ## `ds-tut` — 10
 
@@ -166,47 +104,37 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-standing` | src/ui/shell.css:6225 | 16 |
-| `.ds-standing-cap` | src/ui/shell.css:6331 | 3 |
-| `.ds-standing-head` | src/ui/shell.css:6245 | 2 |
-| `.ds-standing-headtext` | src/ui/shell.css:6250 | 2 |
-| `.ds-standing-lock` | src/ui/shell.css:6209 | 1 |
-| `.ds-standing-log` | src/ui/shell.css:6336 | 1 |
-| `.ds-standing-name` | src/ui/shell.css:6317 | 2 |
-| `.ds-standing-note` | src/ui/shell.css:6361 | 1 |
-| `.ds-standing-what` | src/ui/shell.css:6356 | 1 |
-=======
-| `.ds-standing` | src/ui/shell.css:6209 | 16 |
-| `.ds-standing-cap` | src/ui/shell.css:6315 | 3 |
-| `.ds-standing-head` | src/ui/shell.css:6229 | 2 |
-| `.ds-standing-headtext` | src/ui/shell.css:6234 | 2 |
-| `.ds-standing-lock` | src/ui/shell.css:6193 | 1 |
-| `.ds-standing-log` | src/ui/shell.css:6320 | 1 |
-| `.ds-standing-name` | src/ui/shell.css:6301 | 2 |
-| `.ds-standing-note` | src/ui/shell.css:6345 | 1 |
-| `.ds-standing-what` | src/ui/shell.css:6340 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-standing` | src/ui/shell.css:6159 | 16 |
+| `.ds-standing-cap` | src/ui/shell.css:6265 | 3 |
+| `.ds-standing-head` | src/ui/shell.css:6179 | 2 |
+| `.ds-standing-headtext` | src/ui/shell.css:6184 | 2 |
+| `.ds-standing-lock` | src/ui/shell.css:6143 | 1 |
+| `.ds-standing-log` | src/ui/shell.css:6270 | 1 |
+| `.ds-standing-name` | src/ui/shell.css:6251 | 2 |
+| `.ds-standing-note` | src/ui/shell.css:6295 | 1 |
+| `.ds-standing-what` | src/ui/shell.css:6290 | 1 |
 
 ## `ds-gauge` — 6
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-gauge` | src/ui/shell.css:6259 | 7 |
-| `.ds-gauge-fill` | src/ui/shell.css:6294 | 1 |
-| `.ds-gauge-mark` | src/ui/shell.css:6289 | 1 |
-| `.ds-gauge-max` | src/ui/shell.css:6312 | 1 |
-| `.ds-gauge-num` | src/ui/shell.css:6302 | 1 |
-| `.ds-gauge-tick` | src/ui/shell.css:6284 | 1 |
-=======
-| `.ds-gauge` | src/ui/shell.css:6243 | 7 |
-| `.ds-gauge-fill` | src/ui/shell.css:6278 | 1 |
-| `.ds-gauge-mark` | src/ui/shell.css:6273 | 1 |
-| `.ds-gauge-max` | src/ui/shell.css:6296 | 1 |
-| `.ds-gauge-num` | src/ui/shell.css:6286 | 1 |
-| `.ds-gauge-tick` | src/ui/shell.css:6268 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-gauge` | src/ui/shell.css:6193 | 7 |
+| `.ds-gauge-fill` | src/ui/shell.css:6228 | 1 |
+| `.ds-gauge-mark` | src/ui/shell.css:6223 | 1 |
+| `.ds-gauge-max` | src/ui/shell.css:6246 | 1 |
+| `.ds-gauge-num` | src/ui/shell.css:6236 | 1 |
+| `.ds-gauge-tick` | src/ui/shell.css:6218 | 1 |
+
+## `ds-home` — 6
+
+| class | declared | used |
+|---|---|---|
+| `.ds-home` | src/ui/shell.css:1157 | 9 |
+| `.ds-home-games` | src/ui/shell.css:1175 | 1 |
+| `.ds-home-link` | src/ui/shell.css:1310 | 4 |
+| `.ds-home-links` | src/ui/shell.css:1181 | 1 |
+| `.ds-home-presents` | src/ui/shell.css:6588 | 1 |
+| `.ds-home-title` | src/ui/shell.css:1167 | 1 |
 
 ## `ds-lan` — 6
 
@@ -223,142 +151,73 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-osk` | src/ui/shell.css:7214 | 12 |
-| `.ds-osk-foot` | src/ui/shell.css:7299 | 1 |
-| `.ds-osk-grid` | src/ui/shell.css:7243 | 1 |
-| `.ds-osk-key` | src/ui/shell.css:7253 | 6 |
-| `.ds-osk-row` | src/ui/shell.css:7248 | 1 |
-| `.ds-osk-val` | src/ui/shell.css:7230 | 1 |
-=======
-| `.ds-osk` | src/ui/shell.css:7198 | 12 |
-| `.ds-osk-foot` | src/ui/shell.css:7283 | 1 |
-| `.ds-osk-grid` | src/ui/shell.css:7227 | 1 |
-| `.ds-osk-key` | src/ui/shell.css:7237 | 6 |
-| `.ds-osk-row` | src/ui/shell.css:7232 | 1 |
-| `.ds-osk-val` | src/ui/shell.css:7214 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-osk` | src/ui/shell.css:7148 | 12 |
+| `.ds-osk-foot` | src/ui/shell.css:7233 | 1 |
+| `.ds-osk-grid` | src/ui/shell.css:7177 | 1 |
+| `.ds-osk-key` | src/ui/shell.css:7187 | 6 |
+| `.ds-osk-row` | src/ui/shell.css:7182 | 1 |
+| `.ds-osk-val` | src/ui/shell.css:7164 | 1 |
 
 ## `ds-panel` — 6
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-panel` | src/ui/shell.css:1936 | 308 |
-| `.ds-panel-body` | src/ui/shell.css:1988 | 73 |
-| `.ds-panel-foot` | src/ui/shell.css:2029 | 2 |
-| `.ds-panel-h` | src/ui/shell.css:2163 | 68 |
-| `.ds-panel-open` | src/ui/shell.css:2160 | 2 |
-| `.ds-panel-title` | src/ui/shell.css:2172 | 72 |
-=======
-| `.ds-panel` | src/ui/shell.css:1920 | 308 |
-| `.ds-panel-body` | src/ui/shell.css:1972 | 73 |
-| `.ds-panel-foot` | src/ui/shell.css:2013 | 2 |
-| `.ds-panel-h` | src/ui/shell.css:2147 | 68 |
-| `.ds-panel-open` | src/ui/shell.css:2144 | 2 |
-| `.ds-panel-title` | src/ui/shell.css:2156 | 72 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-panel` | src/ui/shell.css:1870 | 308 |
+| `.ds-panel-body` | src/ui/shell.css:1922 | 73 |
+| `.ds-panel-foot` | src/ui/shell.css:1963 | 2 |
+| `.ds-panel-h` | src/ui/shell.css:2097 | 68 |
+| `.ds-panel-open` | src/ui/shell.css:2094 | 2 |
+| `.ds-panel-title` | src/ui/shell.css:2106 | 72 |
 
 ## `ds-bind` — 5
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-bind-block` | src/ui/shell.css:5417 | 8 |
-| `.ds-bind-col` | src/ui/shell.css:5411 | 2 |
-| `.ds-bind-grid` | src/ui/shell.css:5432 | 4 |
-| `.ds-bind-label` | src/ui/shell.css:5444 | 10 |
-| `.ds-bind-row` | src/ui/shell.css:4590 | 11 |
-=======
-| `.ds-bind-block` | src/ui/shell.css:5401 | 8 |
-| `.ds-bind-col` | src/ui/shell.css:5395 | 2 |
-| `.ds-bind-grid` | src/ui/shell.css:5416 | 4 |
-| `.ds-bind-label` | src/ui/shell.css:5428 | 10 |
-| `.ds-bind-row` | src/ui/shell.css:4574 | 11 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-bind-block` | src/ui/shell.css:5351 | 8 |
+| `.ds-bind-col` | src/ui/shell.css:5345 | 2 |
+| `.ds-bind-grid` | src/ui/shell.css:5366 | 4 |
+| `.ds-bind-label` | src/ui/shell.css:5378 | 10 |
+| `.ds-bind-row` | src/ui/shell.css:4524 | 11 |
 
 ## `ds-foot` — 5
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-foot` | src/ui/shell.css:1562 | 13 |
-| `.ds-foot-brand` | src/ui/shell.css:1574 | 1 |
-| `.ds-foot-link` | src/ui/shell.css:1549 | 8 |
-| `.ds-foot-links` | src/ui/shell.css:1587 | 1 |
-| `.ds-foot-sponsor` | src/ui/shell.css:6659 | 1 |
-=======
-| `.ds-foot` | src/ui/shell.css:1546 | 13 |
-| `.ds-foot-brand` | src/ui/shell.css:1558 | 1 |
-| `.ds-foot-link` | src/ui/shell.css:1533 | 8 |
-| `.ds-foot-links` | src/ui/shell.css:1571 | 1 |
-| `.ds-foot-sponsor` | src/ui/shell.css:6643 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-foot` | src/ui/shell.css:1496 | 13 |
+| `.ds-foot-brand` | src/ui/shell.css:1508 | 1 |
+| `.ds-foot-link` | src/ui/shell.css:1483 | 8 |
+| `.ds-foot-links` | src/ui/shell.css:1521 | 1 |
+| `.ds-foot-sponsor` | src/ui/shell.css:6593 | 1 |
 
 ## `ds-form` — 5
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-form` | src/ui/shell.css:3762 | 31 |
-| `.ds-form-aside` | src/ui/shell.css:3855 | 1 |
-| `.ds-form-err` | src/ui/shell.css:3791 | 16 |
-| `.ds-form-hint` | src/ui/shell.css:3795 | 7 |
-| `.ds-form-switch` | src/ui/shell.css:3833 | 2 |
-=======
-| `.ds-form` | src/ui/shell.css:3746 | 31 |
-| `.ds-form-aside` | src/ui/shell.css:3839 | 1 |
-| `.ds-form-err` | src/ui/shell.css:3775 | 16 |
-| `.ds-form-hint` | src/ui/shell.css:3779 | 7 |
-| `.ds-form-switch` | src/ui/shell.css:3817 | 2 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-form` | src/ui/shell.css:3696 | 31 |
+| `.ds-form-aside` | src/ui/shell.css:3789 | 1 |
+| `.ds-form-err` | src/ui/shell.css:3725 | 16 |
+| `.ds-form-hint` | src/ui/shell.css:3729 | 7 |
+| `.ds-form-switch` | src/ui/shell.css:3767 | 2 |
 
 ## `ds-hero` — 5
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-hero` | src/ui/shell.css:4653 | 6 |
-| `.ds-hero-info` | src/ui/shell.css:4858 | 1 |
-| `.ds-hero-name` | src/ui/shell.css:4864 | 1 |
-| `.ds-hero-team` | src/ui/shell.css:4885 | 1 |
-| `.ds-hero-view` | src/ui/shell.css:4671 | 1 |
-=======
-| `.ds-hero` | src/ui/shell.css:4637 | 6 |
-| `.ds-hero-info` | src/ui/shell.css:4842 | 1 |
-| `.ds-hero-name` | src/ui/shell.css:4848 | 1 |
-| `.ds-hero-team` | src/ui/shell.css:4869 | 1 |
-| `.ds-hero-view` | src/ui/shell.css:4655 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
-
-## `ds-home` — 5
-
-| class | declared | used |
-|---|---|---|
-<<<<<<< HEAD
-| `.ds-home` | src/ui/shell.css:1157 | 8 |
-| `.ds-home-link` | src/ui/shell.css:1376 | 4 |
-| `.ds-home-links` | src/ui/shell.css:1247 | 1 |
-| `.ds-home-presents` | src/ui/shell.css:6654 | 1 |
-| `.ds-home-title` | src/ui/shell.css:1167 | 1 |
-=======
-| `.ds-home` | src/ui/shell.css:1140 | 8 |
-| `.ds-home-link` | src/ui/shell.css:1360 | 4 |
-| `.ds-home-links` | src/ui/shell.css:1231 | 1 |
-| `.ds-home-presents` | src/ui/shell.css:6638 | 1 |
-| `.ds-home-title` | src/ui/shell.css:1150 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-hero` | src/ui/shell.css:4587 | 6 |
+| `.ds-hero-info` | src/ui/shell.css:4792 | 1 |
+| `.ds-hero-name` | src/ui/shell.css:4798 | 1 |
+| `.ds-hero-team` | src/ui/shell.css:4819 | 1 |
+| `.ds-hero-view` | src/ui/shell.css:4605 | 1 |
 
 ## `ds-strat` — 5
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-strat-card` | src/ui/shell.css:5617 | 1 |
-| `.ds-strat-cards` | src/ui/shell.css:5612 | 1 |
-| `.ds-strat-chips` | src/ui/shell.css:1749 | 1 |
-| `.ds-strat-meta` | src/ui/shell.css:5638 | 1 |
-| `.ds-strat-prev` | src/ui/shell.css:5633 | 1 |
+| `.ds-strat-card` | src/ui/shell.css:5551 | 1 |
+| `.ds-strat-cards` | src/ui/shell.css:5546 | 1 |
+| `.ds-strat-chips` | src/ui/shell.css:1683 | 1 |
+| `.ds-strat-meta` | src/ui/shell.css:5572 | 1 |
+| `.ds-strat-prev` | src/ui/shell.css:5567 | 1 |
 
 ## `ds-bar` — 4
 
@@ -368,29 +227,15 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 | `.ds-bar-live` | src/ui/shell.css:423 | 3 |
 | `.ds-bar-right` | src/ui/shell.css:460 | 1 |
 | `.ds-bar-season` | src/ui/shell.css:391 | 1 |
-=======
-| `.ds-strat-card` | src/ui/shell.css:5601 | 1 |
-| `.ds-strat-cards` | src/ui/shell.css:5596 | 1 |
-| `.ds-strat-chips` | src/ui/shell.css:1733 | 1 |
-| `.ds-strat-meta` | src/ui/shell.css:5622 | 1 |
-| `.ds-strat-prev` | src/ui/shell.css:5617 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
 
 ## `ds-listbox` — 4
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
 | `.ds-listbox-btn` | src/ui/shell.css:475 | 1 |
-| `.ds-listbox-opt` | src/ui/shell.css:2348 | 1 |
-| `.ds-listbox-pop` | src/ui/shell.css:2332 | 1 |
+| `.ds-listbox-opt` | src/ui/shell.css:2282 | 1 |
+| `.ds-listbox-pop` | src/ui/shell.css:2266 | 1 |
 | `.ds-listbox-root` | src/ui/shell.css:897 | 1 |
-=======
-| `.ds-listbox-btn` | src/ui/shell.css:458 | 1 |
-| `.ds-listbox-opt` | src/ui/shell.css:2332 | 1 |
-| `.ds-listbox-pop` | src/ui/shell.css:2316 | 1 |
-| `.ds-listbox-root` | src/ui/shell.css:880 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
 
 ## `ds-rail` — 4
 
@@ -405,115 +250,52 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-report` | src/ui/shell.css:6456 | 11 |
-| `.ds-report-actions` | src/ui/shell.css:6482 | 3 |
-| `.ds-report-cap` | src/ui/shell.css:6472 | 2 |
-| `.ds-report-h` | src/ui/shell.css:6467 | 3 |
-=======
-| `.ds-report` | src/ui/shell.css:6440 | 11 |
-| `.ds-report-actions` | src/ui/shell.css:6466 | 3 |
-| `.ds-report-cap` | src/ui/shell.css:6456 | 2 |
-| `.ds-report-h` | src/ui/shell.css:6451 | 3 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-report` | src/ui/shell.css:6390 | 11 |
+| `.ds-report-actions` | src/ui/shell.css:6416 | 3 |
+| `.ds-report-cap` | src/ui/shell.css:6406 | 2 |
+| `.ds-report-h` | src/ui/shell.css:6401 | 3 |
 
 ## `ds-roleswap` — 4
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-roleswap` | src/ui/shell.css:5936 | 6 |
-| `.ds-roleswap-ctl` | src/ui/shell.css:5955 | 1 |
-| `.ds-roleswap-note` | src/ui/shell.css:5961 | 3 |
-| `.ds-roleswap-role` | src/ui/shell.css:5947 | 1 |
-=======
-| `.ds-roleswap` | src/ui/shell.css:5920 | 6 |
-| `.ds-roleswap-ctl` | src/ui/shell.css:5939 | 1 |
-| `.ds-roleswap-note` | src/ui/shell.css:5945 | 3 |
-| `.ds-roleswap-role` | src/ui/shell.css:5931 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-roleswap` | src/ui/shell.css:5870 | 6 |
+| `.ds-roleswap-ctl` | src/ui/shell.css:5889 | 1 |
+| `.ds-roleswap-note` | src/ui/shell.css:5895 | 3 |
+| `.ds-roleswap-role` | src/ui/shell.css:5881 | 1 |
 
 ## `ds-subnav` — 4
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-subnav` | src/ui/shell.css:1471 | 5 |
-| `.ds-subnav-body` | src/ui/shell.css:1516 | 1 |
-| `.ds-subnav-btn` | src/ui/shell.css:1478 | 2 |
-| `.ds-subnav-layout` | src/ui/shell.css:1464 | 1 |
-=======
-| `.ds-subnav` | src/ui/shell.css:1455 | 5 |
-| `.ds-subnav-body` | src/ui/shell.css:1500 | 1 |
-| `.ds-subnav-btn` | src/ui/shell.css:1462 | 2 |
-| `.ds-subnav-layout` | src/ui/shell.css:1448 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
-
-## `ds-wm` — 4
-
-| class | declared | used |
-|---|---|---|
-<<<<<<< HEAD
-| `.ds-wm` | src/ui/shell.css:1189 | 4 |
-| `.ds-wm-dark` | src/ui/shell.css:1218 | 1 |
-| `.ds-wm-light` | src/ui/shell.css:1221 | 1 |
-| `.ds-wm-text` | src/ui/shell.css:1227 | 1 |
-=======
-| `.ds-wm` | src/ui/shell.css:1172 | 4 |
-| `.ds-wm-dark` | src/ui/shell.css:1199 | 1 |
-| `.ds-wm-light` | src/ui/shell.css:1202 | 1 |
-| `.ds-wm-text` | src/ui/shell.css:1208 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-subnav` | src/ui/shell.css:1405 | 5 |
+| `.ds-subnav-body` | src/ui/shell.css:1450 | 1 |
+| `.ds-subnav-btn` | src/ui/shell.css:1412 | 2 |
+| `.ds-subnav-layout` | src/ui/shell.css:1398 | 1 |
 
 ## `ds-acct` — 3
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-acct-email` | src/ui/shell.css:2092 | 1 |
-| `.ds-acct-id` | src/ui/shell.css:2096 | 1 |
-| `.ds-acct-uuid` | src/ui/shell.css:2101 | 1 |
-=======
-| `.ds-acct-email` | src/ui/shell.css:2076 | 1 |
-| `.ds-acct-id` | src/ui/shell.css:2080 | 1 |
-| `.ds-acct-uuid` | src/ui/shell.css:2085 | 1 |
-
-## `ds-bar` — 3
-
-| class | declared | used |
-|---|---|---|
-| `.ds-bar` | src/ui/shell.css:306 | 6 |
-| `.ds-bar-live` | src/ui/shell.css:406 | 3 |
-| `.ds-bar-right` | src/ui/shell.css:443 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-acct-email` | src/ui/shell.css:2026 | 1 |
+| `.ds-acct-id` | src/ui/shell.css:2030 | 1 |
+| `.ds-acct-uuid` | src/ui/shell.css:2035 | 1 |
 
 ## `ds-modal` — 3
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-modal` | src/ui/shell.css:3744 | 16 |
-| `.ds-modal-backdrop` | src/ui/shell.css:3735 | 8 |
-| `.ds-modal-h` | src/ui/shell.css:3756 | 4 |
-=======
-| `.ds-modal` | src/ui/shell.css:3728 | 16 |
-| `.ds-modal-backdrop` | src/ui/shell.css:3719 | 8 |
-| `.ds-modal-h` | src/ui/shell.css:3740 | 4 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-modal` | src/ui/shell.css:3678 | 16 |
+| `.ds-modal-backdrop` | src/ui/shell.css:3669 | 8 |
+| `.ds-modal-h` | src/ui/shell.css:3690 | 4 |
 
 ## `ds-opt` — 3
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-opt` | src/ui/shell.css:1698 | 75 |
-| `.ds-opt-add` | src/ui/shell.css:4263 | 1 |
-| `.ds-opt-del` | src/ui/shell.css:4240 | 2 |
-=======
-| `.ds-opt` | src/ui/shell.css:1682 | 75 |
-| `.ds-opt-add` | src/ui/shell.css:4247 | 1 |
-| `.ds-opt-del` | src/ui/shell.css:4224 | 2 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-opt` | src/ui/shell.css:1632 | 75 |
+| `.ds-opt-add` | src/ui/shell.css:4197 | 1 |
+| `.ds-opt-del` | src/ui/shell.css:4174 | 2 |
 
 ## `ds-presence` — 3
 
@@ -527,29 +309,17 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-qcount` | src/ui/shell.css:6019 | 5 |
-| `.ds-qcount-game` | src/ui/shell.css:6035 | 1 |
-| `.ds-qcount-sep` | src/ui/shell.css:6068 | 2 |
-=======
-| `.ds-qcount` | src/ui/shell.css:6003 | 5 |
-| `.ds-qcount-game` | src/ui/shell.css:6019 | 1 |
-| `.ds-qcount-sep` | src/ui/shell.css:6052 | 2 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-qcount` | src/ui/shell.css:5953 | 5 |
+| `.ds-qcount-game` | src/ui/shell.css:5969 | 1 |
+| `.ds-qcount-sep` | src/ui/shell.css:6002 | 2 |
 
 ## `ds-sub` — 3
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-sub` | src/ui/shell.css:1716 | 32 |
-| `.ds-sub-row` | src/ui/shell.css:1741 | 2 |
-| `.ds-sub-tight` | src/ui/shell.css:3943 | 3 |
-=======
-| `.ds-sub` | src/ui/shell.css:1700 | 32 |
-| `.ds-sub-row` | src/ui/shell.css:1725 | 2 |
-| `.ds-sub-tight` | src/ui/shell.css:3927 | 3 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-sub` | src/ui/shell.css:1650 | 32 |
+| `.ds-sub-row` | src/ui/shell.css:1675 | 2 |
+| `.ds-sub-tight` | src/ui/shell.css:3877 | 3 |
 
 ## `ds-avatar` — 2
 
@@ -562,37 +332,22 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-chal` | src/ui/shell.css:4452 | 2 |
-| `.ds-chal-list` | src/ui/shell.css:4455 | 1 |
-=======
-| `.ds-chal` | src/ui/shell.css:4436 | 2 |
-| `.ds-chal-list` | src/ui/shell.css:4439 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-chal` | src/ui/shell.css:4386 | 2 |
+| `.ds-chal-list` | src/ui/shell.css:4389 | 1 |
 
 ## `ds-claim` — 2
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-claim-msg` | src/ui/shell.css:6004 | 3 |
-| `.ds-claim-row` | src/ui/shell.css:5991 | 2 |
-=======
-| `.ds-claim-msg` | src/ui/shell.css:5988 | 3 |
-| `.ds-claim-row` | src/ui/shell.css:5975 | 2 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-claim-msg` | src/ui/shell.css:5938 | 3 |
+| `.ds-claim-row` | src/ui/shell.css:5925 | 2 |
 
 ## `ds-console` — 2
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
 | `.ds-console` | src/ui/shell.css:796 | 20 |
-| `.ds-console-in` | src/ui/shell.css:3942 | 10 |
-=======
-| `.ds-console` | src/ui/shell.css:779 | 20 |
-| `.ds-console-in` | src/ui/shell.css:3926 | 10 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-console-in` | src/ui/shell.css:3876 | 10 |
 
 ## `ds-dialog` — 2
 
@@ -605,49 +360,29 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-field` | src/ui/shell.css:2089 | 65 |
-| `.ds-field-row` | src/ui/shell.css:2016 | 6 |
-=======
-| `.ds-field` | src/ui/shell.css:2073 | 65 |
-| `.ds-field-row` | src/ui/shell.css:2000 | 6 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-field` | src/ui/shell.css:2023 | 65 |
+| `.ds-field-row` | src/ui/shell.css:1950 | 6 |
 
 ## `ds-fold` — 2
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-fold` | src/ui/shell.css:1699 | 9 |
-| `.ds-fold-body` | src/ui/shell.css:4087 | 4 |
-=======
-| `.ds-fold` | src/ui/shell.css:1683 | 9 |
-| `.ds-fold-body` | src/ui/shell.css:4071 | 4 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-fold` | src/ui/shell.css:1633 | 9 |
+| `.ds-fold-body` | src/ui/shell.css:4021 | 4 |
 
 ## `ds-head` — 2
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-head` | src/ui/shell.css:3969 | 14 |
-| `.ds-head-spacer` | src/ui/shell.css:4010 | 5 |
-=======
-| `.ds-head` | src/ui/shell.css:3953 | 14 |
-| `.ds-head-spacer` | src/ui/shell.css:3994 | 5 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-head` | src/ui/shell.css:3903 | 14 |
+| `.ds-head-spacer` | src/ui/shell.css:3944 | 5 |
 
 ## `ds-homestats` — 2
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-homestats` | src/ui/shell.css:1800 | 2 |
-| `.ds-homestats-break` | src/ui/shell.css:1814 | 1 |
-=======
-| `.ds-homestats` | src/ui/shell.css:1784 | 2 |
-| `.ds-homestats-break` | src/ui/shell.css:1798 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-homestats` | src/ui/shell.css:1734 | 2 |
+| `.ds-homestats-break` | src/ui/shell.css:1748 | 1 |
 
 ## `ds-main` — 2
 
@@ -667,83 +402,49 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-menu` | src/ui/shell.css:1405 | 2 |
-| `.ds-menu-btn` | src/ui/shell.css:1411 | 1 |
-=======
-| `.ds-menu` | src/ui/shell.css:1389 | 2 |
-| `.ds-menu-btn` | src/ui/shell.css:1395 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-menu` | src/ui/shell.css:1339 | 2 |
+| `.ds-menu-btn` | src/ui/shell.css:1345 | 1 |
 
 ## `ds-passpick` — 2
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-passpick` | src/ui/shell.css:5922 | 2 |
-| `.ds-passpick-presets` | src/ui/shell.css:5928 | 1 |
-=======
-| `.ds-passpick` | src/ui/shell.css:5906 | 2 |
-| `.ds-passpick-presets` | src/ui/shell.css:5912 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-passpick` | src/ui/shell.css:5856 | 2 |
+| `.ds-passpick-presets` | src/ui/shell.css:5862 | 1 |
 
 ## `ds-robot` — 2
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-robot` | src/ui/shell.css:1515 | 2 |
-| `.ds-robot-sprite` | src/ui/shell.css:4666 | 1 |
-=======
-| `.ds-robot` | src/ui/shell.css:1499 | 2 |
-| `.ds-robot-sprite` | src/ui/shell.css:4650 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-robot` | src/ui/shell.css:1449 | 2 |
+| `.ds-robot-sprite` | src/ui/shell.css:4600 | 1 |
 
 ## `ds-tileset` — 2
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-tileset` | src/ui/shell.css:1919 | 8 |
-| `.ds-tileset-label` | src/ui/shell.css:1922 | 4 |
-=======
-| `.ds-tileset` | src/ui/shell.css:1903 | 8 |
-| `.ds-tileset-label` | src/ui/shell.css:1906 | 4 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-tileset` | src/ui/shell.css:1853 | 8 |
+| `.ds-tileset-label` | src/ui/shell.css:1856 | 4 |
 
 ## `ds-usersearch` — 2
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-usersearch` | src/ui/shell.css:1764 | 2 |
-| `.ds-usersearch-results` | src/ui/shell.css:1770 | 1 |
-=======
-| `.ds-usersearch` | src/ui/shell.css:1748 | 2 |
-| `.ds-usersearch-results` | src/ui/shell.css:1754 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-usersearch` | src/ui/shell.css:1698 | 2 |
+| `.ds-usersearch-results` | src/ui/shell.css:1704 | 1 |
 
 ## `ds-verifybar` — 2
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-verifybar` | src/ui/shell.css:3884 | 2 |
-| `.ds-verifybar-text` | src/ui/shell.css:3898 | 1 |
-=======
-| `.ds-verifybar` | src/ui/shell.css:3868 | 2 |
-| `.ds-verifybar-text` | src/ui/shell.css:3882 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-verifybar` | src/ui/shell.css:3818 | 2 |
+| `.ds-verifybar-text` | src/ui/shell.css:3832 | 1 |
 
 ## `ds-actions` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-actions` | src/ui/shell.css:5651 | 22 |
-=======
-| `.ds-actions` | src/ui/shell.css:5635 | 22 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-actions` | src/ui/shell.css:5585 | 22 |
 
 ## `ds-app` — 1
 
@@ -755,21 +456,13 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-back` | src/ui/shell.css:1688 | 14 |
-=======
-| `.ds-back` | src/ui/shell.css:1672 | 14 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-back` | src/ui/shell.css:1622 | 14 |
 
 ## `ds-binds` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-binds` | src/ui/shell.css:5400 | 2 |
-=======
-| `.ds-binds` | src/ui/shell.css:5384 | 2 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-binds` | src/ui/shell.css:5334 | 2 |
 
 ## `ds-body` — 1
 
@@ -787,111 +480,67 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-checkline` | src/ui/shell.css:2053 | 3 |
-=======
-| `.ds-checkline` | src/ui/shell.css:2037 | 3 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-checkline` | src/ui/shell.css:1987 | 3 |
 
 ## `ds-chip` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-chip` | src/ui/shell.css:1595 | 22 |
-=======
-| `.ds-chip` | src/ui/shell.css:1579 | 20 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-chip` | src/ui/shell.css:1529 | 22 |
 
 ## `ds-clickable` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-clickable` | src/ui/shell.css:2520 | 1 |
-=======
-| `.ds-clickable` | src/ui/shell.css:2504 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-clickable` | src/ui/shell.css:2454 | 1 |
 
 ## `ds-count` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-count` | src/ui/shell.css:4234 | 13 |
-=======
-| `.ds-count` | src/ui/shell.css:4218 | 13 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-count` | src/ui/shell.css:4168 | 13 |
 
 ## `ds-cta` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-cta` | src/ui/shell.css:1697 | 27 |
-=======
-| `.ds-cta` | src/ui/shell.css:1681 | 27 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-cta` | src/ui/shell.css:1631 | 27 |
 
 ## `ds-discord` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-discord-join` | src/ui/shell.css:1260 | 1 |
-=======
-| `.ds-discord-join` | src/ui/shell.css:1244 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-discord-join` | src/ui/shell.css:1194 | 1 |
 
 ## `ds-dlpage` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-dlpage` | src/ui/shell.css:5664 | 1 |
-=======
-| `.ds-dlpage` | src/ui/shell.css:5648 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-dlpage` | src/ui/shell.css:5598 | 1 |
 
 ## `ds-dodge` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-dodge` | src/ui/shell.css:6182 | 3 |
-=======
-| `.ds-dodge` | src/ui/shell.css:6166 | 3 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-dodge` | src/ui/shell.css:6116 | 3 |
 
 ## `ds-dt` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-dt` | src/ui/shell.css:2510 | 6 |
-=======
-| `.ds-dt` | src/ui/shell.css:2494 | 6 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-dt` | src/ui/shell.css:2444 | 6 |
 
 ## `ds-empty` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-empty` | src/ui/shell.css:2153 | 37 |
-=======
-| `.ds-empty` | src/ui/shell.css:2137 | 37 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-empty` | src/ui/shell.css:2087 | 37 |
 
 ## `ds-fields` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-fields` | src/ui/shell.css:4547 | 10 |
-=======
-| `.ds-fields` | src/ui/shell.css:4531 | 10 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-fields` | src/ui/shell.css:4481 | 10 |
 
 ## `ds-friends` — 1
 
@@ -903,111 +552,67 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-h1` | src/ui/shell.css:1719 | 16 |
-=======
-| `.ds-h1` | src/ui/shell.css:1703 | 16 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-h1` | src/ui/shell.css:1653 | 16 |
 
 ## `ds-h2` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-h2` | src/ui/shell.css:1732 | 11 |
-=======
-| `.ds-h2` | src/ui/shell.css:1716 | 11 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-h2` | src/ui/shell.css:1666 | 11 |
 
 ## `ds-hint` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-hint` | src/ui/shell.css:2035 | 183 |
-=======
-| `.ds-hint` | src/ui/shell.css:2019 | 183 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-hint` | src/ui/shell.css:1969 | 183 |
 
 ## `ds-idedit` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-idedit` | src/ui/shell.css:1365 | 1 |
-=======
-| `.ds-idedit` | src/ui/shell.css:1349 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-idedit` | src/ui/shell.css:1299 | 1 |
 
 ## `ds-input` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-input` | src/ui/shell.css:1767 | 33 |
-=======
-| `.ds-input` | src/ui/shell.css:1751 | 33 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-input` | src/ui/shell.css:1701 | 33 |
 
 ## `ds-key` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-key` | src/ui/shell.css:1700 | 12 |
-=======
-| `.ds-key` | src/ui/shell.css:1684 | 12 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-key` | src/ui/shell.css:1634 | 12 |
 
 ## `ds-keys` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-keys` | src/ui/shell.css:5456 | 5 |
-=======
-| `.ds-keys` | src/ui/shell.css:5440 | 5 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-keys` | src/ui/shell.css:5390 | 5 |
 
 ## `ds-linkbtn` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-linkbtn` | src/ui/shell.css:6376 | 4 |
-=======
-| `.ds-linkbtn` | src/ui/shell.css:6360 | 4 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-linkbtn` | src/ui/shell.css:6310 | 4 |
 
 ## `ds-loading` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-loading` | src/ui/shell.css:2154 | 28 |
-=======
-| `.ds-loading` | src/ui/shell.css:2138 | 26 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-loading` | src/ui/shell.css:2088 | 28 |
 
 ## `ds-lobbies` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-lobbies` | src/ui/shell.css:1314 | 1 |
-=======
-| `.ds-lobbies` | src/ui/shell.css:1298 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-lobbies` | src/ui/shell.css:1248 | 1 |
 
 ## `ds-lobby` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-lobby-row` | src/ui/shell.css:1319 | 1 |
-=======
-| `.ds-lobby-row` | src/ui/shell.css:1303 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-lobby-row` | src/ui/shell.css:1253 | 1 |
 
 ## `ds-mark` — 1
 
@@ -1019,151 +624,91 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-muted` | src/ui/shell.css:6208 | 60 |
-=======
-| `.ds-muted` | src/ui/shell.css:6192 | 60 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-muted` | src/ui/shell.css:6142 | 60 |
 
 ## `ds-note` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-note` | src/ui/shell.css:4526 | 9 |
-=======
-| `.ds-note` | src/ui/shell.css:4510 | 9 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-note` | src/ui/shell.css:4460 | 9 |
 
 ## `ds-opts` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-opts` | src/ui/shell.css:4145 | 43 |
-=======
-| `.ds-opts` | src/ui/shell.css:4129 | 43 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-opts` | src/ui/shell.css:4079 | 43 |
 
 ## `ds-padhint` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-padhint` | src/ui/shell.css:7189 | 1 |
-=======
-| `.ds-padhint` | src/ui/shell.css:7173 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-padhint` | src/ui/shell.css:7123 | 1 |
 
 ## `ds-page` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-page-note` | src/ui/shell.css:2066 | 2 |
-=======
-| `.ds-page-note` | src/ui/shell.css:2050 | 2 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-page-note` | src/ui/shell.css:2000 | 2 |
 
 ## `ds-panelbox` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-panelbox` | src/ui/shell.css:1935 | 10 |
-=======
-| `.ds-panelbox` | src/ui/shell.css:1919 | 10 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-panelbox` | src/ui/shell.css:1869 | 10 |
 
 ## `ds-period` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-period` | src/ui/shell.css:2187 | 1 |
-=======
-| `.ds-period` | src/ui/shell.css:2171 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-period` | src/ui/shell.css:2121 | 1 |
 
 ## `ds-perks` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-perks` | src/ui/shell.css:5969 | 1 |
-=======
-| `.ds-perks` | src/ui/shell.css:5953 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-perks` | src/ui/shell.css:5903 | 1 |
 
 ## `ds-player` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-player` | src/ui/shell.css:5531 | 2 |
-=======
-| `.ds-player` | src/ui/shell.css:5515 | 2 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-player` | src/ui/shell.css:5465 | 2 |
 
 ## `ds-players` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-players` | src/ui/shell.css:5526 | 2 |
-=======
-| `.ds-players` | src/ui/shell.css:5510 | 2 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-players` | src/ui/shell.css:5460 | 2 |
 
 ## `ds-queuebar` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-queuebar` | src/ui/shell.css:6083 | 1 |
-=======
-| `.ds-queuebar` | src/ui/shell.css:6067 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-queuebar` | src/ui/shell.css:6017 | 1 |
 
 ## `ds-queuechip` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-queuechip` | src/ui/shell.css:6142 | 1 |
-=======
-| `.ds-queuechip` | src/ui/shell.css:6126 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-queuechip` | src/ui/shell.css:6076 | 1 |
 
 ## `ds-range` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-range` | src/ui/shell.css:4589 | 22 |
-=======
-| `.ds-range` | src/ui/shell.css:4573 | 22 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-range` | src/ui/shell.css:4523 | 22 |
 
 ## `ds-rejoin` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-rejoin` | src/ui/shell.css:1821 | 2 |
-=======
-| `.ds-rejoin` | src/ui/shell.css:1805 | 2 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-rejoin` | src/ui/shell.css:1755 | 2 |
 
 ## `ds-req` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-req` | src/ui/shell.css:5687 | 1 |
-=======
-| `.ds-req` | src/ui/shell.css:5671 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-req` | src/ui/shell.css:5621 | 1 |
 
 ## `ds-room` — 1
 
@@ -1175,37 +720,25 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-sec` | src/ui/shell.css:1971 | 21 |
-=======
-| `.ds-sec` | src/ui/shell.css:1955 | 21 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-sec` | src/ui/shell.css:1905 | 21 |
 
 ## `ds-seg` — 1
 
 | class | declared | used |
 |---|---|---|
-| `.ds-seg` | src/ui/shell.css:482 | 15 |
+| `.ds-seg` | src/ui/shell.css:482 | 16 |
 
 ## `ds-segs` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-segs` | src/ui/shell.css:2200 | 9 |
-=======
-| `.ds-segs` | src/ui/shell.css:2184 | 9 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-segs` | src/ui/shell.css:2134 | 10 |
 
 ## `ds-select` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-select` | src/ui/shell.css:2196 | 7 |
-=======
-| `.ds-select` | src/ui/shell.css:2180 | 7 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-select` | src/ui/shell.css:2130 | 7 |
 
 ## `ds-server` — 1
 
@@ -1217,91 +750,55 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-share` | src/ui/shell.css:2659 | 1 |
-=======
-| `.ds-share` | src/ui/shell.css:2643 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-share` | src/ui/shell.css:2593 | 1 |
 
 ## `ds-stat` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-stat` | src/ui/shell.css:1808 | 23 |
-=======
-| `.ds-stat` | src/ui/shell.css:1792 | 23 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-stat` | src/ui/shell.css:1742 | 23 |
 
 ## `ds-stats` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-stats` | src/ui/shell.css:2856 | 4 |
-=======
-| `.ds-stats` | src/ui/shell.css:2840 | 4 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-stats` | src/ui/shell.css:2790 | 4 |
 
 ## `ds-subh` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-subh` | src/ui/shell.css:4134 | 10 |
-=======
-| `.ds-subh` | src/ui/shell.css:4118 | 10 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-subh` | src/ui/shell.css:4068 | 10 |
 
 ## `ds-tab` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-tab` | src/ui/shell.css:1529 | 4 |
-=======
-| `.ds-tab` | src/ui/shell.css:1513 | 4 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-tab` | src/ui/shell.css:1463 | 4 |
 
 ## `ds-table` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-table` | src/ui/shell.css:2110 | 7 |
-=======
-| `.ds-table` | src/ui/shell.css:2094 | 7 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-table` | src/ui/shell.css:2044 | 7 |
 
 ## `ds-tabs` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-tabs` | src/ui/shell.css:1523 | 3 |
-=======
-| `.ds-tabs` | src/ui/shell.css:1507 | 3 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-tabs` | src/ui/shell.css:1457 | 3 |
 
 ## `ds-tile` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-tile` | src/ui/shell.css:1689 | 8 |
-=======
-| `.ds-tile` | src/ui/shell.css:1673 | 8 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-tile` | src/ui/shell.css:1623 | 8 |
 
 ## `ds-tiles` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-tiles` | src/ui/shell.css:1834 | 5 |
-=======
-| `.ds-tiles` | src/ui/shell.css:1818 | 5 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-tiles` | src/ui/shell.css:1768 | 5 |
 
 ## `ds-tip` — 1
 
@@ -1313,45 +810,23 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-title` | src/ui/shell.css:4022 | 8 |
-=======
-| `.ds-title` | src/ui/shell.css:4006 | 8 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-title` | src/ui/shell.css:3956 | 8 |
 
 ## `ds-username` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-username-input` | src/ui/shell.css:3801 | 1 |
-=======
-| `.ds-username-input` | src/ui/shell.css:3785 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-username-input` | src/ui/shell.css:3735 | 1 |
 
 ## `ds-watch` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-watch` | src/ui/shell.css:2526 | 1 |
-=======
-| `.ds-watch` | src/ui/shell.css:2510 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
+| `.ds-watch` | src/ui/shell.css:2460 | 1 |
 
 ## `ds-watchcode` — 1
 
 | class | declared | used |
 |---|---|---|
-<<<<<<< HEAD
-| `.ds-watchcode` | src/ui/shell.css:1785 | 1 |
-=======
-| `.ds-watchcode` | src/ui/shell.css:1769 | 1 |
->>>>>>> parent of e5c66da (the wordmarks sit on one baseline)
-
-## `ds-wordmarks` — 1
-
-| class | declared | used |
-|---|---|---|
-| `.ds-wordmarks` | src/ui/shell.css:1181 | 1 |
+| `.ds-watchcode` | src/ui/shell.css:1719 | 1 |
 
