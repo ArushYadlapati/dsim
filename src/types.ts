@@ -236,13 +236,28 @@ export interface RobotSpec {
    * and every client solve the same arc from the same number; a value read out of localStorage
    * at launch time would make one client's pass land somewhere else and reconcile with a snap.
    *
-   * ABSENT IS THE PRESET, and absent is the default: `bbPassPoint` (`games/biobuzz/play.ts`)
-   * answers the alliance's own LOADING ZONE when this is unset. So a player who never opens the
-   * setting still has a working pass, which is the "simple preset" half of the request, and the
-   * field stays off the wire for everyone who has not moved it. Clamped into the field (and
-   * dropped when either component is not finite) by `coerceBiobuzzSpec`.
+   * ABSENT MEANS "USE THE PRESET", and absent is the default: `bbPassPoint`
+   * (`games/biobuzz/play.ts`) falls through to `bbPassPreset` below, so a player who never opens
+   * the setting still has a working pass and the field stays off the wire for everyone who has
+   * not moved it. Clamped into the field (and dropped when either component is not finite) by
+   * `coerceBiobuzzSpec`.
+   *
+   * ⚠️ THIS IS THE MAP PICK. `bbPassPreset` is the NAMED choice; this is the arbitrary point
+   * somebody dropped on the field map, and it WINS when both are set — a custom pick is a more
+   * specific instruction than a preset, and the picker clears it when a preset is chosen again.
    */
   bbPassTarget?: Vec2;
+  /**
+   * BIOBUZZ: WHICH NAMED PASS PRESET, when `bbPassTarget` is not set
+   * (`games/biobuzz/passTargets.ts`). Absent is `BB_PASS_PRESET_DEFAULT` — `pastGoal`, just
+   * beyond the thrower's own hive on the far side from wherever it is standing, which is what
+   * the owner asked a pass to mean (2026-09-22: "passing towards the other side of the goal").
+   *
+   * A STRING ID, never a point: the ids are a closed set the coercer folds unknown values onto,
+   * so a preset's geometry can be re-tuned without rewriting every saved robot, and an old
+   * replay keeps meaning what it meant. Same reasoning as the cosmetic axes.
+   */
+  bbPassPreset?: string;
   /**
    * BIOBUZZ 3D PHYSICS ONLY (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.4/§3.3): the robot's
    * height in inches (12..29, absent 18) — see `BB3_HEIGHT_MIN`/`_DEFAULT`/`_MAX` in

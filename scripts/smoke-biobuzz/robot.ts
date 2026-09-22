@@ -5,6 +5,7 @@ import { worldHash } from '../../src/net/checksum';
 import { defaultSettings, switchGame } from '../../src/settings';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
+  BB_HIVE_CELL_LEN,
   BB_PRESETS,
   BB_SIZE_STEP,
   bbSizeLimits,
@@ -119,6 +120,14 @@ import {
 } from '../../src/games/biobuzz/robot';
 import { bbConfigSummary } from '../../src/games/biobuzz/labels';
 import { bbAimTarget, bbFlightEnters, bbKindOf, bbPassPoint } from '../../src/games/biobuzz/play';
+import {
+  BB_PASS_PRESETS,
+  BB_PASS_PRESET_DEFAULT,
+  BB_PASS_PRESET_HINT,
+  BB_PASS_PRESET_LABEL,
+  bbPassPresetPoint,
+} from '../../src/games/biobuzz/passTargets';
+import { hiveCellPos } from '../../src/games/biobuzz/hive';
 import { hiveCellTarget } from '../../src/games/biobuzz/elements';
 import {
   BB_INTAKE_KINDS,
@@ -3446,6 +3455,10 @@ export function robotChecks(check: Check): void {
      * genuinely bad shot.
      */
     const NEAR_3D = 3;
+    /* THE PRESET SWEEP'S BOUND, one number for both backends because it is deliberately loose:
+       what it has to separate is "delivered" from the 26-in scatter a blocked flight produces,
+       not 1 in from 3 in. Worst measured across all four presets in both backends is ~7 in. */
+    const DELIVER = 12;
     /* the settle bound is a SANITY rail, not an accuracy claim: it catches an element that
        left the field or never stopped, and nothing finer. See the note above. */
     const SETTLE_3D = 40;
@@ -3567,6 +3580,171 @@ export function robotChecks(check: Check): void {
         c3.thrown === 3 && c3.closest < NEAR_3D && Math.abs(c3.pt.x - 40) < 1e-9 && Math.abs(c3.pt.y + 40) < 1e-9,
         `thrown ${c3.thrown}/3, worst closest ${fmt(c3.closest)}, settles at ${fmt(c3.worst)}`,
       );
+    }
+
+    /**
+     * ── THE NAMED PRESETS (`passTargets.ts`) ───────────────────────────────────────────────
+     *
+     * Owner, 2026-09-22: "Pass should be passing towards the other side of the goal at a
+     * specific point. Where to pass should also be configurable using a map and there should be
+     * presets." The map is the UI half; this is the geometry half.
+     *
+     * ⚠️ WHAT MAKES A PRESET WRONG IS NOT USUALLY ITS ARITHMETIC. Every one of these points
+     * is trivially computable and every one could still be a bad place to throw: inside a hive
+     * cell (a "pass" that scores), off the field, on the thrower's OWN side, mirrored across the
+     * wrong axis for red, or — the one that actually happened — on the hive's own axis, so the
+     * flight goes THROUGH the structure. So these check the properties, and then MEASURE a real
+     * pass at each one in both backends.
+     */
+    {
+      const ENDS: readonly (readonly [string, Vec2])[] = [
+        ['TOP', { x: 34, y: 60 }],
+        ['BOTTOM', { x: 46, y: -60 }],
+      ];
+
+      // (a) THE REGISTRY IS COMPLETE. A preset with no label ships as a blank radio button.
+      check(
+        'pass presets: every id has a LABEL and a HINT — a nameless preset is a blank control',
+        BB_PASS_PRESETS.every((k) => (BB_PASS_PRESET_LABEL[k] ?? '').length > 0 && (BB_PASS_PRESET_HINT[k] ?? '').length > 0),
+        BB_PASS_PRESETS.filter((k) => !BB_PASS_PRESET_LABEL[k] || !BB_PASS_PRESET_HINT[k]).join(',') || 'all named',
+      );
+      check('pass presets: the default is one of them', BB_PASS_PRESETS.includes(BB_PASS_PRESET_DEFAULT));
+
+      // (b) IN THE FIELD, and clear of BOTH hive cells — a pass that scores is not a pass.
+      const off: string[] = [];
+      const inCell: string[] = [];
+      const wrongSide: string[] = [];
+      const notMirrored: string[] = [];
+      for (const k of BB_PASS_PRESETS) {
+        for (const [endName, from] of ENDS) {
+          for (const a of ['blue', 'red'] as const) {
+            const q = bbPassPresetPoint(k, a, a === 'red' ? { x: -from.x, y: -from.y } : from);
+            if (Math.abs(q.x) > BB_HALF_X || Math.abs(q.y) > BB_HALF_Y) off.push(`${k}/${a}/${endName}`);
+            /* CLEAR OF THE CELL by more than the cell's own reach plus an element radius. The
+               cell opening is centred `BB_HIVE_CELL_DY` off the pivot and runs
+               `BB_HIVE_CELL_LEN` along the bar, so anything inside half that of a cell centre
+               is in the mouth. */
+            const clearance = Math.min(
+              ...(['north', 'south'] as const).map((side) => {
+                const c = hiveCellPos(a, side);
+                return hyp(q.x - c.x, q.y - c.y);
+              }),
+            );
+            if (clearance < BB_HIVE_CELL_LEN / 2 + BB_POLLEN_R) inCell.push(`${k}/${a}/${endName} ${clearance.toFixed(1)}in`);
+          }
+          /* (c) POINT SYMMETRY. Red's answer must be blue's answer mirrored through the ORIGIN,
+             not reflected in x: the BIOBUZZ layout is 180°-symmetric, so a preset built by
+             negating x alone lands in the wrong half. Asked with each alliance's own mirrored
+             thrower, which is the only way the relative presets can agree. */
+          const b = bbPassPresetPoint(k, 'blue', from);
+          const rd = bbPassPresetPoint(k, 'red', { x: -from.x, y: -from.y });
+          if (Math.abs(rd.x + b.x) > 1e-9 || Math.abs(rd.y + b.y) > 1e-9) {
+            notMirrored.push(`${k}/${endName}: blue(${b.x.toFixed(1)},${b.y.toFixed(1)}) red(${rd.x.toFixed(1)},${rd.y.toFixed(1)})`);
+          }
+          /* (d) THE TWO RELATIVE PRESETS FACE AWAY FROM THE THROWER. This is the whole meaning
+             of "the other side of the goal", and it is the property a sign error kills silently:
+             a red pass aimed at red's own end still lands on the field and still looks fine in
+             a unit test that only checks bounds. */
+          for (const k2 of ['pastGoal', 'farEnd'] as const) {
+            if (k !== k2) continue;
+            const q = bbPassPresetPoint(k2, 'blue', from);
+            if (Math.sign(q.y) === Math.sign(from.y)) wrongSide.push(`${k2}/blue/${endName}`);
+            const qr = bbPassPresetPoint(k2, 'red', { x: -from.x, y: -from.y });
+            if (Math.sign(qr.y) === Math.sign(-from.y)) wrongSide.push(`${k2}/red/${endName}`);
+          }
+        }
+      }
+      check('pass presets: every point is INSIDE the field', off.length === 0, off.join(' ') || 'all in');
+      check(
+        '⚠️ pass presets: ...and none sits in a hive cell — a pass that SCORES is not a pass',
+        inCell.length === 0,
+        inCell.join(' ') || 'all clear',
+      );
+      check(
+        '⚠️ pass presets: red is blue MIRRORED THROUGH THE ORIGIN, not reflected in x',
+        notMirrored.length === 0,
+        notMirrored.join(' ') || 'point-symmetric',
+      );
+      check(
+        '⚠️ pass presets: `pastGoal` and `farEnd` are on the FAR side of the thrower, both alliances',
+        wrongSide.length === 0,
+        wrongSide.join(' ') || 'all far-side',
+      );
+
+      // (e) PRECEDENCE, which the picker depends on: a map pick beats a preset.
+      {
+        const w = mkWorld('free', 5);
+        const r = w.robots[0];
+        r.spec = { ...r.spec, bbPassPreset: 'loadingZone', bbPassTarget: { x: 5, y: -5 } };
+        const pt = bbPassPoint(r);
+        check(
+          '⚠️ pass presets: an explicit `bbPassTarget` BEATS the preset — the picker clears one to use the other',
+          Math.abs(pt.x - 5) < 1e-9 && Math.abs(pt.y + 5) < 1e-9,
+          `(${pt.x.toFixed(1)}, ${pt.y.toFixed(1)})`,
+        );
+        r.spec = { ...r.spec, bbPassTarget: undefined, bbPassPreset: 'nonsense-from-a-newer-build' };
+        const d = bbPassPoint(r);
+        const want = bbPassPresetPoint(BB_PASS_PRESET_DEFAULT, r.alliance, r.pos);
+        check(
+          'pass presets: ...and an UNKNOWN id resolves to the default, not to nothing',
+          Math.abs(d.x - want.x) < 1e-9 && Math.abs(d.y - want.y) < 1e-9,
+          `(${d.x.toFixed(1)}, ${d.y.toFixed(1)}) vs default (${want.x.toFixed(1)}, ${want.y.toFixed(1)})`,
+        );
+      }
+
+      /* (f) AND EACH ONE ACTUALLY DELIVERS, in BOTH backends, scoring nothing. This is the half
+         that caught the real bug: `pastGoal` began on the hive's own axis and MEASURED in 3D the
+         three elements scattered to (68.9, -31.4), (35.0, -13.1) and (-11.6, -39.6) — the flight
+         crossed the hive, which is a collider there and is not in 2D. Bounds-checking the point
+         would never have found it; only throwing at it does. */
+      for (const k of BB_PASS_PRESETS) {
+        for (const phys of ['2d', '3d'] as const) {
+          const w = phys === '2d' ? mkWorld('free', 5) : mkWorld3d('free', 5);
+          const r = w.robots[0];
+          r.spec = { ...r.spec, bbPassPreset: k };
+          /**
+           * ⚠️ THE ROBOT'S OWN PRELOADS, NOT HAND-BUILT HELD BALLS. Pushing
+           * `{ kind: 'held', robot, slot }` artifacts by hand — which the older fixture just
+           * above still does — produces held elements whose position is NaN on tick 0, MEASURED,
+           * in 2D. It resolves the moment they launch, so a check that reads only settled
+           * positions never notices; one that samples every tick gets NaN and reads as "nothing
+           * landed". The world already preloads a full hopper through the real path, and those
+           * are finite from the first tick, so there is nothing to hand-build.
+           */
+          const held = w.balls.filter(
+            (b) => b.state.kind === 'held' && (b.state as { robot: number }).robot === r.id,
+          );
+          const ids = held.map((b) => b.id);
+          w.balls.length = 0;
+          w.balls.push(...held);
+          for (const f of w.biobuzz!.flowers) f.stack = [];
+          w.biobuzz!.hives.red.contents = [];
+          w.biobuzz!.hives.blue.contents = [];
+          const loaded = r.hopper.length;
+          const pt = bbPassPoint(r);
+          const near = new Map<number, number>();
+          const cs = new Map([[0, cmd({ bbPass: true })]]);
+          for (let i = 0; i < Math.round(8 / C.SIM_DT); i++) {
+            biobuzzStep(w, C.SIM_DT, cs);
+            for (const b of w.balls) {
+              if (!Number.isFinite(b.pos.x) || !Number.isFinite(b.pos.y)) continue;
+              const d = hyp(b.pos.x - pt.x, b.pos.y - pt.y);
+              const prev = near.get(b.id);
+              if (prev === undefined || d < prev) near.set(b.id, d);
+            }
+          }
+          const thrown = loaded - r.hopper.length;
+          const scored = w.biobuzz!.hives.red.contents.length + w.biobuzz!.hives.blue.contents.length;
+          /* only the preloads: a restock can add a NECTAR mid-run and its distance to the pass
+             point is not a fact about the pass. */
+          const worst = Math.max(...ids.map((id) => near.get(id) ?? Infinity));
+          check(
+            `pass preset ${k} (${phys}): every preload thrown, delivered, and NOTHING scored`,
+            thrown === loaded && loaded > 0 && worst < DELIVER && scored === 0,
+            `thrown ${thrown}/${loaded}, worst closest ${worst === Infinity ? 'nothing landed' : worst.toFixed(1) + 'in'}, scored ${scored}, target (${pt.x.toFixed(0)}, ${pt.y.toFixed(0)})`,
+          );
+        }
+      }
     }
 
     // the CONTROL: the same build holding FIRE still aims at the HIVE and still scores.

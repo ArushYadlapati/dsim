@@ -27,6 +27,11 @@ import {
   type BbFlowerReach,
 } from './config';
 import { biobuzzColliders } from './colliders';
+import {
+  BB_PASS_PRESET_DEFAULT,
+  bbPassPresetPoint,
+  isBbPassPreset,
+} from './passTargets';
 import { capturePollen, hiveCellTarget, scoreTargets, takeHeld } from './elements';
 import { bbBites, bbElementRadius, flowerFits, flowerRetrieve, flowerStackZ, type BbElementKind } from './flower';
 import { hiveAccepts, hiveCellPos, hiveDeflect, hiveStep, hiveTakingSide, spillPoses } from './hive';
@@ -1183,15 +1188,23 @@ function bbRampSwingStep2d(world: World, rob: RobotState): void {
  * ⚠️ **IT NEVER READS THE PARTNER'S POSE.** Owner, 2026-09-21: “in real life, you can't know
  * where your opponent is accurately. So, people should be able to choose a point to shoot
  * towards, but there should also be a simple preset.” A pass that tracked the partner would
- * be an aimbot for the one thing a real driver has to eyeball, so the target is a FIXED point:
- * `spec.bbPassTarget` when the player has set one, and otherwise the alliance's own LOADING
- * ZONE — a named, point-symmetric spot both drivers already know, and the reason a player who
- * never opens the setting still has a working pass.
+ * be an aimbot for the one thing a real driver has to eyeball, so the target is a FIXED point.
+ *
+ * TWO WAYS TO SET IT, and the more specific one wins:
+ *   1. `spec.bbPassTarget` — an arbitrary point dropped on the field map.
+ *   2. `spec.bbPassPreset` — a NAMED spot (`passTargets.ts`), absent meaning the default.
+ *
+ * ⚠️ THE FALLBACK USED TO BE THE LOADING ZONE and is now `pastGoal`. That is the owner's own
+ * correction (2026-09-22: "Pass should be passing towards the other side of the goal at a
+ * specific point"), and the geometry backs it: an alliance's two robots start at OPPOSITE ENDS
+ * with the hive between them, so the far side of the hive is where a partner is and the loading
+ * zone is not. `passTargets.ts` carries the measurement.
  */
 export function bbPassPoint(r: RobotState): Vec2 {
   const t = r.spec.bbPassTarget;
   if (t && Number.isFinite(t.x) && Number.isFinite(t.y)) return { x: t.x, y: t.y };
-  return bbLoadingZoneSpot(r.alliance);
+  const preset = isBbPassPreset(r.spec.bbPassPreset) ? r.spec.bbPassPreset : BB_PASS_PRESET_DEFAULT;
+  return bbPassPresetPoint(preset, r.alliance, r.pos);
 }
 
 /**

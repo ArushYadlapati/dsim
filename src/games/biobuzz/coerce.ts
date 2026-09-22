@@ -1,5 +1,6 @@
 import type { RobotSpec } from '../../types';
 import { clamp } from '../../math';
+import { isBbPassPreset } from './passTargets';
 import { massLimits } from '../../sim/drivetrain';
 import { DEFAULT_SPEC } from '../../sim/specDefaults';
 import {
@@ -136,6 +137,15 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   } else {
     delete out.bbPassTarget;
   }
+  /* THE NAMED PRESET, folded onto its closed set. ABSENT STAYS ABSENT rather than becoming the
+     default id: absent is already the default at read time (`bbPassPoint`), and writing the id
+     in here would put a field on the wire for every player who never opened the picker — the
+     same reason `bbPassTarget` above is deleted rather than defaulted. An UNKNOWN id is a
+     different case and is dropped, not kept: a build from a newer client naming a preset this
+     one has never heard of must resolve to something, and the default is the only honest
+     answer. */
+  if (isBbPassPreset(raw.bbPassPreset)) out.bbPassPreset = raw.bbPassPreset;
+  else delete out.bbPassPreset;
 
   const mech = coerceBbMech(raw);
   out.bbMech = mech;
