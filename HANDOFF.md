@@ -1,3 +1,56 @@
+# HANDOFF — 2026-09-22a (alpha: the star reward actually works now, and says so)
+
+**READ FIRST.** Gates on alpha at the tip: `npm test` 4,742 ALL PASS, `dbtest`, `build`,
+`server:check`, `docaudit`, `bundleaudit` ALL PASS, `uiaudit` at baseline, `contrast` 247.
+`dsim-alpha` deployed, `/health` ok. **The GitHub star reward is LIVE and verified end to end:**
+the log reads `[rewards] star sweep: +1 -0 of 7 stargazers`.
+
+⚠️ **THE REWARD WAS BUILT, DEPLOYED, CORRECTLY CONFIGURED — AND GRANTED NOTHING, FOR A
+REASON THAT WAS NOT IN THE SWEEP.** The only thing that ever granted was
+`setInterval(…, 1 h)`, created at BOOT. First fire is an hour after start and every deploy
+pushes it back another hour, so on a day with several alpha deploys it never ran once. Nothing
+was broken; there was simply no path from "somebody linked" to "somebody is granted" that ran
+in human time. Fixed three ways, and all three are worth keeping:
+
+1. **The link route sweeps for itself**, before the redirect. One GitHub request either way
+   (the sweep reads the REPO's stargazers, never the person), and it is wrapped — the link is
+   already committed by then and an outage must not turn a good link into `?link=error`.
+2. **One sweep 30 s after boot.** This is what actually granted the owner's. It is also the
+   only thing that catches a star made while the process was down.
+3. **`StarReward`** (`src/ui/StarReward.tsx`) — the panel on the bounce back. Even a working
+   grant was silent, and silent is indistinguishable from broken.
+
+⚠️ **AND THE SWEEP WAS SILENT IN MOST OF ITS OUTCOMES, WHICH COST AN HOUR OF DIAGNOSIS.** The
+no-links path returned with NO log; the applied path logged only when something CHANGED. So
+"never ran", "ran, nobody linked" and "ran, changed nothing" were indistinguishable from
+outside — three situations with three different fixes. Every path prints one line now, tagged
+with the caller (`boot` / `hourly` / `link`).
+
+⚠️ **`GITHUB_TOKEN` NEEDS `public_repo`, AND "NO SCOPES" IS WRONG.** Measured: an unscoped
+classic PAT authenticates, reads `/repos/<repo>` and `/contributors` at 200, and **404s** on
+`/stargazers` — GitHub answers 404 rather than 403 there, so the one status that reads as a
+typo is the one that means the token is too weak. GraphQL is worse, not a way round: the same
+token reads `stargazerCount: 7` and gets ZERO nodes. All four failure modes (401, 403-limited,
+403-forbidden, 404) name themselves now, with `dbtest` checks on the sentences.
+
+⚠️ **PRODUCTION DOES NOT HAVE THE REWARDS ROUTES.** `dohun-sim-decode`'s
+`/api/user/links` answers **200 with a PROFILE** — an older `/api/user/:id` pattern is
+swallowing the path and reading "links" as a user id. Harmless today (no client calls it
+there), but it means any prod rollout has to confirm route ORDER, not just that the code
+shipped. Alpha 401s correctly.
+
+**WHAT THE STAR NOW GIVES:** `title:stargazer` and `decal:star`. Both move as a UNIT on one
+holder set read off the title (`STARGAZER_GRANTS`) — a half-grant or half-revoke is a state no
+later sweep repairs, and the unlink path had that bug waiting. The decal is `earned` tier, the
+first that file has ever had, deliberately NOT a supporter fill: a star is one click, and
+gifting a Ko-fi colour for one click prices the membership at one click.
+
+**STILL UNVERIFIED:** the Discord boost perk end to end (the bot reads the guild — 422 members,
+intent on — but nobody is boosting, so nothing has been granted); and the Discord redirect URI
+registration, which Discord only validates client-side.
+
+---
+
 # HANDOFF — 2026-09-21l (alpha: mobile, the overhead cross, real tile mats, the OAuth bounce)
 
 **READ FIRST.** Gates on alpha at `d4d0b70`: `npm test` ALL PASS (4,735 biobuzz + shared),
