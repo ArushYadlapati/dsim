@@ -3571,7 +3571,7 @@ async function main(): Promise<void> {
     check('stargazers: it pages until a short page', got.complete && got.ids.length === 101);
 
     // every failure path is INCOMPLETE
-    const bad = { ok: false, status: 502, json: async () => [] } as unknown as Response;
+    const bad = { ok: false, status: 502, headers: new Headers(), json: async () => [] } as unknown as Response;
     got = await stargazers.fetchStargazers('o/r', undefined, stub([bad]));
     check('⚠️ stargazers: a non-2xx is INCOMPLETE', !got.complete);
 
@@ -3626,6 +3626,58 @@ async function main(): Promise<void> {
       fetched === 0, `${fetched} fetches`);
     check('...and it says GITHUB_TOKEN by name, because the alternative is a silent no-op forever',
       warnings.some((w) => w.includes('GITHUB_TOKEN')), warnings.join(' | ').slice(0, 120));
+
+    /**
+     * ⚠️ **AND AN EXPIRED TOKEN IS THE SAME OUTAGE, ARRIVING LATER.** The refusal above
+     * catches a token that is ABSENT; one that has lapsed is PRESENT and reaches the non-2xx
+     * path instead. A fine-grained GitHub token caps out around a year, so this is the
+     * ordinary end of its life rather than an edge case — and the reward would go quiet on
+     * whatever day that is, with a `401` in a log nobody is reading.
+     *
+     * 403 is deliberately NOT the same sentence: rate limiting is self-healing and the next
+     * sweep is an hour away, so it is a note. The two are told apart by
+     * `x-ratelimit-remaining`, not by the status.
+     */
+    const errs: string[] = [];
+    const realErr = console.error;
+    const realWarn2 = console.warn;
+    const capture = async (status: number, remaining: string | null): Promise<string> => {
+      errs.length = 0;
+      console.error = (...a: unknown[]) => void errs.push(a.join(' '));
+      console.warn = (...a: unknown[]) => void errs.push(a.join(' '));
+      const res = {
+        ok: false,
+        status,
+        headers: { get: (h: string) => (h === 'x-ratelimit-remaining' ? remaining : null) },
+        json: async () => [],
+      };
+      await stargazers.fetchStargazers('o/r', 'tok', (async () => res) as unknown as typeof fetch);
+      console.error = realErr;
+      console.warn = realWarn2;
+      return errs.join(' | ');
+    };
+
+    const dead = await capture(401, null);
+    check('⚠️ stargazers: a REJECTED token (401) says the token was rejected, not just "401"',
+      /REJECTED|expired/i.test(dead) && dead.includes('GITHUB_TOKEN'), dead.slice(0, 110));
+    const limited = await capture(403, '0');
+    check('...and a rate-limit 403 does NOT cry credential — it is self-healing by the next sweep',
+      /rate-limited/i.test(limited) && !/REJECTED/i.test(limited), limited.slice(0, 110));
+    const forbidden = await capture(403, '57');
+    check('...while a 403 with budget left DOES, because that one is not going to fix itself',
+      /FORBIDDEN/i.test(forbidden), forbidden.slice(0, 110));
+
+    /**
+     * ⚠️ **AND 404 IS THE ONE THAT LIES.** On this endpoint GitHub answers 404 rather than
+     * 403 for an under-scoped token, so that a caller cannot use the status to learn a repo
+     * exists — which makes the one status that reads as "you typed the name wrong" also mean
+     * "your token is too weak". MEASURED 2026-09-21: an unscoped classic PAT reads `/user` and
+     * `/repos/genius0412/dsim` at 200 and 404s on that repo's `/stargazers`. This check exists
+     * because I gave the owner the wrong advice from exactly that 404.
+     */
+    const notfound = await capture(404, null);
+    check('⚠️ stargazers: a 404 WITH a token says MISSING SCOPE, because GitHub will not',
+      /scope/i.test(notfound) && notfound.includes('public_repo'), notfound.slice(0, 120));
   }
 
 

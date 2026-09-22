@@ -27,8 +27,11 @@ import { liveLinks, sweepStargazers, type StarSweepResult } from './db/repo';
  * sweep that ran hourly, logged one generic status line, granted nothing, revoked nothing, and
  * looked from the outside exactly like a repo nobody had starred.
  *
- * The token needs NO SCOPES — this reads public data. A classic PAT with every box unticked,
- * or a fine-grained token with public-repository read, is enough.
+ * ⚠️ **AND IT NEEDS THE `public_repo` SCOPE. "NO SCOPES" WAS TRIED AND IS WRONG** — see the
+ * 404 branch in `fetchStargazers`, which carries the measurement. An unscoped classic PAT
+ * authenticates, reads `/repos/<repo>` and `/contributors`, and 404s on `/stargazers`; GitHub
+ * uses 404 rather than 403 there, so the one status that reads as a typo is the one that means
+ * the token is too weak. `repo` is measured working; `public_repo` is its read-only subset.
  */
 
 /** ~how often to sweep. Hourly is plenty: a star is not time-critical and the reward is a decal. */
@@ -80,7 +83,60 @@ export async function fetchStargazers(
       return { ids, complete: false };
     }
     if (!res.ok) {
-      console.error(`[rewards] stargazer fetch ${res.status} on page ${page}`);
+      /**
+       * ⚠️ **A 401 HERE IS A DEAD CREDENTIAL, AND IT HAS TO SAY SO IN THOSE WORDS.**
+       * The missing-token refusal above only catches a token that is ABSENT. One that has
+       * EXPIRED or been revoked is present, reaches this line, and without this branch prints
+       * `stargazer fetch 401` — which is the same quiet no-op having no token used to be,
+       * arriving a year later when nobody remembers the reward exists. A fine-grained token
+       * caps out around a year, so this is the ordinary end of its life, not an edge case.
+       *
+       * 403 is TWO different things and they get different sentences: GitHub answers 403 for
+       * rate limiting with `x-ratelimit-remaining: 0`, and 403 for a token that authenticated
+       * but may not read this. Rate limiting is self-healing and the next sweep is in an hour,
+       * so it is a note; the other is not.
+       */
+      const rl = res.headers.get('x-ratelimit-remaining');
+      if (res.status === 401) {
+        console.error(
+          '[rewards] THE GITHUB STAR REWARD IS OFF: the GITHUB_TOKEN was REJECTED (401). It has ' +
+            'expired, been revoked, or was copied wrong. No star can be seen until it is replaced. ' +
+            'It needs NO scopes — it reads public data.',
+        );
+      } else if (res.status === 403 && rl === '0') {
+        console.warn(`[rewards] stargazer fetch rate-limited (403, remaining 0) on page ${page} — retrying next sweep`);
+      } else if (res.status === 403) {
+        console.error(`[rewards] stargazer fetch FORBIDDEN (403) on page ${page} — the token authenticated but may not read ${repo}`);
+      } else if (res.status === 404) {
+        /**
+         * ⚠️ **A 404 HERE IS A MISSING SCOPE, NOT A MISSING REPO, AND GITHUB WILL NOT SAY
+         * SO.** It answers 404 rather than 403 on this endpoint so that an unauthorised caller
+         * cannot use the status to learn a repo exists — which means the one status that reads
+         * as "you typed the name wrong" is also the one that means "your token is too weak".
+         *
+         * MEASURED 2026-09-21. An unscoped classic PAT, authenticated (5,000/hr, `/user` 200,
+         * `/repos/<repo>` 200 on the same repo):
+         *
+         *     /repos/genius0412/dsim/stargazers   404      /repos/.../contributors  200
+         *     /repos/genius0412/dsim/subscribers  404      /users/octocat/followers 200
+         *     /repos/octocat/Hello-World/stargazers 404    /repos/.../forks         200
+         *
+         * So it is not the repo and it is not privacy — starring and watching are simply gated
+         * where the neighbouring list endpoints are not. GraphQL does not route around it: the
+         * same token reads `stargazerCount: 7` and gets ZERO nodes from the connection, which
+         * is a worse failure because it looks like a successful query. A token carrying `repo`
+         * returns all seven by either route; `public_repo` is the read-only subset of it and is
+         * the least a token needs here.
+         */
+        console.error(
+          `[rewards] THE GITHUB STAR REWARD IS OFF: 404 on ${repo}'s stargazers WITH a token. On ` +
+            'this endpoint GitHub returns 404 for a MISSING SCOPE, not a missing repo. Give ' +
+            'GITHUB_TOKEN the `public_repo` scope. (An unscoped token reads /repos and ' +
+            '/contributors fine, which is what makes this one look like a typo.)',
+        );
+      } else {
+        console.error(`[rewards] stargazer fetch ${res.status} on page ${page}`);
+      }
       return { ids, complete: false };
     }
     let body: unknown;
