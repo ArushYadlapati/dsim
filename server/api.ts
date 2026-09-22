@@ -3,6 +3,7 @@ import type { GameId } from '../src/types';
 import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
 import { authorizeUrl, exchangeForId, linkConfigured, readState } from './oauthLink';
+import { runStarSweep } from './stargazers';
 import { BALANCE_VERSION, SIM_DT } from '../src/config';
 import { monthsFor, policyFromEnv, whyNoMonths } from './kofi';
 import { CHALLENGE_FORMATS } from '../src/net/protocol';
@@ -829,6 +830,34 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (!dbEnabled) return back('error');
       await ensureProfile(who.userId, '');
       const linked = await linkProvider(who.userId, provider, providerUserId);
+      /**
+       * ⚠️ **SWEEP RIGHT NOW, BEFORE THE REDIRECT. A REWARD THAT ARRIVES IN AN HOUR IS
+       * INDISTINGUISHABLE FROM ONE THAT IS BROKEN**, and that is exactly how it read: the
+       * only thing that granted anything was `setInterval(…, 1 h)` in `server/index.ts`, so
+       * a person who linked saw their GitHub connected and NOTHING else, with no way to tell
+       * whether it had worked. Worse, the interval is created at boot, so every deploy pushed
+       * the first fire back another hour — on a day with several deploys it may never have
+       * run at all. (It had not: the live log had no `[rewards]` line.)
+       *
+       * So the link itself grants. It costs ONE GitHub request — the sweep reads the repo's
+       * stargazers, not the person, so it is the same single request whatever the reason for
+       * running it — and it means the page the callback bounces to can state what was earned
+       * as fact instead of asking somebody to come back later.
+       *
+       * ⚠️ AND IT CANNOT FAIL THE LINK. The link is already committed at this point; a
+       * GitHub outage, a bad token or a thrown query must not turn a successful link into
+       * `?link=error` and send somebody round the OAuth loop again to fix something that is
+       * not broken. The sweep's own fail-safe already declines to act on a list it does not
+       * trust, so the worst case here is that the hourly pass picks it up — which is the
+       * behaviour that existed before this block.
+       */
+      if (linked && provider === 'github') {
+        try {
+          await runStarSweep(process.env.GITHUB_STAR_REPO ?? 'genius0412/dsim', process.env.GITHUB_TOKEN);
+        } catch (e) {
+          console.error('[rewards] the on-link star sweep failed; the hourly pass will retry:', e);
+        }
+      }
       // `false` means that external account already belongs to a DIFFERENT DSIM account —
       // the 0047 anti-farm. It is a refusal the person needs to see, not a silent no-op.
       return back(linked ? 'ok' : 'taken');

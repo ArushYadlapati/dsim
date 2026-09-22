@@ -3762,6 +3762,27 @@ const STAR_REPO = process.env.GITHUB_STAR_REPO ?? 'genius0412/dsim';
    the deploy has stopped reading the log. `warnNoToken` is once-per-process, so this is the
    only place it actually prints. */
 if (dbEnabled && !process.env.GITHUB_TOKEN) warnNoToken();
+/**
+ * ⚠️ **ONE SWEEP SHORTLY AFTER BOOT, BECAUSE `setInterval` IS CREATED AT BOOT AND ITS FIRST
+ * FIRE IS A WHOLE HOUR AWAY.** On a day with several deploys the hourly pass may never run at
+ * all — measured: after an afternoon of alpha deploys the live log had no `[rewards]` line of
+ * any kind, and a star nobody had swept for looks exactly like a reward that does not work.
+ *
+ * It is also the only thing that catches a star made while the process was DOWN. The link
+ * route sweeps on its own now, but that only helps somebody who links from here on.
+ *
+ * 30 s of delay so it is not competing with Rapier's WASM init and the first rooms for a cold
+ * machine's single shared CPU, and `unref` like every other timer here so it never holds the
+ * process open. With no links it returns before making a request at all, which is the state
+ * every satellite is in.
+ */
+const starBoot = setTimeout(() => {
+  if (!dbEnabled) return;
+  void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN).catch((e) =>
+    console.error('[rewards] the boot star sweep failed:', e),
+  );
+}, 30_000);
+starBoot.unref();
 const starSweeper = setInterval(() => {
   if (!dbEnabled) return;
   void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN).catch((e) =>

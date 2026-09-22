@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { TitlePicker } from './TitlePicker';
 import { LinkedAccounts } from './LinkedAccounts';
+import { StarReward } from './StarReward';
 import type { GameSettings } from '../game';
 import { defaultSettings } from '../settings';
 import { authEnabled, authClient } from '../lib/authClient';
@@ -82,6 +83,12 @@ export function Account({
       {/* Above Privacy: a title is part of how a name is PRESENTED, which is what the
           identity panels above are about, whereas Privacy begins the settings half of
           the page. Renders nothing at all until the account has earned one. */}
+      {/* ⚠️ ABOVE `LinkedAccounts`, and both facts matter. It has to MOUNT first because
+          `LinkedAccounts` strips `?link` from the URL once it has read it, and it has to READ
+          first because this panel is the thing somebody is coming back to see — burying a
+          reward under the row that granted it is the version of this that still feels like
+          nothing happened. */}
+      {authEnabled && <StarReward />}
       {authEnabled && <LinkedAccounts />}
       {authEnabled && <TitlePicker />}
       {authEnabled && <ReplayPrivacy />}

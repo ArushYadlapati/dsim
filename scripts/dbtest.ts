@@ -16,12 +16,19 @@
  * Deliberately NOT wired into `npm test` — a red `npm test` must keep meaning
  * "physics broke" (see CLAUDE.md). This is its own command, like `contrast`.
  */
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PGlite } from '@electric-sql/pglite';
 import { setPoolForTests, type DbPool } from '../server/db/pool';
 import { monthsFor, whyNoMonths, DEFAULT_POLICY, policyFromEnv } from '../server/kofi';
 // a LEAF module (no imports, no env read at module scope — see its own header), so unlike
 // `server/db/repo` this is safe to import up front rather than after the pool swap.
 import { stripUnentitledCosmetics, cosmeticTier, type CosmeticId } from '../src/cosmetics';
+
+/** the repo root — the few checks below read SOURCE, because what they guard is a call
+ *  being deleted while tidying, not a behaviour this suite can drive. */
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * MODERATION, STUBBED AT THE TRANSPORT — so `saveReplay`'s name scrub can be exercised
@@ -3703,6 +3710,32 @@ async function main(): Promise<void> {
     const notfound = await capture(404, null);
     check('⚠️ stargazers: a 404 WITH a token says MISSING SCOPE, because GitHub will not',
       /scope/i.test(notfound) && notfound.includes('public_repo'), notfound.slice(0, 120));
+
+    /**
+     * ⚠️ **THE LINK MUST SWEEP FOR ITSELF, AND THE SWEEP MUST NOT BE ABLE TO FAIL THE LINK.**
+     * Both halves were wrong at once and it is worth spelling out how it presented: the only
+     * thing that granted anything was `setInterval(…, 1 h)` in `server/index.ts`, created at
+     * BOOT — so every deploy pushed the first fire back another hour, and after an afternoon
+     * of alpha deploys the live log had no `[rewards]` line at all. Somebody who linked saw
+     * GitHub connected and nothing else, indefinitely, which is indistinguishable from a
+     * feature that does not work. It is what the owner reported.
+     *
+     * Grepped rather than driven: the route needs a signed `state`, a verified bearer token
+     * and a live provider round trip, none of which this suite has. What is actually at risk
+     * is somebody deleting either half while tidying — a reachable `runStarSweep` call, and
+     * the `try` around it, since the link is already COMMITTED by then and a GitHub outage
+     * must not turn a good link into `?link=error` and send somebody round OAuth again.
+     */
+    const apiSrc = readFileSync(join(ROOT, 'server/api.ts'), 'utf8');
+    const cb = apiSrc.slice(apiSrc.indexOf('const linked = await linkProvider('));
+    const onLink = cb.slice(0, cb.indexOf('return back(linked'));
+    check('⚠️ link: a completed GitHub link sweeps IMMEDIATELY — an hourly timer is the bug',
+      /runStarSweep\(/.test(onLink), onLink.length ? 'found the callback' : 'CALLBACK NOT FOUND');
+    check('...and the sweep is wrapped, so a GitHub outage cannot fail a link already committed',
+      /try \{/.test(onLink) && /catch/.test(onLink));
+    const idxSrc = readFileSync(join(ROOT, 'server/index.ts'), 'utf8');
+    check('...and one sweep runs after BOOT too, because the hourly timer first fires an hour late',
+      /starBoot = setTimeout\(/.test(idxSrc) && /runStarSweep\(STAR_REPO/.test(idxSrc));
   }
 
 

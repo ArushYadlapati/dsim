@@ -7075,3 +7075,53 @@ button.ds-key:active {
 .title-pick > li > .title-chip {
   margin-right: 2px;
 }
+
+/* ── THE STAR REWARD PANEL (`ui/StarReward.tsx`) ────────────────────────────────────────────
+   Shown once, on the bounce back from a completed GitHub link. `.on` is the version that
+   actually granted something; without it the panel is the quiet "you have not starred yet"
+   sentence and takes no emphasis at all. */
+.star-reward.on {
+  /* the award family's hue, as an EDGE rather than a fill: this sits in a column of
+     `.ds-panel`s and a violet card would shout over the account's own settings. The left
+     edge is the same device the ranked-standing strip uses. */
+  border-left: 3px solid var(--ds-award);
+}
+.star-reward-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* A GRID, NOT A FLEX ROW, and that is the only way the two rows line up: the markers are
+   different WIDTHS by nature — one is a text chip as wide as its label, the other a fixed
+   disc — so a flex row left the two sentences starting at different x. A fixed marker
+   column puts the text on one edge whatever the chip says. */
+.star-reward-list > li {
+  display: grid;
+  grid-template-columns: 5.5em 1fr;
+  align-items: center;
+  gap: 12px;
+}
+/* centred in that column, so a short chip and a round disc both sit on its axis */
+.star-reward-list > li > :first-child {
+  justify-self: center;
+}
+/* the decal preview: the award hue on a dark disc, so the shape reads as the thing that goes
+   ON a robot rather than as another chip. Sized in `em` because it sits beside body text. */
+.star-reward-decal {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 2em;
+  height: 2em;
+  padding: 4px;
+  border-radius: var(--ds-round-full);
+  background: var(--ds-stage-bg);
+}
+.star-reward-decal svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: var(--ds-award);
+}
