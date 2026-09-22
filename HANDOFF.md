@@ -33,6 +33,32 @@ typo is the one that means the token is too weak. GraphQL is worse, not a way ro
 token reads `stargazerCount: 7` and gets ZERO nodes. All four failure modes (401, 403-limited,
 403-forbidden, 404) name themselves now, with `dbtest` checks on the sentences.
 
+⚠️ **THE FIRST `earned` COSMETIC WAS UNSELECTABLE, AND THE PICKER WAS THE ONLY BROKEN LINK.**
+`CosmeticsRows` held `const earned = NO_EARNED_COSMETICS` — a hardcoded `[]` from back when
+nothing fell through to the `earned` tier. Its own comment named the one thing to change
+("wiring the real one in later is this one name") and it was still missed when `decal:star`
+became the first key to fall through. Everything either side already worked:
+`/api/user/entitlements` has sent `unlockedCosmetics` since 0044, the join path loads
+`client.earnedCosmetics`, and `server/room.ts` strips on every re-pick. The list rides on
+`AdsProvider`'s context now — that provider already fetched the endpoint for the ad gate and
+was discarding the field. **Any future `earned` key inherits this working path**; three smoke
+greps stop the placeholder returning.
+
+⚠️ **THE SHARD RUNNER'S SUMMARY LINE LIED ABOUT A DEAD SHARD.** `bad` and the exit code were
+always right and the per-shard death block printed, but the LAST line — the one anybody reads
+— said `0 FAILURES`. Measured: a transform error in one shard dropped 146 checks and still
+summarised as 0 FAILURES. Fixed and verified by injecting a broken block (`1 SHARD(S) DIED`,
+exit 1).
+
+⚠️ **`sed -i` STRIPS CRLF AND PRODUCES 25,000-LINE DIFFS.** `scripts/smoke.ts` and
+`scripts/dbtest.ts` have CRLF blobs in git; a `sed -i` pass rewrites the whole file as LF, and
+the diff then hides the real change. Caught on `smoke.ts` and converted back (25 lines instead
+of 25k). **`scripts/dbtest.ts` was already flipped in `ad5234a` and shipped** — left as LF
+because converting back is a second full rewrite that recovers nothing, and its blame is
+already spent. There is NO `.gitattributes` and `core.autocrlf=true`, so this will recur:
+prefer a Python round-trip with `newline=''` over `sed -i` on these files. Adding
+`* text=auto` would fix it repo-wide but rewrites many blobs — an owner decision, not taken.
+
 ⚠️ **PRODUCTION DOES NOT HAVE THE REWARDS ROUTES.** `dohun-sim-decode`'s
 `/api/user/links` answers **200 with a PROFILE** — an older `/api/user/:id` pattern is
 swallowing the path and reading "links" as a user id. Harmless today (no client calls it
