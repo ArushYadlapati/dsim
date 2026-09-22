@@ -767,6 +767,31 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
     stripUnentitledCosmetics({ ...DEFAULT_SPEC, decal: 'star' }, false, []).decal === COSMETIC_DEFAULTS.decal);
   check('...and one that EARNED it keeps it, with no membership at all',
     stripUnentitledCosmetics({ ...DEFAULT_SPEC, decal: 'star' }, false, ['decal:star']).decal === 'star');
+
+  /**
+   * ⚠️ **THE PICKER MUST READ A REAL EARNED LIST, AND FOR ONE BUILD IT DID NOT.**
+   * `CosmeticsRows` held `const earned = NO_EARNED_COSMETICS` — a hardcoded `[]` from back
+   * when no key fell through to `earned`. `decal:star` was the first that did, so the owner
+   * held the decal in `profiles.cosmetics` and found the swatch LOCKED.
+   *
+   * What made it quiet is that every other link in the chain was already right: the
+   * entitlements route has sent `unlockedCosmetics` since 0044, and the server strips an
+   * unentitled spec on join and on every re-pick. Only the one surface where a person CHOOSES
+   * a cosmetic believed nobody owned any — so the feature was correct everywhere except where
+   * it was used.
+   *
+   * Grepped, because this lane has no DOM and cannot mount React. What is at risk is the
+   * placeholder coming back, or the provider dropping the field again.
+   */
+  const menuSrc = readFileSync('src/ui/Menu.tsx', 'utf8');
+  check('⚠️ cosmetics: the builder reads the signed-in account earned list, not a hardcoded empty one',
+    /earnedCosmetics: earned/.test(menuSrc) && !/NO_EARNED_COSMETICS/.test(menuSrc),
+    /NO_EARNED_COSMETICS/.test(menuSrc) ? 'the placeholder is BACK' : 'reads useAds()');
+  const adsSrc = readFileSync('src/ads/AdsProvider.tsx', 'utf8');
+  check('...and the provider that already fetches entitlements actually carries the field',
+    /setEarnedCosmetics\(e\.unlockedCosmetics/.test(adsSrc) && /earnedCosmetics }}/.test(adsSrc));
+  check('...and an unowned `earned` key says HOW to earn it, not "see Career" (wrong screen for this one)',
+    /'decal:star': /.test(menuSrc) && /EARN_HINT\[id\]/.test(menuSrc));
 }
 
 // ---- worldHash INVARIANCE across cosmetics (split from the block above; already

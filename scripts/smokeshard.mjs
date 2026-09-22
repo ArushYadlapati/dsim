@@ -349,5 +349,19 @@ if (EXPECT && total !== Number(EXPECT)) {
   console.log(`EXPECTED ${EXPECT} checks, ran ${total} — a block may have been added, removed or dropped.`);
   bad = true;
 }
-console.log(bad ? `${failures.length} FAILURES` : 'ALL PASS');
+/**
+ * ⚠️ THE LAST LINE IS THE ONE ANYBODY ACTUALLY READS, SO IT MUST NOT SAY ZERO ON A RUN THAT
+ * FAILED. A shard that dies before printing a verdict contributes no failures — it
+ * contributes NOTHING, its whole slice of the suite simply did not run — so the old
+ * `${failures.length} FAILURES` printed "0 FAILURES" while exiting 1. The exit code and the
+ * per-shard death block above were both right; the summary quietly disagreed with them, which
+ * is the version of this that gets believed. Measured live: a transform error in one shard
+ * dropped 146 checks and still summarised as 0 FAILURES.
+ */
+const crashNote = crashed.length ? `${crashed.length} SHARD(S) DIED — their checks did not run` : '';
+console.log(
+  bad
+    ? [failures.length ? `${failures.length} FAILURES` : '', crashNote].filter(Boolean).join(' · ')
+    : 'ALL PASS',
+);
 process.exit(bad ? 1 : 0);
