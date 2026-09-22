@@ -3778,14 +3778,14 @@ if (dbEnabled && !process.env.GITHUB_TOKEN) warnNoToken();
  */
 const starBoot = setTimeout(() => {
   if (!dbEnabled) return;
-  void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN).catch((e) =>
+  void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN, fetch, 'boot').catch((e) =>
     console.error('[rewards] the boot star sweep failed:', e),
   );
 }, 30_000);
 starBoot.unref();
 const starSweeper = setInterval(() => {
   if (!dbEnabled) return;
-  void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN).catch((e) =>
+  void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN, fetch, 'hourly').catch((e) =>
     console.error('[rewards] star sweep failed:', e),
   );
 }, STAR_SWEEP_MS);

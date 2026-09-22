@@ -188,6 +188,9 @@ export async function runStarSweep(
   repo: string,
   token?: string,
   fetchImpl: typeof fetch = fetch,
+  /** who asked — `boot`, `hourly` or `link`. It is in every line this function prints, because
+   *  which caller ran (or did not run) was the actual question the first time this went wrong. */
+  tag = 'hourly',
 ): Promise<StarSweepResult> {
   /* ⚠️ NO TOKEN, NO SWEEP — AND IT SAYS SO, ONCE, IN WORDS THAT NAME THE FIX. The endpoint
      answers 401 without one (see the header), and every layer below this is built to do
@@ -202,13 +205,31 @@ export async function runStarSweep(
      nobody to grant to, and hitting the API hourly to learn that is wasted traffic. This is
      also the state the server is in the whole time the provider is not enabled in the Neon
      Auth project, which is where this feature sits until the owner turns it on. */
-  if ((await liveLinks('github')).length === 0) return { granted: [], revoked: [], applied: false };
+  const links = (await liveLinks('github')).length;
+  if (links === 0) {
+    /* ⚠️ SAID OUT LOUD, BECAUSE THE SILENT VERSION COST AN HOUR OF DIAGNOSIS. This
+       returned quietly, and the owner reported "connected to GitHub and it is not giving me
+       the stuff". With no log line, THREE different situations were indistinguishable from
+       outside: the sweep had never run, it had run and found nobody linked, or it had run and
+       granted nothing. Each has a completely different fix, and the only way to tell them
+       apart was to read the source and reason about a timer. `tag` names the caller so a boot
+       sweep, the hourly pass and an on-link sweep are also told apart. */
+    console.log(`[rewards] star sweep (${tag}): NOBODY has a live GitHub link — nothing to do`);
+    return { granted: [], revoked: [], applied: false };
+  }
   const got = await fetchStargazers(repo, token, fetchImpl);
   const out = await sweepStargazers(got.ids, got.complete);
   if (!out.applied) {
-    console.warn('[rewards] star sweep skipped — the stargazer list could not be trusted');
-  } else if (out.granted.length || out.revoked.length) {
-    console.log(`[rewards] star sweep: +${out.granted.length} -${out.revoked.length} of ${got.ids.length} stargazers`);
+    console.warn(`[rewards] star sweep (${tag}) skipped — the stargazer list could not be trusted`);
+  } else {
+    /* NO LONGER ONLY WHEN SOMETHING CHANGED. A sweep that ran and correctly changed nothing is
+       the COMMON case once everybody eligible holds the title, and it used to look exactly
+       like a sweep that never ran. One line an hour is not a log problem; not being able to
+       answer "did it run?" is. */
+    console.log(
+      `[rewards] star sweep (${tag}): +${out.granted.length} -${out.revoked.length} · ` +
+        `${links} linked account(s) against ${got.ids.length} stargazers`,
+    );
   }
   return out;
 }

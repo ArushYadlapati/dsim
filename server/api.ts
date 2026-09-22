@@ -853,7 +853,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
        */
       if (linked && provider === 'github') {
         try {
-          await runStarSweep(process.env.GITHUB_STAR_REPO ?? 'genius0412/dsim', process.env.GITHUB_TOKEN);
+          await runStarSweep(process.env.GITHUB_STAR_REPO ?? 'genius0412/dsim', process.env.GITHUB_TOKEN, fetch, 'link');
         } catch (e) {
           console.error('[rewards] the on-link star sweep failed; the hourly pass will retry:', e);
         }
