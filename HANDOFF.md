@@ -72,6 +72,23 @@ the same body type; it is a `ToggleRow` (Private / Anyone can watch), and the ot
 labels (title picker, consent, your-data, admin) take `--ds-t-md` 600 ink. Client-only; no Fly
 redeploy needed.
 
+**Follow-up, same day: season artwork.** `public/brand/<game>/` holds the publisher files (README
+there has the sources and the trademark note): FIRST's DECODE and BIOBUZZ brand packs
+(`FIRST_AGE-FTC-logos.zip`, `first-biobuzz-logos.zip`), and the owner's Chain Reaction mark and
+wordmarks. `Season.brand` (`seasons.ts`) points at a `poster` and a `mark`; `brandUrl` prefixes the
+Vite base. The home game picker is three `.ds-poster` tiles on a FIXED dark ground (two posters are
+white-on-transparent, so the card cannot theme; category 3). The hive's `am-5883 Panel Sticker`
+(`renderFieldGlb.ts` `bannerTexture`) paints the BIOBUZZ emblem + wordmark on the lockup's cream,
+async through `THREE.ImageLoader`, blank sticker as the fallback. ⚠️ Vite's watcher missed a
+byte-level write to `shell.css` once this session (served a stale file until the dev server was
+restarted); if a CSS edit does not show, restart `dev` before debugging the CSS.
+
+**Also this day:** the box tube clears the flower's REAL solid (`BB_FLOWER_OUTER_R` measured off the
+GLB, tip parks outside the top plate's edge; swept-arm check 0/5176 vs 3736 for the bore aim); the
+rear hazard bar is gone (owner: not FTC); the title picker is `.ds-opt` tiles; the footer's Discord
+link (back via a main merge, unstyled) is gone; ~70 copy strings de-padded; `Admin.tsx` drivetrain
+list and the OG card gained Butterfly / lost "2D".
+
 Gotchas found on the way: `@discord/embedded-app-sdk` was not installed in this worktree (a bare
 `npm install` fixed the build). `scripts/smoke-biobuzz/sim3d.ts` and `docs/area/biobuzz.md` are
 stored with CRLF in the repo (everything else is LF); they were staged with `core.autocrlf=false`

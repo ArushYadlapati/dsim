@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { GameSettings } from '../game';
 import type { GameId } from '../types';
-import { APP_NAME, LINKS, seasonFor } from '../seasons';
+import { APP_NAME, LINKS, brandUrl, seasonFor } from '../seasons';
 import { visibleGames } from '../seasonVisibility';
 import { fetchGlobalStats, type GlobalStats } from '../net/api';
 import { RAIL_ITEMS } from './NavRail';
@@ -97,19 +97,32 @@ export function HomeMenu({
           ours to sell) — this mark is the app's own and a different fact. */}
       <SponsorPresents />
 
+      {/* THE GAME PICKER IS THE SEASONS' OWN ARTWORK. Each tile is the publisher's lockup on a
+          fixed dark card (two of the three are white-on-transparent), the selected one edged
+          in accent. The name is repeated as text under the art so the tile still reads with
+          images off and to a screen reader; the art itself is decorative (`alt=""`). */}
       {games.length > 1 && (
-        <div className="ds-segs ds-home-games" role="tablist" aria-label="Game">
-          {games.map((g) => (
-            <button
-              key={g.id}
-              role="tab"
-              aria-selected={settings.game === g.id}
-              className={`ds-seg${settings.game === g.id ? ' on' : ''}`}
-              onClick={() => onGame(g.id)}
-            >
-              {seasonFor(g.id).name}
-            </button>
-          ))}
+        <div className="ds-posters" role="tablist" aria-label="Game">
+          {games.map((g) => {
+            const season = seasonFor(g.id);
+            const on = settings.game === g.id;
+            return (
+              <button
+                key={g.id}
+                role="tab"
+                aria-selected={on}
+                className={`ds-poster${on ? ' on' : ''}`}
+                onClick={() => onGame(g.id)}
+              >
+                {season.brand ? (
+                  <img className="ds-poster-art" src={brandUrl(season.brand.poster)} alt="" draggable={false} />
+                ) : (
+                  <span className="ds-poster-art" />
+                )}
+                <span className="ds-poster-name">{season.name}</span>
+              </button>
+            );
+          })}
         </div>
       )}
 

@@ -2439,7 +2439,68 @@ function bannerTexture(wIn: number, hIn: number): THREE.CanvasTexture {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.needsUpdate = true;
+  paintBannerArtwork(ctx, canvas.width, canvas.height, pxPerIn, tex);
   return tex;
+}
+
+/** the BIOBUZZ lockup's own panel cream, sampled off the publisher's file (`public/brand`). */
+const BANNER_CREAM = '#f3edb0';
+
+/**
+ * THE BANNER IS THE SEASON'S LOCKUP, NOT A BLANK STICKER (owner, 2026-09-22: "make the banner in
+ * the 3d biobuzz game display the actual biobuzz thing"). The real `am-5883 Panel Sticker` is
+ * printed with the season artwork; the STEP carries no artwork, so the texture is painted here:
+ * the lockup's cream ground, the hex emblem at the left, the wordmark filling the rest, both
+ * from `public/brand/biobuzz/` (the publisher's files, see the README there).
+ *
+ * ASYNC ON PURPOSE. The sticker face is drawn synchronously above so the quad is never a hole;
+ * the two images land when they land, repaint the same canvas and flag the texture. A failed
+ * fetch leaves the plain sticker (one `console.warn`, the `buildBiobuzzField` fallback shape),
+ * which is exactly what shipped before this.
+ */
+function paintBannerArtwork(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  pxPerIn: number,
+  tex: THREE.CanvasTexture,
+): void {
+  const base = (import.meta.env?.BASE_URL ?? '/').replace(/\/+$/, '');
+  const url = (f: string): string => `${base}/brand/biobuzz/${f}`.replace(/\/{2,}/g, '/');
+  const loader = new THREE.ImageLoader();
+  let mark: HTMLImageElement | null = null;
+  let word: HTMLImageElement | null = null;
+  const paint = (): void => {
+    if (!mark || !word) return;
+    // the sticker's own cream ground, inside the wrapped-edge band the base texture drew
+    const inset = Math.max(1, Math.round(0.18 * pxPerIn));
+    ctx.fillStyle = BANNER_CREAM;
+    ctx.fillRect(inset, 0, w - 2 * inset, h);
+    // the emblem at the left, with the panel's own margin above and below
+    const pad = Math.round(0.55 * pxPerIn);
+    const mh = h - 2 * pad;
+    const mw = Math.round(mh * (mark.naturalWidth / mark.naturalHeight));
+    ctx.drawImage(mark, inset + pad, pad, mw, mh);
+    // the wordmark centred in what is left, at most 60 % of the panel height so its
+    // letterforms keep the lockup's proportions rather than filling the sheet edge to edge
+    const x0 = inset + pad + mw + pad;
+    const availW = w - inset - pad - x0;
+    const ratio = word.naturalWidth / word.naturalHeight;
+    let ww = availW;
+    let wh = ww / ratio;
+    const maxH = h * 0.6;
+    if (wh > maxH) {
+      wh = maxH;
+      ww = wh * ratio;
+    }
+    ctx.drawImage(word, x0 + (availW - ww) / 2, (h - wh) / 2, ww, wh);
+    tex.needsUpdate = true;
+  };
+  const fail = (what: string) => (): void => {
+    console.warn(`BIOBUZZ banner: couldn't load ${what}; the panel stays blank.`);
+  };
+  loader.load(url('mark.webp'), (img) => { mark = img; paint(); }, undefined, fail('the emblem'));
+  loader.load(url('wordmark-black.webp'), (img) => { word = img; paint(); }, undefined, fail('the wordmark'));
 }
 
 /** the ACM board's face: aluminium composite under a vinyl sticker is semi-gloss, not the matt
