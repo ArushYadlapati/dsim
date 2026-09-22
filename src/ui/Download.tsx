@@ -1,5 +1,4 @@
 import { DESKTOP_BUILDS, releasesUrl, appVersion, detectOS, isMobile, OS_LABEL, type DesktopBuild } from '../download';
-import { APP_NAME } from '../seasons';
 import { SponsorDownloadMark } from './Sponsor';
 import { trackEvent } from '../analytics';
 
@@ -50,7 +49,6 @@ export function Download() {
 
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · {mobile ? 'On mobile' : 'Desktop'}</p>
       <h1 className="ds-h1">{mobile ? 'Play on your phone' : 'Download for desktop'}</h1>
       {mobile ? (
         // no inline margin: `.ds-main > .ds-panel` owns the panel stack now.

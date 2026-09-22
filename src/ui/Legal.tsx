@@ -1,6 +1,5 @@
 import { Markdown } from './markdown';
 import { PRIVACY_MD, TERMS_MD, LEGAL_UPDATED, LEGAL_IDENTIFIED, LEGAL_CONTACT } from '../legalText';
-import { APP_NAME } from '../seasons';
 import { YourData } from './YourData';
 
 /**
@@ -18,7 +17,6 @@ import { YourData } from './YourData';
 function LegalPage({ title, sub, body }: { title: string; sub?: string; body: string }) {
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Legal</p>
       <h1 className="ds-h1">{title}</h1>
       {/* `sub` is OPTIONAL, because most of the time it is the title said again
           as a sentence. Only keep one where it carries something the heading

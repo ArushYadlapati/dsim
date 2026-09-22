@@ -5,7 +5,6 @@ import {
   requestEmailVerification,
   type AuthFlowResult,
 } from '../lib/authFlows';
-import { APP_NAME } from '../seasons';
 import { AuthDisabled } from './AuthDisabled';
 import { ENTRY_TOKEN } from './entryToken';
 
@@ -29,7 +28,6 @@ import { ENTRY_TOKEN } from './entryToken';
 export function AccountVerify({ onAccount }: { onAccount: () => void }) {
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Account</p>
       <h1 className="ds-h1">Verify your email</h1>
       {!authEnabled ? <AuthDisabled /> : <Verify onAccount={onAccount} />}
     </>

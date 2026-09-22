@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchAnnouncements, type Announcement, type AnnouncementKind } from '../net/api';
 import { gameServerConfigured } from '../net/env';
-import { APP_NAME, LINKS } from '../seasons';
+import { LINKS } from '../seasons';
 import { Markdown } from './markdown';
 
 const KIND_LABEL: Record<AnnouncementKind, string> = {
@@ -35,7 +35,6 @@ export function Changelog() {
 
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Changes</p>
       <h1 className="ds-h1">Changes</h1>
 
       <section className="ds-panel">

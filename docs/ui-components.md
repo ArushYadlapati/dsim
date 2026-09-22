@@ -479,7 +479,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-checkline` | src/ui/shell.css:1970 | 6 |
+| `.ds-checkline` | src/ui/shell.css:1970 | 5 |
 
 ## `ds-chip` — 1
 

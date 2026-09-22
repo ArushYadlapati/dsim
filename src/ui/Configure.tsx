@@ -1,6 +1,5 @@
 import { Suspense, lazy } from 'react';
 import type { GameSettings } from '../game';
-import { APP_NAME } from '../seasons';
 import { Menu } from './Menu';
 import { MatchSetup } from './MatchSetup';
 import { ControlsSection } from './ControlsSection';
@@ -86,7 +85,6 @@ export function Configure({
 }) {
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Configure</p>
       <h1 className="ds-h1">Configure</h1>
 
       <div className="ds-subnav-layout">

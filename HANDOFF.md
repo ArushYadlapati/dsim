@@ -63,6 +63,15 @@ Owner requests, and where each landed:
   did: Profile, Career, MatchHistory, Friends, Lobby, MatchStrategy (which had no badge at all);
   Results roster gets the BADGE only (a title chip clipped a long name to "M." on a 340 px half).
 
+**Follow-up, same day (owner: "You've made UI even worse. Remove 'DSIM · Play'").** The "large plain
+white text" was the `.ds-eyebrow` line. Alpha's a0bb3b4 deleted the CSS rule and removed the eyebrow
+from three pages, but fourteen other pages (and the home page, re-introduced by the merge) still
+rendered `<p className="ds-eyebrow">` as a bare 16px body-ink paragraph. All of them are gone now,
+with their dead `APP_NAME` imports. The replay-sharing checkbox in Account was a raw `<span>` in
+the same body type; it is a `ToggleRow` (Private / Anyone can watch), and the other `.ds-checkline`
+labels (title picker, consent, your-data, admin) take `--ds-t-md` 600 ink. Client-only; no Fly
+redeploy needed.
+
 Gotchas found on the way: `@discord/embedded-app-sdk` was not installed in this worktree (a bare
 `npm install` fixed the build). `scripts/smoke-biobuzz/sim3d.ts` and `docs/area/biobuzz.md` are
 stored with CRLF in the repo (everything else is LF); they were staged with `core.autocrlf=false`

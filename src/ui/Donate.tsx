@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { APP_NAME, LINKS } from '../seasons';
+import { LINKS } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
 import { claimKofiPayment, fetchEntitlements, fetchPricing, type TierPrice } from '../net/api';
 import type { StaffRole } from '../net/protocol';
@@ -113,7 +113,6 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
   if (!SUPPORT_ENABLED) {
     return (
       <>
-        <p className="ds-eyebrow">{APP_NAME} · Support</p>
         <h1 className="ds-h1">Support DSIM</h1>
         {/* The `.ds-sub` here read "Not open yet." — the same sentence as the
             panel's "There is nothing to pay for yet", 30px apart. The panel keeps
@@ -132,7 +131,6 @@ export function Donate({ signedIn }: { signedIn: boolean }) {
 
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Support</p>
       <h1 className="ds-h1">Support DSIM</h1>
       <p className="ds-sub">
         DSIM is free and stays free. Servers and a database are not - this is what keeps them

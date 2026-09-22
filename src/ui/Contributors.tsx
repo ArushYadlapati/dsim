@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CORE_TEAM, CONTRIBUTORS, THIRD_PARTY, type Contributor } from '../contributors';
 import { fetchProfileByUsername } from '../net/api';
-import { APP_NAME, LINKS } from '../seasons';
+import { LINKS } from '../seasons';
 
 /**
  * Contributors — the people, sponsor and open-source projects behind the sim, linked
@@ -19,7 +19,6 @@ import { APP_NAME, LINKS } from '../seasons';
 export function Contributors({ onOpenProfile }: { onOpenProfile: (username: string) => void }) {
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Credits</p>
       <h1 className="ds-h1">Contributors</h1>
 
       <section className="ds-panel">

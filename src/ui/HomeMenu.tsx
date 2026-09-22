@@ -42,7 +42,6 @@ export function HomeMenu({
   // this release channel are selectable; the switcher hides itself until there are
   // ≥2 to choose between.
   const games = visibleGames();
-  const season = seasonFor(settings.game);
 
   // site-wide counters (players + games played), when the server is configured
   const [stats, setStats] = useState<GlobalStats | null>(null);
@@ -91,18 +90,6 @@ export function HomeMenu({
           )}
         </button>
       )}
-      {/* The eyebrow is CSS-uppercased, so the presenting sponsor gets its own
-          span that opts back out: goBILDA is not GOBILDA. Hence `presenter` is
-          a field of its own rather than part of one pre-joined string. */}
-      <p className="ds-eyebrow">
-        {season.name}
-        {season.presenter && (
-          <>
-            {' presented by '}
-            <span className="ds-brand">{season.presenter}</span>
-          </>
-        )}
-      </p>
       <h1 className="ds-home-title">{APP_NAME}</h1>
 
       {/* The APP's presenting sponsor, directly under the app's name. The SEASON

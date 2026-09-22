@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ToggleRow } from './OptRow';
 import { TitlePicker } from './TitlePicker';
 import { LinkedAccounts } from './LinkedAccounts';
 import { StarReward } from './StarReward';
@@ -24,7 +25,6 @@ import { fmtDay } from './fmtDate';
 import { ServerMenu } from './ServerMenu';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
 import { VerifyEmailBanner } from './VerifyEmailBanner';
-import { APP_NAME } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
 import { LEGAL_CONTACT } from '../legalText';
 import { trackEvent } from '../analytics';
@@ -53,7 +53,6 @@ export function Account({
 }) {
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Profile</p>
       <h1 className="ds-h1">Profile</h1>
 
       {/* ABOVE the identity panel, because it is about the address that panel shows,
@@ -193,15 +192,13 @@ function ReplayPrivacy() {
           <p className="ds-hint">Checking…</p>
         ) : (
           <>
-            <label className="ds-checkline">
-              <input
-                type="checkbox"
-                checked={value}
-                disabled={status === 'saving'}
-                onChange={(e) => toggle(e.target.checked)}
-              />
-              <span>Let anyone watch my match replays</span>
-            </label>
+            <ToggleRow
+              label="Match replays"
+              value={value}
+              onPick={toggle}
+              off="Private"
+              on="Anyone can watch"
+            />
             <p className="ds-hint">
               A replay shows both alliances, so a match only becomes public when everyone who
               played in it has turned this on. Turning it off again hides every match of yours

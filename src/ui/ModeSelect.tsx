@@ -63,7 +63,6 @@ export function ModeSelect({
   const [seen] = useState(() => tutorialSeen());
   return (
     <>
-      <p className="ds-eyebrow">{APP_NAME} · Play</p>
       <h1 className="ds-h1">Pick a mode</h1>
 
       {activeGame && (
