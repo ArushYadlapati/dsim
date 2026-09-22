@@ -62,14 +62,13 @@ export interface Season {
   /** false ⇒ shown in the picker as "coming soon", not selectable */
   playable: boolean;
   /**
-   * The season's own wordmark under `public/brand/<key>/`, as site-root paths WITHOUT the Vite
-   * base (`brandUrl` prefixes `import.meta.env.BASE_URL`, the Electron build's `./`): the
-   * publisher's black cut for a light surface and white cut for a dark one, so the mark themes
-   * the way ink does. `h` is the rendered height in px at the home picker, set per brand so the
-   * three MAIN WORDS share a cap height: the FIRST files carry a "presented by" subline under
-   * the word and are taller than the word alone. `public/brand/README.md` has the sources.
+   * The season's own artwork under `public/brand/<key>/`, as site-root paths WITHOUT the Vite
+   * base (`brandUrl` prefixes `import.meta.env.BASE_URL`, the Electron build's `./`).
+   * `poster` is the full lockup as a self-contained card (mark + wordmark + presenter), the
+   * thing the home picker shows; `mark` is the emblem alone. Both are the publisher's own
+   * files, unedited beyond a crop and a resize; `public/brand/README.md` has the sources.
    */
-  brand?: { onLight: string; onDark: string; h: number };
+  brand?: { poster: string; mark: string };
   /**
    * Which client CHANNELS may SEE this season at all. Absent ⇒ every channel.
    *
@@ -92,7 +91,7 @@ export const SEASONS: readonly Season[] = [
     years: '2025–26',
     blurb: 'Classify artifacts into cross-court goals, match the motif, park on base.',
     playable: true,
-    brand: { onLight: 'brand/decode/wordmark-black.webp', onDark: 'brand/decode/wordmark-white.webp', h: 34 },
+    brand: { poster: 'brand/decode/poster.webp', mark: 'brand/decode/poster.webp' },
   },
   {
     key: 'chain',
@@ -102,7 +101,7 @@ export const SEASONS: readonly Season[] = [
     years: '2026',
     blurb: 'The 2026 Unofficial FTC CAD-competition game - a new shooter (rules to come).',
     playable: true,
-    brand: { onLight: 'brand/chain/wordmark-black.webp', onDark: 'brand/chain/wordmark-white.webp', h: 20 },
+    brand: { poster: 'brand/chain/poster.webp', mark: 'brand/chain/mark.webp' },
   },
   {
     // PUBLIC since 2026-09-13 (the promotion to production). It was alpha-only while it was
@@ -114,7 +113,7 @@ export const SEASONS: readonly Season[] = [
     years: '2026–27',
     blurb: 'Tip the HIVE, fill the FLOWERS and park, with a turret, a double turret or a dumper.',
     playable: true,
-    brand: { onLight: 'brand/biobuzz/wordmark-black.webp', onDark: 'brand/biobuzz/wordmark-white.webp', h: 32 },
+    brand: { poster: 'brand/biobuzz/poster.webp', mark: 'brand/biobuzz/mark.webp' },
   },
 ] as const;
 
