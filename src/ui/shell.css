@@ -1171,76 +1171,10 @@
   line-height: 1.05;
   margin: 0 0 var(--ds-s-4);
 }
-/* GAME PICKER (home): the seasons' official wordmarks as a tab strip. A wordmark is its own
-   name, so there is no caption and no card; it is drawn in INK (the publisher's black cut on
-   the light theme, white cut on the dark one — both are in the DOM, this rule picks one), muted
-   until chosen, and the chosen one carries the accent rule every tab in the app carries. The
-   rule is a border that is always present and only changes colour, so selection moves no
-   layout. The <img> height is an attribute (`Season.brand.h`), one value for all three bare
-   words, so they share a cap height and, centred, a baseline. */
-.ds-wordmarks {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
+/* game switcher (DECODE / Chain Reaction) — centered under the title */
+.ds-home-games {
   justify-content: center;
-  gap: 4px 8px;
   margin: 0 0 var(--ds-s-5);
-}
-.ds-wm {
-  font: inherit;
-  display: inline-flex;
-  align-items: center;
-  /* sized so the three words (20px tall: 74 + 186 + 107) sit on ONE row inside the 460px
-     home column with room to spare; the phone block below re-caps them */
-  padding: 8px 8px 10px;
-  border: 0;
-  border-bottom: 3px solid transparent;
-  background: none;
-  color: var(--ds-ink);
-  cursor: pointer;
-  opacity: 0.45;
-  transition:
-    opacity 0.12s,
-    border-color 0.12s;
-}
-.ds-wm:hover {
-  opacity: 0.8;
-}
-.ds-wm.on {
-  opacity: 1;
-  border-bottom-color: var(--ds-accent);
-}
-.ds-wm img {
-  display: block;
-  width: auto;
-  user-select: none;
-}
-.ds-wm-dark {
-  display: none;
-}
-:root[data-theme='dark'] .ds-wm-light {
-  display: none;
-}
-:root[data-theme='dark'] .ds-wm-dark {
-  display: block;
-}
-.ds-wm-text {
-  font-size: 15px;
-  font-weight: 700;
-}
-/* ONE ROW ON A PHONE: at 375px the three words at 22px do not fit beside each other with the
-   desktop padding, so the height is capped and the padding tightened; `width: auto` keeps the
-   ratio when the height is capped. */
-@media (max-width: 420px) {
-  .ds-wordmarks {
-    gap: 4px 8px;
-  }
-  .ds-wm {
-    padding: 8px 2px;
-  }
-  .ds-wm img {
-    max-height: 15px;
-  }
 }
 /* Discord / Instagram / GitHub — prominent pills near the top of the home menu. They WRAP:
    three pills no longer fit side by side on the narrowest phones. */

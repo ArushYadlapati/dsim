@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { GameSettings } from '../game';
 import type { GameId } from '../types';
-import { APP_NAME, LINKS, brandUrl, seasonFor } from '../seasons';
+import { APP_NAME, LINKS, seasonFor } from '../seasons';
 import { visibleGames } from '../seasonVisibility';
 import { fetchGlobalStats, type GlobalStats } from '../net/api';
 import { RAIL_ITEMS } from './NavRail';
@@ -97,51 +97,19 @@ export function HomeMenu({
           ours to sell) — this mark is the app's own and a different fact. */}
       <SponsorPresents />
 
-      {/* THE GAME PICKER IS A WORDMARK TAB STRIP. Each season's official horizontal wordmark,
-          in the page's ink (the black cut on the light theme, the white cut on the dark one —
-          both `<img>`s are in the DOM and the theme picks one in CSS, so there is no JS theme
-          subscription), muted when not selected, an accent rule under the one that is. No card,
-          no caption: the wordmark IS the name, and `aria-label` carries it for a reader. The
-          files are the bare words at one height (`Season.brand.h`), centred on one line, so the
-          three sit on one baseline; the FIRST packs' "presented by" sublines were cut off for
-          exactly that reason (with them, the bottom edge is the subline, not the word). */}
       {games.length > 1 && (
-        <div className="ds-wordmarks" role="tablist" aria-label="Game">
-          {games.map((g) => {
-            const season = seasonFor(g.id);
-            const on = settings.game === g.id;
-            return (
-              <button
-                key={g.id}
-                role="tab"
-                aria-selected={on}
-                aria-label={season.name}
-                className={`ds-wm${on ? ' on' : ''}`}
-                onClick={() => onGame(g.id)}
-              >
-                {season.brand ? (
-                  <>
-                    <img
-                      className="ds-wm-light"
-                      src={brandUrl(season.brand.onLight)}
-                      alt=""
-                      draggable={false}
-                      height={season.brand.h}
-                    />
-                    <img
-                      className="ds-wm-dark"
-                      src={brandUrl(season.brand.onDark)}
-                      alt=""
-                      draggable={false}
-                      height={season.brand.h}
-                    />
-                  </>
-                ) : (
-                  <span className="ds-wm-text">{season.name}</span>
-                )}
-              </button>
-            );
-          })}
+        <div className="ds-segs ds-home-games" role="tablist" aria-label="Game">
+          {games.map((g) => (
+            <button
+              key={g.id}
+              role="tab"
+              aria-selected={settings.game === g.id}
+              className={`ds-seg${settings.game === g.id ? ' on' : ''}`}
+              onClick={() => onGame(g.id)}
+            >
+              {seasonFor(g.id).name}
+            </button>
+          ))}
         </div>
       )}
 

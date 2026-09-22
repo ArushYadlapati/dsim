@@ -62,16 +62,6 @@ export interface Season {
   /** false ⇒ shown in the picker as "coming soon", not selectable */
   playable: boolean;
   /**
-   * The season's own wordmark under `public/brand/<key>/`, as site-root paths WITHOUT the Vite
-   * base (`brandUrl` prefixes `import.meta.env.BASE_URL`, the Electron build's `./`): the
-   * publisher's black cut for a light surface and white cut for a dark one, so the mark themes
-   * the way ink does. The files are the BARE WORD (the FIRST packs' wordmarks carry a
-   * "presented by" subline, cut off so the three share one baseline); `h` is the rendered height
-   * in px at the home picker, one value for all so cap heights match. `public/brand/README.md`
-   * has the sources.
-   */
-  brand?: { onLight: string; onDark: string; h: number };
-  /**
    * Which client CHANNELS may SEE this season at all. Absent ⇒ every channel.
    *
    * Distinct from `playable`, and the difference matters: `playable: false` is a
@@ -93,7 +83,6 @@ export const SEASONS: readonly Season[] = [
     years: '2025–26',
     blurb: 'Classify artifacts into cross-court goals, match the motif, park on base.',
     playable: true,
-    brand: { onLight: 'brand/decode/wordmark-black.webp', onDark: 'brand/decode/wordmark-white.webp', h: 20 },
   },
   {
     key: 'chain',
@@ -103,7 +92,6 @@ export const SEASONS: readonly Season[] = [
     years: '2026',
     blurb: 'The 2026 Unofficial FTC CAD-competition game - a new shooter (rules to come).',
     playable: true,
-    brand: { onLight: 'brand/chain/wordmark-black.webp', onDark: 'brand/chain/wordmark-white.webp', h: 20 },
   },
   {
     // PUBLIC since 2026-09-13 (the promotion to production). It was alpha-only while it was
@@ -115,19 +103,8 @@ export const SEASONS: readonly Season[] = [
     years: '2026–27',
     blurb: 'Tip the HIVE, fill the FLOWERS and park, with a turret, a double turret or a dumper.',
     playable: true,
-    brand: { onLight: 'brand/biobuzz/wordmark-black.webp', onDark: 'brand/biobuzz/wordmark-white.webp', h: 20 },
   },
 ] as const;
-
-/** a season's brand file as a fetchable URL, under the Vite base (the Electron build serves
- * from `./`, where a bare `/brand/...` resolves at the filesystem root and 404s silently). */
-export function brandUrl(path: string): string {
-  // typed by hand: this file is also compiled by tsconfig.server.json, which has no Vite
-  // client types, and the server never calls this
-  const env = (import.meta as { env?: { BASE_URL?: string } }).env;
-  const base = (env?.BASE_URL ?? '/').replace(/\/+$/, '');
-  return `${base}/${path.replace(/^\/+/, '')}`.replace(/\/{2,}/g, '/');
-}
 
 /**
  * Is this season visible on a client built for `channel`?

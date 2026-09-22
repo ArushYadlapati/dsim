@@ -89,23 +89,7 @@ record page (`src/net/roomPhysics.ts`); `LobbyClient.physicsReady()` LATCHES and
 **Also:** the in-match top-right HUD is main's again (game card alone; SPEC / DESYNC / server chips
 in the restored bottom-right `.net-corner`, which carries no `data-hud-band`, so the 3D camera no
 longer re-frames when a spectator chip lands). Alpha's later removal of the NECTAR dot column is
-kept. The app bar names the loaded season (`.ds-bar-season`, "DSIM · BIOBUZZ"). The home game
-picker is a WORDMARK TAB STRIP (`.ds-wordmarks`): the seasons' bare words cut from the brand packs
-(the FIRST files' "presented by" sublines removed so the three share a baseline), black cut on
-light / white cut on dark, one height, accent rule under the selected one; the poster tiles are
-gone. `brandUrl` types `import.meta` by hand because `seasons.ts` is also compiled by
-`tsconfig.server.json`.
-
-**Follow-up, same day: season artwork.** `public/brand/<game>/` holds the publisher files (README
-there has the sources and the trademark note): FIRST's DECODE and BIOBUZZ brand packs
-(`FIRST_AGE-FTC-logos.zip`, `first-biobuzz-logos.zip`), and the owner's Chain Reaction mark and
-wordmarks. `Season.brand` (`seasons.ts`) points at a `poster` and a `mark`; `brandUrl` prefixes the
-Vite base. The home game picker is three `.ds-poster` tiles on a FIXED dark ground (two posters are
-white-on-transparent, so the card cannot theme; category 3). The hive's `am-5883 Panel Sticker`
-(`renderFieldGlb.ts` `bannerTexture`) paints the BIOBUZZ emblem + wordmark on the lockup's cream,
-async through `THREE.ImageLoader`, blank sticker as the fallback. ⚠️ Vite's watcher missed a
-byte-level write to `shell.css` once this session (served a stale file until the dev server was
-restarted); if a CSS edit does not show, restart `dev` before debugging the CSS.
+kept. The app bar names the loaded season (`.ds-bar-season`, "DSIM · BIOBUZZ").
 
 **Also this day:** the box tube clears the flower's REAL solid (`BB_FLOWER_OUTER_R` measured off the
 GLB, tip parks outside the top plate's edge; swept-arm check 0/5176 vs 3736 for the bore aim); the
