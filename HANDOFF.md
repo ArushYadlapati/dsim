@@ -46,9 +46,11 @@ is not:
 | the browser round trip | **UNVERIFIED** — it needs a person to sign in and click through |
 | the star sweep | **OFF.** See below. |
 
-⚠️ **`GITHUB_TOKEN` NEEDS THE `public_repo` SCOPE, AND THE TOKEN ON ALPHA HAS NO SCOPES.**
-The owner created one on my advice, and my advice was wrong twice — first that the token was
-optional, then that it needed no scopes. MEASURED 2026-09-21 with an unscoped classic PAT that
+⚠️ **`GITHUB_TOKEN` NEEDS THE `public_repo` SCOPE. RESOLVED — alpha carries one and the
+live fetch returns all seven ids** (`complete: true`, numeric, unique, through the real
+`fetchStargazers`). It is written down because my advice was wrong TWICE on the way here —
+first that the token was optional, then that it needed no scopes — and the second one is a
+trap anybody would fall into. MEASURED 2026-09-21 with an unscoped classic PAT that
 authenticates perfectly (5,000/hr, `/user` 200):
 
     /repos/genius0412/dsim                200  ("private": false)   /contributors  200
@@ -62,10 +64,14 @@ typed the name wrong" is also the one that means "your token is too weak". Graph
 not a way round: the same token reads `stargazerCount: 7` and gets ZERO nodes. A token with
 `repo` returns all seven; `public_repo` is its read-only subset.
 
-**TO FIX: regenerate at github.com/settings/tokens with `public_repo` ticked, then
-`flyctl secrets set GITHUB_TOKEN=... -a dsim-alpha`.** Nothing else is outstanding for it —
-401, 403-rate-limited, 403-forbidden and 404 each say what they mean now, `dbtest` pins all
-four sentences, and the boot guard confirms the token is present on the live machine.
+401, 403-rate-limited, 403-forbidden and 404 each say what they mean now rather than printing
+a status code, `dbtest` pins all four sentences, and alpha boots with no rewards warning.
+
+**WHAT IS STILL UNEXERCISED:** the sweep does not fire until somebody has linked a GitHub
+account (`liveLinks('github')` is empty, so it returns before the request). So the first real
+end-to-end run of the star reward happens in the hour after the first link, and until then a
+configuration mistake there would be invisible — which is the whole reason the four sentences
+above exist.
 
 ⚠️ **AND IT WAS REQUIRED AT ALL, WHICH IS THE FIRST HALF OF THE SAME MISTAKE.** Found by calling the API once the rest was
 in place. MEASURED anonymously from a clean rate-limit budget on a repo that is genuinely
