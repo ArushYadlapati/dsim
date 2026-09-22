@@ -1,4 +1,4 @@
-<!-- governs: server/db/**, server/ranked.ts, server/matchmaking.ts, server/persist.ts, server/standing.ts, src/lib/**, src/standing.ts, src/awards.ts, src/dodge.ts, src/report.ts, src/playtime.ts, src/ui/Leaderboard.tsx, src/ui/Admin.tsx -->
+<!-- governs: server/db/**, server/ranked.ts, server/matchmaking.ts, server/persist.ts, server/standing.ts, src/lib/**, src/standing.ts, src/awards.ts, src/badges.ts, src/rewards.ts, src/dodge.ts, src/report.ts, src/playtime.ts, src/ui/Leaderboard.tsx, src/ui/Admin.tsx -->
 # Accounts, ranked, leaderboards, records, staff roles
 
 Glicko-2, per-game boards and periods, the badge rules, challenges and the party token, and the background ranked queue.
@@ -187,6 +187,49 @@ width from the name — see the note beside `.resx-roster-name` in `src/ui/style
 Two surfaces print no badge because they print no person: `DiscordLobbyList` (room codes and
 seat counts) and `ChallengePicker` (a `@username` in its own dialog title, reached from a
 friends row that already carries both).
+
+**REWARDS — EVERY GRANT IS CLAIMED, NEVER SILENT (migration 0048, 2026-09-22).** Owner: "Titles
+should not ever silently get added UNLESS specified." Every title, badge and cosmetic an account
+is given is a row in `reward_grants`, unique on `(user_id, grant_key)` where the key names the
+reward and its period (`ranked:<game>:act<N>:<mode>`, `record:<game>:bv<N>`, `stargazer`).
+- **PENDING DELIVERS NOTHING.** A pending grant's title is not in `earnedTitles`, its badge is not
+  in `badgeCounts`, its cosmetic is not in `profiles.cosmetics`. `claimReward` applies it in one
+  transaction; `equip` also wears the first title and each badge. The claim dialog
+  (`src/ui/RewardDialog.tsx`) is the only way in, mounted inside `AppShell` (never over a match),
+  behind `TermsGate`/`UsernameGate` (its parents) and every other shell modal (`blocked`).
+- **`grantReward` IS THE ONE DOOR.** Silent is a per-source CODE flag (`REWARD_SOURCES`, off unless
+  a row says so); the only silent source is `legacy`. `grantCosmetic` is now the inventory write a
+  claim makes, not a grant path. A revoked grant keeps its row (`revoked_at`), so a re-star re-opens
+  the same key as pending instead of minting a second grant.
+- **BADGES COUNT, TITLES DO NOT** (`src/badges.ts`). Four closed ids: `ranked-gold|silver|bronze`
+  (act podium) and `record-holder` (season records). The count is claimed, unrevoked grants carrying
+  the id. `profiles.equipped_badges` (`[{id,n}]`, at most 3) is a PROJECTION of that count, rewritten
+  only by `refreshEquippedBadges` on every claim, revoke and equip, and projected by `badgeCols` so
+  every name surface gets it free. `TitleMark` takes `badges` — pass it wherever a title shows.
+- **THE CRITERIA** (`runRewardJob`, owner 2026-09-22). End of every ranked ACT: top 3 of each ladder
+  via `eloLeaderboard` (placed players, `user_id` last on ties) → an act title
+  (`award:<game>:act<N>:ranked_act:<mode>:<rank>`) + a podium badge. End of every SEASON: the SOLO
+  record board's overall top 3 and each drivetrain's #1 via `recordLeaderboard` (its `boardPhysics`
+  default) → one grant per player per season, a title per placement, ONE `record-holder` badge.
+  **Act 0 is never paid**, ranked or records. Duo boards are out (`RECORD_AWARD_MODES`); adding
+  `'duo'` there is the whole change.
+- **ONE JOB FOR THE BACKFILL AND THE ROLLOVER.** `runRewardJob` pays every CLOSED period not yet in
+  `reward_periods` (a season is closed once `currentSeasonNumber` is past it; an act once a seasons
+  row exists in a later act). It runs at every boot on every machine and after every
+  `startNewSeason`, outside the roll's transaction so it can never fail the roll. The period row is
+  claimed in the same transaction as its grants: the first machine pays, the rest skip, and a period
+  is never re-paid when its board later changes (a deleted record, a deleted account).
+- **WHERE PAST STANDINGS COME FROM.** Nothing snapshotted an act's final ladder before this job. A
+  closed act's final standings are its `elo_ratings` rows (keyed by act since 0013; nothing writes a
+  closed act's row except `chargeRatingForBehaviour`, which targets a player's most recent board).
+  Season records are `records` rows stamped with `balance_version`. Each grant's `reason` now stores
+  the rank and the rating or score it closed on.
+- **`season_awards` (0045) IS RETIRED**: nothing writes it; its titles stay wearable. A placement
+  both hold is one title (same id) and one trophy-case row (`trophyCase` dedupes).
+- **OLD CLIENTS** never call `/api/user/rewards`, so they never see a pending grant and keep working
+  on `/api/user/title` (claimed titles). An older server 404s the new routes, which the client reads
+  as "nothing pending". Tests: `npm run dbtest` (the job, Act 0, ties, per-drivetrain #1, pending →
+  claimed → equipped, the counter, silent, the cascade) and `npm test` (ids, words, queue order).
 
 **COSMETICS — TWO SEPARATE LEDGERS, DONE** (`docs/cosmetics-plan.md`). `chassisColor` /
 `accent` / `decal` / `plate` (`src/cosmetics.ts`) are four closed-set axes on `RobotSpec`;

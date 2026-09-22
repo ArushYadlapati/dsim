@@ -22,7 +22,12 @@ export interface AwardRow {
   act: number;
   /** the season's number within its act — "Act 2 Season 3" */
   seasonNo: number;
-  kind: 'ranked' | 'record_overall' | 'record_drivetrain';
+  /**
+   * `ranked_act` is the CURRENT ranked award: a final placement on a ranked ladder when an ACT
+   * ends (0048, owner 2026-09-22). `ranked` is the RETIRED per-season one 0045 minted; its
+   * titles stay wearable, so the kind stays readable, but nothing mints it any more.
+   */
+  kind: 'ranked' | 'ranked_act' | 'record_overall' | 'record_drivetrain';
   mode: '1v1' | '2v2' | 'solo' | 'duo';
   drivetrain: string | null;
   rank: number;
@@ -47,7 +52,7 @@ export function awardRankWord(kind: AwardRow['kind'], rank: number): string {
 
 /** what the award is OF — the board, in the fewest words that stay unambiguous. */
 export function awardBoardWord(a: Pick<AwardRow, 'kind' | 'mode' | 'drivetrain'>): string {
-  if (a.kind === 'ranked') return a.mode; // '1v1' | '2v2'
+  if (a.kind === 'ranked' || a.kind === 'ranked_act') return a.mode; // '1v1' | '2v2'
   const dt = a.drivetrain ? (DRIVETRAIN_LABELS[a.drivetrain as DrivetrainType] ?? a.drivetrain) : null;
   const solo = a.mode === 'duo' ? 'Duo ' : '';
   // "Record" is the board's own name on the site, so a record award says so rather than
@@ -63,12 +68,27 @@ export function awardBoardWord(a: Pick<AwardRow, 'kind' | 'mode' | 'drivetrain'>
  */
 export function awardTitleText(a: AwardRow): string {
   const season = seasonFor(a.game).name;
+  // an ACT award names the act alone: the ladder it is a placement on spans every season in it
+  if (a.kind === 'ranked_act') return `${season} · Act ${a.act} · ${awardBoardWord(a)} ${awardRankWord(a.kind, a.rank)}`;
   return `${season} · Act ${a.act} Season ${a.seasonNo} · ${awardBoardWord(a)} ${awardRankWord(a.kind, a.rank)}`;
 }
 
-/** the SHORT form for a chip beside a name, where the season is already context. */
+/** the SHORT form for a chip beside a name, where the season is already context. An act
+ *  award keeps its act, which its id carries (see `parseAwardTitleId`), because "1v1 Champion"
+ *  alone would read the same as a retired per-season one. */
 export function awardShortText(a: AwardRow): string {
-  return `${awardBoardWord(a)} ${awardRankWord(a.kind, a.rank)}`;
+  const words = `${awardBoardWord(a)} ${awardRankWord(a.kind, a.rank)}`;
+  return a.kind === 'ranked_act' && a.act > 0 ? `Act ${a.act} · ${words}` : words;
+}
+
+/**
+ * THE PODIUM TIER OF A TITLE, or null. An act ranked title is the most prestigious thing the
+ * ledger mints (owner, 2026-09-22), so its hexagon takes the podium's metal instead of the
+ * award violet every other title shares — the same gold / silver / bronze its badge wears.
+ */
+export function awardPodiumTier(a: Pick<AwardRow, 'kind' | 'rank'>): 'gold' | 'silver' | 'bronze' | null {
+  if (a.kind !== 'ranked_act') return null;
+  return a.rank <= 1 ? 'gold' : a.rank === 2 ? 'silver' : 'bronze';
 }
 
 /**
@@ -91,8 +111,13 @@ export function awardBadgeRank(a: Pick<AwardRow, 'rank'>): 1 | 2 | 3 {
  * as a chip that silently stops rendering.
  */
 export function awardTitleId(
-  a: Pick<AwardRow, 'game' | 'balanceVersion' | 'kind' | 'mode' | 'drivetrain' | 'rank'>,
+  a: Pick<AwardRow, 'game' | 'balanceVersion' | 'kind' | 'mode' | 'drivetrain' | 'rank'> & { act?: number },
 ): string {
+  // ⚠️ AN ACT AWARD IS KEYED BY ITS ACT, NOT A SEASON. Its period is the act, and the chip
+  // beside a name needs the act number to say which one — so the version field carries
+  // `act<N>`. An older client's parser reads that as a non-number and draws nothing, which is
+  // the graceful direction: no chip, never a wrong one.
+  if (a.kind === 'ranked_act') return `award:${a.game}:act${a.act ?? 0}:ranked_act:${a.mode}:${a.rank}`;
   const dt = a.drivetrain ? `:${a.drivetrain}` : '';
   return `award:${a.game}:${a.balanceVersion}:${a.kind}:${a.mode}${dt}:${a.rank}`;
 }
@@ -123,6 +148,13 @@ export function parseAwardTitleId(id: string): AwardRow | null {
   const [, game, version, kind, mode, ...rest] = parts;
   const drivetrain = rest.length === 2 ? rest[0] : null;
   const rank = Number(rest[rest.length - 1]);
+  // `act<N>` is an ACT award's period (see `awardTitleId`); every other kind carries a season
+  if (kind === 'ranked_act') {
+    const act = /^act(\d+)$/.exec(version);
+    if (!act || !Number.isFinite(rank) || drivetrain !== null) return null;
+    if (mode !== '1v1' && mode !== '2v2') return null;
+    return { game: game as AwardRow['game'], balanceVersion: 0, act: Number(act[1]), seasonNo: 0, kind, mode, drivetrain: null, rank, score: null };
+  }
   const balanceVersion = Number(version);
   if (!Number.isFinite(rank) || !Number.isFinite(balanceVersion)) return null;
   if (kind !== 'ranked' && kind !== 'record_overall' && kind !== 'record_drivetrain') return null;
@@ -141,6 +173,8 @@ export function parseAwardTitleId(id: string): AwardRow | null {
  */
 export function compareAwards(a: AwardRow, b: AwardRow): number {
   if (a.balanceVersion !== b.balanceVersion) return b.balanceVersion - a.balanceVersion;
+  // an act podium outranks anything else from the same close — it is the prestigious one
+  if ((a.kind === 'ranked_act') !== (b.kind === 'ranked_act')) return a.kind === 'ranked_act' ? -1 : 1;
   if (a.rank !== b.rank) return a.rank - b.rank;
   if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
   if (a.mode !== b.mode) return a.mode < b.mode ? -1 : 1;

@@ -86,6 +86,7 @@ import {
   challengeParty,
   clearRoomInvitesTo,
   syncStaffRoles,
+  runRewardJob,
   type GlobalPresence,
   // the admin console's own layer (migration 0041)
   profileNames,
@@ -3149,6 +3150,8 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
         if (p?.supporter) client.player.supporter = true;
         if (p?.role) client.player.role = p.role;
         if (p?.title) client.player.title = p.title;
+        // the worn badges and their counters (0048), on the same server-authored terms
+        if (p?.badges?.length) client.player.badges = p.badges;
         client.earnedCosmetics = p?.cosmetics ?? [];
       }
       markAuthed(user.userId);
@@ -3682,6 +3685,15 @@ migrate()
     console.log(
       `[server] staff synced: ${OWNER_ID ? '1 owner' : 'no owner'}, ${Math.max(0, ADMIN_LIST.filter((id) => id !== OWNER_ID).length)} admin(s)`,
     );
+    /* THE COMPETITIVE AWARD JOB, at every boot (docs/area/accounts.md, REWARDS). It pays any
+       closed act or season that has not been paid — which on the first boot after 0048 is
+       the BACKFILL of every past period, and afterwards is a safety net under the roll's own
+       run (`startNewSeason`). Every machine runs it; `reward_periods` makes the first one pay
+       and the rest skip, so it is one read per game once there is nothing to do. Its own
+       catch: a failure here must not read as "migration failed (records disabled)". */
+    await runRewardJob()
+      .then((paid) => console.log(`[rewards] boot award job: ${paid.grants} grant(s) over ${paid.periods} new period(s)`))
+      .catch((e) => console.error('[rewards] boot award job failed; the next boot or roll retries it:', e));
   })
   .catch((e) => console.error('[server] migration failed (records disabled):', e));
 
