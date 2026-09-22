@@ -44,15 +44,14 @@ export function isConfigureSection(s: string | null): s is ConfigureSection {
  * other words, and "Robot · Presets, build, intake" listed three of the section's six panels
  * — which is a promise that goes stale every time one is added.
  *
- * A HINT IS OPTIONAL. Audio and Visual said "Follows your account" and Graphics "This device
- * only" — where each one's settings are stored, which is not something anybody chooses a
- * section by, and the owner called both clutter (2026-09-22). A section whose label says
- * enough carries none.
+ * NO HINTS. Audio and Visual said "Follows your account" and Graphics "This device only",
+ * and the owner called both clutter (2026-09-22); the other three went with them, since a
+ * sub-nav where some rows carry a second line and others do not reads as unfinished.
  */
-const LABELS: Record<ConfigureSection, { label: string; hint?: string }> = {
-  robot: { label: 'Robot', hint: 'Build, look, drive feel' },
-  controls: { label: 'Controls', hint: 'Keyboard, gamepad, touch' },
-  match: { label: 'Match', hint: 'Practice setup' },
+const LABELS: Record<ConfigureSection, { label: string }> = {
+  robot: { label: 'Robot' },
+  controls: { label: 'Controls' },
+  match: { label: 'Match' },
   // route key stays 'audio' — /configure/audio is deep-linkable and already shipped
   audio: { label: 'Audio and Visual' },
   graphics: { label: 'Graphics' },
@@ -101,7 +100,6 @@ export function Configure({
               onClick={() => onSection(s)}
             >
               <span className="sl">{LABELS[s].label}</span>
-              {LABELS[s].hint && <span className="sh">{LABELS[s].hint}</span>}
             </button>
           ))}
         </nav>

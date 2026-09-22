@@ -4,13 +4,14 @@ import { QueueCounts } from './QueueCounts';
 /** the four top-level destinations, in the order they appear on the home menu.
  *
  * A hint NAMES WHAT IS BEHIND THE LABEL; it never restates it. "Play → Pick a
- * game mode" said nothing the word Play did not, in the one slot that renders
- * twice (the home keycap `.mh` and the rail `.rh`). */
+ * game mode" said nothing the word Play did not. It renders on the home keycaps
+ * (`.mh`) only: the rail is on every screen, and there it was clutter (owner,
+ * 2026-09-22). */
 export const RAIL_ITEMS: ReadonlyArray<{ id: ShellNav; label: string; hint: string }> = [
   { id: 'play', label: 'Play', hint: 'Practice & compete' },
   { id: 'configure', label: 'Configure', hint: 'Robot & match setup' },
   { id: 'records', label: 'Records', hint: 'Leaderboard & career' },
-  { id: 'profile', label: 'Profile', hint: 'Badges & account' },
+  { id: 'profile', label: 'Profile', hint: 'Appearance & account' },
 ];
 
 /**
@@ -46,7 +47,6 @@ export function NavRail({
               {it.label}
               {it.id === 'play' && <QueueCounts className="rail" />}
             </span>
-            <span className="rh">{it.hint}</span>
           </button>
         ))}
         {showAdmin && (
@@ -56,7 +56,6 @@ export function NavRail({
             onClick={() => onNav('admin')}
           >
             <span className="rl">Admin</span>
-            <span className="rh">Server control</span>
           </button>
         )}
       </div>
