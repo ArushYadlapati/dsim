@@ -1,5 +1,5 @@
 /**
- * BIOBUZZ AI — THE TIER TABLE (Day 3, `docs/biobuzz/plan-3d.md` §6).
+ * BIOBUZZ AI — THE TIER TABLE (Day 3, `docs/biobuzz/plan-3d.md` §6; rewritten 2026-09-22).
  *
  * Three difficulties, ONE policy. `policy.ts` is a single state machine and every tier runs the
  * same one; what a tier changes is a handful of numbers it reads out of here. That is deliberate
@@ -9,10 +9,16 @@
  * the same driver with different hands.
  *
  * ⚠️ **NO TIER MAY READ ANYTHING A LOWER TIER CANNOT.** Difficulty is EXECUTION — how fast it
- * drives, how long it dithers, how strict it is about taking a shot — never information. A Hard
- * bot that read the opponent's hopper while Easy did not would be cheating at a game the player
- * cannot see into either, and "the AI knows things" is the complaint that kills a practice mode.
- * The policy reads exactly one set of fields for every tier (see `policy.ts`'s header).
+ * drives, how late it reacts, how carefully it picks a shot and a target — never information. A
+ * Hard bot that read the opponent's hopper while Easy did not would be cheating at a game the
+ * player cannot see into either, and "the AI knows things" is the complaint that kills a
+ * practice mode. The policy reads exactly one set of fields for every tier (see `policy.ts`).
+ *
+ * ⚠️ **AND NO TIER IS ALLOWED TO BE BROKEN.** Every tier gets the same stuck detection, the same
+ * reachability test, the same pin back-off and the same G402 discipline — a weak driver is slow,
+ * late and sloppy, not wedged in a corner for a minute. The first tier table made Easy weak by
+ * making it idle (113 s of a 150-s match standing still, measured by `scripts/aibench.ts`), which
+ * is a bot nobody learns anything from.
  *
  * The strings are OPAQUE to the seam (`BotDriver.tiers` is `readonly string[]`), so a fourth
  * tier is a row here and a label in the UI — no shared type edit.
@@ -33,108 +39,139 @@ export const BB_AI_DEFAULT_TIER: BbAiTier = 'medium';
  */
 export interface BbAiTierSpec {
   /**
-   * Chance, per decision, that the bot SKIPS this decision and holds what it was already doing.
-   *
-   * This is the reaction model, and it is a hold rather than a delay queue because a hold is
-   * what a slow driver actually looks like: they keep doing the last thing a beat too long.
-   * A queue would make the bot react late to everything equally, including to things it never
-   * had to react to. Drawn from the bot's OWN chain, never the world's.
+   * Chance, per decision, that the bot SKIPS this decision and holds what it was already doing —
+   * a slow driver keeps doing the last thing a beat too long. Drawn from the bot's OWN chain.
+   * Never applied to a safety manoeuvre (an escape or a pin back-off already in progress).
    */
   hesitate: number;
-  /** ceiling on every translation command, as a fraction of full stick. The single biggest
-   * difference between the tiers: an EASY bot crosses the field in most of two seconds longer,
-   * which is two fewer volleys in a MATCH. */
+  /** REACTION DELAY, in decisions: how long a change of plan (collect → score → park, a new
+   * target) takes to be acted on. The honest version of "reacts late" — the bot keeps working
+   * the old plan while it notices. */
+  react: number;
+  /** ceiling on every translation command, as a fraction of full stick */
   speedCap: number;
-  /** how close to its wanted heading (rad) the bot calls itself lined up. A DUMPER cannot score
-   * at all until it is inside `BB_AIM_TOL` (0.14), so a loose tolerance here is a bot that
-   * squeezes the trigger early and waits for the sim to refuse it. */
+  /** how close to its wanted heading (rad) the bot calls itself lined up */
   aimTol: number;
   /**
-   * Does the bot require the SHARED SHOT VERDICT before holding fire?
-   *
-   * `true` — it runs `bbFlightEnters` over the release it would actually make and holds fire
-   * only when the arc lands, which is what a good driver's eye does. `false` — it holds fire
-   * whenever it is roughly pointed and roughly in range, and lets `bbLaunch`'s own verdict
-   * refuse it. Both are SAFE (the sim gates the release either way, so a loose bot wastes
-   * nothing but time); the difference is that a loose bot stands at the wrong range holding a
-   * trigger that will never fire, because nothing told it the arc was short.
+   * THE SHOT DISCIPLINE — how far outside the measured firing envelope (`tuning.ts`) the bot
+   * will still take a shot. `envAng` is the half-angle off the cell's mouth normal it stands
+   * inside (rad); `envPad` widens the distance band on both ends (in). A sloppy driver shoots
+   * from the side and from too close, and misses; that is the aim error the tiers differ by —
+   * the turret aims itself in every tier, so where the bot SHOOTS FROM is the only aim a bot has.
    */
-  strictVerdict: boolean;
+  envAng: number;
+  envPad: number;
+  /** does a turret keep firing while it drives (across the line to the cell or away from it)? */
+  moveFire: boolean;
   /**
-   * Does the bot stay on its OWN HALF for the whole MATCH?
-   *
-   * Every tier stays home during AUTO (plan §6). A cautious driver never stops: they work the
-   * half they started on, collect what is in front of them, and leave the middle alone. It costs
-   * half the field's elements, which is the biggest single handicap available that is still a
-   * HABIT rather than a disability — the bot is running the identical policy over a smaller set
-   * of targets.
+   * How many elements the bot collects before it goes to shoot, when nothing else sends it
+   * sooner. A full hopper is the efficient answer (a volley per trip is the whole cycle); a
+   * nervous driver goes with two and drives to the envelope twice as often.
+   */
+  volleyAt: number;
+  /**
+   * Does the bot COUNT toward the TIP — hold the elements a cell does not need, not fire into a
+   * swing that will spill them, and walk to the far cell while the tray is still moving? A
+   * driver who does not simply empties the hopper into whatever is up.
+   */
+  tipSense: boolean;
+  /** TARGET CHOICE NOISE, in seconds of travel added to each candidate's cost at random — the
+   * "worse choices" knob. 0 is the planner's own ranking. */
+  choice: number;
+  /** does the bot weigh where it will SHOOT FROM when it picks an element to collect? */
+  lookahead: boolean;
+  /**
+   * Does the bot stay on its OWN HALF for the whole MATCH? Every tier stays home during AUTO
+   * (G402). A cautious driver never stops.
    */
   homeOnly: boolean;
-  /** does the bot PLACE NECTAR into a FLOWER once the 1:00 window opens? */
+  /** does the bot PLACE NECTAR into a FLOWER once the 1:00 window opens (a Box Tube build)? */
   places: boolean;
   /** does the bot spend the alliance's NECTAR entries (`bbNectar`) at its own LOADING ZONE? */
   entersNectar: boolean;
-  /** does the bot DEFEND — shadow the nearest opponent between them and their own up CELL —
-   * when it has nothing of its own to do? */
+  /** does the bot DEFEND — stand on the opponent's firing stand — when it has nothing of its
+   * own to do? */
   defends: boolean;
-  /**
-   * How many DECISIONS the bot spends trying to collect, with the HOPPER not growing, before it
-   * writes the element it is going for (and its neighbours) off for `BB_AI_TARGET_COOLDOWN`.
-   *
-   * The single most EXPENSIVE habit a weak driver has, and the reason it is a tier knob rather
-   * than one constant: some elements are unreachable, nothing a position read says which, and a
-   * driver finds out by trying. A patient one keeps trying — for seconds, then tens of seconds,
-   * while the field empties around them. It is execution, not information: every tier learns the
-   * same thing the same way, they just take different amounts of a two-minute match to do it.
-   */
+  /** decisions collecting with the hopper not growing before the bot writes the element (and its
+   * neighbours) off — the patience clock */
   patience: number;
-  /** does the bot PARK in its own LOADING ZONE, and with how many seconds of TELEOP left?
-   * 0 ⇒ it never parks. PARK is 3 points and costs the last few seconds of collection, so the
-   * tiers disagree about whether it is worth it and about how early to leave. */
-  parkAtS: number;
+  /** does the bot PARK in its LOADING ZONE at the end of the MATCH? */
+  parks: boolean;
+  /** …and at the end of AUTO (5 points, and LEAVE's 3 with it, for a few seconds' drive)? */
+  autoPark: boolean;
+  /** in a 2v2, does the bot leave its PARTNER's elements and stand to the partner, and take the
+   * opposite side of the firing envelope? */
+  coordinates: boolean;
 }
 
 /**
  * THE TABLE. Read it as a column per tier, and note what does NOT change across it: the decide
- * cadence (`BB_AI_DECIDE_TICKS`, one number for every tier — plan §6 fixes it at 6 so every
- * bot's recorded track compresses the same way) and every geometric constant in `config.ts`.
+ * cadence (`BB_AI_DECIDE_TICKS`), the stuck test, the reachability test, the pin back-off, and
+ * every geometric constant.
  */
 export const BB_AI_TIER_SPECS: Readonly<Record<BbAiTier, BbAiTierSpec>> = {
   easy: {
-    hesitate: 0.6,
-    speedCap: 0.35,
-    aimTol: 0.35,
-    strictVerdict: false,
+    hesitate: 0.35,
+    react: 8,
+    speedCap: 0.42,
+    aimTol: 0.3,
+    envAng: 1.1,
+    envPad: 10,
+    moveFire: false,
+    volleyAt: 2,
+    tipSense: false,
+    choice: 3,
+    lookahead: false,
     homeOnly: false,
     places: false,
     entersNectar: false,
     defends: false,
-    patience: 300,
-    parkAtS: 0,
+    patience: 150,
+    parks: false,
+    autoPark: false,
+    coordinates: false,
   },
   medium: {
-    hesitate: 0.25,
-    speedCap: 0.7,
-    aimTol: 0.16,
-    strictVerdict: true,
+    hesitate: 0.15,
+    react: 3,
+    speedCap: 0.62,
+    aimTol: 0.18,
+    envAng: 0.8,
+    envPad: 5,
+    moveFire: true,
+    volleyAt: 3,
+    tipSense: true,
+    choice: 1.2,
+    lookahead: false,
     homeOnly: false,
     places: true,
     entersNectar: true,
     defends: false,
-    patience: 120,
-    parkAtS: 6,
+    patience: 90,
+    parks: true,
+    autoPark: false,
+    coordinates: true,
   },
   hard: {
     hesitate: 0,
-    speedCap: 0.85,
-    aimTol: 0.14,
-    strictVerdict: true,
+    react: 0,
+    speedCap: 0.95,
+    aimTol: 0.1,
+    envAng: 0.52,
+    envPad: 0,
+    moveFire: true,
+    volleyAt: 4,
+    tipSense: true,
+    choice: 0,
+    lookahead: true,
     homeOnly: false,
     places: true,
     entersNectar: true,
     defends: true,
-    patience: 120,
-    parkAtS: 8,
+    patience: 60,
+    parks: true,
+    autoPark: true,
+    coordinates: true,
   },
 };
 
