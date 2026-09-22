@@ -7,8 +7,6 @@ import { accentFill, clampCosmetics } from '../../cosmetics';
 import {
   BB_BOX_TUBE_OVERLAP,
   BB_FRONT_INK,
-  BB_HAZARD_INK,
-  BB_HAZARD_TICKS,
   BB_PLACE_MARK_R,
   BB_REAR_INK,
   bbBoxTubeGlyph,
@@ -60,8 +58,8 @@ import { BB_ALLIANCE_BLUE, ELEMENT_FILL, ELEMENT_LINE } from './draw';
  * that matters: A BUILD READS AT A GLANCE. The mounted sweeper, this build's LAUNCHER (one turret
  * on top · two individual turrets · a chassis-wide dumper tray), its BOX TUBE (a short tube at its
  * mount plus the placement-point marker), the ELEMENTS it is holding, and the FRONT/BACK marks —
- * a near-white light bar at the front rail, a deck arrow pointing at it and an amber hazard bar
- * at the rear (`bbFrontMarks`, `parts.ts`, carries the design). Front = robot +x.
+ * a near-white light bar at the front rail and a deck arrow pointing at it (`bbFrontMarks`,
+ * `parts.ts`, carries the design). Front = robot +x.
  *
  * ── A BUILD IS A MANDATORY LAUNCHER PLUS AN OPTIONAL BOX TUBE ───────────────
  * `bbLauncherOf`/`bbLiftOf` (`mechs.ts`) are the one place that reads `RobotSpec.bbMech` and
@@ -288,17 +286,11 @@ function drawFrontBack(ctx: CanvasRenderingContext2D, spec: RobotSpec): void {
   ctx.fillStyle = 'rgba(17,21,27,0.55)';
   ctx.fillRect(m.front.x0, -m.front.halfY, 0.18, m.front.halfY * 2);
 
-  // 2. THE HAZARD BAR, full width at the rear edge — near-black with amber ticks
+  // 2. THE REAR RAIL, full width — the chassis' own dark, no stripes (see `bbFrontMarks`)
   ctx.fillStyle = BB_REAR_INK;
   ctx.fillRect(m.rear.x0, -m.rear.halfY, m.rear.x1 - m.rear.x0, m.rear.halfY * 2);
-  ctx.fillStyle = BB_HAZARD_INK;
-  const span = m.rear.halfY * 2;
-  const tick = span / (BB_HAZARD_TICKS * 2);
-  for (let i = 0; i < BB_HAZARD_TICKS; i++) {
-    ctx.fillRect(m.rear.x0, -m.rear.halfY + i * tick * 2, m.rear.x1 - m.rear.x0, tick);
-  }
 
-  // 3. THE DECK ARROW, pointing at the light bar and away from the ticks
+  // 3. THE DECK ARROW, pointing at the light bar and away from the plain end
   ctx.fillStyle = BB_FRONT_INK;
   ctx.beginPath();
   ctx.moveTo(m.arrow.apex, 0);

@@ -99,8 +99,6 @@ import { chassis3dShapes } from '../../src/games/biobuzz/sim3d/bodies';
 import {
   BB_END_BAR_INSET,
   BB_FRONT_INK,
-  BB_HAZARD_INK,
-  BB_HAZARD_TICKS,
   BB_REAR_INK,
   bbBoxTubeGlyph,
   bbFrontMarks,
@@ -115,16 +113,25 @@ import {
   BB_BOX_TUBE_TIP_CLEAR,
   BB_BOX_TUBE_WALL,
   BB_BOX_TUBE_Z,
+  BB_BOX_TUBE_FLOWER_GAP,
+  BB_BOX_TUBE_HALF_W,
   bbBoxTubeAim,
+  bbBoxTubeDeployExt,
   bbBoxTubeStages,
+  bbBoxTubeStandoff,
+  bbBoxTubeSwivelFrac,
   BB_BRACE_PROUD,
   BB_DECK_Z,
   BB_FLOWERS,
   BB_FLOWER_D,
   BB_FLOWER_FOOT,
   BB_FLOWER_OPEN_R,
+  BB_FLOWER_OUTER_MAX,
+  BB_FLOWER_OUTER_MIN,
   BB_FLOWER_TOP_Z,
+  bbFlowerOuterR,
   FLOWER_MOUTH,
+  FLOWER_RING_Z,
   BB_PLACE_TOL,
   BB_FEED_WALL_T,
   BB_FLYWHEEL_CLEAR,
@@ -1494,6 +1501,11 @@ export function renderChecks(check: Check): void {
  *
  * ⚠️ IT ASSERTS THE MARKS ARE NOT COLLIDERS, the same way `endPlateChecks` does: they sit inside
  * the chassis box in x/y and only stand above the deck, so neither solve grows for them.
+ *
+ * ⚠️ AND IT ASSERTS THERE IS NO AMBER ANYWHERE ON THE ROBOT (owner, 2026-09-22: "what is this ugly
+ * ass yellow and black beams rendered in 3D? It is awful and does not fit FTC"). The rear's
+ * hazard stripes are gone; this is the check that keeps them gone, in both renderers and in the
+ * shared geometry, rather than trusting that nobody re-adds a "clearer" version of them.
  */
 function frontBackChecks(check: Check): void {
   const ID = 5;
@@ -1502,11 +1514,36 @@ function frontBackChecks(check: Check): void {
 
   check(
     'front/back: the marks are neither alliance colour — "red end" must not compete with "red team"',
-    !ALLIANCE_INKS.includes(BB_FRONT_INK.toLowerCase()) &&
-      !ALLIANCE_INKS.includes(BB_HAZARD_INK.toLowerCase()) &&
-      !ALLIANCE_INKS.includes(BB_REAR_INK.toLowerCase()),
-    `${BB_FRONT_INK} / ${BB_HAZARD_INK} / ${BB_REAR_INK}`,
+    !ALLIANCE_INKS.includes(BB_FRONT_INK.toLowerCase()) && !ALLIANCE_INKS.includes(BB_REAR_INK.toLowerCase()),
+    `${BB_FRONT_INK} / ${BB_REAR_INK}`,
   );
+  // NO HAZARD STRIPES, in either renderer or in the geometry they share. `#f59e0b` is the exact
+  // amber that shipped for four hours; the wider net catches a differently-spelled retry.
+  {
+    const srcs: [string, string][] = [
+      ['parts.ts', readFileSync(join(BIOBUZZ_DIR, 'parts.ts'), 'utf8')],
+      ['drawRobot.ts', readFileSync(join(BIOBUZZ_DIR, 'drawRobot.ts'), 'utf8')],
+      ['scene/renderRobots.ts', readFileSync(join(SCENE_DIR, 'renderRobots.ts'), 'utf8')],
+    ];
+    for (const [name, src] of srcs) {
+      const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+      // AMBER by what it IS, not by one literal: a hot red channel, a middling green and almost
+      // no blue. Spelling the family out catches a retry at a different hex; matching `#f5...`
+      // would have caught plain white too.
+      const hits = [...code.matchAll(/#[0-9a-f]{6}\b/gi)]
+        .map((m) => m[0])
+        .filter((hex) => {
+          const n = parseInt(hex.slice(1), 16);
+          const [rr, gg, bb2] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+          return rr >= 0xc8 && gg >= 0x50 && gg <= 0xc8 && bb2 <= 0x60;
+        });
+      check(
+        `front/back: ${name} names no amber/hazard colour — the rear is structure, not a warning label`,
+        hits.length === 0 && !/BB_HAZARD|:hazard/i.test(code),
+        hits.join(', ') || 'clean',
+      );
+    }
+  }
 
   // ---- 3D: the nodes exist, they are on the ends they name, and they grow nothing -----------
   for (const [L, W] of [[13.5, 13.5], [18, 18], [17.5, 13.5]] as const) {
@@ -1517,9 +1554,9 @@ function frontBackChecks(check: Check): void {
       for (const n of nodes) n.updateMatrixWorld(true);
       const names = nodes.map((n) => n.name).sort();
       check(
-        `front/back 3D ${tag}: exactly the four mark nodes exist, and no legacy nose box`,
+        `front/back 3D ${tag}: exactly the three mark nodes exist — no legacy nose box, no hazard ribs`,
         JSON.stringify(names) ===
-          JSON.stringify([`robot:${ID}:front:arrow`, `robot:${ID}:front:bar`, `robot:${ID}:rear:bar`, `robot:${ID}:rear:hazard`]),
+          JSON.stringify([`robot:${ID}:front:arrow`, `robot:${ID}:front:bar`, `robot:${ID}:rear:bar`]),
         names.join(','),
       );
 
@@ -1529,9 +1566,8 @@ function frontBackChecks(check: Check): void {
       };
       const front = boxOf('front:bar');
       const rear = boxOf('rear:bar');
-      const hazard = boxOf('rear:hazard');
       const arrow = boxOf('front:arrow');
-      if (!front || !rear || !hazard || !arrow) continue;
+      if (!front || !rear || !arrow) continue;
 
       const hl = L / 2;
       check(
@@ -1539,17 +1575,14 @@ function frontBackChecks(check: Check): void {
         front.min.x > 0 && Math.abs(front.max.x - hl) < 1e-6,
         `x[${front.min.x.toFixed(3)}, ${front.max.x.toFixed(3)}] vs hl ${hl}`,
       );
-      // the rear MARK is the dark core plus its ribs; the core is inset so the ribs stand proud,
-      // so it is their ENVELOPE that has to be flush with the rail
-      const rearAll = rear.clone().union(hazard);
       check(
-        `front/back 3D ${tag}: the hazard bar is at −x and flush with the rear rail`,
-        rearAll.max.x < 0 && Math.abs(rearAll.min.x + hl) < 1e-6,
-        `x[${rearAll.min.x.toFixed(3)}, ${rearAll.max.x.toFixed(3)}]`,
+        `front/back 3D ${tag}: the rear rail is at −x and flush with the rear rail`,
+        rear.max.x < 0 && Math.abs(rear.min.x + hl) < 1e-6,
+        `x[${rear.min.x.toFixed(3)}, ${rear.max.x.toFixed(3)}]`,
       );
       // FULL WIDTH is the property that survives occlusion — a mark narrow enough to hide behind
       // a turret is the nose box this replaced.
-      for (const [name, b] of [['light bar', front], ['hazard bar', rearAll]] as const) {
+      for (const [name, b] of [['light bar', front], ['rear rail', rear]] as const) {
         check(
           `front/back 3D ${tag}: the ${name} spans most of the chassis width`,
           b.max.y - b.min.y >= W - 2 * BB_END_BAR_INSET - 1e-6,
@@ -1560,12 +1593,6 @@ function frontBackChecks(check: Check): void {
         `front/back 3D ${tag}: the deck arrow POINTS FORWARD — apex ahead of its own base`,
         arrow.max.x > arrow.min.x && Math.abs(arrow.max.x - bbFrontMarks(spec).arrow.apex) < 1e-6,
         `x[${arrow.min.x.toFixed(3)}, ${arrow.max.x.toFixed(3)}]`,
-      );
-      check(
-        `front/back 3D ${tag}: the amber ticks sit ON the hazard bar, not beside it`,
-        hazard.min.x <= rear.min.x + 1e-6 && hazard.max.x >= rear.max.x - 1e-6 && hazard.max.y <= rear.max.y + 1e-6 &&
-          hazard.min.z <= rear.min.z + 1e-6 && hazard.max.z >= rear.max.z - 1e-6,
-        `ticks x[${hazard.min.x.toFixed(3)}, ${hazard.max.x.toFixed(3)}]`,
       );
       // NOT A COLLIDER — inside the frame box both solves already treat as solid, and above the
       // deck. Same ruling as the end plates.
@@ -1637,15 +1664,11 @@ function frontBackChecks(check: Check): void {
       const bar = rects.find((q) => q.style === ink && Math.abs(q.x - m.front.x0) < 1e-6 && Math.abs(q.w - (m.front.x1 - m.front.x0)) < 1e-6);
       check(`front/back 2D ${mount}: the light bar is filled at the FRONT rail, full width`, !!bar && bar.x > 0 && Math.abs(bar.h - m.front.halfY * 2) < 1e-6, bar ? `x ${bar.x.toFixed(2)} w ${bar.w.toFixed(2)} h ${bar.h.toFixed(2)}` : 'no such rect');
 
-      const hazardRects = rects.filter((q) => q.style === BB_HAZARD_INK.toLowerCase());
       check(
-        `front/back 2D ${mount}: the rear bar carries ${BB_HAZARD_TICKS} amber ticks, all at −x`,
-        hazardRects.length === BB_HAZARD_TICKS && hazardRects.every((q) => q.x < 0 && Math.abs(q.x - m.rear.x0) < 1e-6),
-        `${hazardRects.length} ticks`,
-      );
-      check(
-        `front/back 2D ${mount}: and a near-black bar under them at the REAR rail`,
-        rects.some((q) => q.style === BB_REAR_INK.toLowerCase() && Math.abs(q.x + r.spec.length / 2) < 1e-6),
+        `front/back 2D ${mount}: a plain rail at the REAR, in the chassis' own dark and with no stripes`,
+        rects.some((q) => q.style === BB_REAR_INK.toLowerCase() && Math.abs(q.x + r.spec.length / 2) < 1e-6) &&
+          rects.filter((q) => q.style === BB_REAR_INK.toLowerCase()).length === 1,
+        `${rects.filter((q) => q.style === BB_REAR_INK.toLowerCase()).length} rear fills`,
       );
 
       const arrow = tris.find((t) => t.style === ink);
@@ -1656,8 +1679,9 @@ function frontBackChecks(check: Check): void {
         arrow ? `apex ${arrow.pts[0][0].toFixed(2)} base ${arrow.pts[1][0].toFixed(2)}` : 'no filled triangle in the front ink',
       );
       check(
-        `front/back 2D ${mount}: no mark is filled in an alliance colour`,
-        !rects.some((q) => ALLIANCE_INKS.includes(q.style)) && !tris.some((t) => ALLIANCE_INKS.includes(t.style)),
+        `front/back 2D ${mount}: no mark is filled in an alliance colour, and nothing is filled amber`,
+        !rects.some((q) => ALLIANCE_INKS.includes(q.style)) && !tris.some((t) => ALLIANCE_INKS.includes(t.style)) &&
+          !rects.some((q) => /^#f[0-9a-f]{2}[0-9a-f]{3}$/.test(q.style) && q.style !== BB_FRONT_INK.toLowerCase()),
       );
     }
   }
@@ -6841,8 +6865,10 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
             robotsCode.includes('BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR'),
         );
         check(
-          '...at the flower’s NEAR RIM, not its centre — the one argument that keeps it out of the column',
-          /rig\.stages,\s*\n\s*BB_FLOWER_OPEN_R,/.test(robotsCode),
+          '...at the PLATE’s outer edge in the approach direction, not at the bore — the one argument that keeps the arm out of the flower',
+          robotsCode.includes('const stand = bbBoxTubeStandoff(theta);') &&
+            robotsCode.includes('const n = FLOWER_MOUTH[f.wall];') &&
+            !robotsCode.includes('BB_FLOWER_OPEN_R'),
         );
         check(
           '...pitching about a SHOULDER at the frame rail, with a drawn bracket on it',
@@ -6856,38 +6882,153 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           robotsCode.includes('(i === 0 ? node : pitch).add(mesh);'),
         );
         check(
-          '...and ONE ease drives pitch, swivel and extension together',
-          /rig\.swivel\.rotation\.z = e \* entry\.tubeYaw;/.test(robotsCode) &&
-            /rig\.pitch\.rotation\.y = -e \* entry\.tubePitch;/.test(robotsCode) &&
-            /stages\[i\]\.position\.x = e \* entry\.tubeExt \* \(i \+ 1\);/.test(robotsCode),
+          '...and ONE ease drives the whole pose — but pitch and swivel follow the CAPPED extension',
+          /const ext = bbBoxTubeDeployExt\(/.test(robotsCode) &&
+            /const q = entry\.tubeExt > 1e-6 \? ext \/ entry\.tubeExt : e;/.test(robotsCode) &&
+            /rig\.swivel\.rotation\.z = bbBoxTubeSwivelFrac\(q\) \* entry\.tubeYaw;/.test(robotsCode) &&
+            /rig\.pitch\.rotation\.y = -q \* entry\.tubePitch;/.test(robotsCode) &&
+            /stages\[i\]\.position\.x = ext \* \(i \+ 1\);/.test(robotsCode),
         );
 
         // ARITHMETIC, over the whole legal build space and a grid of in-reach poses.
         //
-        // ⚠️ **IT MEASURES THE OLD AIM TOO, AND THAT IS THE POINT OF THE BLOCK.** The tip check
-        // below has passed to 4e-8 in since 2026-09-20 while the arm went straight through the
-        // flower on every single pose, because a check on the ENDPOINT says nothing about the
-        // segment. `pen` is the deepest the drawn axis gets inside the top ring's bore BELOW the
-        // top plate, walked at 1/400 of the arm, and it is computed for both aims from the same
-        // poses so the report is a comparison and not an assertion.
-        //
-        // The POSE SET is filtered to what the FIELD's own collider can produce: a robot whose
-        // footprint overlaps the flower's FOOT rect is a pose only a teleport can reach, and 1,080
-        // of those put the SHOULDER itself inside the bore — where no straight arm out of it can
-        // stay outside the cylinder, so an unfiltered sweep would be asserting something
-        // geometrically impossible. Filtered, the nearest the shoulder ever gets is 3.084 in
-        // against a 2.086-in bore.
-        //
-        // `bbFlowerInReach` is ALLIANCE-BLIND (it is a distance to the nearer of four rings), so
-        // sweeping both alliances would sweep the same arithmetic twice; the four FLOWERS already
-        // cover both halves of the field and every wall normal.
+        // ⚠️ **IT MEASURES THE SWEPT ARM AGAINST THE FLOWER'S REAL SOLID, AND IT MEASURES THE OLD
+        // AIM THE SAME WAY** (owner, 2026-09-22: "the offset boxtube still meshes with the
+        // flower"). Two things were wrong with the check this replaces, and each on its own was
+        // enough to pass a drawing that visibly cuts the plate:
+        //   1. it tested the flower as a CYLINDER AT THE BORE RADIUS (2.086). The bore is the hole
+        //      an element falls through; the ring PLATE around it reaches 2.392 straight out of
+        //      the wall and 3.113 at its corners, so an arm that stopped on the bore rim was
+        //      already 0.31…1.03 in inside the solid.
+        //   2. it tested the AXIS. The arm is a 1.25-in box, so a centre line clearing by 0.06 in
+        //      is half an inch of aluminium through the plate.
+        // The envelope below is re-measured off the shipped `field.glb` every run, so this is the
+        // drawn flower rather than a belief about it, and `BB_FLOWER_OUTER_R` is pinned against it.
         const TIP_Z = BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR;
         const tubeMounts = ['front', 'back', 'left', 'right', 'frontleft', 'frontright', 'backleft', 'backright'] as const;
-        // the OLD stage table, kept here rather than in `config.ts`: it is what this block is
-        // measuring AGAINST, and nothing ships it any more
-        const oldStages = (reach: number) => {
+
+        // ---- THE FLOWER'S OWN ENVELOPE, off the asset: max radius per (z slab, azimuth bin) in
+        // the flower's own frame (azimuth 0 = straight out of the wall). `flower_0` is F1 on the
+        // left wall, so its inward normal is +x and its local frame is the world one.
+        const ENV_DZ = 0.05;
+        const ENV_NZ = Math.ceil(24 / ENV_DZ);
+        const ENV_NA = 72; // 5 degrees
+        const env = new Float64Array(ENV_NZ * ENV_NA);
+        const envIn = new Float64Array(ENV_NZ * ENV_NA).fill(Infinity);
+        let envMax = 0;
+        let envVerts = 0;
+        {
+          const f0 = FIELD_GLB_SCENE?.getObjectByName('flower_0') ?? null;
+          if (f0) {
+            f0.updateMatrixWorld(true);
+            const cx = -68.0447; // F1 top-bore centre, `field-measurements.json`
+            const cy = -23.3924;
+            const v = new THREE.Vector3();
+            f0.traverse((o) => {
+              const m = o as THREE.Mesh;
+              if (!(m as { isMesh?: boolean }).isMesh) return;
+              const pos = m.geometry.getAttribute('position') as THREE.BufferAttribute;
+              for (let i = 0; i < pos.count; i++) {
+                v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+                const r = Math.hypot(v.x - cx, v.y - cy);
+                let th = Math.atan2(v.y - cy, v.x - cx);
+                if (th < 0) th += Math.PI * 2;
+                const zi = Math.max(0, Math.min(ENV_NZ - 1, Math.floor(v.z / ENV_DZ)));
+                const ai = Math.min(ENV_NA - 1, Math.floor((th / (Math.PI * 2)) * ENV_NA));
+                const k = zi * ENV_NA + ai;
+                if (r > env[k]) env[k] = r;
+                if (r < envIn[k]) envIn[k] = r;
+                if (r > envMax) envMax = r;
+                envVerts++;
+              }
+            });
+          }
+        }
+        check(
+          'box tube: the flower envelope came off the SHIPPED asset, not a constant (else every check below is vacuous)',
+          envVerts > 4000 && envMax > 4,
+          `${envVerts} vertices, widest ${envMax.toFixed(3)} in`,
+        );
+        // ⚠️ THE FLOWER IS A HOLLOW COLUMN, AND A SOLID-DISC MODEL OF IT IS WORSE THAN USELESS.
+        // A ray at (z, azimuth) crosses solid between an INNER and an OUTER radius and the middle
+        // is the bore an element is placed INTO; treating everything inside the outer radius as
+        // solid called a tube passing cleanly through the hole a 4.9-in penetration. `envAt` is
+        // the outer radius, `clearOf` the radial distance to the SHELL, negative inside it. Both
+        // take the max/min over the neighbouring z slab and azimuth bin, because a vertex grid
+        // under-reads a surface between its own vertices.
+        const envAt = (z: number, th: number): number => {
+          if (z < 0 || z >= ENV_NZ * ENV_DZ) return 0;
+          const zi = Math.floor(z / ENV_DZ);
+          let t = th;
+          while (t < 0) t += Math.PI * 2;
+          const ai = Math.min(ENV_NA - 1, Math.floor((t / (Math.PI * 2)) * ENV_NA));
+          let m = 0;
+          for (let dz = -1; dz <= 1; dz++) {
+            const zz = zi + dz;
+            if (zz < 0 || zz >= ENV_NZ) continue;
+            for (let da = -1; da <= 1; da++) {
+              const aa = (ai + da + ENV_NA) % ENV_NA;
+              const e = env[zz * ENV_NA + aa];
+              if (e > m) m = e;
+            }
+          }
+          return m;
+        };
+        const clearOf = (z: number, th: number, rad: number): number => {
+          if (z < 0 || z >= ENV_NZ * ENV_DZ) return Infinity;
+          const zi = Math.floor(z / ENV_DZ);
+          let t = th;
+          while (t < 0) t += Math.PI * 2;
+          const ai = Math.min(ENV_NA - 1, Math.floor((t / (Math.PI * 2)) * ENV_NA));
+          let out = 0;
+          let inn = Infinity;
+          for (let dz = -1; dz <= 1; dz++) {
+            const zz = zi + dz;
+            if (zz < 0 || zz >= ENV_NZ) continue;
+            for (let da = -1; da <= 1; da++) {
+              const aa = (ai + da + ENV_NA) % ENV_NA;
+              const k = zz * ENV_NA + aa;
+              if (env[k] > out) out = env[k];
+              if (envIn[k] < inn) inn = envIn[k];
+            }
+          }
+          if (out <= 0) return Infinity;
+          if (rad >= out) return rad - out;
+          if (rad <= inn) return inn - rad;
+          return -Math.min(out - rad, rad - inn);
+        };
+        // ...and the CONSTANT the aim reads has to be at least that, in the field half
+        {
+          let worstUnder = 0;
+          let atDeg = 0;
+          for (let d = 0; d <= 90; d += 1) {
+            const th = (d * Math.PI) / 180;
+            let measured = 0;
+            for (const sign of [1, -1] as const) {
+              for (let z = 0; z < BB_FLOWER_TOP_Z; z += ENV_DZ) {
+                const e = envAt(z, sign * th);
+                if (e > measured) measured = e;
+              }
+            }
+            const under = measured - bbFlowerOuterR(th);
+            if (under > worstUnder) {
+              worstUnder = under;
+              atDeg = d;
+            }
+          }
+          // the table is a MEASUREMENT rounded to three decimals, so it may sit a thousandth under
+          // the raw vertex it came from; `BB_BOX_TUBE_FLOWER_GAP` is 0.35, three hundred times that
+          check(
+            'box tube: BB_FLOWER_OUTER_R covers the asset it was measured from, at every approach angle',
+            worstUnder <= 0.001,
+            `worst shortfall ${worstUnder.toFixed(4)} in at ${atDeg}°; table ${BB_FLOWER_OUTER_MIN}…${BB_FLOWER_OUTER_MAX}, bore ${BB_FLOWER_OPEN_R.toFixed(3)}`,
+          );
+        }
+
+        // the stage table the BORE aim shipped with, kept here because this block measures against it
+        const boreStages = (reach: number) => {
           const n = BB_BOX_TUBE_SECTIONS.length - 1;
-          const travel = Math.hypot(reach + BB_PLACE_TOL, TIP_Z - BB_BOX_TUBE_Z) / n;
+          const travel = Math.hypot(Math.max(0, reach + BB_PLACE_TOL - BB_FLOWER_OPEN_R), TIP_Z - BB_BOX_TUBE_Z) / n;
           return { sectionLen: travel + BB_BOX_TUBE_STAGE_OVERLAP, travel, moving: n, full: n * travel };
         };
         const footRect = (f: (typeof BB_FLOWERS)[number]) => {
@@ -6930,9 +7071,11 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         let lowTail = Infinity;
         let newPen = 0;
         let newBad = 0;
-        let newClear = Infinity;
-        let oldPen = 0;
-        let oldBad = 0;
+        let newGap = Infinity;
+        let borePen = 0;
+        let boreBad = 0;
+        let standLo = Infinity;
+        let standHi = 0;
         for (const mount of tubeMounts) {
           for (const intakeMount of ['front', 'side', 'frontback'] as const) {
             // SIZE EXTREMES too (2026-09-22): the shoulder's reach, and therefore the whole stage
@@ -6952,7 +7095,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
               const glyph = bbBoxTubeGlyph(spec, lift.mount, place);
               const reach = Math.hypot(place.x - glyph.outer.x, place.y - glyph.outer.y);
               const st = bbBoxTubeStages(reach);
-              const stOld = oldStages(reach);
+              const stBore = boreStages(reach);
               // THE RETRACTED ARM IS THE OLD REST POSE: every section spans [−sectionLen, 0] from
               // `glyph.outer` along the glyph's own unit vector, which is where the pre-2026-09-20
               // stack sat. Nothing pokes past the rail and nothing leaves the frame.
@@ -6967,6 +7110,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
               for (let fi = 0; fi < BB_FLOWERS.length; fi++) {
                 const f = BB_FLOWERS[fi];
                 const rect = footRect(f);
+                const nrm = FLOWER_MOUTH[f.wall];
                 for (let h = 0; h < 12; h++) {
                   const heading = (h * Math.PI * 2) / 12;
                   const c = Math.cos(heading);
@@ -6992,11 +7136,33 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                         if (flat < BB_FLOWER_OPEN_R) shoulderInBore++;
                         continue;
                       }
+                      // ...and the PERIMETER WALL is a collider as much as the foot is. Without
+                      // this the sweep teleports a robot half way into the wall BESIDE a flower and
+                      // asks the arm to reach it from behind, which is an approach angle past 90°
+                      // — a place no robot can stand and the one place the column's own HIPS pipes
+                      // are. Filtered, the approach angle never leaves ±78.5°.
+                      {
+                        const hl2 = (fx.front + fx.rear) / 2;
+                        const cx2 = r.pos.x + (c * (fx.front - fx.rear)) / 2;
+                        const cy2 = r.pos.y + (s * (fx.front - fx.rear)) / 2;
+                        const ex = Math.abs(c) * hl2 + Math.abs(s) * fx.half;
+                        const ey = Math.abs(s) * hl2 + Math.abs(c) * fx.half;
+                        if (Math.abs(cx2) + ex > BB_HALF_X || Math.abs(cy2) + ey > BB_HALF_Y) {
+                          skipped++;
+                          continue;
+                        }
+                      }
                       poses++;
                       shoulderMin = Math.min(shoulderMin, flat);
-                      const aim = bbBoxTubeAim(pivot, target, st, BB_FLOWER_OPEN_R);
-                      // the arm only ever has to span the RIM, which is one opening radius short
-                      const need = Math.hypot(Math.max(0, flat - BB_FLOWER_OPEN_R), target.z - pivot.z);
+                      // the SHOULDER in world, and the approach angle off the flower's own normal
+                      const wx = r.pos.x + pivot.x * c - pivot.y * s - f.x;
+                      const wy = r.pos.y + pivot.x * s + pivot.y * c - f.y;
+                      const theta = Math.atan2(wx * nrm.y - wy * nrm.x, wx * nrm.x + wy * nrm.y);
+                      const stand = bbBoxTubeStandoff(theta);
+                      standLo = Math.min(standLo, stand);
+                      standHi = Math.max(standHi, stand);
+                      const aim = bbBoxTubeAim(pivot, target, st, stand);
+                      const need = Math.hypot(flat - stand, target.z - pivot.z);
                       if (aim.len < need - 1e-9) short++;
                       pitchLo = Math.min(pitchLo, aim.pitch);
                       pitchHi = Math.max(pitchHi, aim.pitch);
@@ -7008,36 +7174,78 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
                         y: pivot.y + Math.cos(aim.pitch) * Math.sin(aim.yaw) * L2,
                         z: pivot.z + Math.sin(aim.pitch) * L2,
                       };
-                      // ...ON THE LIP: one opening radius out from the ring centre, at tip height
+                      // ...JUST OUTSIDE THE PLATE'S EDGE and JUST ABOVE IT — the whole fix
                       worstTip = Math.max(
                         worstTip,
-                        Math.abs(Math.hypot(tip.x - target.x, tip.y - target.y) - BB_FLOWER_OPEN_R) + Math.abs(tip.z - target.z),
+                        Math.abs(Math.hypot(tip.x - target.x, tip.y - target.y) - stand) + Math.abs(tip.z - target.z),
                       );
-                      // THE SEGMENT vs THE COLUMN, for the shipped aim and for the old one
-                      for (const [rim, stg] of [[BB_FLOWER_OPEN_R, st], [0, stOld]] as const) {
+
+                      // ---- THE SWEPT ARM vs THE FLOWER, for the shipped aim and for the BORE aim
+                      // that shipped before it. Every MOVING stage, at its own half-width, over its
+                      // own span, through the deploy.
+                      for (const [which, stg, rim] of [['new', st, stand], ['bore', stBore, BB_FLOWER_OPEN_R]] as const) {
                         const am = bbBoxTubeAim(pivot, target, stg, rim);
-                        const len = stg.moving * am.ext;
+                        const ox = r.pos.x + pivot.x * c - pivot.y * s;
+                        const oy = r.pos.y + pivot.x * s + pivot.y * c;
+                        const oz = pivot.z + (r.z ?? 0);
                         let pen = 0;
-                        let clear = Infinity;
-                        for (let t = 0; t <= 1.0001; t += 1 / 400) {
-                          const d = t * len;
-                          const x = pivot.x + Math.cos(am.pitch) * Math.cos(am.yaw) * d;
-                          const y = pivot.y + Math.cos(am.pitch) * Math.sin(am.yaw) * d;
-                          const z = pivot.z + Math.sin(am.pitch) * d;
-                          if (z >= BB_FLOWER_TOP_Z - (r.z ?? 0)) continue; // at or above the top plate
-                          const rad = Math.hypot(x - target.x, y - target.y);
-                          if (rad < BB_FLOWER_OPEN_R) pen = Math.max(pen, BB_FLOWER_OPEN_R - rad);
-                          else clear = Math.min(clear, rad - BB_FLOWER_OPEN_R);
+                        let gap = Infinity;
+                        // ⚠️ THE POSE AT EASE `e` IS DRAWN FROM THE **CAPPED** EXTENSION, and pitch
+                        // and swivel follow that, not the raw ease. Sampling the raw ease would be
+                        // sampling poses the renderer never draws. The BORE variant is the one that
+                        // shipped before this pass: rim at the bore, and a deploy with no cap at
+                        // all, where pitch and extension ran together off the ease.
+                        for (let ei = 0; ei <= 10; ei++) {
+                          const e = ei / 10;
+                          const extE = which === 'new'
+                            ? bbBoxTubeDeployExt(e, am.pitch, am.ext, stg.moving, wx, wy, heading + baseYaw, am.yaw - baseYaw, nrm.x, nrm.y, oz, rim)
+                            : e * am.ext;
+                          const q = which === 'new' && am.ext > 1e-6 ? extE / am.ext : e;
+                          const swiv = which === 'new' ? bbBoxTubeSwivelFrac(q) : e;
+                          const yawW = heading + baseYaw + swiv * (am.yaw - baseYaw);
+                          const pit = q * am.pitch;
+                          const ux = Math.cos(pit) * Math.cos(yawW);
+                          const uy = Math.cos(pit) * Math.sin(yawW);
+                          const uz = Math.sin(pit);
+                          for (let i = 1; i < BB_BOX_TUBE_SECTIONS.length; i++) {
+                            const halfW = BB_BOX_TUBE_SECTIONS[i] / 2;
+                            const front = extE * i;
+                            for (let k = 0; k <= 10; k++) {
+                              const d = front - (k / 10) * stg.sectionLen;
+                              const qx = ox + ux * d;
+                              const qy = oy + uy * d;
+                              const qz = oz + uz * d;
+                              // ⚠️ ABOVE THE MID PLATE ONLY, and that is a STATEMENT not a dodge:
+                              // the shoulder sits at 5.55 and the mid plate's top face at 5.254, so
+                              // everything this check skips is the retracted stack lying in its own
+                              // cradle INSIDE the chassis. It grazes the mid plate by 0.124 in on
+                              // the poses where the chassis itself does — the drawn plate reaches
+                              // 2.415 in from the wall and the FOOT COLLIDER that stops a robot
+                              // stops it at 2.384 — which is a field asset/collider difference, not
+                              // something the arm can be aimed out of.
+                              if (qz <= FLOWER_RING_Z.mid[1] || qz > BB_FLOWER_TOP_Z) continue;
+                              const rad = Math.hypot(qx - f.x, qy - f.y);
+                              if (rad - halfW > envMax) continue;
+                              const ax2 = qx - f.x;
+                              const ay2 = qy - f.y;
+                              const thq = Math.atan2(ax2 * nrm.y - ay2 * nrm.x, ax2 * nrm.x + ay2 * nrm.y);
+                              const clear = clearOf(qz, thq, rad) - halfW;
+                              if (!isFinite(clear)) continue;
+                              if (clear < 0) pen = Math.max(pen, -clear);
+                              else if (clear < gap) gap = clear;
+                            }
+                          }
                         }
-                        if (rim > 0) {
+                        if (which === 'new') {
                           newPen = Math.max(newPen, pen);
                           if (pen > 0) newBad++;
-                          else if (clear < Infinity) newClear = Math.min(newClear, clear);
+                          else if (gap < newGap) newGap = gap;
                         } else {
-                          oldPen = Math.max(oldPen, pen);
-                          if (pen > 0) oldBad++;
+                          borePen = Math.max(borePen, pen);
+                          if (pen > 0) boreBad++;
                         }
                       }
+
                       // NO STAGE LEAVES ITS PARENT, at any ease: consecutive stages are one `ext`
                       // apart and each is `sectionLen` long, so the capture is `sectionLen − ext`.
                       // The same walk measures the TAIL DIP — stage 1's back end is behind the
@@ -7055,27 +7263,26 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         }
         check('box tube pose sweep: it found in-reach poses to measure at all', poses > 2000, `${poses} poses`);
         check(
-          'box tube pose sweep: the poses it DROPPED are the ones a flower foot forbids, and only those',
+          'box tube pose sweep: the poses it DROPPED are the ones a flower foot or the perimeter wall forbids',
           shoulderInBore > 0 && shoulderMin > BB_FLOWER_OPEN_R,
           `${skipped} on the foot (${shoulderInBore} with the shoulder inside the bore); nearest legal shoulder ${shoulderMin.toFixed(3)} in vs bore ${BB_FLOWER_OPEN_R.toFixed(3)}`,
         );
-        // ⚠️ **THE CHECK THE 2026-09-20 PASS DID NOT HAVE** (owner, 2026-09-22: "make the boxtube
-        // in-game not go through the flower when it extends"). RUN AGAINST THE OLD CENTRE AIM IT
-        // FAILS ON EVERY POSE — the numbers in the second argument are from this same sweep.
+        // ⚠️ **THE CHECK THE BORE AIM PASSED AND THE OWNER STILL SAW FAIL.** Run against that aim
+        // it fails on nearly every pose — the numbers in the second argument come off this sweep.
         check(
-          'box tube: the drawn arm stays OUTSIDE the flower column everywhere below its top plate',
+          'box tube: the SWEPT arm clears the flower’s real solid at every ease, every stage, every in-reach pose',
           newBad === 0,
-          `rim aim ${newBad}/${poses} inside (worst ${newPen.toFixed(3)} in); the OLD centre aim was ${oldBad}/${poses}, worst ${oldPen.toFixed(3)} in of a ${BB_FLOWER_OPEN_R.toFixed(3)} bore`,
+          `plate aim ${newBad}/${poses} meshing (worst ${newPen.toFixed(3)} in); the BORE aim was ${boreBad}/${poses}, worst ${borePen.toFixed(3)} in`,
         );
         check(
-          '...with real clearance at the plate, not a tangency that rounds the right way',
-          newClear > 0.02,
-          `worst clearance ${newClear === Infinity ? 'n/a' : newClear.toFixed(4)} in`,
+          '...with clear air, not a tangency that rounds the right way',
+          newGap > 0.02,
+          `tightest gap ${newGap === Infinity ? 'n/a' : newGap.toFixed(4)} in (arm half-width ${BB_BOX_TUBE_HALF_W}, gap target ${BB_BOX_TUBE_FLOWER_GAP})`,
         );
         check(
-          'box tube: at full ease the drawn TIP is on the flower’s LIP, for every in-reach pose',
+          'box tube: at full ease the TIP parks just outside the plate’s edge and just above it',
           worstTip < 1e-6,
-          `worst ${worstTip.toExponential(2)} in over ${poses} poses`,
+          `worst ${worstTip.toExponential(2)} in over ${poses} poses; standoff ${standLo.toFixed(3)}…${standHi.toFixed(3)} in from the bore centre`,
         );
         check(
           '...and the arm is never asked for more length than the stages have',
@@ -7095,7 +7302,7 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         check(
           'box tube: the arm REACHES UP — every in-reach pose asks for a steep pitch, never a flat one',
           pitchLo > Math.PI / 4,
-          `${((pitchLo * 180) / Math.PI).toFixed(1)}° … ${((pitchHi * 180) / Math.PI).toFixed(1)}°`,
+          `${((pitchLo * 180) / Math.PI).toFixed(1)}° … ${((pitchHi * 180) / Math.PI).toFixed(1)}° (past 90° is the arm leaning BACK so its tip stands outside the plate)`,
         );
         check(
           '...and the base SWIVEL stays small — the ring is at most BB_PLACE_TOL off the mount line',

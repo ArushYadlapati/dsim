@@ -349,20 +349,26 @@ export function bbBoxTubeGlyph(
  * alliance colour, so "red at that end" competed with "red team" for the same cue.
  *
  * ── THE LANGUAGE ────────────────────────────────────────────────────────────
- * Three marks, the same three in both renderers, none of them in an alliance colour:
+ * The FRONT is marked and the back is not. Two marks, the same two in both renderers, neither in
+ * an alliance colour:
  *  1. a **LIGHT BAR** across the FULL front edge, near-white (`BB_FRONT_INK`) — headlights, the
  *     most-read "this end goes first" signal there is, and full-width so it survives being
  *     partly occluded by whatever is mounted up front;
  *  2. a **CHEVRON** on the deck pointing forward, in the same near-white, sitting just ahead of
- *     the rear bar where no mechanism is ever drawn (the front third belongs to the intake and
- *     the turret; an arrow there is under something on half the builds);
- *  3. a **HAZARD BAR** across the FULL rear edge, near-black with amber ticks — the back of a
- *     truck. The pair is what carries it: the arrow points AWAY from the striped end.
+ *     the rear rail where no mechanism is ever drawn (the front third belongs to the intake and
+ *     the turret; an arrow there is under something on half the builds).
+ * The REAR takes a plain bar in the chassis' own structural dark (`BB_REAR_INK`) — a rail, not a
+ * marking. It is there so the arrow has something to point away from.
+ *
+ * ⚠️ **NO HAZARD STRIPES** (owner, 2026-09-22: "what is this ugly ass yellow and black beams
+ * rendered in 3D? It is awful and does not fit FTC"). The first pass gave the rear amber ribs on
+ * near-black, on the reasoning that the back of a truck is the most-read "this is the back"
+ * language there is. It is — on a truck. On an FTC robot it reads as construction tape, it is the
+ * loudest thing on the field, and it competes with a POLLEN's own yellow. The front language
+ * carries the whole job on its own: a bright bar at one end and structure at the other.
  *
  * Colours are CATEGORY 3 (CLAUDE.md THEMING: the ground is the canvas and the field is hardcoded
- * dark), so none of them themes. Amber rather than a second white because the rear has to read as
- * a different KIND of mark, not a dimmer one; it is a ticked pattern on near-black and never a
- * disc, so it does not compete with a POLLEN (`#f2d14b`).
+ * dark), so neither themes.
  *
  * ── IT FOLLOWS THE SIM'S FRONT, NOT THE DRIVER'S "REVERSED" ─────────────────
  * Flip-front is an INPUT transform (`GameController`); it rotates the stick, never `r.heading`,
@@ -374,8 +380,9 @@ export function bbBoxTubeGlyph(
  * variant of a mesh. REVERSED is a property of a driver's stick, not of the machine.
  */
 export const BB_FRONT_INK = '#f8fafc';
-export const BB_REAR_INK = '#11151b';
-export const BB_HAZARD_INK = '#f59e0b';
+/** the rear rail's own tone — `renderRobots.ts`'s `ALU_DK`, i.e. the colour the rest of the
+ *  chassis structure is already drawn in. NOT a marking colour, on purpose. */
+export const BB_REAR_INK = '#39414f';
 /** bar thickness along the robot's own x (in), and how far in from each rail the bars stop so
  *  they never fight `C.CHASSIS_CORNER`'s rounding. DRAWING sizes. */
 export const BB_END_BAR_T = 0.9;
@@ -387,8 +394,6 @@ export const BB_END_BAR_INSET = 1.0;
 export const BB_FRONT_ARROW_GAP = 0.6;
 export const BB_FRONT_ARROW_LEN = 2.8;
 export const BB_FRONT_ARROW_HALF = 3.0;
-/** how many amber ticks the rear bar carries */
-export const BB_HAZARD_TICKS = 5;
 /** 3D ONLY: how far the two end bars stand above the deck, and how thick the extruded deck arrow
  *  is (in). The bars are deliberately TALL enough to break the chassis silhouette from a chase
  *  camera — flush with the deck they were invisible from behind, which is the view a driver
@@ -399,10 +404,6 @@ export const BB_HAZARD_TICKS = 5;
  *  Neither is a collider; see `buildFrontMarks`. */
 export const BB_END_BAR_H = 1.8;
 export const BB_FRONT_ARROW_T = 0.12;
-/** 3D ONLY: how far the rear bar's amber ribs stand proud of its dark core (in). The CORE is
- *  inset by it rather than the ribs raised, so the pair's envelope is exactly the bar and the
- *  ribs never poke past the rail or under the deck. */
-export const BB_HAZARD_PROUD = 0.06;
 
 /**
  * The three marks in the ROBOT frame (+x forward), as plain numbers — no canvas, no three.js.

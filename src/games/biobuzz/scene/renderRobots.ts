@@ -20,11 +20,14 @@ import {
   BB_BOX_TUBE_WALL,
   BB_BOX_TUBE_Z,
   bbBoxTubeAim,
+  bbBoxTubeDeployExt,
   bbBoxTubeStages,
+  bbBoxTubeStandoff,
+  bbBoxTubeSwivelFrac,
   BB_DECK_Z,
   BB_FLOWERS,
-  BB_FLOWER_OPEN_R,
   BB_FLOWER_TOP_Z,
+  FLOWER_MOUTH,
   BB_DUMP_RELOAD_S,
   BB_DUMP_SEAT_PITCH,
   BB_FEED_WALL_T,
@@ -75,10 +78,7 @@ import { bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf, type BbLauncherSp
 import {
   BB_END_BAR_H,
   BB_FRONT_ARROW_T,
-  BB_HAZARD_PROUD,
   BB_FRONT_INK,
-  BB_HAZARD_INK,
-  BB_HAZARD_TICKS,
   BB_REAR_INK,
   bbBoxTubeGlyph,
   bbFrontMarks,
@@ -3166,7 +3166,10 @@ export function buildRobotGroup(
  *    when they most need to know which way they are pointing.
  *  • `front:arrow` — the deck chevron, extruded a hair so it takes an edge highlight rather than
  *    reading as a decal sticker.
- *  • `rear:bar` — the hazard bar, near-black with `BB_HAZARD_TICKS` amber ribs standing on it.
+ *  • `rear:bar` — a plain rail in the chassis' own structural dark. It carries NO stripes: the
+ *    amber-and-black hazard bar the first pass gave it was the owner's second report of the day
+ *    ("what is this ugly ass yellow and black beams rendered in 3D? It is awful and does not fit
+ *    FTC"), and `bbFrontMarks`' header has why it went rather than being toned down.
  *
  * ⚠️ NONE OF THE THREE IS A COLLIDER AND NONE GROWS THE FOOTPRINT. The bars sit INSIDE the
  * chassis box in x (`bbFrontMarks` puts them within the rail) and only stand above the deck,
@@ -3208,18 +3211,8 @@ export function buildFrontMarks(spec: RobotSpec, id: number): THREE.Object3D[] {
 
   const rear = cast(
     new THREE.Mesh(
-      // the dark core is INSET by `BB_HAZARD_PROUD` on its exposed faces so the amber ribs stand
-      // proud of it without the ribs themselves poking past the rail or under the deck — the
-      // envelope of the pair is exactly the bar, which is what the RENDER lane measures
       framePart(`rear:bar|${m.rear.x1.toFixed(3)}|${m.rear.halfY.toFixed(3)}`, () => [
-        boxAt(
-          m.rear.x1 - m.rear.x0 - BB_HAZARD_PROUD,
-          m.rear.halfY * 2,
-          BB_END_BAR_H - BB_HAZARD_PROUD * 2,
-          (m.rear.x0 + m.rear.x1) / 2 + BB_HAZARD_PROUD / 2,
-          0,
-          0,
-        ),
+        boxAt(m.rear.x1 - m.rear.x0, m.rear.halfY * 2, BB_END_BAR_H, (m.rear.x0 + m.rear.x1) / 2, 0, 0),
       ]),
       solidMat(BB_REAR_INK, 0.75, 0.05),
     ),
@@ -3227,27 +3220,6 @@ export function buildFrontMarks(spec: RobotSpec, id: number): THREE.Object3D[] {
   rear.name = `robot:${id}:rear:bar`;
   rear.position.set(0, 0, barZ);
   out.push(rear);
-
-  // the amber ribs, standing a hair proud of the dark bar on all three exposed faces — one mesh
-  // for the set, so the rear costs two draw calls whatever the tick count is
-  const ticks = cast(
-    new THREE.Mesh(
-      framePart(`rear:hazard|${m.rear.x1.toFixed(3)}|${m.rear.halfY.toFixed(3)}`, () => {
-        const span = m.rear.halfY * 2;
-        const t = span / (BB_HAZARD_TICKS * 2);
-        const parts: THREE.BufferGeometry[] = [];
-        for (let i = 0; i < BB_HAZARD_TICKS; i++) {
-          const y = -m.rear.halfY + i * t * 2 + t / 2;
-          parts.push(boxAt(m.rear.x1 - m.rear.x0, t, BB_END_BAR_H, (m.rear.x0 + m.rear.x1) / 2, y, 0));
-        }
-        return parts;
-      }),
-      solidMat(BB_HAZARD_INK, 0.6, 0.05),
-    ),
-  );
-  ticks.name = `robot:${id}:rear:hazard`;
-  ticks.position.set(0, 0, barZ);
-  out.push(ticks);
 
   return out;
 }
@@ -3424,6 +3396,15 @@ interface RobotEntry {
   tubeYaw: number;
   tubePitch: number;
   tubeExt: number;
+  /** the SHOULDER relative to the flower's bore centre, in world x/y — what
+   *  `bbBoxTubeDeployExt` caps the mid-deploy sweep against. Held with the rest of the pose. */
+  tubeAx: number;
+  tubeAy: number;
+  /** the flower's own inward wall normal, held with the rest of the pose */
+  tubeNx: number;
+  tubeNy: number;
+  /** the parked standoff this pose was solved for */
+  tubeStand: number;
 }
 
 export interface BbRobots {
@@ -3482,7 +3463,7 @@ export function buildBiobuzzRobots(): BbRobots {
           disposeRobotGroup(entry.group);
         }
         const g = buildRobotGroup(r.spec, r.id, r.alliance, wheelDetail);
-        entry = { group: g, key, tubeEase: 0, tubeYaw: 0, tubePitch: 0, tubeExt: 0 };
+        entry = { group: g, key, tubeEase: 0, tubeYaw: 0, tubePitch: 0, tubeExt: 0, tubeAx: 0, tubeAy: 0, tubeNx: 1, tubeNy: 0, tubeStand: 0 };
         entries.set(r.id, entry);
         group.add(g);
       }
@@ -3605,16 +3586,24 @@ export function buildBiobuzzRobots(): BbRobots {
           const dy = f.y - r.pos.y;
           const c = Math.cos(-r.heading);
           const s = Math.sin(-r.heading);
-          // ⚠️ `BB_FLOWER_OPEN_R` IS THE WHOLE OF "TOWARDS THE TOP LIP INSTEAD OF THROUGH IT"
-          // (owner, 2026-09-22). The target passed in is the ring CENTRE; `bbBoxTubeAim` backs the
-          // aim point off one opening radius along the approach, so the tip lands on the NEAR RIM
-          // and the segment below the top plate is outside the column. See that function's header
-          // for the measurement this replaced (48,048 of 48,048 poses, up to 2.014 in inside).
+          // ⚠️ THE STANDOFF IS THE PLATE'S EDGE IN THE DIRECTION THE ARM COMES FROM, not the bore
+          // (owner, 2026-09-22: "the offset boxtube still meshes with the flower"). `theta` is the
+          // angle between the flower's inward wall normal and the horizontal line out to the
+          // SHOULDER, solved in WORLD space because that is the frame the flower's own normal is
+          // in; `bbBoxTubeStandoff` then adds the arm's swept half-width and a gap, so what clears
+          // the solid is the drawn box's outer surface rather than its centre line.
+          const sh = Math.sin(r.heading);
+          const ch = Math.cos(r.heading);
+          const px = r.pos.x + rig.pivot.x * ch - rig.pivot.y * sh - f.x;
+          const py = r.pos.y + rig.pivot.x * sh + rig.pivot.y * ch - f.y;
+          const n = FLOWER_MOUTH[f.wall];
+          const theta = Math.atan2(px * n.y - py * n.x, px * n.x + py * n.y);
+          const stand = bbBoxTubeStandoff(theta);
           const aim = bbBoxTubeAim(
             rig.pivot,
             { x: dx * c - dy * s, y: dx * s + dy * c, z: BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR - (r.z ?? 0) },
             rig.stages,
-            BB_FLOWER_OPEN_R,
+            stand,
           );
           // KEPT so the retraction runs back down the path it came up, rather than snapping to
           // a rest bearing the moment the predicate goes false.
@@ -3631,11 +3620,21 @@ export function buildBiobuzzRobots(): BbRobots {
             entry.tubeYaw = yaw;
             entry.tubePitch = aim.pitch;
             entry.tubeExt = aim.ext;
+            entry.tubeAx = px;
+            entry.tubeAy = py;
+            entry.tubeNx = n.x;
+            entry.tubeNy = n.y;
+            entry.tubeStand = stand;
           } else {
             const slew = BB_BOX_TUBE_SLEW * dt;
             entry.tubeYaw += clampAbs(wrapPi(yaw - entry.tubeYaw), slew);
             entry.tubePitch += clampAbs(aim.pitch - entry.tubePitch, slew);
             entry.tubeExt += clampAbs(aim.ext - entry.tubeExt, BB_BOX_TUBE_EXT_SLEW * dt);
+            entry.tubeAx += clampAbs(px - entry.tubeAx, BB_BOX_TUBE_EXT_SLEW * dt);
+            entry.tubeAy += clampAbs(py - entry.tubeAy, BB_BOX_TUBE_EXT_SLEW * dt);
+            entry.tubeNx = n.x;
+            entry.tubeNy = n.y;
+            entry.tubeStand = stand;
           }
         }
         // ⚠️ THE RATE IS ON THE CLAMPED WORLD CLOCK, AND THE SHAPE IS A SMOOTHSTEP. Keeping the
@@ -3651,9 +3650,33 @@ export function buildBiobuzzRobots(): BbRobots {
         // ONE ease drives the whole pose, so the tip travels a straight-ish line from the rest
         // stack to the opening instead of pitching and extending on two schedules
         const e = smoothstep01(entry.tubeEase);
-        rig.swivel.rotation.z = e * entry.tubeYaw;
-        rig.pitch.rotation.y = -e * entry.tubePitch;
-        for (let i = 0; i < stages.length; i++) stages[i].position.x = e * entry.tubeExt * (i + 1);
+        // ...and the EXTENSION is capped for the pitch it is at, which is what keeps the arm
+        // from sweeping through the flower half way through the deploy. `bbBoxTubeDeployExt`'s
+        // header has the measurement; at full ease the cap never binds, so the parked pose is
+        // exactly `bbBoxTubeStandoff`'s.
+        const ext = bbBoxTubeDeployExt(
+          e,
+          entry.tubePitch,
+          entry.tubeExt,
+          rig.stages.moving,
+          entry.tubeAx,
+          entry.tubeAy,
+          r.heading + rig.baseYaw,
+          entry.tubeYaw,
+          entry.tubeNx,
+          entry.tubeNy,
+          BB_BOX_TUBE_Z + (r.z ?? 0),
+          entry.tubeStand,
+        );
+        // ⚠️ AND PITCH AND SWIVEL FOLLOW THE EXTENSION, NOT THE RAW EASE. A stack that is still in
+        // its cradle has 5.5 in of TAIL behind the shoulder, so pitching or swivelling it while it
+        // is retracted sweeps that tail out of the chassis and down — measured, into the flower's
+        // MID plate (1.148 in at z 4.29). Tying both to how far the arm is actually OUT keeps the
+        // retracted stack lying in its own cradle, where it is drawn inside the robot.
+        const q = entry.tubeExt > 1e-6 ? ext / entry.tubeExt : e;
+        rig.swivel.rotation.z = bbBoxTubeSwivelFrac(q) * entry.tubeYaw;
+        rig.pitch.rotation.y = -q * entry.tubePitch;
+        for (let i = 0; i < stages.length; i++) stages[i].position.x = ext * (i + 1);
       }
 
       const heads = entry.group.userData.turretHeads as THREE.Group[] | undefined;

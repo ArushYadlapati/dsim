@@ -734,14 +734,21 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   "somehow make it clearer fundamentally which side is front and which is back in game. This is
   especially confusing in a symmetric robot in 3D"). `bbFrontMarks` (`parts.ts`) is the geometry
   and its header is the design; `drawFrontBack` fills it in 2D and `buildFrontMarks` builds it in
-  3D. Three marks, none in an alliance colour: a near-white **LIGHT BAR** across the full front
+  3D. TWO marks, neither in an alliance colour: a near-white **LIGHT BAR** across the full front
   rail (emissive in 3D — a matte white bar goes grey in the hive's shadow, which is where a driver
-  needs it most), a near-white **ARROW** on the deck pointing at it, and a near-black **HAZARD
-  BAR** with amber ribs across the full rear rail. The pair is what carries it: the arrow points
-  away from the striped end. What this replaces is a 0.7-in white block on the front cross member
+  needs it most) and a near-white **ARROW** on the deck pointing at it. The REAR takes a plain rail
+  in the chassis' own structural dark and nothing else.
+  ⚠️ **It had amber hazard ribs for about four hours**, and the owner's answer was "what is this
+  ugly ass yellow and black beams rendered in 3D? It is awful and does not fit FTC". The back of a
+  truck is the most-read "this is the back" language there is — on a truck; on an FTC robot it
+  reads as construction tape, it is the loudest thing on the field and it competes with a POLLEN's
+  own yellow. The FRONT language carries the job on its own: a bright bar at one end and plain
+  structure at the other. The RENDER lane asserts there is no amber anywhere on the robot, in both
+  renderers and in the geometry they share, by COLOUR FAMILY rather than by the one hex.
+  What this replaces is a 0.7-in white block on the front cross member
   (3D) and a rear chevron in the ALLIANCE colour (2D) — the block was four screen pixels at match
   distance and behind the intake from the one angle you would look for it, and the chevron made
-  "red at that end" compete with "red team". None of the three is a collider: they sit inside the
+  "red at that end" compete with "red team". Neither mark is a collider: they sit inside the
   frame box in x/y and only stand above the deck, the same ruling the end plates got, and the
   RENDER lane measures it off the built meshes.
   **It follows the SIM's front, never the driver's REVERSED.** Flip-front is an input transform, it
@@ -929,22 +936,43 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     turret's ring on every legal chassis, and the mast then rose straight through the head: its
     axis came within **0.000 in** of the drawn turret belt. Section 0 is a CRADLE bolted to the base
     node and never posed, so the retracted arm is byte-identical to the drawing that shipped.
-  - ⚠️ **AND IT AIMS AT THE NEAR LIP, NOT THE RING CENTRE** (owner, 2026-09-22: "make the boxtube
-    in-game not go through the flower when it extends. It should be extending towards the top lip
-    instead of through it. It also moves way too quickly in animation and in a violent way"). The
-    2026-09-20 pass above checked the TIP and nothing else, and a check on an endpoint says nothing
-    about the segment: aiming a straight tube at the ring centre put the drawn axis INSIDE the top
-    ring's bore below the top plate on **13,104 of 13,104** collision-legal in-reach poses, up to
-    **1.900 in** of a 2.086-in bore — the mast came out of the flower's own axis. `bbBoxTubeAim`
-    takes a `rim` argument now and backs the aim point off `BB_FLOWER_OPEN_R` along the approach;
-    the horizontal distance then falls monotonically to the rim and reaches it one
-    `BB_BOX_TUBE_TIP_CLEAR` ABOVE the plate, so everything below the plate is outside the column by
-    construction. After: **0 of 13,104**, worst clearance at the plate **0.0599 in**, tip still on
-    the lip to 5.3e-8. The RENDER lane runs both aims over the same poses, so the failure is in the
-    check's own output rather than in a commit message. It sweeps only poses the flower FOOT
-    collider permits — 1,800 of the unfiltered set put the SHOULDER itself inside the bore, where
-    no straight arm can stay outside, and a real chassis never gets nearer than 3.084 in.
-    Knock-on: the arm is 17.1–17.9 in rather than 17.6–18.7, and the cradle 5.53–5.72.
+  - ⚠️ **AND IT AIMS AT THE PLATE'S OUTER EDGE, NOT AT THE BORE** (owner, 2026-09-22, twice: "make
+    the boxtube in-game not go through the flower when it extends", then "the offset boxtube still
+    meshes with the flower"). The 2026-09-20 pass checked the TIP and nothing else, and a check on
+    an endpoint says nothing about the segment: aiming at the ring CENTRE put the drawn axis inside
+    the bore below the top plate on **13,104 of 13,104** in-reach poses. Backing off by the BORE
+    radius fixed that number and nothing the owner could see, because **the bore is the hole, not
+    the part a tube hits**, and because a check on the AXIS says nothing about a 1.25-in box.
+    Three things are true now, each measured off the shipped `field.glb` rather than assumed:
+    - `BB_FLOWER_OUTER_R` is the flower's own OUTER radius about its top-bore centre, sampled every
+      5° from the wall normal over the field half and dilated ±15°: **2.392 straight out of the wall,
+      3.113 at the plate corners, 2.972 along it**, against a 2.086 bore — the solid is **0.31…1.03
+      in wider than the hole**. The RENDER lane re-measures it off the asset and pins the table.
+      The same pass found the column EMPTY on the field side between the plates (z 0.4…3.9 and
+      5.3…20.2): the four HIPS pipes are all on the WALL side, at azimuth 135°–215°.
+    - the tip parks at `bbBoxTubeStandoff(θ)` = that radius + the arm's swept half-width + a 0.35
+      gap, i.e. **3.367…4.088 in** from the bore centre and `BB_BOX_TUBE_TIP_CLEAR` above the plate.
+      A flower foot stops a chassis at 2.384, so the shoulder is often NEARER than that: the run is
+      signed now and the arm leans a couple of degrees BACK over its own robot (pitch
+      74.7°…92.3°) rather than clamping vertical.
+    - ⚠️ **AND THE DEPLOY PATH IS CAPPED, WHICH IS HALF THE REPORT.** Fixing where the arm ENDS
+      fixes one frame in twenty-four. One ease driving pitch and extension together means that half
+      way out the arm is long and FLAT, and a 17.5-in arm at 50° from a shoulder 3 in off the
+      flower reaches straight through the open column and out into the pipes on the far side.
+      `bbBoxTubeDeployExt` bisects for the largest fraction whose DRAWN tip stays on the field side
+      of the flower and out of the top ring's own annulus; pitch and swivel then follow that capped
+      extension rather than the raw ease. At full ease the cap never binds, so the parked pose is
+      untouched.
+    Measured over the same pose grid, swept at every stage's own half-width and every ease:
+    **plate aim 0 of 5,176 meshing; the BORE aim 3,736 of 5,176, worst 0.783 in.** The lane sweeps
+    only poses the flower FOOT and the PERIMETER WALL both permit — without the wall filter it
+    teleports a robot half into the wall beside a flower and asks the arm to reach it from behind,
+    an approach angle no robot can stand at and the one place the pipes are.
+    ⚠️ **Named residual:** the check covers the arm ABOVE the mid plate's top face (5.254). Below
+    that is the retracted stack lying in its own cradle inside the chassis, which grazes the drawn
+    mid plate by **0.124 in** on poses where the CHASSIS does — the drawn plate reaches 2.415 in
+    from the wall and the foot COLLIDER that stops a robot stops it at 2.384. That is a field
+    asset-vs-collider difference, not something the arm can be aimed out of.
   - ⚠️ **AND 0.12 s WAS THE WRONG ANSWER TO "A LOT FASTER"** (same report: "way too quickly … in a
     violent way"). Seven frames at 60 Hz for 64–86° of pitch and 18 in of arm is a teleport.
     `BB_BOX_TUBE_EXTEND_S` is **0.40** and the ease is a `smoothstep`, which is the half that

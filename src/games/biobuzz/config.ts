@@ -499,6 +499,58 @@ export { FLOWER_RING_Z };
 export const BB_FLOWER_OPEN_R = FLOWER_RING_D.top / 2;
 
 /**
+ * ⚠️ **THE FLOWER IS MUCH WIDER THAN ITS BORE, AND THE BOX TUBE HAS TO CLEAR THE SOLID, NOT THE
+ * HOLE** (owner, 2026-09-22: "the offset boxtube still meshes with the flower"). The first pass
+ * aimed the arm at the top ring's OPENING radius — 2.086 — which is the hole an element drops
+ * through and not the part a tube hits. The ring PLATE around it, its hardware and the column's
+ * supports all stand further out, so an arm that stopped on the bore rim still cut the plate.
+ *
+ * `BB_FLOWER_OUTER_R` is the flower's own OUTER radius about its top-bore centre, sampled every
+ * 5° from the wall normal (index 0 = straight out of the wall, index 18 = along the wall), over
+ * the FIELD half only — the half a robot can be in. MEASURED off the shipped `field.glb`
+ * (`flower_0`, all six meshes, every vertex with z ≤ `BB_FLOWER_TOP_Z`) and DILATED by ±15° at
+ * each sample, so a thick arm that spans a few degrees of azimuth cannot slip into the notch
+ * between two samples. **The RENDER lane re-measures it off the asset and pins this table**, so a
+ * new field export that grows the flower fails there rather than quietly re-introducing the bug.
+ *
+ * What the numbers say: 2.392 straight out of the wall, rising to 3.113 at 35°–60° (the plate
+ * corners), 2.972 along the wall. The bore is 2.086 — the solid is **0.31 to 1.03 in wider than
+ * the hole**, which is the whole of the report.
+ *
+ * ⚠️ AND THE COLUMN IS EMPTY ON THE FIELD SIDE BETWEEN THE PLATES. Measured in the same pass:
+ * z 0.4…3.9 (the retrieval opening) and z 5.3…20.2 have **no flower geometry at all** in the
+ * field half — the four HIPS support pipes are on the WALL side, at azimuth 135°–215°. So a tube
+ * rising on the field side only ever has to clear the MID plate (z 3.9…5.3, and the shoulder
+ * already sits above it at `BB_BOX_TUBE_Z` 5.55) and the TOP plate. That is why the arm can go
+ * nearly vertical instead of standing a foot off.
+ */
+export const BB_FLOWER_OUTER_R: readonly number[] = [
+  2.392, 2.392, 2.502, 2.738, 2.928, 3.05, 3.105, 3.113, 3.113, 3.113, 3.113, 3.113, 3.113, 3.049,
+  2.963, 2.972, 2.972, 2.972, 2.972,
+];
+export const BB_FLOWER_OUTER_MIN = 2.392;
+export const BB_FLOWER_OUTER_MAX = 3.113;
+
+/**
+ * The flower's outer radius in the direction a mechanism approaches from — `theta` is the angle
+ * between the flower's INWARD wall normal (`FLOWER_MOUTH`) and the horizontal line from its bore
+ * centre to that mechanism, in radians, either sign.
+ *
+ * It reads the table with NO interpolation and takes the LARGER of the two samples it falls
+ * between: a sample is a ±15° dilated maximum, so the larger neighbour is the conservative answer
+ * and a lerp between them would dip below the solid between samples.
+ */
+export function bbFlowerOuterR(theta: number): number {
+  const t = Math.abs(theta) * (180 / Math.PI);
+  if (!(t >= 0)) return BB_FLOWER_OUTER_MAX; // NaN
+  if (t >= 90) return BB_FLOWER_OUTER_R[BB_FLOWER_OUTER_R.length - 1];
+  const k = t / 5;
+  const lo = Math.floor(k);
+  const hi = Math.min(BB_FLOWER_OUTER_R.length - 1, lo + 1);
+  return Math.max(BB_FLOWER_OUTER_R[lo], BB_FLOWER_OUTER_R[hi]);
+}
+
+/**
  * the FLOWER's FOOTPRINT on the tiles (in) — `along` the wall by `deep` into the field, flush
  * against the wall face. MEASURED (owner CAD, 2026-09-12; reference §2.3).
  *
@@ -1558,6 +1610,124 @@ export const BB_BOX_TUBE_EXT_SLEW = 60;
  * a tube that stops level with the plate reads as resting ON it; `flower3d.ts` drops a placed
  * element at the top ring, so the tip belongs just clear of the hole it drops through. */
 export const BB_BOX_TUBE_TIP_CLEAR = 1.0;
+/**
+ * the SWEPT half-width of the moving arm (in) — half the widest section that ever leaves the
+ * cradle. Section 0 (1.5) is the cradle and never moves, so the thing that can meet a FLOWER is
+ * section 1 at 1.25.
+ *
+ * ⚠️ THE AXIS IS NOT THE ARM. The 2026-09-22 report ("the offset boxtube still meshes with the
+ * flower") is half about the flower being wider than its bore and half about this: the aim, the
+ * sizing and the old check all reasoned about the CENTRE LINE, and a centre line that clears a
+ * plate by 0.06 in is a 1.25-in box cutting it by half an inch.
+ */
+export const BB_BOX_TUBE_HALF_W = BB_BOX_TUBE_SECTIONS[1] / 2;
+/** how much clear air the arm's OUTER SURFACE keeps from the flower's own solid (in). APPROX.
+ *  0.35 is the square-corner excess a round swept radius misses — (√2 − 1)·`BB_BOX_TUBE_HALF_W`
+ *  = 0.26 — plus slack, so the drawn box clears even at the 45° roll where its corner leads. */
+export const BB_BOX_TUBE_FLOWER_GAP = 0.35;
+/** where the TIP parks, as a radius from the flower's bore centre, for one approach angle. This
+ *  is the whole of the 2026-09-22 fix: the tube stops just OUTSIDE the plate's own edge and just
+ *  ABOVE it, rather than on the bore rim, which was inside the plate. */
+export function bbBoxTubeStandoff(theta: number): number {
+  return bbFlowerOuterR(theta) + BB_BOX_TUBE_HALF_W + BB_BOX_TUBE_FLOWER_GAP;
+}
+
+/**
+ * ⚠️ **THE DEPLOY PATH, AND THE OTHER HALF OF "IT STILL MESHES WITH THE FLOWER".** Fixing where
+ * the arm ENDS fixes one frame in twenty-four. One ease driving pitch and extension together
+ * means that half way through, the arm is already HALF ITS LENGTH at HALF ITS PITCH — long and
+ * flat — and a 17.5-in arm at 50° from a shoulder 3.1 in off the flower reaches 6.5 in
+ * horizontally, which is straight through the column and out into the HIPS pipes on the far
+ * side. MEASURED over the RENDER lane's own sweep: the tip crossed the axis on 10,035 of 13,104
+ * poses and the drawn box met a pipe at radius 3.29, azimuth −135°, z 11.8.
+ *
+ * The fix is a CAP on how far out the arm may be for the pitch it is at — not a second ease.
+ * The rule: **the arm never crosses to the WALL SIDE of the flower.** The length is cut where the
+ * axis would pass the plane through the bore centre normal to `FLOWER_MOUTH`. That is the right
+ * keep-out rather than a cylinder about the column, because the column is HOLLOW — the pipes live
+ * at radius 1.9…4.7 on the wall side and there is nothing at all on the field side between the
+ * plates, so "stay out of a cylinder" both failed to stop the sweep and forced the stage TAILS
+ * down into the mid plate. The PARKED pose is on the ray from the bore centre out through the
+ * shoulder, so its tip is on the field side by construction and the cap never binds at full ease.
+ *
+ * It has to be solved against the EASED heading, not the final one: the swivel eases too, so half
+ * way through the deploy the arm is pointing between its mount's own aim and the flower, and a cap
+ * that assumed a radial line missed the sideways sweep entirely (measured: it changed nothing).
+ *
+ * At full ease the cap never binds — the final pose is `bbBoxTubeStandoff`'s and nothing about it
+ * changes — so this only reshapes the middle of the deploy, which is exactly what was wrong.
+ */
+/**
+ * how much of the deploy the base SWIVEL takes, as a fraction. APPROX.
+ *
+ * ⚠️ **AN EASED SWIVEL IS WHY A "RADIAL" CAP KEPT MISSING.** The arm's bearing eases from its
+ * mount's own aim to the flower, so half way through the deploy it is pointing at NEITHER, and
+ * every argument of the form "the tip runs along the ray from the bore centre" is false there —
+ * measured, the tip's radius dipped to 2.25 at z 20.23 and cut the top plate's ring on a pose
+ * whose radial path never goes inside 4.088. Finishing the swivel in the first quarter, while the
+ * arm is still short and low, makes the rest of the climb genuinely radial.
+ */
+export const BB_BOX_TUBE_SWIVEL_LEAD = 1;
+export function bbBoxTubeDeployExt(
+  e: number,
+  pitchFull: number,
+  extFull: number,
+  moving: number,
+  /** the SHOULDER, relative to the flower's bore centre, in world x/y */
+  ax: number,
+  ay: number,
+  /** the arm's world bearing when fully STOWED (the mount's own aim), and the swivel it takes on
+   *  top of that when fully deployed */
+  yawBase: number,
+  yawDelta: number,
+  /** the flower's own INWARD wall normal (`FLOWER_MOUTH`) */
+  nx: number,
+  ny: number,
+  /** the SHOULDER's height, and the radius the tip has to keep while it is level with the TOP
+   *  PLATE — the parked standoff, which is where it ends up anyway */
+  zPivot: number,
+  standR: number,
+): number {
+  // ⚠️ A BISECTION ON THE DRAWN POSE, not an algebraic cap. Pitch, swivel and length are all
+  // functions of ONE fraction, so "how long may the arm be" and "how steep is it" are the same
+  // question asked twice; solving one for the other is a fixed point that is easy to write
+  // subtly wrong and impossible to read. This asks the only thing that matters — does the TIP of
+  // the pose we would draw at `q` sit on the field side of the flower — and keeps the largest
+  // `q ≤ e` that answers yes. Twelve steps resolve `e` to 1/4096, far finer than a frame.
+  const safeAt = (q: number): boolean => {
+    const len = moving * q * extFull;
+    const p = q * pitchFull;
+    const yaw = yawBase + bbBoxTubeSwivelFrac(q) * yawDelta;
+    const h = len * dcos(p);
+    const rx = ax + h * dcos(yaw);
+    const ry = ay + h * dsin(yaw);
+    // 1. NEVER ROUND THE BACK. The column is hollow and its HIPS pipes are all on the wall side,
+    //    so the one thing the tip must not do is cross the flower's own centre plane.
+    if (rx * nx + ry * ny < 0) return false;
+    // 2. AND NEVER LEVEL WITH THE TOP PLATE AT A RADIUS INSIDE IT. Half way out the arm is long
+    //    and flat, so its tip can rise into the ring's own annulus on its way up — measured at
+    //    radius 2.27 against a 3.05 plate — even though the parked pose stands well outside.
+    const z = zPivot + len * dsin(p);
+    if (z > FLOWER_RING_Z.top[0] - BB_BOX_TUBE_HALF_W) {
+      if (hyp(rx, ry) < standR) return false;
+    }
+    return true;
+  };
+  if (safeAt(e)) return e * extFull;
+  let lo = 0;
+  let hi = e;
+  for (let it = 0; it < 12; it++) {
+    const mid = (lo + hi) / 2;
+    if (safeAt(mid)) lo = mid;
+    else hi = mid;
+  }
+  return lo * extFull;
+}
+
+/** how much of the base SWIVEL is in, for an arm that is `q` of the way out. */
+export function bbBoxTubeSwivelFrac(q: number): number {
+  return Math.min(1, q / BB_BOX_TUBE_SWIVEL_LEAD);
+}
 
 /**
  * THE STAGE TABLE — a CRADLE of `sectionLen` lying flat in the frame, `moving` stages nested in
@@ -1579,20 +1749,23 @@ export const BB_BOX_TUBE_TIP_CLEAR = 1.0;
  * meets the opening BY CONSTRUCTION at every legal build rather than by a tolerance — the same
  * bargain the tip already made with the placement point when it only had to reach horizontally.
  *
- * ⚠️ **THE TARGET IS THE NEAR RIM, SO THE ARM IS `BB_FLOWER_OPEN_R` SHORTER THAN IT WAS** (owner,
- * 2026-09-22: "make the boxtube in-game not go through the flower when it extends"). The worst
- * pose's horizontal run stops one opening radius short of the ring CENTRE — see `bbBoxTubeAim` —
- * so sizing to the centre would leave every stage 2.09 in of travel it can never be asked for,
- * and `short` (the RENDER lane's "never asked for more length than the stages have") would stop
- * being the tight bound it is. Retracted length falls with it, which is the cradle that has to
- * fit inside a 13.5-in chassis.
+ * ⚠️ **THE TARGET IS THE PLATE'S OUTER EDGE, AND THE RUN CAN BE NEGATIVE** (owner, 2026-09-22:
+ * "the offset boxtube still meshes with the flower"). The tip parks at `bbBoxTubeStandoff(θ)`
+ * from the bore centre — 3.37 in straight out of the wall, 4.09 at the plate's corners — so the
+ * worst case is no longer "the ring as far out as it gets". It is whichever of the two ENDS is
+ * further from that standoff: a ring at `reach + BB_PLACE_TOL` with the SMALLEST standoff (the
+ * arm reaches out), or a ring at `reach − BB_PLACE_TOL` with the LARGEST (the arm leans BACK over
+ * its own robot, because the tip has to stand further from the flower than the shoulder does).
+ * Both are a horizontal run the stages must cover, and `hyp` does not care about the sign.
  */
 export function bbBoxTubeStages(reach: number): { sectionLen: number; travel: number; moving: number; full: number } {
   const n = BB_BOX_TUBE_SECTIONS.length - 1;
   const k = BB_BOX_TUBE_STAGE_OVERLAP;
   const dz = BB_FLOWER_TOP_Z + BB_BOX_TUBE_TIP_CLEAR - BB_BOX_TUBE_Z;
-  const run = Math.max(0, reach + BB_PLACE_TOL - BB_FLOWER_OPEN_R);
-  const travel = hyp(run, dz) / n;
+  const gap = BB_BOX_TUBE_HALF_W + BB_BOX_TUBE_FLOWER_GAP;
+  const out = Math.abs(reach + BB_PLACE_TOL - (BB_FLOWER_OUTER_MIN + gap));
+  const back = Math.abs(reach - BB_PLACE_TOL - (BB_FLOWER_OUTER_MAX + gap));
+  const travel = hyp(Math.max(out, back), dz) / n;
   return { sectionLen: travel + k, travel, moving: n, full: n * travel };
 }
 
@@ -1607,26 +1780,26 @@ export function bbBoxTubeStages(reach: number): { sectionLen: number; travel: nu
  * parent even for a pose the sizing did not anticipate (an airborne robot, say) — it falls short
  * instead of coming apart.
  *
- * ⚠️ **`rim` IS WHY THE ARM NO LONGER GOES THROUGH THE FLOWER** (owner, 2026-09-22: "make the
- * boxtube in-game not go through the flower when it extends. It should be extending towards the
- * top lip instead of through it"). `target` is the ring CENTRE at tip height, and aiming a
- * STRAIGHT telescoping tube at it means the line from the shoulder to that point passes through
- * the column: MEASURED over the RENDER lane's own sweep, **48,048 of 48,048 in-reach poses** put
- * the drawn axis inside the top ring's bore below the top plate, by up to **2.014 in** of a
- * 2.086-in radius — i.e. the mast came out of the flower's axis, having passed through the plate
- * that is the hole's own edge.
+ * ⚠️ **`rim` IS WHY THE ARM NO LONGER GOES THROUGH THE FLOWER, AND IT IS THE PLATE'S EDGE, NOT
+ * THE BORE'S** (owner, 2026-09-22, twice). `target` is the ring CENTRE at tip height. Aiming a
+ * straight telescoping tube at it drove the mast down the column: MEASURED, **13,104 of 13,104**
+ * collision-legal in-reach poses put the drawn axis inside the bore below the top plate, by up to
+ * 1.900 in of a 2.086-in radius. Backing off by the BORE radius fixed the axis-vs-bore number and
+ * nothing the owner could see — "the offset boxtube still meshes with the flower" — because the
+ * plate, its hardware and the column's supports stand 0.31…1.03 in further out than the hole
+ * (`BB_FLOWER_OUTER_R`) and the arm is a 1.25-in BOX, not a line.
  *
- * Backing the aim point off by `rim` along the horizontal direction the arm approaches from puts
- * the tip on the NEAR LIP instead. It is not a fudge factor, it is the geometry: the horizontal
- * distance from the shoulder falls MONOTONICALLY along the segment and now stops at `rim`, which
- * it reaches at `BB_BOX_TUBE_TIP_CLEAR` ABOVE the plate — so everything below the plate is
- * strictly outside the cylinder, by construction rather than by a tolerance.
+ * `rim` is `bbBoxTubeStandoff(θ)` now: the flower's own outer radius in the direction the arm
+ * comes from, plus the arm's swept half-width, plus a gap. The tip parks on the ray from the bore
+ * centre through the shoulder, at that radius and `BB_BOX_TUBE_TIP_CLEAR` above the top plate —
+ * just outside the plate's edge and just above it.
  *
- * The backoff is clamped to the horizontal distance itself, for the degenerate pose where the
- * shoulder is already inside the bore's own footprint: there is no straight arm out of a point
- * inside a cylinder that stays outside it, so the aim goes VERTICAL rather than reversing
- * through the robot. A flower foot is a collider 2.384 in deep in front of the ring, so a real
- * match cannot produce that pose — only a teleporting test can, and the RENDER lane says which.
+ * ⚠️ **AND THE RUN IS NOT CLAMPED AT ZERO.** It was, which meant that whenever the shoulder was
+ * already nearer the flower than the standoff — every FLUSH pose, since the foot stops a chassis
+ * at 2.384 and the plate corners reach 3.113 — the arm went dead vertical and the box still cut
+ * the plate. A negative run is a real pose: the arm leans a few degrees BACK over its own robot so
+ * the tip stands further out than the shoulder. `datan2(dz, run)` returns the obtuse pitch for it
+ * and `hyp` the same length either way, so nothing else in the chain changes.
  */
 export function bbBoxTubeAim(
   pivot: { x: number; y: number; z: number },
@@ -1640,7 +1813,7 @@ export function bbBoxTubeAim(
   // `hyp`/`datan2`, not `Math.hypot`/`Math.atan2`: this file is under `src/games/`, which the
   // determinism source guard greps, and the rule is "don't write the engine-defined call here".
   const flat = hyp(dx, dy);
-  const run = Math.max(0, flat - rim);
+  const run = flat - rim;
   const len = Math.min(stages.moving * stages.travel, hyp(run, dz));
   return { yaw: datan2(dy, dx), pitch: datan2(dz, run), ext: len / stages.moving, len };
 }
