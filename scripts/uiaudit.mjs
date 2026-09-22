@@ -71,7 +71,11 @@ const BASELINE = {
   // `.resx-roster-name` and `.resx-roster-meta`'s `6px` gaps and `.resx-breakdown`'s `3px`
   // cell padding. They are `em` now, so they scale with the row they sit in and there is no
   // number left to round.
-  'off-grid-gap': 146,
+  // 146 → 144, 2026-09-22: merging main's LAN Screen Redesign lost the `.net-corner` /
+  // `.chip.net-quality.clickable` rules along with the dead ping-graph feature they served
+  // (superseded by `.perf-hud`, owner ruling 2026-09-19); two of their off-grid literals
+  // went with them.
+  'off-grid-gap': 144,
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
   // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
   // not the 31 first measured. The other two start where they stand: paying them down needs a

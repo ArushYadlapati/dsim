@@ -1,4 +1,4 @@
-# HANDOFF — 2026-09-22d (repeat fouls, the BIOBUZZ mass model, presets, builder strip, box tube, front marks, copy)
+# HANDOFF — 2026-09-22e (repeat fouls, the BIOBUZZ mass model, presets, builder strip, box tube, front marks, copy)
 
 **State: green.** `npm test` (2288 + 4972, ALL PASS, no flakes hit), `npm run build`, `server:check`,
 `uiaudit` (baselines: `literal-radius` 13→12, `off-scale-font-size` 46→45), `docaudit`, `contrast`
@@ -70,6 +70,49 @@ so this commit does not rewrite every line of both. Normalize them in a commit o
 
 Next: deploy alpha (`./scripts/fly-deploy.sh --alpha` from an alpha tree) and check a match's
 foul log; decide `BB_MAX_LENGTH`; the mecanum corner hook.
+# HANDOFF — 2026-09-22d (merged origin/main into alpha — LAN Screen Redesign + CR HudChips)
+
+**State at the time: green.** `npm run build`, `npm run server:check`, `npm run uiaudit` (all rules at or
+under baseline, `off-grid-gap` ratcheted 146 → 144), `npm run contrast` (249 pairs) and
+`npm run docaudit` all pass. `npm test` has the one known machine-load perf flake
+(`perf: bot-driven 2v2 step3d p95 <= 1.5ms`) and nothing else — 4774 checks. Working tree
+clean; merge commit is `b142895`.
+
+**What came in:** main's LAN Screen Redesign (`LanPanel.tsx` fully rewritten — tabbed
+host/join, `initialName` propagated into `Lobby`), Chain Reaction's own `ChainHudChips`
+(`src/games/chain/HudSlots.tsx`, new file) plus the `pinnedNotice` slot's PIN/CONTROL-5+
+relocation into the event log (`GameModule.pinnedNotice`, `eventlog-pinned`), the Admin
+console's Users tab and a corrected Aadvik Gupta GitHub handle, and assorted `ui-fixes` PR
+work (`Admin.tsx`'s `adm-*` spacing classes, `.park-status`/`.sub-hud`/`.cr-hud` CSS).
+
+⚠️ **TWO classes of merge bug, not just textual conflicts, and both are worth knowing about
+before the next big merge:**
+- **Diff-alignment gave wrong "clean" merges on at least a dozen files.** Every page's
+  `<p className="ds-eyebrow">…</p>` line (Account, AppShell's footer Discord link, Changelog,
+  Configure, Contributors, Donate, Download, HomeMenu's `season`/`APP_TAGLINE`, Legal,
+  ModeSelect, Profile, Records, WatchLive, `seasons.ts`'s `APP_TAGLINE` export itself) vanished
+  with NO conflict marker — git matched alpha's later addition against unrelated main content
+  near the same heading and silently dropped it. Three pages (DesktopUpdate, MatchHistory,
+  PracticeReplays) reverted from alpha's `.ds-panel`+`OptRow` refactor back to main's older
+  `.ds-sec` markup the same way. Caught by `tsc` (`Cannot find name 'season'`, unused-import
+  errors) for the ones that broke the build; the rest only showed up by diffing every
+  "cleanly" merged file against `23fe5a5` by hand. **If you merge main again and a page's
+  brand line or panel styling looks off, diff it against alpha's last tip before assuming
+  it's new.**
+- **`scripts/smoke.ts` conflicted across its ENTIRE 46k lines** (one `<<<<<<<` at line 1, one
+  `>>>>>>>` at the end) — not a real whole-file conflict, `git show :2:` was emitting CRLF
+  (Windows `core.autocrlf=true`) while `:1:`/`:3:` came out LF, so every line differed. Fixed
+  by re-running `git merge-file` on `\r`-stripped extractions of all three stages, which
+  produced a normal, small, correct conflict. Same trick unstuck `contributors.ts` and several
+  `src/ui/*.tsx` files. **If a merge conflict spans a whole large file, suspect line endings
+  before attempting a manual resolution.**
+
+Judgment calls, in case they need revisiting: kept alpha's BIOBUZZ NECTAR-chip removal (owner
+ruling 2026-09-19) over main's same-day dot-row redesign of it — ported main's PIN/CONTROL-5+
+relocation and flower-icon layout forward onto alpha's decision, and added the G407 MAJOR
+escalation to `BiobuzzPinnedNotice` since main's version predates that feature. Kept alpha's
+`PerfHud` consolidation (owner ruling 2026-09-19 — the old NetQuality/ping-graph click target
+never worked, `.hud` is `pointer-events: none`) over main's `net-corner`/`NetQuality` re-add.
 
 ---
 

@@ -634,6 +634,11 @@ export function App() {
     setPendingAutoJoin({ room: code, config: { kind: 'versus', game } });
     navigate('lobby');
   };
+  // a name typed on the LAN Play entry card, waiting to seed the Lobby screen it
+  // navigates to (`initialName`). One-shot like `pendingAutoJoin` above: cleared on
+  // both exits from the Lobby screen it seeds, so a later NORMAL visit shows the
+  // ordinary displayName/teamName default instead of a stale LAN-screen name.
+  const [pendingLanName, setPendingLanName] = useState<string | null>(null);
   // a RATED challenge waiting to be queued under its party token. Same one-shot
   // shape as pendingAutoJoin and for the same reason: the Matchmaking screen
   // consumes it on mount, so a later ordinary visit to /ranked is an ordinary
@@ -1588,10 +1593,12 @@ export function App() {
            ordinary visit to this screen cannot re-adopt a room the player has left. */
         onStart={(s) => {
           setResumedRoom(null);
+          setPendingLanName(null);
           beginSession(s, 'custom');
         }}
         onCancel={() => {
           setResumedRoom(null);
+          setPendingLanName(null);
           navigate('modes');
         }}
         config={auto?.config}
@@ -1607,7 +1614,45 @@ export function App() {
         discordActivity={!!discordGroupId}
         group={discordGroupId}
         resume={resumedRoom ?? undefined}
+        initialName={pendingLanName ?? undefined}
       />
+    );
+  }
+  // LAN. Bypasses AppShell the same way `screen === 'lobby'` does — the mockup this
+  // screen was redesigned against has none of the shell's chrome (rail, top bar), the
+  // same reason Lobby renders here instead of inside AppShell.
+  // `onConnected` goes to the CUSTOM ROOM screen, because that is what a LAN match is —
+  // a code-joined room, on a different server. Nothing about the room flow changes;
+  // only `gameServerUrl()` now answers with the host's machine.
+  // Belt and braces on the `lanOn` guard: the Play tile is hidden and `/lan` no longer
+  // parses where the flag is off, so nothing should reach this — but `navigate('lan')`
+  // is still a callable function, and a screen that renders a whole feature is worth
+  // guarding at the point of render too.
+  if (lanOn && screen === 'lan') {
+    return roomScreen(
+      <LanPanel
+        signedIn={signedIn}
+        game={settings.game}
+        onBack={() => navigate('modes')}
+        displayName={handle}
+        myUserId={accountUserId}
+        onOpenProfile={openProfile}
+        onJoinInvite={onJoinInvite}
+        onSpectate={spectateRoom}
+        onConnected={(code, game, name) =>
+          guardStart(() => {
+            /* A WEBRTC ROOM IS ALREADY OPEN BY THE TIME WE GET HERE, so the lobby must
+               JOIN it rather than offer a create/join form. Without this the player lands
+               on the entry screen and has to type the code a second time — and the
+               transport waiting in `pending.ts` would then be adopted by whatever they
+               typed, which need not be the room it is connected to. Same one-shot
+               `pendingAutoJoin` an accepted invite uses; the Lobby clears it on consume. */
+            if (code) setPendingAutoJoin({ room: code, config: { kind: 'versus', game: game ?? settings.game } });
+            if (name) setPendingLanName(name);
+            navigate('lobby');
+          })
+        }
+      />,
     );
   }
   if (screen === 'record') {
@@ -1974,32 +2019,6 @@ export function App() {
         />
       )}
       {screen === 'watch' && <WatchLive onWatch={spectateRoom} onBack={() => navigate('modes')} />}
-      {/* LAN. `onConnected` goes to the CUSTOM ROOM screen, because that is what a LAN
-          match is — a code-joined room, on a different server. Nothing about the room
-          flow changes; only `gameServerUrl()` now answers with the host's machine. */}
-      {/* Belt and braces. The Play tile is hidden and `/lan` no longer parses where the
-          flag is off, so nothing should reach this — but `navigate('lan')` is still a
-          callable function, and a screen that renders a whole feature is worth guarding at
-          the point of render too. */}
-      {lanOn && screen === 'lan' && (
-        <LanPanel
-          signedIn={signedIn}
-          game={settings.game}
-          onConnected={(code, game) =>
-            guardStart(() => {
-              /* A WEBRTC ROOM IS ALREADY OPEN BY THE TIME WE GET HERE, so the lobby must
-                 JOIN it rather than offer a create/join form. Without this the player lands
-                 on the entry screen and has to type the code a second time — and the
-                 transport waiting in `pending.ts` would then be adopted by whatever they
-                 typed, which need not be the room it is connected to. Same one-shot
-                 `pendingAutoJoin` an accepted invite uses; the Lobby clears it on consume. */
-              if (code) setPendingAutoJoin({ room: code, config: { kind: 'versus', game: game ?? settings.game } });
-              navigate('lobby');
-            })
-          }
-          onBack={() => navigate('modes')}
-        />
-      )}
       {screen === 'download' && <Download />}
       {screen === 'contributors' && <Contributors onOpenProfile={openProfile} />}
       {/* legal pages are public and must stay reachable without an account —

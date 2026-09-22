@@ -8085,32 +8085,25 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
        that a formatter breaks wherever the column runs out. */
     const lanText = lan.replace(/\s+/g, ' ');
 
-    // the label sits OUTSIDE the bridge guard now; inside it, the web build shows no host half
-    /* ⚠️ THE HEADING THIS PINS WAS RENAMED, and the fact underneath it did not move.
-       It read `Host · this computer`, which was true while the only two host paths were the
-       desktop app and the terminal — both of them literally THIS computer, the machine opening
-       a listening socket. A browser TAB hosts now (`docs/lan-webrtc.md`), on a Chromebook with
-       nothing installed, so the qualifier had stopped being true of the first panel on the
-       page and the section is plainly `Host`.
-       What is still pinned is what the check was always for: the host half of this screen must
-       render on the WEB build, i.e. ABOVE `{bridge?.lan && (`. Below that guard it exists only
-       in the desktop shell, and a player on the web then gets a page titled "LAN play" whose
-       only control asks for somebody ELSE'S address — which reads as hosting being broken.
-       Pinned on the whole JSX element, not the bare word `Host`, which appears a dozen times
-       on this page (`Host in this tab`, `Host without internet`, `Host address`, `hostErr`).
-       The tab-host panel's own heading is pinned WITH it, because that panel IS the web build's
-       host path: it sliding inside the guard would be exactly the original bug again, with the
-       section label still sitting innocently outside. */
-    const hostLabel = lan.indexOf('<p className="ds-tileset-label">Host</p>');
-    const tabHostPanel = lan.indexOf('<p className="ds-lan-state">Host in this tab</p>');
+    // the Host tab sits OUTSIDE the bridge guard now; inside it, the web build shows no host half
+    /* ⚠️ THE MARKUP THIS PINS WAS RESTRUCTURED (Host/Join went from two always-visible
+       sections to a tab toggle, matching the redesigned LAN Play screen), and the fact
+       underneath it did not move. What is still pinned is what the check was always for: the
+       host half of this screen must render on the WEB build, i.e. ABOVE `{bridge?.lan && (`.
+       Below that guard it exists only in the desktop shell, and a player on the web then gets
+       a page titled "LAN Play" whose only control asks for somebody ELSE'S address — which
+       reads as hosting being broken.
+       Pinned on the Host tab's own label and its primary action, not the bare word `Host`,
+       which appears a dozen times on this page (`Host room`, `Host without browser`, `Host
+       address`, `hostErr`). `indexOf` finds the FIRST occurrence of each, which is the web
+       build's tab-hosted path — the desktop bridge's own button reuses the same label further
+       down, after the guard, which is fine: it sliding ABOVE the guard would be the bug. */
+    const hostTab = lan.indexOf('<span className="ot">Host room</span>');
+    const hostCta = lan.indexOf('HOST ROOM ▶');
     const bridgeGuard = lan.indexOf('{bridge?.lan && (');
     check(
-      'lan guide: the Host heading renders without the desktop bridge',
-      hostLabel > 0 &&
-        tabHostPanel > 0 &&
-        bridgeGuard > 0 &&
-        hostLabel < bridgeGuard &&
-        tabHostPanel < bridgeGuard,
+      'lan guide: the Host tab renders without the desktop bridge',
+      hostTab > 0 && hostCta > 0 && bridgeGuard > 0 && hostTab < bridgeGuard && hostCta < bridgeGuard,
     );
     /* This used to assert the page says "a browser tab can’t be a server". That sentence was
        REMOVED, on purpose: a tab now hosts (`docs/lan-webrtc.md`), so printing it directly
@@ -9099,10 +9092,13 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
        it would make the player type the code a SECOND time — and the live transport waiting
        in `pending.ts` would then be adopted by whatever they typed, which need not be the room
        it is connected to. Both WebRTC paths therefore carry the code out; the two ADDRESS
-       paths deliberately do not, because reaching a LAN server is not picking a room on it. */
+       paths deliberately do not, because reaching a LAN server is not picking a room on it.
+       Both also carry `name` now — the screen's own Your name field, handed to `Lobby` as a
+       one-shot `initialName` the same way the code seeds the room it opens. */
     check(
       'lan tab: arriving at the room screen JOINS the code, rather than asking for it again',
-      /onConnected\(tabCode, tabHost\.game\)/.test(lp) && /onConnected\(r\.code\)/.test(lp),
+      /onConnected\(tabCode, tabHost\.game, name\)/.test(lp) &&
+        /onConnected\(r\.code, undefined, name\)/.test(lp),
     );
     check(
       'lan tab: and the app turns that into the same one-shot auto-join an invite uses',
@@ -10898,6 +10894,26 @@ const acquireTicks = (speed: number): number => Math.round(acquireSecs(speed) / 
     'opening the opponent gate: 1 G417 + one G418 per artifact that drains off their ramp',
     w.match.fouls.blue.major === N + 1,
     `blueMajor=${w.match.fouls.blue.major} (expected ${N + 1})  redFoulPts=${w.match.scores.red.foulPoints}`,
+  );
+  check(
+    'HudSnapshot.gateForced: an opponent forcing the gate open pins gateCulprit to them',
+    w.penalties.gateCulprit.red === 'blue',
+    `gateCulprit.red=${w.penalties.gateCulprit.red}`,
+  );
+
+  // the OWNER (red) pushing its own gate open must never set gateCulprit — HudSnapshot.gateForced
+  // is a straight read of it, and it drives the gate icon's red "forced" state vs. green
+  // "own alliance opened it" (game.ts).
+  const w2 = foulWorld();
+  w2.robots[1].pos = { x: gz.x0 - 7, y: (gz.y0 + gz.y1) / 2 }; // red field-side of its OWN gate
+  w2.robots[1].heading = 0;
+  w2.robots[1].fieldCentric = false;
+  w2.robots[0].pos = { x: 0, y: 30 };
+  runCmds(w2, new Map([[1, cmd({ driveY: 1 })]]), 2.5);
+  check(
+    'HudSnapshot.gateForced: the owner opening its own gate never sets gateCulprit',
+    w2.penalties.gateCulprit.red === null && w2.goals.red.gateOpen,
+    `gateCulprit.red=${w2.penalties.gateCulprit.red} gateOpen=${w2.goals.red.gateOpen}`,
   );
 }
 
@@ -18731,7 +18747,7 @@ const mkMM = () => {
       'an unvalidated `?region=` throws ERR_INVALID_CHAR inside the handler, which the process-level hook only LOGS — the socket is then left hanging until it times out',
     );
   }
-  check('discord activity: roomCodeForInstance is deterministic', allDet);
+  check('discord activity: roomCodeForInstance is deterministic', allDet);
   check('discord activity: instance codes are always valid room codes', allInstValid);
   check('discord activity: distinct instances spread to distinct rooms', instSeen.size > 490, `${instSeen.size}/500`);
 

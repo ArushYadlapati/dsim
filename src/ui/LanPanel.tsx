@@ -9,10 +9,13 @@ import { setTabHosting } from '../lan/hosting';
 import { keepHostedRoom, takeHostedRoom } from '../lan/hostKeeper';
 import { generateRoomCode, normalizeRoomCode } from '../net/roomCode';
 import { serverCaps } from '../net/api';
+import type { RoomInvite } from '../net/api';
 import { useEscape } from './useEscape';
 import { appBuild, clearLanServer, lanActive, lanServerUrl, setLanServer } from '../net/env';
 import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lanAddress';
 import { copyText } from './copyText';
+import { Logo } from './Logo';
+import { RoomFriendsLayout } from './Lobby';
 
 /**
  * LAN PLAY — host a game on this machine, or join one on this network.
@@ -20,6 +23,13 @@ import { copyText } from './copyText';
  * Matches on a self-hosted server are UNOFFICIAL: never rated, never on a leaderboard. Their
  * replays are still saved to the host's account, which is the whole reason hosting is gated
  * on being signed in. See docs/lan-selfhost.md.
+ *
+ * ⚠️ **THIS SCREEN BYPASSES `AppShell`**, the same way `Lobby`'s entry phase does (and for
+ * the same reason: the screen it's modeled on has none of the shell's chrome). `App.tsx`
+ * renders it as an early return, wrapped in `RoomFriendsLayout` — the exact wrapper `Lobby`
+ * uses for its own Friends panel — rather than as a child of `<AppShell>`. One consequence:
+ * `LanBanner` (rendered by `AppShell`) doesn't show here, same as it already doesn't show
+ * inside `Lobby`'s room screens — the "Connected to …" block below covers that case instead.
  *
  * TWO CONSTRAINTS SHAPE THIS SCREEN, and neither is obvious from looking at it:
  *
@@ -33,6 +43,10 @@ import { copyText } from './copyText';
  *    that BEFORE connecting and says the one thing that works: open the host's URL in a
  *    browser instead. `localhost` is exempt, which is why the host themselves can play from
  *    the live site.
+ *
+ * ⚠️ **NO REGION PICKER, ON PURPOSE** — unlike the custom-room entry screen this one is
+ * modeled on (`Lobby.tsx`'s `phase === 'entry'`). LAN has one machine; offering a region
+ * would be offering a choice that does not exist.
  */
 /**
  * THE FOUR COMMANDS, in the order a person types them.
@@ -47,14 +61,19 @@ import { copyText } from './copyText';
  * resolve new versions, they are trying to run the thing.
  */
 const HOST_STEPS = [
-  { what: 'Get the code', cmd: `git clone ${LINKS.repo}` },
-  { what: 'Go into it', cmd: 'cd dsim' },
+  { what: 'Clone the code', cmd: `git clone ${LINKS.repo}` },
+  { what: 'Open the code root', cmd: 'cd dsim' },
   { what: 'Install once', cmd: 'npm ci' },
   { what: 'Host', cmd: 'npm run lan' },
 ] as const;
 export function LanPanel({
   signedIn,
   game,
+  displayName,
+  myUserId,
+  onOpenProfile,
+  onJoinInvite,
+  onSpectate,
   onConnected,
   onBack,
 }: {
@@ -69,6 +88,13 @@ export function LanPanel({
    * judged against DECODE's start rules, cleared by the room, and nothing on screen said why.
    */
   game: GameId;
+  /** Saved DSIM display name — the same pre-fill `Lobby`'s own Your name field uses. */
+  displayName?: string | null;
+  /** Account context forwarded into the persistent room Friends panel. */
+  myUserId?: string | null;
+  onOpenProfile: (username: string) => void;
+  onJoinInvite: (invite: RoomInvite) => void;
+  onSpectate: (room: string, region?: string) => void;
   /** connected to a LAN server — take the player to the room screen */
   /**
    * Go to the room screen. The CODE is passed when this navigation already knows which room
@@ -80,12 +106,33 @@ export function LanPanel({
    * `game` rides along for the tab-hosted HOST, because it is the room's game and not
    * necessarily the setting any more: a host who parks the room, changes game and comes back
    * must still re-enter the room they are running, as the game it runs.
+   *
+   * `name` is what was typed into this screen's own Your name field, handed to `Lobby` as a
+   * one-shot `initialName` the same way `code`/`game` seed the room it opens.
    */
-  onConnected: (code?: string, game?: GameId) => void;
+  onConnected: (code?: string, game?: GameId, name?: string) => void;
   /** leave the LAN screen without connecting to anything — see the note on `.ds-back` below */
   onBack: () => void;
 }) {
   const bridge = desktop();
+
+  /**
+   * Pre-filled from the account's display name, exactly like `Lobby`'s own Your name field —
+   * and guarded the same way against a `displayName` that resolves AFTER mount clobbering a
+   * deliberate edit (`nameEditedRef`).
+   */
+  const [name, setName] = useState(displayName || 'Player');
+  const nameEditedRef = useRef(false);
+  useEffect(() => {
+    if (displayName && !nameEditedRef.current) setName(displayName);
+  }, [displayName]);
+
+  /** Host room / Join room — replaces the old always-both-visible stacked sections. */
+  const [entryMode, setEntryMode] = useState<'host' | 'join'>('host');
+  /** the address-join field is a secondary, tucked-away option under Join room: most
+   *  players join a tab-hosted room by code, and the address path is for the no-internet
+   *  terminal-hosted case (see `HOST_STEPS` below). */
+  const [addrOpen, setAddrOpen] = useState(false);
 
   /**
    * HOSTING FROM THIS TAB — the WebRTC path (`docs/lan-webrtc.md`).
@@ -214,7 +261,7 @@ export function LanPanel({
     keepHostedRoom(tabHost);
     // `transport` is a fresh loopback if the last visit's was disposed — see `LanHost.transport`
     setPendingLanRoom({ transport: tabHost.transport, code: tabCode, hosting: true });
-    onConnected(tabCode, tabHost.game);
+    onConnected(tabCode, tabHost.game, name);
   };
 
   const joinByCode = (): void => {
@@ -226,7 +273,7 @@ export function LanPanel({
       .then((r) => {
         setPendingLanRoom({ transport: r.transport, code: r.code, hosting: false });
         setJoinCodeBusy(false);
-        onConnected(r.code);
+        onConnected(r.code, undefined, name);
       })
       .catch((e: Error) => {
         setJoinCodeErr(e.message || 'Couldn’t reach that room. Check the code and try again.');
@@ -366,7 +413,7 @@ export function LanPanel({
     }
     setLanServer(hit.value.url);
     setActive(true);
-    onConnected();
+    onConnected(undefined, undefined, name);
   };
 
   const leave = (): void => {
@@ -379,294 +426,329 @@ export function LanPanel({
   const port = host?.port || LAN_DEFAULT_PORT;
   const joinUrls = (host?.addresses ?? []).map((a) => `http://${a.address}:${port}`);
 
-  // A SHELL PAGE, the same shape as `ModeSelect` beside it — an eyebrow, a heading and
-  // sections. NOT a `ds-console`: this screen renders inside `AppShell`, which already
-  // carries the top bar and the left rail, so a console in here would draw a second header.
-  //
-  // ⚠️ IT STILL NEEDS ITS OWN BACK. An earlier version of this comment said the shell's own
-  // Back made one here a duplicate — it does not: `AppShell` renders a top bar and a rail and
-  // NO back control at all, and its docstring hands that responsibility to the screen ("own
-  // their own back/Esc semantics"). `WatchLive`, the other screen of this shape, takes an
-  // `onBack` for exactly this reason. Without one the only way off this page was the left
-  // rail, which is not where anyone looks after typing an address into a field — reported from
-  // a real session, on the join step.
   return (
-    <>
-      <button className="ds-back" onClick={onBack}>
-        ← Back
-      </button>
-      <p className="ds-eyebrow">{APP_NAME} · LAN</p>
-      <h1 className="ds-h1">LAN play</h1>
-
-      <p className="ds-page-note">
-        Play with everyone on the same network. LAN matches aren’t ranked, and the host’s
-        replays save to their account.
-      </p>
-
-      {active && (
-        <div className="ds-panelbox">
-          <p className="ds-lan-state">
-            Connected to <b>{lanServerUrl().replace(/^wss?:\/\//, '')}</b>
-          </p>
-          <div className="ds-actions">
-            <button className="ds-btn" onClick={leave}>
-              Disconnect
+    <RoomFriendsLayout
+      signedIn={signedIn}
+      myUserId={myUserId}
+      onOpenProfile={onOpenProfile}
+      onJoinInvite={onJoinInvite}
+      onSpectate={onSpectate}
+    >
+      <div className="ds-console">
+        <div className="ds-console-in narrow">
+          <div className="ds-head">
+            <button className="ds-back" onClick={onBack}>
+              ← Back
             </button>
+            <span className="ds-mark">
+              <Logo size={24} />
+              {APP_NAME}
+            </span>
           </div>
-        </div>
-      )}
+          <div className="ds-title">
+            <h1>
+              LAN <span className="accent">Play</span>
+            </h1>
+          </div>
 
-      {/* ---- HOST ---- */}
-      <p className="ds-tileset-label">Host</p>
-
-      {/* THE ONE HOST PATH WITH NOTHING TO INSTALL. It is first because for most people it is
-          the only one they can use: the desktop app needs a download and the terminal needs
-          Node and git, and neither exists on a school Chromebook. */}
-      <div className="ds-panelbox">
-        <p className="ds-lan-state">Host in this tab</p>
-        {!tabHost && (
-          <>
-            <p className="ds-hint">
-              Runs the match in this browser tab. Players join with a six-character code.
-            </p>
-            <p className="ds-hint">
-              Needs internet for a moment at the start so players can find each other. After
-              that the match stays on your network.
-            </p>
-            {!signedIn && !anonHostOk && (
-              <p className="ds-hint warn">Sign in to host. Matches are saved to your account.</p>
-            )}
-            {!signedIn && anonHostOk && (
-              <p className="ds-hint warn">This server has no accounts. Matches stay on this device.</p>
-            )}
-            {tabErr && <p className="ds-form-err">⚠ {tabErr}</p>}
-            <div className="ds-actions">
-              <button className="ds-cta" onClick={startTabHost} disabled={!mayTabHost || tabBusy}>
-                {tabBusy ? 'STARTING…' : 'START HOSTING ▶'}
-              </button>
+          {active && (
+            <div className="ds-panelbox">
+              <p className="ds-lan-state">
+                Connected to <b>{lanServerUrl().replace(/^wss?:\/\//, '')}</b>
+              </p>
+              <div className="ds-actions">
+                <button className="ds-btn" onClick={leave}>
+                  Disconnect
+                </button>
+              </div>
             </div>
-          </>
-        )}
-        {tabHost && (
-          <>
-            <p className="ds-hint">Share this code with your players.</p>
-            <button className="ds-lan-url" onClick={() => copy(tabCode)} title="Copy">
-              <span className="u">{tabCode}</span>
-              <span className="c">{copied === tabCode ? 'Copied' : 'Copy'}</span>
-            </button>
-            <p className="ds-hint">
-              {tabGuests === 0
-                ? 'Waiting for players…'
-                : `${tabGuests} ${tabGuests === 1 ? 'player' : 'players'} joined.`}
-            </p>
-            {/* THE HOST LOOP'S OWN HEALTH. A throttled tab does not announce itself — it just
-                runs the match slowly for everyone else — so the one person who can fix it is
-                told. See docs/lan-webrtc.md §6. */}
-            {tabHealth && tabHealth.behind > 250 && (
-              <p className="ds-hint warn">Your browser is slowing this tab. Keep it visible while you host.</p>
-            )}
-            <div className="ds-actions">
-              <button className="ds-cta" onClick={playTabHost}>
-                GO TO THE ROOM ▶
-              </button>
-              <button className="ds-btn" onClick={() => tabHost.stop()}>
-                Stop hosting
-              </button>
-            </div>
-          </>
-        )}
-      </div>
+          )}
 
-      {bridge?.lan && (
-        <>
           <div className="ds-panelbox">
-            {!running && (
-              <>
-                <p className="ds-hint">
-                  Starts a game server on this computer. Players open the address it shows in a
-                  browser.
-                </p>
-                {!signedIn && (
-                  <p className="ds-hint warn">Sign in to host. Matches are saved to your account.</p>
-                )}
-                {hostErr && <p className="ds-form-err">⚠ {hostErr}</p>}
-                <div className="ds-actions">
-                  <button className="ds-cta" disabled={hostBusy || !signedIn} onClick={startHost}>
-                    {hostBusy ? 'STARTING…' : 'START HOSTING ▶'}
-                  </button>
-                </div>
-              </>
-            )}
+            <label className="ds-field">
+              <span className="cap">Your name</span>
+              <input
+                className="ds-input"
+                value={name}
+                onChange={(e) => {
+                  nameEditedRef.current = true;
+                  setName(e.target.value);
+                }}
+                maxLength={20}
+              />
+            </label>
 
-            {running && (
+            <div className="ds-opts two">
+              <button
+                className={`ds-opt ${entryMode === 'host' ? 'on' : ''}`}
+                onClick={() => setEntryMode('host')}
+              >
+                <span className="ot">Host room</span>
+              </button>
+              <button
+                className={`ds-opt ${entryMode === 'join' ? 'on' : ''}`}
+                onClick={() => setEntryMode('join')}
+              >
+                <span className="ot">Join room</span>
+              </button>
+            </div>
+
+            {entryMode === 'host' ? (
               <>
-                <p className="ds-lan-state">
-                  Hosting on port <b>{port}</b>
-                </p>
-                {joinUrls.length === 0 ? (
-                  <p className="ds-hint warn">
-                    This computer isn’t on a network other players can reach. Connect to Wi-Fi or
-                    ethernet, then start hosting again.
-                  </p>
-                ) : (
+                {/* THE ONE HOST PATH WITH NOTHING TO INSTALL. It is first because for most
+                    people it is the only one they can use: the desktop app needs a download
+                    and the terminal needs Node and git, and neither exists on a school
+                    Chromebook. */}
+                {!tabHost && (
                   <>
-                    <p className="ds-hint">Players open this in a browser on the same network:</p>
-                    <div className="ds-lan-urls">
-                      {joinUrls.map((u, i) => (
-                        <button
-                          key={u}
-                          className={`ds-lan-url${i === 0 ? ' primary' : ''}`}
-                          onClick={() => copy(u)}
-                          title="Copy"
-                        >
-                          <span className="u">{u}</span>
-                          <span className="c">{copied === u ? 'Copied' : 'Copy'}</span>
-                        </button>
-                      ))}
-                    </div>
-                    {joinUrls.length > 1 && (
-                      <p className="ds-hint">If the first address doesn’t work, try the next.</p>
+                    <p className="ds-hint">
+                      Needs internet for a moment at the start so players can find each other. After
+                      that the match stays on your network.
+                    </p>
+                    {!signedIn && !anonHostOk && (
+                      <p className="ds-hint warn">Sign in to host. Matches are saved to your account.</p>
                     )}
+                    {!signedIn && anonHostOk && (
+                      <p className="ds-hint warn">This server has no accounts. Matches stay on this device.</p>
+                    )}
+                    {tabErr && <p className="ds-form-err">⚠ {tabErr}</p>}
+                    <div className="ds-actions">
+                      <button className="ds-cta" onClick={startTabHost} disabled={!mayTabHost || tabBusy}>
+                        {tabBusy ? 'STARTING…' : 'HOST ROOM ▶'}
+                      </button>
+                    </div>
                   </>
                 )}
-                {skew && (
-                  <p className="ds-hint warn">
-                    Your server runs a different DSIM build ({skew}) than this window ({appBuild()}).
-                    Play from <b>http://localhost:{port}</b> so everyone is on the same build.
-                  </p>
-                )}
-                <div className="ds-actions">
-                  {!active && (
-                    <button
-                      className="ds-cta"
-                      onClick={() => {
-                        // THE HOST CONNECTS THROUGH `localhost`, not through the address the
-                        // guests use. It is the one host a browser exempts from the mixed-
-                        // content rule, so this works from the live https site as well as
-                        // from the bundled copy — see `mixedContentBlock`.
-                        setLanServer(`localhost:${port}`);
-                        setActive(true);
-                        onConnected();
-                      }}
-                    >
-                      PLAY ON MY SERVER ▶
+                {tabHost && (
+                  <>
+                    <p className="ds-hint">Share this code with your players.</p>
+                    <button className="ds-lan-url" onClick={() => copy(tabCode)} title="Copy">
+                      <span className="u">{tabCode}</span>
+                      <span className="c">{copied === tabCode ? 'Copied' : 'Copy'}</span>
                     </button>
-                  )}
-                  <button className="ds-btn" disabled={hostBusy} onClick={stopHost}>
-                    Stop hosting
+                    <p className="ds-hint">
+                      {tabGuests === 0
+                        ? 'Waiting for players…'
+                        : `${tabGuests} ${tabGuests === 1 ? 'player' : 'players'} joined.`}
+                    </p>
+                    {/* THE HOST LOOP'S OWN HEALTH. A throttled tab does not announce itself — it
+                        just runs the match slowly for everyone else — so the one person who can
+                        fix it is told. See docs/lan-webrtc.md §6. */}
+                    {tabHealth && tabHealth.behind > 250 && (
+                      <p className="ds-hint warn">Your browser is slowing this tab. Keep it visible while you host.</p>
+                    )}
+                    <div className="ds-actions">
+                      <button className="ds-cta" onClick={playTabHost}>
+                        GO TO THE ROOM ▶
+                      </button>
+                      <button className="ds-btn" onClick={() => tabHost.stop()}>
+                        Stop hosting
+                      </button>
+                    </div>
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                {/* Two ways in, and they are not interchangeable: a CODE reaches a tab-hosted
+                    room and an ADDRESS reaches a machine running the server. The code is
+                    primary because it is the one that needs nothing explained; the address
+                    path is tucked behind the disclosure below for the no-internet case. */}
+                <label className="ds-field">
+                  <span className="cap">Room code</span>
+                  <input
+                    className="ds-input"
+                    value={joinCode}
+                    onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                    onKeyDown={(e) => e.key === 'Enter' && joinByCode()}
+                    placeholder="6 characters"
+                    spellCheck={false}
+                    autoCapitalize="characters"
+                    maxLength={6}
+                  />
+                </label>
+                <p className="ds-hint">Both players must be on the same network.</p>
+                {joinCodeErr && <p className="ds-form-err">⚠ {joinCodeErr}</p>}
+                <div className="ds-actions">
+                  <button className="ds-cta" onClick={joinByCode} disabled={joinCode.length < 6 || joinCodeBusy}>
+                    {joinCodeBusy ? 'CONNECTING…' : 'JOIN ▶'}
                   </button>
                 </div>
+
+                <button className="ds-btn ghost small" onClick={() => setAddrOpen((v) => !v)}>
+                  {addrOpen ? 'Hide' : 'Joining a terminal-hosted server instead?'}
+                </button>
+                {addrOpen && (
+                  <>
+                    <label className="ds-field">
+                      <span className="cap">Host address</span>
+                      <input
+                        className="ds-input"
+                        value={addr}
+                        onChange={(e) => setAddr(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && join()}
+                        placeholder={`192.168.1.5:${LAN_DEFAULT_PORT}`}
+                        spellCheck={false}
+                        autoCapitalize="off"
+                      />
+                    </label>
+                    {joinErr && <p className="ds-form-err">⚠ {joinErr}</p>}
+                    {/* THE MIXED-CONTENT DIAGNOSIS. Not an error about the address — the
+                        address is fine and the server is fine; THIS PAGE is the thing that
+                        cannot reach it, and no amount of retrying will change that. So it
+                        says what to do instead. */}
+                    {openInstead && (
+                      <p className="ds-hint warn">
+                        Your browser blocks this page from reaching a local server. Open <b>{openInstead}</b>{' '}
+                        in a new tab instead.
+                      </p>
+                    )}
+                    <div className="ds-actions">
+                      <button className="ds-cta" onClick={join}>
+                        CONNECT ▶
+                      </button>
+                      {openInstead && (
+                        <button className="ds-btn" onClick={() => copy(openInstead)}>
+                          {copied === openInstead ? 'Copied' : 'Copy address'}
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
               </>
             )}
           </div>
-        </>
-      )}
 
-      {/* ---- HOST WITHOUT THE APP ------------------------------------------------------
-          Why this is on the page AT ALL, and why it is not apologetic about the terminal:
+          {entryMode === 'host' && (
+            <>
+              {/* ---- HOST WITHOUT THE APP ------------------------------------------------
+                  Why this is on the page AT ALL, and why it is not apologetic about the
+                  terminal:
 
-          A browser tab still cannot be a SERVER — there is no web API that opens a listening
-          socket, so nothing a guest types into an address bar will ever reach a tab. What
-          changed is that guests no longer have to dial one: the tab-hosted path above reaches
-          them through WebRTC, introduced by a cloud rendezvous. `docs/lan-webrtc.md`.
+                  A browser tab still cannot be a SERVER — there is no web API that opens a
+                  listening socket, so nothing a guest types into an address bar will ever
+                  reach a tab. What changed is that guests no longer have to dial one: the
+                  tab-hosted path above reaches them through WebRTC, introduced by a cloud
+                  rendezvous. `docs/lan-webrtc.md`.
 
-          ⚠️ So this block is NOT the fallback for people who cannot use the button above. It
-          is the path for a venue with NO INTERNET AT ALL, which the tab path needs for about a
-          second to make the introduction. That is a real gym, and it is the reason this stays
-          on the page rather than being deleted now that hosting has a button.
+                  ⚠️ So this block is NOT the fallback for people who cannot use the button
+                  above. It is the path for a venue with NO INTERNET AT ALL, which the tab
+                  path needs for about a second to make the introduction. That is a real gym,
+                  and it is the reason this stays on the page rather than being deleted now
+                  that hosting has a button.
 
-          GUESTS ARE UNAFFECTED either way, which is the part people assume wrong: only the
-          HOST needs any of this. `docs/lan-selfhost.md` carries the long version. ------------ */}
-      <div className="ds-panelbox">
-        <p className="ds-lan-state">Host without internet</p>
-        <p className="ds-hint">
-          Runs the game server from a terminal, so it works with no internet at all. Players
-          join by address instead of a code. Needs Node.js and Git, on macOS, Windows or Linux.
-        </p>
-        <ol className="ds-lan-steps">
-          {HOST_STEPS.map((step) => (
-            <li key={step.cmd}>
-              <span className="s">{step.what}</span>
-              <button
-                className="ds-lan-url compact"
-                onClick={() => copy(step.cmd)}
-                title="Copy"
-              >
-                <span className="u">{step.cmd}</span>
-                <span className="c">{copied === step.cmd ? 'Copied' : 'Copy'}</span>
-              </button>
-            </li>
-          ))}
-        </ol>
-        <p className="ds-hint">
-          It prints the addresses to share and hosts until you press Ctrl-C. The first run takes
-          a minute to build. Players don’t install anything.
-        </p>
-      </div>
+                  GUESTS ARE UNAFFECTED either way, which is the part people assume wrong:
+                  only the HOST needs any of this. `docs/lan-selfhost.md` carries the long
+                  version. ---------------------------------------------------------------- */}
+              <div className="ds-panelbox">
+                <p className="ds-lan-state">Host without browser</p>
+                <p className="ds-hint">
+                  Runs the game server from a terminal, so it works with no internet at all. Players
+                  join by address instead of a code. Needs Node.js and Git, on macOS, Windows or Linux.
+                </p>
+                <ol className="ds-lan-steps">
+                  {HOST_STEPS.map((step) => (
+                    <li key={step.cmd}>
+                      <span className="s">{step.what}</span>
+                      <button className="ds-lan-url compact" onClick={() => copy(step.cmd)} title="Copy">
+                        <span className="u">{step.cmd}</span>
+                        <span className="c">{copied === step.cmd ? 'Copied' : 'Copy'}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+                <p className="ds-hint">
+                  It prints the addresses to share and hosts until you press Ctrl-C. The first run takes
+                  a minute to build. Players don’t install anything.
+                </p>
+              </div>
 
-      {/* ---- JOIN ---- */}
-      <p className="ds-tileset-label">Join</p>
+              {bridge?.lan && (
+                <div className="ds-panelbox">
+                  {!running && (
+                    <>
+                      <p className="ds-hint">
+                        Starts a game server on this computer. Players open the address it shows in a
+                        browser.
+                      </p>
+                      {!signedIn && (
+                        <p className="ds-hint warn">Sign in to host. Matches are saved to your account.</p>
+                      )}
+                      {hostErr && <p className="ds-form-err">⚠ {hostErr}</p>}
+                      <div className="ds-actions">
+                        <button className="ds-cta" disabled={hostBusy || !signedIn} onClick={startHost}>
+                          {hostBusy ? 'STARTING…' : 'HOST ROOM ▶'}
+                        </button>
+                      </div>
+                    </>
+                  )}
 
-      {/* Two ways in, and they are not interchangeable: a CODE reaches a tab-hosted room and an
-          ADDRESS reaches a machine running the server. The code is first because it is the one
-          that needs nothing explained. */}
-      <div className="ds-panelbox">
-        <label className="ds-field">
-          <span className="cap">Room code</span>
-          <input
-            className="ds-input"
-            value={joinCode}
-            onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
-            onKeyDown={(e) => e.key === 'Enter' && joinByCode()}
-            placeholder="BCDFGH"
-            spellCheck={false}
-            autoCapitalize="characters"
-            maxLength={6}
-          />
-        </label>
-        <p className="ds-hint">For a host running DSIM in a browser tab.</p>
-        {joinCodeErr && <p className="ds-form-err">⚠ {joinCodeErr}</p>}
-        <div className="ds-actions">
-          <button className="ds-cta" onClick={joinByCode} disabled={joinCode.length < 6 || joinCodeBusy}>
-            {joinCodeBusy ? 'CONNECTING…' : 'JOIN ▶'}
-          </button>
-        </div>
-      </div>
-
-      <div className="ds-panelbox">
-        <label className="ds-field">
-          <span className="cap">Host address</span>
-          <input
-            className="ds-input"
-            value={addr}
-            onChange={(e) => setAddr(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && join()}
-            placeholder={`192.168.1.5:${LAN_DEFAULT_PORT}`}
-            spellCheck={false}
-            autoCapitalize="off"
-          />
-        </label>
-        {joinErr && <p className="ds-form-err">⚠ {joinErr}</p>}
-        {/* THE MIXED-CONTENT DIAGNOSIS. Not an error about the address — the address is fine
-            and the server is fine; THIS PAGE is the thing that cannot reach it, and no amount
-            of retrying will change that. So it says what to do instead. */}
-        {openInstead && (
-          <p className="ds-hint warn">
-            Your browser blocks this page from reaching a local server. Open <b>{openInstead}</b>{' '}
-            in a new tab instead.
-          </p>
-        )}
-        <div className="ds-actions">
-          <button className="ds-cta" onClick={join}>
-            CONNECT ▶
-          </button>
-          {openInstead && (
-            <button className="ds-btn" onClick={() => copy(openInstead)}>
-              {copied === openInstead ? 'Copied' : 'Copy address'}
-            </button>
+                  {running && (
+                    <>
+                      <p className="ds-lan-state">
+                        Hosting on port <b>{port}</b>
+                      </p>
+                      {joinUrls.length === 0 ? (
+                        <p className="ds-hint warn">
+                          This computer isn’t on a network other players can reach. Connect to Wi-Fi or
+                          ethernet, then start hosting again.
+                        </p>
+                      ) : (
+                        <>
+                          <p className="ds-hint">Players open this in a browser on the same network:</p>
+                          <div className="ds-lan-urls">
+                            {joinUrls.map((u, i) => (
+                              <button
+                                key={u}
+                                className={`ds-lan-url${i === 0 ? ' primary' : ''}`}
+                                onClick={() => copy(u)}
+                                title="Copy"
+                              >
+                                <span className="u">{u}</span>
+                                <span className="c">{copied === u ? 'Copied' : 'Copy'}</span>
+                              </button>
+                            ))}
+                          </div>
+                          {joinUrls.length > 1 && (
+                            <p className="ds-hint">If the first address doesn’t work, try the next.</p>
+                          )}
+                        </>
+                      )}
+                      {skew && (
+                        <p className="ds-hint warn">
+                          Your server runs a different DSIM build ({skew}) than this window ({appBuild()}).
+                          Play from <b>http://localhost:{port}</b> so everyone is on the same build.
+                        </p>
+                      )}
+                      <div className="ds-actions">
+                        {!active && (
+                          <button
+                            className="ds-cta"
+                            onClick={() => {
+                              // THE HOST CONNECTS THROUGH `localhost`, not through the address the
+                              // guests use. It is the one host a browser exempts from the mixed-
+                              // content rule, so this works from the live https site as well as
+                              // from the bundled copy — see `mixedContentBlock`.
+                              setLanServer(`localhost:${port}`);
+                              setActive(true);
+                              onConnected(undefined, undefined, name);
+                            }}
+                          >
+                            PLAY ON MY SERVER ▶
+                          </button>
+                        )}
+                        <button className="ds-btn" disabled={hostBusy} onClick={stopHost}>
+                          Stop hosting
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
-    </>
+    </RoomFriendsLayout>
   );
 }

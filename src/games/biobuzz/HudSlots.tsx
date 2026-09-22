@@ -196,139 +196,128 @@ function useHeldBump(count: number, timeLeft: number, phase: string, hold: numbe
  * that change what THEY do next. So the robot half and the alliance half (own CELL, own NECTAR
  * supply) both belong here, and the opponent's numbers do not.
  *
- * The ROBOT half, which a BIOBUZZ driver needs and cannot infer:
- *  • which launcher's rules are in force (it decides whether the fire button STEERS the chassis).
- *  • WHAT IS IN THE ROBOT — one disc per held element, coloured by element, then a hollow ring
- *    per free slot up to the cap. The row runs NEXT-OUT FIRST: the leftmost filled disc is the
- *    element the launcher (or the Box Tube) takes next, and it carries the `.next` ring. The
- *    discs carry no letters or digits and the row prints no count chip (owner ruling
- *    2026-09-12); the row's accessible name says the same thing in words. It reuses DECODE's
- *    `.hopper` / `.hopper-pip` anatomy, so the empty slot's contrast-audited ring is the same one.
- *  • FLOWER IN REACH — the Box Tube's placement point is on a FLOWER, so a place button will do
- *    something. Proximity is hard to judge top-down.
- *
- * G410 LIVES ON THE BAR, NOT HERE. `GameView` suppresses this whole row on a coarse pointer,
- * so a chip on it is not a place a phone can read a rule from — and a MAJOR 20 per NECTAR
- * entered one second early is not a rule to leave to a cue the device does not render. The
- * bar's row states the lock and carries the countdown; this row keeps only the CROSSING, the
- * one instant of it that is news.
+ * STORAGE is dots only, no wording (owner ruling 2026-09-12 extended to every chip in this
+ * card): one disc per held element, coloured by element, then a hollow ring per free slot up
+ * to the cap (NEXT-OUT FIRST: the leftmost filled disc carries the `.next` ring). Under it, the
+ * FLOWER icon (grey while G410 locks entry, alliance-yellow once it opens, ringed while
+ * `flowerInReach`). NO NECTAR COLUMN (owner, 2026-09-19: "get rid of ... the top right corner
+ * display that shows the number of nectar remaining") — the human player's box, which now
+ * stands where the drive team can see it, is the thing that actually holds the NECTAR, and a
+ * count beside it would be a second copy of a number you can look at.
+ * The PIN countdown and the CONTROL 5+ warning do NOT live here — both are transient calls to
+ * action rather than standing facts, so `BiobuzzPinnedNotice` renders them above the event log
+ * instead (see there).
+ * Every row's accessible name says the same thing in words, since the dots carry no text.
  */
 export function BiobuzzHudChips({ hud }: GameHudProps) {
   const s = sliceOf(hud);
   const f = s?.field;
   const r = s?.robot;
-  const pin = soonestPin(f?.pins);
-  // G407. The hook runs on every sample, including the ones where an absent slice reads 0, so
-  // the hold is measured against the same clock the rest of the row is drawn from.
-  const warned = useHeldBump(
-    f?.warnings[hud.alliance] ?? 0,
-    hud.timeLeft,
-    hud.phase,
-    BB_WARN_HOLD_S,
-  );
-  // ...and whether it has climbed all the way to the STRATEGIC MAJOR (owner ruling 2026-09-19).
-  // A flag, not a held bump: the MAJOR is a per-MATCH latch, so once it is true it stays the
-  // fact for the rest of the match, the same way a red card would.
-  const majored = f?.controlMajor[hud.alliance] ?? false;
-  /**
-   * G410, FROM THE OTHER SIDE: the moment the FLOWERS OPEN.
-   *
-   * The bar's NECTAR LOCKED line simply stops being drawn at the 1:00 cue, and a line that
-   * vanishes is not a cue — a driver watching the field rather than the strip has nothing that
-   * says the rule just changed. `step.ts` already pushes `FLOWER OWNERSHIP UNLOCKED` on the crossing
-   * tick, but the event log is the muted left edge and this is a fact worth a beat in the
-   * driver's own row.
-   *
-   * HELD, NOT PERMANENT, and that is the whole design: FLOWERS OPEN is true for the last
-   * minute of every match, so a chip bound to the state itself would sit there as noise for
-   * exactly as long as it was useless — which is the same objection that took the standing
-   * NECTAR LOCKED chip off this row. It reuses `useHeldBump` off the match clock, like the
-   * G407 warning, so it costs the row width for `BB_WARN_HOLD_S` and then gives it back.
-   *
-   * `nectarLocked` IS A STATE, so it is turned into the monotonic count the hook wants: 0 while
-   * the FLOWERS are shut, 1 once they open. Inside TELEOP the cue is one-way, so it only ever
-   * counts up; the re-lock at the buzzer is a PHASE change, which the hook already refuses to
-   * read as a bump.
-   */
-  const opened = useHeldBump(f?.nectarLocked === false ? 1 : 0, hud.timeLeft, hud.phase, BB_WARN_HOLD_S);
   const held = r?.held ?? [];
   const free = r ? Math.max(0, r.cap - held.length) : 0;
   const said = heldPhrase(held);
+
+  // G410: grey while locked, alliance-yellow once the FLOWERS open — a standing fill, not a
+  // flash (contrast a G407 warning, which genuinely only matters for a few seconds).
+  const flowerOpen = f?.nectarLocked === false;
+  const flowerSaid = `FLOWER ${flowerOpen ? 'open' : 'locked'}${r?.flowerInReach ? ', in reach' : ''}.`;
+
   return (
-    <>
-      {/* NO ARCHETYPE CHIP. The launcher's name is a thing the driver CHOSE in the builder and
-          cannot change mid-match, so it told them nothing they did not already know while
-          costing the width of the longest label in `BB_MODE_LABELS` ("DOUBLE TURRET") on a
-          `nowrap` row. What the launcher's rules actually DO to the controls is already in the
-          controls themselves; the hopper row beside it is the part that changes. */}
-      {r && (
-        <div className="hopper" role="img" aria-label={said} title={said}>
-          {[...held].reverse().map((c, i) => (
-            <span key={`h${i}`} className={`hopper-pip ${c}${i === 0 ? ' next' : ''}`} />
-          ))}
-          {Array.from({ length: free }, (_, i) => (
-            <span key={`e${i}`} className="hopper-pip empty" />
-          ))}
-        </div>
-      )}
-      {r?.flowerInReach && <span className="chip on">FLOWER IN REACH</span>}
+    <div className="bb-hud">
+      <div className="bb-hud-left">
+        {/* NO ARCHETYPE CHIP. The launcher's name is a thing the driver CHOSE in the builder
+            and cannot change mid-match, so it told them nothing they did not already know
+            while costing the width of the longest label in `BB_MODE_LABELS`
+            ("DOUBLE TURRET"). What the launcher's rules actually DO to the controls is already
+            in the controls themselves; the hopper column beside it is the part that changes. */}
+        {r && (
+          <div className="hopper vertical" role="img" aria-label={said} title={said}>
+            {[...held].reverse().map((c, i) => (
+              <span key={`h${i}`} className={`hopper-pip ${c}${i === 0 ? ' next' : ''}`} />
+            ))}
+            {Array.from({ length: free }, (_, i) => (
+              <span key={`e${i}`} className="hopper-pip empty" />
+            ))}
+          </div>
+        )}
+        {/* NO CELL CHIP. `BiobuzzScoreBar` already prints this alliance's up-CELL line under
+            its own score panel — `cellLine`, the same two states ("n MORE TO TIP" / "TIPPING")
+            this card used to carry, in the place a driver already watches for the score. */}
+        {/* THE FLOWER ICON replaces the old FLOWER IN REACH / FLOWERS OPEN text chips — G410's
+            lock is the fill (grey/open), `flowerInReach` is the ring. CONTROL 5+ used to sit
+            beside it here; it now lives in the event log with the PIN countdown, below, since
+            both are transient calls to action rather than a standing fact like this icon. */}
+        {f && (
+          <span
+            className={`flower-icon${flowerOpen ? ' open' : ''}${r?.flowerInReach ? ' reach' : ''}`}
+            role="img"
+            aria-label={flowerSaid}
+            title={flowerSaid}
+          />
+        )}
+      </div>
       {/* the `ramp` intake's own state — absent (no chip) for every other archetype, per
           `hudRobot.ts`'s `rampOut`. `.on`/`.off` are the same GATE OPEN/CLOSED pair, not a new
           colour: down is the ready state, folded recedes like a closed gate does. */}
       {r?.rampOut !== undefined && (
         <span className={`chip ${r.rampOut ? 'on' : 'off'}`}>{r.rampOut ? 'RAMP DOWN' : 'RAMP UP'}</span>
       )}
-      {/* NO CELL CHIP. `BiobuzzScoreBar` already prints this alliance's up-CELL line under its
-          own score panel — `cellLine`, the same two states ("n MORE TO TIP" / "TIPPING") the
-          chips carried, in the place a driver already watches for the score. Two readouts of
-          one number is one readout too many on a row that grows leftward into the sponsor
-          mark. */}
-      {/* NO NECTAR STOCK CHIP (owner, 2026-09-19: "get rid of ... the top right corner display
-          that shows the number of nectar remaining"). The count was said TWICE on screen — here
-          and on a billboard over the human player's box in the 3D world — and the box itself,
-          which now stands where the drive team can see it, is the thing that actually holds the
-          NECTAR. A count beside it is a second copy of a number you can look at.
-          ⚠️ THE REFUSAL REASONS WENT WITH IT. `NECTAR_CHIP` carried `none-owed` / `none-left` /
-          `locked` in its text, which is the only place the HUD said WHY a press would do
-          nothing. If that turns out to be missed, it belongs on the bar's own rule row
-          (`BiobuzzScoreBar`), not back on this right-anchored `nowrap` row — the comment below
-          records what a sixth chip costs here. */}
-      {/* NO NECTAR LOCKED CHIP HERE. The lock is TRUE for all of AUTO and the first minute of
-          TELEOP — most of a match — so as a chip it was a permanent fixture rather than a cue,
-          and a chip that is always on is read as furniture. The bar's row above the score
-          panels still states it AND carries the countdown (`BiobuzzScoreBar`), which is the
-          version that survives a coarse pointer anyway; the cue worth a beat on this row is
-          the CROSSING, below. */}
-      {/* ...the moment the lock lifts — see `opened` above. `on` rather than a colour of
-          its own: `npm run contrast` audits the palette pair by pair, so a token invented for
-          one chip is a new pair to justify, and the meaning here is the same one `FLOWER IN
-          REACH` already uses — a thing you may now do. */}
-      {opened && <span className="chip on">FLOWERS OPEN</span>}
-      {/* G407 — CONTROL of a fifth SCORING ELEMENT. The base sanction is a WARNING worth no
-          points and no card, which is exactly why it needs a chip: a sanction that moves no
-          number is invisible on a scoreboard unless the HUD says it happened. Held
-          `BB_WARN_HOLD_S` off the match clock (see `useHeldBump`), because the underlying
-          count never comes back down.
-          ⚠️ ONCE THE STRATEGIC MAJOR BILLS (owner ruling 2026-09-19), the chip SWITCHES rather
-          than adds a second one: same slot, `.chip.bad` in place of `.chip.warn`, so the driver
-          sees the escalation coming without a row that grows. `majored` is a latch, not a held
-          bump, so the chip stays up for the rest of the match once it is true — existing
-          classes only, no new colour to audit. */}
+    </div>
+  );
+}
+
+/**
+ * THE TWO LIVE WARNINGS, pinned above the event log's toasts while either is active — a PIN's
+ * countdown and G407's CONTROL 5+.
+ *
+ * `BbPinHud.nextIn` ticks continuously, which is exactly the shape the toast log cannot hold —
+ * a toast decays after 2.5 s and would have to re-fire every frame to stay lit, which is not a
+ * toast, it is a second HUD. CONTROL 5+ isn't continuous the same way, but it is still a call
+ * to action rather than a fact ("do something differently right now"), which is what belongs
+ * in the driver's eyeline rather than parked as furniture in the HUD card — so it moved here
+ * alongside PIN rather than getting a bespoke third home. Both read the live slice directly,
+ * through the `pinnedNotice` slot (`GameModule`), and the component renders nothing when
+ * neither is active.
+ *
+ * PIN'S NEUTRAL COLOUR IS DELIBERATE, AND IT IS A GAP: the line cannot yet say whether THIS
+ * alliance is the one pinning or the one being held. `BbPinHud` carries robot IDs, and nothing
+ * that reaches a HUD component maps an ID to an alliance — `HudSnapshot` has no roster and no
+ * local robot ID, and the slice's robot half (Lane B's `hudRobot.ts`) has no ID either. A PIN
+ * is always cross-alliance, so the line is always relevant to whoever is reading it and the
+ * COUNTDOWN is the same number for both sides (let go / keep trying); only the colour split is
+ * blocked. Requested of the master: one `pinnerAlliance: Alliance` on `BbPinHud` and this
+ * becomes two differently-coloured lines.
+ */
+export function BiobuzzPinnedNotice({ hud }: GameHudProps) {
+  const f = sliceOf(hud)?.field;
+  const pin = soonestPin(f?.pins);
+  // G407. The hook runs on every sample, including the ones where an absent slice reads 0, so
+  // the hold is measured against the same clock the rest of the HUD is drawn from.
+  const warned = useHeldBump(f?.warnings[hud.alliance] ?? 0, hud.timeLeft, hud.phase, BB_WARN_HOLD_S);
+  // ...and whether it has climbed all the way to the STRATEGIC MAJOR (owner ruling 2026-09-19).
+  // A flag, not a held bump: the MAJOR is a per-MATCH latch, so once it is true it stays the
+  // fact for the rest of the match, the same way a red card would.
+  const majored = f?.controlMajor[hud.alliance] ?? false;
+  if (!pin && !warned && !majored) return null;
+  return (
+    <>
+      {/* G407 — CONTROL of a fifth SCORING ELEMENT. The owner's ruling makes this a WARNING
+          worth no points and no card, which is exactly why it needs a line: a sanction that
+          moves no number is invisible on a scoreboard unless something says it happened. Held
+          `BB_WARN_HOLD_S` off the match clock (see `useHeldBump`), because the underlying count
+          never comes back down.
+          ONCE THE STRATEGIC MAJOR BILLS, the line SWITCHES rather than adds a second one: same
+          slot, `.eventlog-pinned.bad` in place of the plain warn colour, so the driver sees the
+          escalation coming without a log that grows. `majored` is a latch, not a held bump, so
+          the line stays up for the rest of the match once it is true. */}
       {(warned || majored) && (
-        <span className={`chip ${majored ? 'bad' : 'warn'}`}>{majored ? 'CONTROL 5+ MAJOR' : 'CONTROL 5+'}</span>
+        <div className={`eventlog-line eventlog-pinned${majored ? ' bad' : ''}`}>
+          {majored ? 'CONTROL 5+ MAJOR' : 'CONTROL 5+'}
+        </div>
       )}
       {/* G421 — a PIN, counting. 20 points every three seconds, and the clock runs in a
-          referee's head, so `nextIn` is the only warning either driver gets.
-
-          NEUTRAL COLOUR, DELIBERATELY, AND IT IS A GAP: the chip cannot yet say whether THIS
-          alliance is the one pinning or the one being held. `BbPinHud` carries robot IDs, and
-          nothing that reaches a HUD component maps an ID to an alliance — `HudSnapshot` has no
-          roster and no local robot ID, and the slice's robot half (Lane B's `hudRobot.ts`) has
-          no ID either. A PIN is always cross-alliance, so the chip is always relevant to
-          whoever is reading it and the COUNTDOWN is the same number for both sides (let go /
-          keep trying); only the colour split is blocked. Requested of the master: one
-          `pinnerAlliance: Alliance` on `BbPinHud` and the victim's chip becomes `chip bad`. */}
-      {pin && <span className="chip warn">{pinLine(pin)}</span>}
+          referee's head, so `nextIn` is the only warning either driver gets. */}
+      {pin && <div className="eventlog-line eventlog-pinned">{pinLine(pin)}</div>}
     </>
   );
 }
@@ -343,8 +332,7 @@ const PHASE_LABEL: Record<HudSnapshot['phase'], string> = {
 };
 
 /**
- * The whole bottom bar — red | timer | blue, each alliance's up-CELL line under its total,
- * and the G410 cue above.
+ * The whole bottom bar — red | timer | blue, each alliance's up-CELL line under its total.
  *
  * It exists because the SHARED bar is DECODE's: it draws the motif dots for every game that
  * is not Chain Reaction, and BIOBUZZ has no motif. The LAYOUT is the shared one on purpose
