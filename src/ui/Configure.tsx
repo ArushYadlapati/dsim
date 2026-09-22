@@ -4,8 +4,9 @@ import { Menu } from './Menu';
 import { MatchSetup } from './MatchSetup';
 import { ControlsSection } from './ControlsSection';
 import { AudioSection } from './AudioSection';
+import { NetworkSection } from './NetworkSection';
 /**
- * LAZY, unlike its four siblings — and the reason is the bundle, not the screen.
+ * LAZY, unlike its five siblings — and the reason is the bundle, not the screen.
  *
  * `GraphicsSection` carries the whole seventeen-setting model (`graphics/settings.ts`: the preset
  * table, the coercion, the store), which nothing else in the MAIN chunk reads — the renderer
@@ -21,14 +22,15 @@ const GraphicsSection = lazy(() => import('./GraphicsSection').then((m) => ({ de
 
 /**
  * TASK ORDER, not the order the sections were built in: build the robot, learn to drive it,
- * set up the session you will drive it in, then the two output settings. `match` moved from
- * second to third and nothing else changed position.
+ * set up the session you will drive it in, then the output settings, then the connection.
+ * `network` is last because it is the one a player opens least — it holds client prediction,
+ * which moved out of Controls on 2026-09-22 (see `NetworkSection`).
  *
  * ⚠️ THE ROUTE KEYS ARE UNTOUCHED. This array is the ORDER ON SCREEN; `/configure/<key>` is a
  * shipped, deep-linkable URL (`audio` is still the key for Audio and Visual), and reordering a
  * list must never break a link somebody has bookmarked.
  */
-export const CONFIGURE_SECTIONS = ['robot', 'controls', 'match', 'audio', 'graphics'] as const;
+export const CONFIGURE_SECTIONS = ['robot', 'controls', 'match', 'audio', 'graphics', 'network'] as const;
 export type ConfigureSection = (typeof CONFIGURE_SECTIONS)[number];
 
 export function isConfigureSection(s: string | null): s is ConfigureSection {
@@ -41,19 +43,19 @@ export function isConfigureSection(s: string | null): s is ConfigureSection {
  * were written before it: "Audio and Visual · Sounds, voice & theme" said the label again in
  * other words, and "Robot · Presets, build, intake" listed three of the section's six panels
  * — which is a promise that goes stale every time one is added.
+ *
+ * NO HINTS. Audio and Visual said "Follows your account" and Graphics "This device only",
+ * and the owner called both clutter (2026-09-22); the other three went with them, since a
+ * sub-nav where some rows carry a second line and others do not reads as unfinished.
  */
-const LABELS: Record<ConfigureSection, { label: string; hint: string }> = {
-  robot: { label: 'Robot', hint: 'Build, look, drive feel' },
-  controls: { label: 'Controls', hint: 'Keyboard, gamepad, touch' },
-  match: { label: 'Match', hint: 'Practice setup' },
+const LABELS: Record<ConfigureSection, { label: string }> = {
+  robot: { label: 'Robot' },
+  controls: { label: 'Controls' },
+  match: { label: 'Match' },
   // route key stays 'audio' — /configure/audio is deep-linkable and already shipped
-  audio: { label: 'Audio and Visual', hint: 'Follows your account' },
-  // The one section that is NOT `GameSettings`: everything under it is per device
-  // (`localStorage['decodesim.graphics']`), because a GPU is a property of the machine —
-  // `docs/biobuzz/plan-3d.md` §4.4, and `GraphicsSection`'s own header. The hint is the
-  // difference between the two, which is the thing neither label can carry and the one
-  // question a player cannot answer by looking.
-  graphics: { label: 'Graphics', hint: 'This device only' },
+  audio: { label: 'Audio and Visual' },
+  graphics: { label: 'Graphics' },
+  network: { label: 'Network' },
 };
 
 /**
@@ -61,7 +63,8 @@ const LABELS: Record<ConfigureSection, { label: string; hint: string }> = {
  * sub-nav. Each section is an EXISTING component, moved rather than rewritten:
  * `Menu` (the robot builder), `MatchSetup` (was a collapsed panel on Home), and
  * `ControlsSection` + `AudioSection` (were buried in Account). Account keeps only
- * identity, server region, and the settings reset.
+ * identity, server region, and the settings reset. `NetworkSection` is the one written for
+ * it, when client prediction left Controls.
  *
  * The active section is a real route (`/configure/<section>`), so it is
  * deep-linkable and survives back/forward.
@@ -97,7 +100,6 @@ export function Configure({
               onClick={() => onSection(s)}
             >
               <span className="sl">{LABELS[s].label}</span>
-              <span className="sh">{LABELS[s].hint}</span>
             </button>
           ))}
         </nav>
@@ -119,6 +121,7 @@ export function Configure({
               <GraphicsSection />
             </Suspense>
           )}
+          {section === 'network' && <NetworkSection />}
         </div>
       </div>
     </>

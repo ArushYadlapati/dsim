@@ -74,15 +74,33 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   masking reads SATISFIED rather than fired, so under a three-chord the two-chord's wait also
   silences the single for its length. With no combo bound, none of this runs: the fast path is
   the old any-button test with no state. All of it is pinned in `npm test`.
-- **GAME-SPECIFIC BINDS — one main map, per-season overrides** (`ControlBindings.perGame`,
-  `effectiveBindings`). `ControlBindings` (keys + pad + combos) stays THE MAIN SETTING, the
-  shared map every season starts from. `perGame?: Partial<Record<GameId, {keys?, padButtons?,
-  padCombos?}>>` is a NEW SIBLING FIELD — same reasoning as `combos`, and it matters more here:
-  an older client ignores it and plays the main map. An action PRESENT in a game's override is
-  **DESYNCED** there (its binds are exactly the override); ABSENT means it inherits main
-  (**SYNCED**), and "sync back" is the deletion of the entry, nothing else. `padButtons` and
-  `padCombos` for one action are ONE UNIT. Stick role, deadzone, curve, trigger threshold and
-  the combo wait stay GLOBAL — they are how a hand works, not what a button means.
+- **GAME-SPECIFIC BINDS — three kinds of action** (`ControlBindings.perGame`,
+  `effectiveBindings`, `SHARED_ACTIONS` in `bindings.ts`). `ControlBindings` (keys + pad + combos)
+  stays THE MAIN SETTING. Every action is exactly one of three kinds, and the kind decides where
+  its binds live and which scope of the Controls screen lists it (`npm test` holds all three):
+  - **SHARED** — the drive keys, Swap wheel set, Flip front, Park mode (a speed cap on the drive
+    command), Start and Restart. Every game reads them and they mean the same thing in every
+    game: main only, listed under All games only, never overridden.
+  - **SEASON-ONLY** — an action one game uses (Catalyst, Catapult, the five BIOBUZZ ones). Main
+    only as well, because main's bind for it already reaches that one game and no other; listed
+    in its season's scope alone.
+  - **OVERRIDABLE** — a mechanism more than one game has: Intake and Shoot. Main is what every
+    season starts from (All games), and a season may override it.
+  `perGame?: Partial<Record<GameId, {keys?, padButtons?, padCombos?}>>` is a NEW SIBLING FIELD —
+  same reasoning as `combos`: an older client ignores it and plays the main map. An overridable
+  action PRESENT in a game's override is **DESYNCED** there; ABSENT inherits main, and "sync back"
+  is the deletion of the entry. `padButtons` and `padCombos` for one action are ONE UNIT. Stick
+  role, deadzone, curve, trigger threshold and the combo wait stay GLOBAL.
+  ⚠️ **THE MIGRATION (2026-09-22).** `perGame` used to take an override of ANY action a game
+  used, so every season scope listed the drive keys and stick sliders again with SYNCED beside
+  each (owner: "Shared settings like drivetrain controls SHOULD BE only shown on global"), and a
+  season-only action had two stores for its one bind. `mergePerGame` migrates on every load, so it
+  is idempotent: a season-only override FOLDS into main (lossless — it reaches the same one game);
+  a shared override is DROPPED (the one lossy step, alpha-only and three days old, and usually not
+  a choice at all but the victim of a season-scope steal); and a game that had one dropped is
+  SCRUBBED, its own actions giving up any bind a shared control now holds again — otherwise W
+  drives forward AND shoots. A scrubbed override left empty reads UNBOUND. Every reader
+  (`keyDesynced`, `effectiveBindings`, …) also ignores an override of a kind that may not have one.
   **`effectiveBindings(b, game)` is the one resolver**, and everything that drives or NAMES a
   control reads it, never `settings.bindings`: `InputManager` (via `GameController.bindings`,
   resolved once from `gameId`), the start overlay, and the tutorial hints. It returns a plain
@@ -97,24 +115,36 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   every game (`driveMode` included — it is read in `src/sim/robot.ts`, which all three route
   through). **Two actions conflict only if some game uses both.** So MAIN may put one key on
   both `catalyst` and `bbPlace` — no session offers both — while `fire` still steals from
-  everything. Inside a game scope the steal scope is that game's EFFECTIVE map, and the victim
-  is DESYNCED in that game rather than edited in main; the game-scope editors are literally the
-  main editors run against the effective map, where the non-actions are already empty, so the
-  scope comes out right by construction. **Main-edit vs override**: when a main edit would put a
-  bind on an action that is SYNCED in game G while some other action G uses holds it in a
-  DESYNCED override, **the override loses that bind** — so the edit the player just made
-  survives everywhere, and an edit under "All games" never silently does nothing.
+  everything. **The season-scope editors are the main editors run against that season's
+  EFFECTIVE map**, so the steal scope is right by construction, and each changed action is then
+  written where it lives: a season-only one to main, an overridable one to the override (a steal
+  victim among them is DESYNCED there). **A season scope may not take a bind from a shared
+  control** — `assignKeyInGame` / `assignPadBindInGame` REFUSE (`sharedKeyHolder` /
+  `sharedPadHolder` name the holder for the screen), rather than steal a drive key in one season
+  or, from a screen that says it edits one season, in all of them. **Main-edit vs override**: when
+  a main edit would put a bind on an action that is SYNCED in game G while some other action G
+  uses holds it in a DESYNCED override, **the override loses that bind**. **Sync is the same rule
+  run the other way**: the binds a synced action comes back to WIN, and the season's other actions
+  give them up. `resetGame` (the season scope's Reset) syncs the season and puts its season-only
+  actions back on their defaults, minus any default a shared or overridable bind now holds.
   `mergeBindings` validates `perGame` entry by entry (unknown game ids, unknown actions, and
   actions a game does not use are all dropped; lists go through the same validators as main),
   and **`BIND_SLOTS_MAX` (8) caps every list, main included** — `+` could grow one without
   bound, and the server caps the settings blob at 64 KB. A blob with no `perGame` round-trips
   byte for byte, and the field is pruned back to absent when the last override is synced away.
-  UI: a scope switch (`.ds-segs`) at the top of the Controls card — `All games` plus one entry
-  per **visible** season. A season scope lists only that season's actions, each row marked
-  SYNCED or CUSTOM (in BOTH states, so the marker never changes a row's height mid-edit) with a
-  Sync control, and a "Sync all to shared" in the foot, disabled rather than hidden for the same
-  reason the combo-wait slider is. The main scope tags a row with its seasons when they are not
-  all of them, so a key shared by Catalyst and Place POLLEN does not read as a bug.
+  **UI** (`ControlsSection.tsx`, with the row lists in the DOM-free `controlsLayout.ts` so the
+  smoke run can hold them to the kinds): the scope switch comes first — `All games` plus one
+  entry per **visible** season. All games is Touch controls, Tutorial, then three bind panels —
+  Driving, Mechanisms (Intake and Shoot), Match — each a keyboard column and a gamepad column,
+  and a Gamepad panel for the trigger threshold, combo wait and menu navigation (the stick role,
+  deadzone and curve head the Driving panel's gamepad column). A season scope is ONE panel: that
+  season's own actions. A row carries **Sync only while it differs** from All games, and nothing
+  while it matches — the SYNCED/CUSTOM marker on every row is gone, and so is a reserved
+  invisible slot for the button, which wrapped Intake's keycaps on a phone in every season. One
+  status line under the switch (the Backspace hint when idle, so a message never moves the
+  panels) reports a refused bind, and what a main edit took from a row the scope does not show
+  ("Took C from Catalyst … and Place POLLEN …"); a season's button carries a red dot while one of
+  its own rows has no bind (`seasonUnbound`).
   ⚠️ **The capture effects on the controls screen depend on `capture` ALONE**, with
   `bindings`/`onChange` in refs: `onChange` is a fresh arrow every render and the App re-renders
   on its own every few seconds (the presence poll), which restarted the pad effect mid-capture
@@ -209,7 +239,7 @@ Controls screen stands the layer down the same way while a rebind is armed
 
 - **Two new `PadBindings` fields, both NEW SIBLINGS** validated field-by-field like
   `chordGraceMs`: `menuButton` (0..31) and `navEnabled` (default true, the "Controller menu
-  navigation" toggle in Controls ▸ More). Same reasoning as `combos` — an older client ignores
+  navigation" toggle in Controls ▸ Gamepad). Same reasoning as `combos` — an older client ignores
   them and keeps its Esc-only exit. No new storage key: both ride the settings blob that already
   persists and syncs. `App` mirrors them into `padNav.ts`'s little store because the layer is
   mounted outside it; importing `PadBindings` as a value there would close the cycle
@@ -227,12 +257,17 @@ Controls screen stands the layer down the same way while a rebind is armed
   rebindable, so a navigation layer that ate the arrows would either steal a driving control or
   need a runtime conflict check against `effectiveBindings` on every keystroke.
 
-## Configure — the five sections, and the three rules that hold them together
+## Configure — the six sections, and the three rules that hold them together
 
-`src/ui/Configure.tsx` routes five sections at `/configure/<key>`. **The ARRAY is the order on
+`src/ui/Configure.tsx` routes six sections at `/configure/<key>`. **The ARRAY is the order on
 screen; the KEYS are shipped URLs** (`audio` is Audio and Visual), so reordering must never
-rename one. Order is task order — Robot, Controls, Match, Audio and Visual, Graphics: build it,
-learn to drive it, set up the session, then the two output sections.
+rename one. Order is task order — Robot, Controls, Match, Audio and Visual, Graphics, Network:
+build it, learn to drive it, set up the session, the two output sections, then the connection.
+**Network** (`NetworkSection.tsx`) holds client prediction, which sat in a Controls fold until
+2026-09-22 (owner: "Network prediction should NOT be part of controls") — it is how this machine
+draws its own robot in a 3D-physics room, not a control, and not Graphics either. **A sub-nav hint
+is optional**: Audio and Visual's "Follows your account" and Graphics' "This device only" said
+where the settings are stored, which nobody picks a section by, and went as clutter.
 
 - **ONE SPELLING OF A PICK: `OptRow` / `ToggleRow` (`src/ui/OptRow.tsx`).** There used to be
   three — a single tile whose LABEL carried the state (`Auto intake ON`), a two-tile `Off`/`On`
@@ -243,8 +278,10 @@ learn to drive it, set up the session, then the two output sections.
   hand-rolled toggles were missing comes from. **Toggle buttons, never an ARIA radiogroup** —
   a radiogroup owes roving tabindex and arrow keys, and half that pattern is worse than none.
 - **RARE CONTROLS FOLD; THEY ARE NOT ROUTED ELSEWHERE.** `<details class="ds-fold">` — Graphics
-  ▸ Advanced (the sixteen overrides the Quality preset already sets), Controls ▸ More (touch
-  controls, network prediction), Audio ▸ Individual sounds (the five per-emitter trims). Closed
+  ▸ Advanced (the sixteen overrides the Quality preset already sets), Audio ▸ Individual sounds
+  (the five per-emitter trims). A fold is for a RARE control, not an ORPHAN one: Controls ▸ More
+  held touch controls and network prediction because neither was a binding, which put the one
+  control a phone needs last on the page — touch is the first panel now, prediction is Network. Closed
   it is one row; open it is exactly where it was, so nothing is hidden from somebody who knows
   it exists. `.ds-fold.inset` is the variant for inside a panel body, where a second card would
   be nesting. The marker rotates and `[open]` changes a border COLOUR, never a width.
