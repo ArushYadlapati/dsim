@@ -33,7 +33,7 @@ missed it. Both are pinned in `contrast.mjs`. **`COLORS.mat`/`COLORS.tile` are U
 those are the 2D board for all three games and repainting DECODE's was never the ask.
 
 ⚠️ **THE REWARDS SECRETS ARE NOT SET YET, AND ONE COMMAND IS WAITING ON THE OWNER.** The
-values are in `D:\Projectsddecodesim\.env` (owner put them there 2026-09-21); writing them
+values are in `D:/Projects/2ddecodesim/.env` (owner put them there 2026-09-21); writing them
 to Fly was refused by this session's tool policy, so it is in the owner's hands. The exact
 command is in the message that ends this session and in `.env.example`, which now documents
 the whole set. Two things about it that are not obvious:
