@@ -1530,8 +1530,8 @@ four bots of one tier, points per alliance.
 | after (roster builds) | 95.5 / 181.4 / 247.6 | 137.0 / 230.3 / 260.2 | ≤ 4 s | 0–2 pts |
 
 The old HARD bot was stuck for 63 s of every match on average (a 12-s corner press in almost every
-one) and EASY stood idle for 113 s of 150. Head to head now: HARD beats EASY 12–0 (margin 144) and
-MEDIUM 11–1 (margin 45) over 12 seeded 2v2s.
+one) and EASY stood idle for 113 s of 150. Head to head now, 12 seeded 2v2s each: HARD beats EASY
+12–0 (margin 154), MEDIUM 11–1 (margin 64), and MEDIUM beats EASY 12–0 (margin 99).
 
 - **The memory is the CALLER's.** `bot.create(world, robotId, tier, seed)` returns a `BotSeat`; the
   caller (the controller in practice, `Room` on the server, the LAN host worker) calls
