@@ -1171,60 +1171,10 @@
   line-height: 1.05;
   margin: 0 0 var(--ds-s-4);
 }
-/* GAME PICKER (home): the seasons' own lockups, one per card. The ground is a LITERAL dark on
-   purpose, in both themes: two of the three posters are white-on-transparent, so the card
-   cannot follow the theme (category 3, the same reasoning as the field canvas), and the ink on
-   it is the on-field pair. The states are `.ds-opt`'s: the resting block shadow, the accent
-   edge when selected, a 1px lift on hover; no new depth vocabulary. */
-.ds-posters {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  width: 100%;
+/* game switcher (DECODE / Chain Reaction) — centered under the title */
+.ds-home-games {
+  justify-content: center;
   margin: 0 0 var(--ds-s-5);
-}
-.ds-poster {
-  font: inherit;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 8px 8px;
-  border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round-md);
-  background: #1b2128;
-  color: var(--ds-on-field-dim);
-  cursor: pointer;
-  box-shadow: var(--ds-block-sm);
-  transition:
-    transform 0.12s,
-    box-shadow 0.12s,
-    border-color 0.12s,
-    color 0.12s;
-}
-.ds-poster:hover {
-  color: var(--ds-on-field);
-  transform: translate(-1px, -1px);
-}
-.ds-poster.on {
-  border-color: var(--ds-accent);
-  color: var(--ds-on-field);
-  box-shadow: 2px 2px 0 var(--ds-accent-edge);
-}
-.ds-poster-art {
-  display: block;
-  width: 100%;
-  height: 96px;
-  object-fit: contain;
-}
-.ds-poster-name {
-  /* bottom-aligned: a two-line name (CHAIN REACTION at phone width) must not push its own art
-     up out of line with the tiles beside it */
-  margin-top: auto;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
 }
 /* Discord / Instagram / GitHub — prominent pills near the top of the home menu. They WRAP:
    three pills no longer fit side by side on the narrowest phones. */

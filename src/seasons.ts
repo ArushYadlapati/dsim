@@ -62,14 +62,6 @@ export interface Season {
   /** false ⇒ shown in the picker as "coming soon", not selectable */
   playable: boolean;
   /**
-   * The season's own artwork under `public/brand/<key>/`, as site-root paths WITHOUT the Vite
-   * base (`brandUrl` prefixes `import.meta.env.BASE_URL`, the Electron build's `./`).
-   * `poster` is the full lockup as a self-contained card (mark + wordmark + presenter), the
-   * thing the home picker shows; `mark` is the emblem alone. Both are the publisher's own
-   * files, unedited beyond a crop and a resize; `public/brand/README.md` has the sources.
-   */
-  brand?: { poster: string; mark: string };
-  /**
    * Which client CHANNELS may SEE this season at all. Absent ⇒ every channel.
    *
    * Distinct from `playable`, and the difference matters: `playable: false` is a
@@ -91,7 +83,6 @@ export const SEASONS: readonly Season[] = [
     years: '2025–26',
     blurb: 'Classify artifacts into cross-court goals, match the motif, park on base.',
     playable: true,
-    brand: { poster: 'brand/decode/poster.webp', mark: 'brand/decode/poster.webp' },
   },
   {
     key: 'chain',
@@ -101,7 +92,6 @@ export const SEASONS: readonly Season[] = [
     years: '2026',
     blurb: 'The 2026 Unofficial FTC CAD-competition game - a new shooter (rules to come).',
     playable: true,
-    brand: { poster: 'brand/chain/poster.webp', mark: 'brand/chain/mark.webp' },
   },
   {
     // PUBLIC since 2026-09-13 (the promotion to production). It was alpha-only while it was
@@ -113,7 +103,6 @@ export const SEASONS: readonly Season[] = [
     years: '2026–27',
     blurb: 'Tip the HIVE, fill the FLOWERS and park, with a turret, a double turret or a dumper.',
     playable: true,
-    brand: { poster: 'brand/biobuzz/poster.webp', mark: 'brand/biobuzz/mark.webp' },
   },
 ] as const;
 
@@ -132,16 +121,6 @@ export const SEASONS: readonly Season[] = [
  * direction: a typo'd `VITE_APP_CHANNEL` hides the unannounced season rather than
  * publishing it.
  */
-/** a season's brand file as a fetchable URL, under the Vite base (the Electron build serves
- * from `./`, where a bare `/brand/...` resolves at the filesystem root and 404s silently). */
-export function brandUrl(path: string): string {
-  // typed by hand: this file is also compiled by tsconfig.server.json, which has no Vite
-  // client types, and the server never calls this
-  const env = (import.meta as { env?: { BASE_URL?: string } }).env;
-  const base = (env?.BASE_URL ?? '/').replace(/\/+$/, '');
-  return `${base}/${path.replace(/^\/+/, '')}`.replace(/\/{2,}/g, '/');
-}
-
 export function seasonVisibleOn(s: Season, channel: string): boolean {
   return !s.channels || (s.channels as readonly string[]).includes(channel);
 }
