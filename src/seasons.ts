@@ -65,10 +65,9 @@ export interface Season {
    * The season's own wordmark under `public/brand/<key>/`, as site-root paths WITHOUT the Vite
    * base (`brandUrl` prefixes `import.meta.env.BASE_URL`, the Electron build's `./`): the
    * publisher's black cut for a light surface and white cut for a dark one, so the mark themes
-   * the way ink does. The files are the BARE WORD (the FIRST packs' wordmarks carry a
-   * "presented by" subline, cut off so the three share one baseline); `h` is the rendered height
-   * in px at the home picker, one value for all so cap heights match. `public/brand/README.md`
-   * has the sources.
+   * the way ink does. `h` is the rendered height in px at the home picker, set per brand so the
+   * three MAIN WORDS share a cap height: the FIRST files carry a "presented by" subline under
+   * the word and are taller than the word alone. `public/brand/README.md` has the sources.
    */
   brand?: { onLight: string; onDark: string; h: number };
   /**
@@ -93,7 +92,7 @@ export const SEASONS: readonly Season[] = [
     years: '2025–26',
     blurb: 'Classify artifacts into cross-court goals, match the motif, park on base.',
     playable: true,
-    brand: { onLight: 'brand/decode/wordmark-black.webp', onDark: 'brand/decode/wordmark-white.webp', h: 20 },
+    brand: { onLight: 'brand/decode/wordmark-black.webp', onDark: 'brand/decode/wordmark-white.webp', h: 34 },
   },
   {
     key: 'chain',
@@ -115,7 +114,7 @@ export const SEASONS: readonly Season[] = [
     years: '2026–27',
     blurb: 'Tip the HIVE, fill the FLOWERS and park, with a turret, a double turret or a dumper.',
     playable: true,
-    brand: { onLight: 'brand/biobuzz/wordmark-black.webp', onDark: 'brand/biobuzz/wordmark-white.webp', h: 20 },
+    brand: { onLight: 'brand/biobuzz/wordmark-black.webp', onDark: 'brand/biobuzz/wordmark-white.webp', h: 32 },
   },
 ] as const;
 

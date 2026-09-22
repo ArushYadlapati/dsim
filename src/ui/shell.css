@@ -1176,23 +1176,21 @@
    the light theme, white cut on the dark one — both are in the DOM, this rule picks one), muted
    until chosen, and the chosen one carries the accent rule every tab in the app carries. The
    rule is a border that is always present and only changes colour, so selection moves no
-   layout. The <img> height is an attribute (`Season.brand.h`), one value for all three bare
-   words, so they share a cap height and, centred, a baseline. */
+   layout. The <img> heights are inline per brand (`Season.brand.h`), because the three files
+   are not proportioned alike; see `seasons.ts`. */
 .ds-wordmarks {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-end;
   justify-content: center;
-  gap: 4px 8px;
+  gap: 4px 12px;
   margin: 0 0 var(--ds-s-5);
 }
 .ds-wm {
   font: inherit;
   display: inline-flex;
-  align-items: center;
-  /* sized so the three words (20px tall: 74 + 186 + 107) sit on ONE row inside the 460px
-     home column with room to spare; the phone block below re-caps them */
-  padding: 8px 8px 10px;
+  align-items: flex-end;
+  padding: 8px 12px 10px;
   border: 0;
   border-bottom: 3px solid transparent;
   background: none;
@@ -1228,17 +1226,20 @@
   font-size: 15px;
   font-weight: 700;
 }
-/* ONE ROW ON A PHONE: at 375px the three words at 22px do not fit beside each other with the
-   desktop padding, so the height is capped and the padding tightened; `width: auto` keeps the
-   ratio when the height is capped. */
+/* ONE ROW ON A PHONE. At 375px the three marks at their desktop heights wrap 2 + 1, which
+   orphans a wordmark on its own line. `width: auto` keeps the ratio when the height is capped,
+   and the two-word Chain Reaction mark is capped harder because it is the wide one. */
 @media (max-width: 420px) {
   .ds-wordmarks {
     gap: 4px 8px;
   }
   .ds-wm {
-    padding: 8px 2px;
+    padding: 8px 4px 8px;
   }
   .ds-wm img {
+    max-height: 24px;
+  }
+  .ds-wm[data-brand='chain'] img {
     max-height: 15px;
   }
 }

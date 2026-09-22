@@ -102,9 +102,8 @@ export function HomeMenu({
           both `<img>`s are in the DOM and the theme picks one in CSS, so there is no JS theme
           subscription), muted when not selected, an accent rule under the one that is. No card,
           no caption: the wordmark IS the name, and `aria-label` carries it for a reader. The
-          files are the bare words at one height (`Season.brand.h`), centred on one line, so the
-          three sit on one baseline; the FIRST packs' "presented by" sublines were cut off for
-          exactly that reason (with them, the bottom edge is the subline, not the word). */}
+          heights differ per brand on purpose (`Season.brand.h`): the FIRST files include a
+          "presented by" subline, so matching total height would shrink their main word. */}
       {games.length > 1 && (
         <div className="ds-wordmarks" role="tablist" aria-label="Game">
           {games.map((g) => {
@@ -116,6 +115,7 @@ export function HomeMenu({
                 role="tab"
                 aria-selected={on}
                 aria-label={season.name}
+                data-brand={g.id}
                 className={`ds-wm${on ? ' on' : ''}`}
                 onClick={() => onGame(g.id)}
               >
