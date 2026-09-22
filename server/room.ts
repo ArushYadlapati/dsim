@@ -1904,6 +1904,12 @@ export class Room {
     const setups: RobotSetup[] = [];
     this.robotOf.clear();
     this.botTiers.clear();
+    // THE SEED IS DRAWN BEFORE THE SEATS ARE LAID OUT, because a bot's ROBOT is a function of it
+    // (`BotDriver.build`, deterministic in the match seed and the seat) — the same inputs the
+    // client's solo practice seats its bots from, so a room and a practice run of one seed field
+    // the same line-up. A rematch reuses `matchSetups`, so it keeps the robots it had.
+    const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
+    const drv = this.botDriver;
     roster.forEach((c, i) => {
       const alliance: Alliance = record ? 'blue' : c.player.alliance;
       let si = c.player.startIndex ?? 0;
@@ -1926,7 +1932,7 @@ export class Room {
       setups.push({
         id: i,
         alliance,
-        spec: c.player.spec,
+        spec: (c.tier !== null ? drv?.build?.({ seed, robotId: i, tier: c.tier, alliance }) : undefined) ?? c.player.spec,
         assists: c.player.assists,
         startIndex: si,
         // a custom pose overrides the de-conflicted startIndex; createWorld snaps
@@ -1939,7 +1945,6 @@ export class Room {
       else this.botTiers.set(i, c.tier);
     });
 
-    const seed = (Date.now() ^ (Math.random() * 0xffffffff)) >>> 0;
     this.beginMatch(setups, seed);
   }
 

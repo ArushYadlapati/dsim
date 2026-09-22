@@ -409,6 +409,14 @@ export interface BotDriver {
    * (which alliance, which spec) but must not keep a reference that outlives the match.
    */
   create(world: World, robotId: number, tier: string, seed: number): BotSeat;
+  /**
+   * THE ROBOT a bot seat drives, or absent for "the caller's default". A pure function of its
+   * arguments — `seed` is the match seed where the caller has one (solo practice, `Room` at
+   * START), `robotId` the seat — so every peer that seats the same bot builds the same robot.
+   * The result is an ordinary `RobotSpec` that has already passed the game's coercer; it rides
+   * the match's setups like a driver's, so a replay needs no bot to rebuild it.
+   */
+  build?(opts: { seed: number; robotId: number; tier: string; alliance: Alliance }): RobotSpec;
   /** @deprecated memoryless one-shot — see above. Prefer `create`. */
   drive?(world: World, robotId: number, tier: string): RobotCommand;
 }

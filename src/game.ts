@@ -1103,10 +1103,19 @@ export class GameController {
     if (botTier !== 'off' && botDriver) {
       const opp: Alliance = s.alliance === 'blue' ? 'red' : 'blue';
       const anchors = moduleFor(this.gameId).startPoseCount;
+      // THE ROBOT IS THE DRIVER'S CHOICE: a game whose bot offers builds seats each bot on its
+      // own (`BotDriver.build`, deterministic in the match seed and the seat, so a restart is a
+      // new line-up and a replay carries the specs in its setups); a game without one keeps the
+      // shared default chassis.
       const seat = (id: number, alliance: Alliance, startIndex: number): RobotSetup => ({
         id,
         alliance,
-        spec: { ...DEFAULT_SPEC, name: `${botTier} bot`, teamName: 'AI', teamNumber: 0 },
+        spec: botDriver.build?.({ seed, robotId: id, tier: botTier, alliance }) ?? {
+          ...DEFAULT_SPEC,
+          name: `${botTier} bot`,
+          teamName: 'AI',
+          teamNumber: 0,
+        },
         assists: { ...DEFAULT_ASSISTS },
         startIndex,
       });

@@ -1,7 +1,8 @@
-import type { World } from '../../../types';
+import type { Alliance, RobotSpec, World } from '../../../types';
 import type { BotDriver, BotSeat } from '../../types';
 import { createBiobuzzBot } from './policy';
 import { BB_AI_DEFAULT_TIER, BB_AI_TIERS, bbCoerceTier } from './tiers';
+import { bbBotBuild } from './builds';
 
 /**
  * BIOBUZZ AI — the `GameSimModule.bot` registration (Day 3, `docs/biobuzz/plan-3d.md` §6).
@@ -30,6 +31,7 @@ import { BB_AI_DEFAULT_TIER, BB_AI_TIERS, bbCoerceTier } from './tiers';
 export { BB_AI_TIERS, BB_AI_DEFAULT_TIER, bbCoerceTier } from './tiers';
 export type { BbAiTier, BbAiTierSpec } from './tiers';
 export { createBiobuzzBot } from './policy';
+export { BB_BOT_BUILD_KEYS, bbBotBuild, bbBotBuildByKey } from './builds';
 
 export const BIOBUZZ_BOT: BotDriver = {
   tiers: BB_AI_TIERS,
@@ -37,6 +39,10 @@ export const BIOBUZZ_BOT: BotDriver = {
   coerceTier: bbCoerceTier,
   create(world: World, robotId: number, tier: string, seed: number): BotSeat {
     return createBiobuzzBot(world, robotId, tier, seed);
+  },
+  // THE ROBOT: a roster build per seat, deterministic in (seed, robotId) — see `builds.ts`.
+  build(opts: { seed: number; robotId: number; tier: string; alliance: Alliance }): RobotSpec {
+    return bbBotBuild({ ...opts, tier: bbCoerceTier(opts.tier) });
   },
   // `drive` is DELIBERATELY ABSENT — see `BotDriver`'s header. A policy with hysteresis cannot
   // answer a memoryless one-shot with the same behaviour `create` produces, and a server calling
