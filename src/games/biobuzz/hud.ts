@@ -141,10 +141,10 @@ export interface BiobuzzFieldHud {
   warnings: Record<Alliance, number>;
   /**
    * G407 MAJOR — has this alliance drawn the STRATEGIC escalation this MATCH (owner ruling
-   * 2026-09-19)? A FLAG, not a count: the MAJOR is latched once per robot per match
-   * (`bb.held[robot].g407billed`), so there is nothing to count past the first — but the driver
-   * needs to see the escalation coming, so the chip distinguishes "warned" from "MAJOR billed"
-   * (`HudSlots.tsx`).
+   * 2026-09-19)? A FLAG, not a count. Since 2026-09-22 every STRATEGIC instance bills a MAJOR
+   * (`penalties.ts`), but the chip's job is only to distinguish "warned" from "MAJOR billed"
+   * (`HudSlots.tsx`); `bb.held[robot].g407billed` is set on the first and stays set, and the
+   * match tally carries the count.
    */
   controlMajor: Record<Alliance, boolean>;
 }
@@ -224,7 +224,7 @@ function controlWarnings(world: World): Record<Alliance, number> {
 /**
  * HAS EITHER ALLIANCE DRAWN THE G407 MAJOR THIS MATCH — a robot with `bb.held[id].g407billed`
  * set, read off `world.biobuzz` for the same reason the warning above reads
- * `world.penalties`: the latch already exists (`penalties.ts`), already rides every snapshot,
+ * `world.penalties`: the flag already exists (`penalties.ts`), already rides every snapshot,
  * and a second copy on the HUD's own state would be a `state.ts` edit to store what the world
  * already stores. Defaulted at every step — a snapshot from a build that predates the rule
  * arrives without `held` at all, and a HUD is the last place that should throw.
