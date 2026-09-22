@@ -58,7 +58,7 @@ export function Profile({
         {/* the equipped title, beside the badge and never inside it — the same composition
             the leaderboard uses, so the row that sent you here and the header you land on
             say the same thing about the same person. */}
-        <TitleMark title={stats?.title} />
+        <TitleMark title={stats?.title} badges={stats?.badges} />
       </h1>
       <p className="ds-sub">
         {stats?.username ? `@${stats.username} · ` : ''}

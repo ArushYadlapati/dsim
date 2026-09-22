@@ -71,6 +71,7 @@ function DriverName({
   supporter,
   role,
   title,
+  badges,
   onOpenProfile,
 }: {
   handle: string | null;
@@ -79,6 +80,8 @@ function DriverName({
   role?: StaffRole;
   /** the equipped TITLE id (`badgeCols`). Parsed, never joined — see `parseAwardTitleId`. */
   title?: string | null;
+  /** the worn badges and their counters (`badgeCols`, 0048) */
+  badges?: unknown;
   onOpenProfile?: (username: string) => void;
 }) {
   const label = handle ?? (username ? `@${username}` : 'Player');
@@ -98,7 +101,7 @@ function DriverName({
             part of it. */}
         <span className="lb-name-h">{label}</span>
         <SupporterBadge supporter={supporter} role={role} />
-        <TitleMark title={title} />
+        <TitleMark title={title} badges={badges} />
         <span className="lb-at">@{username}</span>
       </button>
     );
@@ -109,7 +112,7 @@ function DriverName({
       <SupporterBadge supporter={supporter} role={role} />
       {/* a row without a username (an anonymous or unclaimed run) still shows whatever
           title it is wearing */}
-      <TitleMark title={title} />
+      <TitleMark title={title} badges={badges} />
     </>
   );
 }
@@ -459,6 +462,7 @@ export function Leaderboard({
                             supporter={r.supporter}
                             role={r.role}
                             title={r.title}
+                            badges={r.badges}
                             onOpenProfile={onOpenProfile}
                           />
                           {isRecords && rec.partnerId && (
@@ -470,6 +474,7 @@ export function Leaderboard({
                                 supporter={rec.partnerSupporter}
                                 role={rec.partnerRole}
                                 title={rec.partnerTitle}
+                                badges={rec.partnerBadges}
                                 onOpenProfile={onOpenProfile}
                               />
                               <span className="ds-dt lb-duo-tag">DUO</span>

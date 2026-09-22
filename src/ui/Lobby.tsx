@@ -959,7 +959,7 @@ export function Lobby({
                     {p.name}
                     {isMe ? ' (you)' : ''}
                     <SupporterBadge supporter={p.supporter} role={p.role} />
-                    <TitleMark title={p.title} />
+                    <TitleMark title={p.title} badges={p.badges} />
                   </span>
                   <span className="ptm">
                     {p.spec.name} · {p.teamNumber || '-'}

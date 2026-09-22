@@ -375,6 +375,22 @@ const serverPairs = (t) => {
     // The SEASON-AWARD badge (0045). Like gold it does NOT invert, so one pair covers
     // both themes; the rank numeral is the glyph, and it is what has to stay readable.
     ['AwardBadge rank numeral', t('--ds-award-ink'), t('--ds-award'), AA],
+    // THE RANKED PODIUM (0048). Three metal fills with ONE fixed ink, declared in the light
+    // block only — so, like the award pair above, each numeral is one pair for both themes.
+    ['Podium badge numeral (gold)', t('--ds-podium-ink'), t('--ds-podium-gold'), AA],
+    ['Podium badge numeral (silver)', t('--ds-podium-ink'), t('--ds-podium-silver'), AA],
+    ['Podium badge numeral (bronze)', t('--ds-podium-ink'), t('--ds-podium-bronze'), AA],
+    // ⚠️ THE RIM IS WHAT KEEPS SILVER VISIBLE ON THE LIGHT PANEL (~1.9:1 by fill), so the rim
+    // itself has to clear 1.4.11 against the panel in BOTH themes — this is that assertion.
+    ['Badge / podium title rim on the panel (1.4.11)', t('--ds-mut'), panel, NON_TEXT],
+    ['Badge counter pip', t('--ds-on-field'), t('--ds-stage-bg'), AA],
+    // the claim dialog's eyebrow and kicker sit on the tier's GLOW, not on the bare panel —
+    // the same color-mix the CSS paints (16% metal / 14% violet over --ds-panel)
+    ['Reward card eyebrow on the gold glow', t('--ds-ink-dim'), composite(t('--ds-podium-gold'), 0.16, panel), AA],
+    ['Reward card eyebrow on the silver glow', t('--ds-ink-dim'), composite(t('--ds-podium-silver'), 0.16, panel), AA],
+    ['Reward card eyebrow on the bronze glow', t('--ds-ink-dim'), composite(t('--ds-podium-bronze'), 0.16, panel), AA],
+    ['Reward card eyebrow on the record glow', t('--ds-ink-dim'), composite(t('--ds-award'), 0.14, panel), AA],
+    ['Reward item kind label on the recessed list', t('--ds-mut'), tile, AA],
     // .legal-warn paints --ds-warn as TEXT on a 9% tint of itself over the page
     ['Legal unfinished-terms warning', t('--ds-warn'), composite(t('--ds-warn'), 0.09, bg), AA],
     ['Leaderboard .lb-standing.placing text', t('--ds-warn'), composite(t('--ds-gold'), 0.09, panel), AA],

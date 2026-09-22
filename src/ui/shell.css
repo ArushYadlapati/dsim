@@ -160,6 +160,18 @@
      as well (a hexagon), which that guide also requires. */
   --ds-award: #a78bfa;
   --ds-award-ink: #2a1065;
+  /* THE RANKED PODIUM (0048) — gold / silver / bronze, on the podium badge and an act
+     podium title. CATEGORY 2 like --ds-award above: fills with ONE fixed dark ink, declared
+     here only, so they do not invert. The owner asked for the metals by name (2026-09-22:
+     "gold/silver/bronze by placement … make it look special"), and the trap the award note
+     above names is answered by the SHAPE (a crest, a hexagon) and by a --ds-mut RIM on every
+     one of them: silver is ~1.9:1 on the light panel by fill alone, and the rim is what
+     separates it there, the way an edge identifies a floating HUD card. The numeral on each
+     fill is a pair in scripts/contrast.mjs. Not --ds-gold, which means SUPPORTER. */
+  --ds-podium-gold: #e8b730;
+  --ds-podium-silver: #b9c3cd;
+  --ds-podium-bronze: #cd8a4f;
+  --ds-podium-ink: #221a08;
 
   /* Discord blurple — a FILL with fixed white ink (4.86:1), so it does NOT invert
      (same category as the alliance chips). Used only by the in-activity
@@ -609,6 +621,8 @@
   padding-top: 10px;
   border-top: 1px solid var(--ds-line);
   display: flex;
+  /* two actions now (Account settings, Sign out) — the parent owns the gap between them */
+  gap: var(--ds-s-2);
 }
 .ds-profile-actions .ds-btn {
   flex: 1;
@@ -7367,52 +7381,431 @@ button.ds-key:active {
   margin-right: 2px;
 }
 
-/* ── THE STAR REWARD PANEL (`ui/StarReward.tsx`) ────────────────────────────────────────────
-   Shown once, on the bounce back from a completed GitHub link. `.on` is the version that
-   actually granted something; without it the panel is the quiet "you have not starred yet"
-   sentence and takes no emphasis at all. */
-.star-reward.on {
-  /* the award family's hue, as an EDGE rather than a fill: this sits in a column of
-     `.ds-panel`s and a violet card would shout over the account's own settings. The left
-     edge is the same device the ranked-standing strip uses. */
-  border-left: 3px solid var(--ds-award);
-}
-.star-reward-list {
-  list-style: none;
+/* ── THE STAR REWARD HINT (`ui/StarReward.tsx`) ─────────────────────────────────────────────
+   Linked GitHub but no star: one quiet sentence, no emphasis. The reward itself, when there is
+   one, is the claim dialog's (`.rw-*` below). */
+.star-reward .ds-hint {
   margin: 0;
-  padding: 0;
+}
+
+/* ── AN ACT PODIUM TITLE (`AwardBadge`, `awardPodiumTier`) ──────────────────────────────────
+   The most prestigious title the ledger mints wears the podium's metal instead of the award
+   violet. The `--ds-mut` rim is what keeps silver visible on the light panel (~1.9:1 by fill
+   alone) — the lavender-pastel lesson in docs/area/accounts.md. */
+.award-badge.podium-gold svg,
+.award-badge.podium-silver svg,
+.award-badge.podium-bronze svg {
+  stroke: var(--ds-mut);
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+}
+.award-badge.podium-gold svg {
+  fill: var(--ds-podium-gold);
+}
+.award-badge.podium-silver svg {
+  fill: var(--ds-podium-silver);
+}
+.award-badge.podium-bronze svg {
+  fill: var(--ds-podium-bronze);
+}
+.award-badge.podium-gold .award-rank,
+.award-badge.podium-silver .award-rank,
+.award-badge.podium-bronze .award-rank {
+  color: var(--ds-podium-ink);
+}
+/* the claim dialog's hero, for a grant whose lead item is a title */
+.award-badge.award-lg {
+  width: 3em;
+  height: 3em;
+  margin-left: 0;
+  font-size: var(--ds-t-xl);
+}
+
+/* ====================================================================================
+   BADGES — `src/ui/BadgeMark.tsx`, `src/badges.ts` (0048). A SIBLING of `.sup-badge` and
+   `.award-badge`, told apart from both by SHAPE: a crest for the ranked podium, a bookmark
+   ribbon for the record holder. Sized in `em` beside a name, like the two it sits with.
+   ==================================================================================== */
+.badge-mark {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 0.12em;
+  /* decoration BESIDE a name, never part of it — `.award-badge`'s two reasons */
+  user-select: none;
+  align-self: center;
+  vertical-align: middle;
+  margin-left: 0.42em;
+}
+.badge-glyph {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 1.1em;
+  height: 1.1em;
+}
+/* ...except where the row already spaces its children with `gap` */
+.lb-name > .badge-mark,
+.appr-preview > .badge-mark,
+.rw-item-mark > .badge-mark,
+.appr-badge-art > .badge-mark,
+.rw-hero > .badge-mark {
+  margin-left: 0;
+}
+.badge-mark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.badge-mark .badge-body {
+  stroke: var(--ds-mut);
+  stroke-width: 1.2;
+  stroke-linejoin: round;
+}
+.badge-mark.tier-gold .badge-body {
+  fill: var(--ds-podium-gold);
+}
+.badge-mark.tier-silver .badge-body {
+  fill: var(--ds-podium-silver);
+}
+.badge-mark.tier-bronze .badge-body {
+  fill: var(--ds-podium-bronze);
+}
+.badge-mark.tier-record .badge-body {
+  fill: var(--ds-award);
+}
+/* the crest's inner bevel — a hairline in the numeral's own ink, so it reads as struck metal */
+.badge-mark .badge-inner {
+  fill: none;
+  stroke: var(--ds-podium-ink);
+  stroke-opacity: 0.3;
+  stroke-width: 1;
+}
+.badge-mark .badge-crown {
+  fill: var(--ds-award-ink);
+}
+.badge-num {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--ds-font-mono);
+  font-size: 0.6em;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--ds-podium-ink);
+}
+/* THE COUNTER. Beside a name it TRAILS the glyph as `×2` — a pip on a 16px crest covers the
+   crest. A badge earned once carries none. */
+.badge-count {
+  font-family: var(--ds-font-mono);
+  font-size: 0.72em;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--ds-ink-dim);
+}
+/* ...and at the large sizes it is a corner PIP: a fixed dark disc with light ink (the stage
+   pair, measured by `scripts/contrast.mjs`), ringed in the panel colour so it lifts off
+   either metal in either theme */
+.badge-mark.badge-lg .badge-count,
+.badge-mark.badge-xl .badge-count {
+  position: absolute;
+  right: -0.3em;
+  bottom: -0.2em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5em;
+  height: 1.5em;
+  padding: 0 0.3em;
+  border-radius: var(--ds-round-full);
+  background: var(--ds-stage-bg);
+  color: var(--ds-on-field);
+  box-shadow: 0 0 0 1px var(--ds-panel);
+  font-size: 0.62em;
+}
+.badge-mark.badge-md .badge-glyph {
+  width: 1.5em;
+  height: 1.5em;
+}
+.badge-mark.badge-lg {
+  font-size: var(--ds-t-xl);
+}
+.badge-mark.badge-lg .badge-glyph {
+  width: 40px;
+  height: 40px;
+}
+.badge-mark.badge-xl {
+  font-size: var(--ds-t-2xl);
+}
+.badge-mark.badge-xl .badge-glyph {
+  width: 96px;
+  height: 96px;
+}
+.badge-mark.badge-xl .badge-num {
+  font-size: 1.15em;
+}
+
+/* ====================================================================================
+   THE CLAIM DIALOG — `src/ui/RewardDialog.tsx`. A `.ds-modal` on the shell's modal
+   backdrop, one reward at a time. The TIER class decides how loud it is:
+     gold / silver / bronze   the ranked podium — a glow of the metal, the headline a size up
+     record                   the record board — the award violet, one size down
+     plain                    everything else (the GitHub star) — the neutral card
+   The glow is a BACKGROUND, not a shadow: DESIGN.md commits to one depth model, and this is
+   light on the card rather than the card lifting off the page.
+   ==================================================================================== */
+.ds-modal.rw-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-}
-/* A GRID, NOT A FLEX ROW, and that is the only way the two rows line up: the markers are
-   different WIDTHS by nature — one is a text chip as wide as its label, the other a fixed
-   disc — so a flex row left the two sentences starting at different x. A fixed marker
-   column puts the text on one edge whatever the chip says. */
-.star-reward-list > li {
-  display: grid;
-  grid-template-columns: 5.5em 1fr;
   align-items: center;
-  gap: 12px;
+  gap: var(--ds-s-3);
+  max-width: 440px;
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  padding: var(--ds-s-5) var(--ds-s-5) var(--ds-s-4);
+  text-align: center;
 }
-/* centred in that column, so a short chip and a round disc both sit on its axis */
-.star-reward-list > li > :first-child {
-  justify-self: center;
+.ds-modal.rw-card.tier-gold {
+  border-color: color-mix(in srgb, var(--ds-podium-gold) 55%, var(--ds-line));
+  background: radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--ds-podium-gold) 16%, transparent), transparent 70%), var(--ds-panel);
 }
-/* the decal preview: the award hue on a dark disc, so the shape reads as the thing that goes
-   ON a robot rather than as another chip. Sized in `em` because it sits beside body text. */
-.star-reward-decal {
-  flex: 0 0 auto;
+.ds-modal.rw-card.tier-silver {
+  border-color: color-mix(in srgb, var(--ds-podium-silver) 55%, var(--ds-line));
+  background: radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--ds-podium-silver) 16%, transparent), transparent 70%), var(--ds-panel);
+}
+.ds-modal.rw-card.tier-bronze {
+  border-color: color-mix(in srgb, var(--ds-podium-bronze) 55%, var(--ds-line));
+  background: radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--ds-podium-bronze) 16%, transparent), transparent 70%), var(--ds-panel);
+}
+.ds-modal.rw-card.tier-record {
+  background: radial-gradient(120% 50% at 50% 0%, color-mix(in srgb, var(--ds-award) 14%, transparent), transparent 70%), var(--ds-panel);
+}
+.rw-top {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-2);
+}
+/* `--ds-ink-dim`, not `--ds-mut`: these sit on the glow, and the mut ink is tuned against the
+   bare panel (the tinted grounds are pairs in `scripts/contrast.mjs`) */
+.rw-eyebrow,
+.rw-queue {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--ds-ink-dim);
+}
+.rw-queue {
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+.rw-hero {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 96px;
+}
+.rw-kicker {
+  margin: 0;
+  font-size: var(--ds-t-sm);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ds-ink-dim);
+}
+.rw-h {
+  margin: 0;
+  font-size: var(--ds-t-xl);
+  font-weight: 800;
+  letter-spacing: -0.015em;
+  line-height: 1;
+  text-wrap: balance;
+  color: var(--ds-ink);
+}
+.ds-modal.rw-card.tier-gold .rw-h,
+.ds-modal.rw-card.tier-silver .rw-h,
+.ds-modal.rw-card.tier-bronze .rw-h {
+  font-size: var(--ds-t-2xl);
+}
+.rw-why {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--ds-t-md);
+  line-height: 1.45;
+  color: var(--ds-ink);
+}
+/* WHAT IS IN IT — recessed, like the builder's own lists, so the card's claim reads as the
+   sentence above and the contents as a list of things */
+/* ONE GRID FOR THE WHOLE LIST (each row is `display: contents`), so the mark column is as wide
+   as its WIDEST mark — a "Stargazer" chip is several times a hexagon — and every label still
+   starts on one edge. A grid per row cannot do that: each row would size its own columns. */
+.rw-items {
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: var(--ds-s-3) var(--ds-s-3);
+  margin: 0;
+  padding: var(--ds-s-3);
+  list-style: none;
+  text-align: left;
+  border-radius: var(--ds-round-md);
+  background: var(--ds-tile);
+}
+.rw-items > li {
+  display: contents;
+}
+.rw-item-mark {
   display: inline-flex;
-  width: 2em;
-  height: 2em;
+  justify-self: center;
+  font-size: var(--ds-t-lg);
+}
+.rw-item-k {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.rw-item-v {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  font-size: var(--ds-t-md);
+  line-height: 1.45;
+  color: var(--ds-ink);
+}
+.rw-item-sub {
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.rw-err {
+  margin: 0;
+}
+/* primary rightmost, always (docs/ui-standard.md §6) */
+.rw-actions {
+  align-self: stretch;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--ds-s-2);
+}
+/* a decal, on the robot-coloured disc it is drawn over */
+.rw-decal {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 1.6em;
+  height: 1.6em;
   padding: 4px;
   border-radius: var(--ds-round-full);
   background: var(--ds-stage-bg);
 }
-.star-reward-decal svg {
+.rw-decal svg {
   display: block;
   width: 100%;
   height: 100%;
   fill: var(--ds-award);
+}
+.rw-decal.rw-decal-xl {
+  width: 96px;
+  height: 96px;
+  padding: 16px;
+}
+
+/* ====================================================================================
+   THE APPEARANCE PAGE — `src/ui/Appearance.tsx`.
+   ==================================================================================== */
+/* what a stranger sees: the board's own components, on the recessed tile */
+.appr-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-3) var(--ds-s-4);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-tile);
+}
+.appr-preview > .award-badge,
+.appr-preview > .title-chip,
+.appr-preview > .sup-badge {
+  margin-left: 0;
+}
+.appr-name {
+  font-size: var(--ds-t-lg);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ds-ink);
+}
+/* rewards waiting: the award hue as an EDGE, the device the ranked-standing strip uses */
+.ds-panel.appr-unclaimed {
+  border-left: 3px solid var(--ds-award);
+}
+.appr-pending {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+  margin: 0;
+  padding: var(--ds-s-3) var(--ds-s-4) var(--ds-s-4);
+  list-style: none;
+}
+.appr-pending > li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ds-s-3);
+}
+.appr-pending > li > .ds-hint {
+  margin: 0;
+}
+.appr-pending-h {
+  font-size: var(--ds-t-md);
+  font-weight: 700;
+  color: var(--ds-ink);
+}
+/* a badge tile: the art beside its name and count, rather than above them */
+.ds-opt.appr-badge {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  column-gap: var(--ds-s-3);
+  row-gap: var(--ds-s-1);
+  text-align: left;
+}
+.appr-badge-art {
+  display: inline-flex;
+  grid-row: span 2;
+}
+/* a badge not yet earned is SHOWN, locked — flat and desaturated, the same call the builder
+   makes for a locked swatch */
+.ds-opt.appr-badge:disabled .badge-mark {
+  filter: grayscale(1);
+  opacity: 0.5;
+}
+.appr-unlocks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-3);
+  margin: 0;
+  padding: var(--ds-s-4);
+  list-style: none;
+}
+.appr-unlocks > li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  font-size: var(--ds-t-md);
+  color: var(--ds-ink);
 }

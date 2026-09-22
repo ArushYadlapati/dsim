@@ -10,7 +10,7 @@ export const RAIL_ITEMS: ReadonlyArray<{ id: ShellNav; label: string; hint: stri
   { id: 'play', label: 'Play', hint: 'Practice & compete' },
   { id: 'configure', label: 'Configure', hint: 'Robot & match setup' },
   { id: 'records', label: 'Records', hint: 'Leaderboard & career' },
-  { id: 'profile', label: 'Profile', hint: 'Account & settings' },
+  { id: 'profile', label: 'Profile', hint: 'Badges & account' },
 ];
 
 /**

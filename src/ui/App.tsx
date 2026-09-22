@@ -72,6 +72,9 @@ import { Profile } from './Profile';
 import { TermsGate } from './TermsGate';
 import { UsernameGate } from './UsernameGate';
 import { Account } from './Account';
+import { Appearance } from './Appearance';
+import { RewardDialog } from './RewardDialog';
+import type { ProfileTab } from './ProfileTabs';
 import { authEnabled } from '../lib/authClient';
 import { useLanEnabled } from './useLanEnabled';
 import { lanEnabled, gameServerConfigured, lanActive, setSelectedServer, selectedServer, selectedServerId, gameServerUrlWith } from '../net/env';
@@ -235,7 +238,9 @@ function screenSuffix(screen: Screen, a: RouteArgs): string {
     case 'changelogs':
       return '/changelogs';
     case 'account':
-      return '/account';
+      // the Profile destination's two pages — `/account` is the ACCOUNT page and stays so,
+      // because it is a shipped URL with jobs of its own (see `ProfileTabs`)
+      return a.sub === 'appearance' ? '/account/appearance' : '/account';
     case 'accountreset':
       return '/account/reset';
     case 'accountverify':
@@ -302,6 +307,7 @@ function parseScreen(rest: string): { screen: Screen } & RouteArgs {
   // BEFORE the bare `/account`, which is a prefix of both
   if (rest.startsWith('/account/reset')) return at('accountreset');
   if (rest.startsWith('/account/verify')) return at('accountverify');
+  if (rest.startsWith('/account/appearance')) return at('account', { sub: 'appearance' });
   if (rest.startsWith('/account')) return at('account');
   if (rest.startsWith('/admin')) return at('admin');
   // /play (a live game) can't be restored without a session ⇒ home
@@ -489,6 +495,8 @@ export function App() {
   // one-time "this simulation isn't realistic" disclaimer (shown the first time CR is
   // the selected game, on this device; dismissal persists in localStorage)
   const [showChainDisclaimer, setShowChainDisclaimer] = useState(false);
+  /** an announcement is on screen — the claim dialog waits for it rather than stacking */
+  const [annActive, setAnnActive] = useState(false);
   // launched from Controls: enter Free Drive with the mobile-layout editor already open
   const [editMobileLayout, setEditMobileLayout] = useState(false);
 
@@ -585,6 +593,11 @@ export function App() {
 
   /** open a player's public profile page (/profile/<username>) */
   const openProfile = (username: string): void => navigate('profile', { username });
+  /** the rail and the home menu. PROFILE lands on its Appearance page — the "profile" half of
+   *  the destination (`ProfileTabs`); the rest map one to one. */
+  const goNav = (n: ShellNav): void =>
+    n === 'profile' ? navigate('account', { sub: 'appearance' }) : navigate(screenForNav(n));
+  const profileTab = (t: ProfileTab): void => navigate('account', t === 'appearance' ? { sub: 'appearance' } : {});
   /** open a replay. `matchId` is passed only from the admin panel, where the match behind the
    *  replay is known and a moderator may need to correct what it scored. */
   const watchReplay = (replayId: string, matchId?: string): void => {
@@ -788,6 +801,22 @@ export function App() {
       clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => void saveAccountSettings(s), 700);
     }
+  };
+
+  /**
+   * "EQUIP NOW" ON A COSMETIC — put a claimed decal (or any axis key) on the ACTIVE robot, the
+   * same edit the builder's own swatch makes. Settings-side only: the server strips anything
+   * the account does not hold at the next join (`stripUnentitledCosmetics`), and the claim
+   * that precedes this is what makes the account hold it. Read through `settingsRef` because
+   * the dialog's callback outlives the render that created it.
+   */
+  const equipCosmetic = (id: string): void => {
+    const i = id.indexOf(':');
+    const axis = id.slice(0, i);
+    const key = id.slice(i + 1);
+    if (axis !== 'decal' && axis !== 'chassisColor' && axis !== 'accent' && axis !== 'plate') return;
+    const cur = settingsRef.current;
+    update({ ...cur, spec: { ...cur.spec, [axis]: key } });
   };
 
   /**
@@ -1732,6 +1761,7 @@ export function App() {
       preferredServerId={settings.preferredServerId ?? selectedServerId()}
       onChangeServer={(id) => update({ ...settings, preferredServerId: id })}
       onAccount={() => navigate('account')}
+      onAppearance={() => navigate('account', { sub: 'appearance' })}
     />
   ) : (
     <>
@@ -1764,7 +1794,7 @@ export function App() {
       <QueueBar onOpen={openParkedQueue} />
       <AppShell
         active={navFor(screen)}
-        onNav={(n) => navigate(screenForNav(n))}
+        onNav={goNav}
         right={right}
         showAdmin={isAdmin}
         showRail={screen !== 'home'}
@@ -1795,7 +1825,17 @@ export function App() {
           gate is back the moment the route is anything else. */}
       {authEnabled && (
         <TermsGate suspended={legalScreen}>
-          <UsernameGate suspended={legalScreen} />
+          <UsernameGate suspended={legalScreen}>
+            {/* THE CLAIM DIALOG waits behind both gates (it is their child), and behind every
+                other modal this shell can raise — an announcement, a start guard. It is
+                inside `AppShell`, which a match, a lobby and the ranked screen replace, so it
+                can never appear over a field. "Equip now" on a decal puts it on the active
+                robot, the same edit the builder's own swatch makes. */}
+            <RewardDialog
+              blocked={legalScreen || annActive || showChainDisclaimer || blockedByActive || rejoinGone || badStart || startBlocked || !!pendingStart}
+              onEquipCosmetic={equipCosmetic}
+            />
+          </UsernameGate>
         </TermsGate>
       )}
 
@@ -1804,7 +1844,7 @@ export function App() {
           settings={settings}
           multiplayer={multiplayer}
           discord={discordGroupId ? { people: discordPeople, onJoin: joinDiscordLobby } : null}
-          onNav={(n) => navigate(screenForNav(n))}
+          onNav={goNav}
           onGame={(g) => {
             update(switchGame(settings, g));
             if (isWebHistory) {
@@ -2023,13 +2063,16 @@ export function App() {
       {screen === 'terms' && <Terms />}
       {screen === 'donate' && <Donate signedIn={signedIn} />}
       {screen === 'changelogs' && <Changelog />}
-      {screen === 'account' && (
-        <Account
-          settings={settings}
-          onChange={update}
+      {screen === 'account' && route.sub === 'appearance' && (
+        <Appearance
+          onTab={profileTab}
           onHandleSaved={setHandle}
-          onDonate={() => navigate('donate')}
+          onViewProfile={openProfile}
+          onRobotBuilder={() => navigate('configure', { sub: 'robot' })}
         />
+      )}
+      {screen === 'account' && route.sub !== 'appearance' && (
+        <Account settings={settings} onChange={update} onDonate={() => navigate('donate')} onTab={profileTab} />
       )}
       {screen === 'accountreset' && <AccountReset onAccount={() => navigate('account')} />}
       {screen === 'accountverify' && <AccountVerify onAccount={() => navigate('account')} />}
@@ -2051,7 +2094,7 @@ export function App() {
           what a crawler reads as the page's main content, and patch notes were
           winning that slot over the homepage itself. (Fresh visitors never see
           it at all now — see `useAnnouncements`.) */}
-      <Announcements muted={settings.audio.volume.master <= 0} />
+      <Announcements muted={settings.audio.volume.master <= 0} onActiveChange={setAnnActive} />
       </AppShell>
     </FriendsProvider>
   );

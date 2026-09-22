@@ -27,12 +27,15 @@ export function ProfileMenu({
   preferredServerId,
   onChangeServer,
   onAccount,
+  onAppearance,
 }: {
   handle?: string | null;
   preferredServerId: string;
   onChangeServer: (id: string) => void;
-  /** navigate to the full Account/Profile page */
+  /** navigate to the Account page (sign-in, email, password, privacy, deletion) */
   onAccount: () => void;
+  /** navigate to the Appearance page (name, title, badges, rewards) — the identity row */
+  onAppearance?: () => void;
 }) {
   const client = authClient!;
   const session = client.useSession();
@@ -82,13 +85,13 @@ export function ProfileMenu({
               className="ds-profile-id"
               onClick={() => {
                 setOpen(false);
-                onAccount();
+                (onAppearance ?? onAccount)();
               }}
             >
               <span className="ds-avatar md">{initials}</span>
               <span className="ds-profile-who">
                 <span className="ds-profile-name">{label === undefined ? '…' : label}</span>
-                <span className="ds-profile-sub">Account settings</span>
+                <span className="ds-profile-sub">{onAppearance ? 'Profile and badges' : 'Account settings'}</span>
               </span>
             </button>
           ) : (
@@ -106,15 +109,29 @@ export function ProfileMenu({
 
           <div className="ds-profile-actions">
             {user ? (
-              <button
-                className="ds-btn ghost"
-                onClick={() => {
-                  setOpen(false);
-                  void client.signOut();
-                }}
-              >
-                Sign out
-              </button>
+              <>
+                {/* the ACCOUNT page, now that the identity row above opens Appearance */}
+                {onAppearance && (
+                  <button
+                    className="ds-btn ghost"
+                    onClick={() => {
+                      setOpen(false);
+                      onAccount();
+                    }}
+                  >
+                    Account settings
+                  </button>
+                )}
+                <button
+                  className="ds-btn ghost"
+                  onClick={() => {
+                    setOpen(false);
+                    void client.signOut();
+                  }}
+                >
+                  Sign out
+                </button>
+              </>
             ) : (
               <button
                 className="ds-btn primary"

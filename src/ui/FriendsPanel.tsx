@@ -598,7 +598,7 @@ export function PersonRow({
         {/* the equipped title rides along, on the same terms as the badge: a sibling of
             `.fr-name`, which ellipsises and would truncate anything nested in it. Both
             `FriendRow` and `PublicProfile` extend `BadgeFields`, so it is already here. */}
-        <TitleMark title={p.title} />
+        <TitleMark title={p.title} badges={p.badges} />
       </span>
       <span className="fr-sub">{sub ?? (username ? `@${username}` : '')}</span>
     </>

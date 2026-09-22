@@ -281,7 +281,7 @@ export function MatchStrategy({
                   <span className="pnm">
                     {p.name}
                     <SupporterBadge supporter={p.supporter} role={p.role} />
-                    <TitleMark title={p.title} />
+                    <TitleMark title={p.title} badges={p.badges} />
                   </span>
                   <span className="ptm">Team {p.teamNumber || '-'}</span>
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
@@ -320,7 +320,7 @@ export function MatchStrategy({
                       {pl.name}
                       {isMe ? ' (you)' : ''}
                       <SupporterBadge supporter={pl.supporter} role={pl.role} />
-                      <TitleMark title={pl.title} />
+                      <TitleMark title={pl.title} badges={pl.badges} />
                     </span>
                     <span className="ptm">
                       {spec.name} · Team {pl.teamNumber || '-'}

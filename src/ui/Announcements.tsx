@@ -133,8 +133,20 @@ function WhatsNew({ items, onClose }: { items: Announcement[]; onClose: () => vo
   );
 }
 
-export function Announcements({ muted = false }: { muted?: boolean }): JSX.Element | null {
+export function Announcements({
+  muted = false,
+  onActiveChange,
+}: {
+  muted?: boolean;
+  /** told whether an announcement is on screen, so the reward claim dialog can wait for it
+   *  instead of stacking a second backdrop over this one */
+  onActiveChange?: (active: boolean) => void;
+}): JSX.Element | null {
   const { unseen, dismiss } = useAnnouncements();
+  const active = unseen.length > 0;
+  useEffect(() => {
+    onActiveChange?.(active);
+  }, [active, onActiveChange]);
   // the newest season/act drives the cinematic reveal (shown before the notes)
   const cinematic = useMemo(
     () => unseen.find((a) => a.kind === 'season' || a.kind === 'act') ?? null,
