@@ -99,12 +99,6 @@ export function bbLiftKindLabel(kind: BbLiftKind, now?: number): string {
   }
 }
 
-/** the LIFT's tradeoff: how it scores. Nothing launched ever enters a FLOWER, so this is the
- * only way a robot scores one. */
-export const BB_LIFT_KIND_BLURBS: Record<BbLiftKind, string> = {
-  vslide: 'Places into a FLOWER · drive the marker onto it',
-};
-
 /** THE LIFT SLOT'S ABSENT CASE: a build with no Box Tube has to SAY so. The StarterBot ships
  * without one, so this is the common reading, not the edge case. */
 export const BB_LIFT_NONE_LABEL = 'No box tube';

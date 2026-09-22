@@ -46,7 +46,6 @@ import {
   BB_INTAKE_LABELS,
   BB_INTAKE_MOUNT_BLURBS,
   BB_INTAKE_MOUNT_LABELS,
-  BB_LIFT_KIND_BLURBS,
   BB_MODE_BLURBS,
   BB_MODE_LABELS,
   BB_MOUNT_POS_LABELS,
@@ -453,7 +452,6 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
         {BB_LIFT_KINDS.map((k) => (
           <button key={k} className={`ds-opt ${lift?.kind === k ? 'on' : ''}`} onClick={() => pickLift(k)}>
             <span className="ot">{bbLiftKindLabel(k)}</span>
-            <span className="od">{BB_LIFT_KIND_BLURBS[k]}</span>
           </button>
         ))}
       </div>
