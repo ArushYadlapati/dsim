@@ -10,9 +10,25 @@ import { liveLinks, sweepStargazers, type StarSweepResult } from './db/repo';
  * That single property is why `provider_links` holds no token, and it is the reason to
  * resist any future reward that would need one.
  *
- * A `GITHUB_TOKEN` is OPTIONAL and buys only rate limit: unauthenticated is 60 requests an
- * hour per IP, authenticated is 5,000. At any plausible star count the sweep is a handful
- * of pages, so the token matters for how OFTEN this can run, not for whether it works.
+ * ⚠️ **`GITHUB_TOKEN` IS REQUIRED, NOT OPTIONAL, AND THIS COMMENT USED TO SAY THE OPPOSITE.**
+ * MEASURED against the live API on 2026-09-21, anonymously and from a clean rate-limit budget
+ * (57 of 60 remaining), on a repo that is genuinely public (`GET /repos/genius0412/dsim` → 200,
+ * `"private": false`):
+ *
+ *     GET /repos/genius0412/dsim/stargazers        → 401 {"message":"Requires authentication"}
+ *     …the same request with an `authorization` header → 200, 7 ids
+ *
+ * So the endpoint needs a credential even though the DATA is public, and the old note — that a
+ * token buys rate limit alone — was wrong about whether this works at all.
+ *
+ * ⚠️ AND THE FAILURE IS SILENT BY CONSTRUCTION, which is why `runStarSweep` refuses BEFORE the
+ * request rather than letting the 401 fall into the `!res.ok` path. Everything downstream is
+ * built to do nothing when it cannot trust the list, so a missing token would have produced a
+ * sweep that ran hourly, logged one generic status line, granted nothing, revoked nothing, and
+ * looked from the outside exactly like a repo nobody had starred.
+ *
+ * The token needs NO SCOPES — this reads public data. A classic PAT with every box unticked,
+ * or a fine-grained token with public-repository read, is enough.
  */
 
 /** ~how often to sweep. Hourly is plenty: a star is not time-critical and the reward is a decal. */
@@ -91,6 +107,22 @@ export async function fetchStargazers(
   return { ids, complete: false };
 }
 
+/** the missing-token warning, said ONCE — an hourly timer would otherwise bury the log. */
+let warnedNoToken = false;
+export function warnNoToken(): void {
+  if (warnedNoToken) return;
+  warnedNoToken = true;
+  console.warn(
+    '[rewards] THE GITHUB STAR REWARD IS OFF: no GITHUB_TOKEN. The stargazers endpoint answers ' +
+      '401 without one even for a public repo, so no star can ever be seen. Set a token with NO ' +
+      'scopes (it reads public data): fly secrets set GITHUB_TOKEN=... -a <app>',
+  );
+}
+/** test seam — the warning is once-per-process, and a suite runs many processes' worth. */
+export function resetNoTokenWarning(): void {
+  warnedNoToken = false;
+}
+
 /**
  * ONE SWEEP: fetch, then hand the set to `sweepStargazers`, which owns the algebra and the
  * fail-safe. Split this way so the interesting half is testable without a network.
@@ -100,11 +132,19 @@ export async function runStarSweep(
   token?: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<StarSweepResult> {
+  /* ⚠️ NO TOKEN, NO SWEEP — AND IT SAYS SO, ONCE, IN WORDS THAT NAME THE FIX. The endpoint
+     answers 401 without one (see the header), and every layer below this is built to do
+     nothing when it cannot trust the list. Falling into the generic `!res.ok` line would
+     therefore be a feature that is switched off and cannot be told apart from a feature that
+     is on with nobody using it. Refusing here, by name, is the difference. */
+  if (!token) {
+    warnNoToken();
+    return { granted: [], revoked: [], applied: false };
+  }
   /* ⚠️ NO LINKS, NO REQUEST. Until somebody has linked a GitHub account the sweep has
-     nobody to grant to, and hitting the API hourly to learn that is wasted traffic against
-     a 60-per-hour unauthenticated budget. This is also the state the server is in the
-     whole time the provider is not enabled in the Neon Auth project, which is where this
-     feature sits until the owner turns it on. */
+     nobody to grant to, and hitting the API hourly to learn that is wasted traffic. This is
+     also the state the server is in the whole time the provider is not enabled in the Neon
+     Auth project, which is where this feature sits until the owner turns it on. */
   if ((await liveLinks('github')).length === 0) return { granted: [], revoked: [], applied: false };
   const got = await fetchStargazers(repo, token, fetchImpl);
   const out = await sweepStargazers(got.ids, got.complete);

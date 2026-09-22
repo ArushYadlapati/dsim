@@ -3592,6 +3592,40 @@ async function main(): Promise<void> {
     // a list that never shortens must stop, and stopping early is INCOMPLETE
     got = await stargazers.fetchStargazers('o/r', undefined, stub([page(1, full)]));
     check('⚠️ stargazers: a list that never ends hits MAX_PAGES and is INCOMPLETE', !got.complete, `${got.ids.length} ids`);
+
+    /**
+     * ⚠️ **NO TOKEN MUST NOT MEAN "NOBODY STARRED", AND FOR A WHILE IT DID.**
+     *
+     * MEASURED against the live API on 2026-09-21: `GET /repos/<public repo>/stargazers`
+     * answers **401 Requires authentication** anonymously — from a clean rate-limit budget,
+     * on a repo whose own `/repos/…` is 200 with `"private": false` — and 200 with any
+     * credential. The token is REQUIRED, and this file's own comments used to say it was
+     * optional and bought rate limit alone.
+     *
+     * That wrong belief was survivable only because of how quiet the failure is. Every layer
+     * below `fetchStargazers` refuses to act on a list it cannot trust, so an unauthenticated
+     * deploy sweeps hourly, logs one generic `stargazer fetch 401` line, grants nothing,
+     * revokes nothing, and is indistinguishable from a repo nobody has starred. So what is
+     * under test here is not the 401 — it is that the sweep NAMES the reason and does not
+     * spend a request finding out.
+     */
+    let fetched = 0;
+    const countingFetch = (async () => {
+      fetched++;
+      return page(1, [1]);
+    }) as unknown as typeof fetch;
+    stargazers.resetNoTokenWarning();
+    const warnings: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...a: unknown[]) => void warnings.push(a.join(' '));
+    const noTok = await stargazers.runStarSweep('o/r', undefined, countingFetch);
+    console.warn = realWarn;
+    check('⚠️ star sweep: NO GITHUB_TOKEN means the sweep does not apply — a 401 list is not an empty one',
+      !noTok.applied && noTok.granted.length === 0 && noTok.revoked.length === 0, JSON.stringify(noTok));
+    check('...and it refuses BEFORE the request, so it does not burn one to learn that',
+      fetched === 0, `${fetched} fetches`);
+    check('...and it says GITHUB_TOKEN by name, because the alternative is a silent no-op forever',
+      warnings.some((w) => w.includes('GITHUB_TOKEN')), warnings.join(' | ').slice(0, 120));
   }
 
 

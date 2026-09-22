@@ -30,7 +30,7 @@ import { BALANCE_VERSION } from '../src/config';
 import { periodLabel } from '../src/seasons';
 import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
-import { runStarSweep, STAR_SWEEP_MS } from './stargazers';
+import { runStarSweep, warnNoToken, STAR_SWEEP_MS } from './stargazers';
 import { runBoostSweep, BOOST_SWEEP_MS } from './boosts';
 import { dbEnabled } from './db/pool';
 import {
@@ -3757,6 +3757,11 @@ if (dbEnabled) {
  * indistinguishable from one that ran and found nothing.
  */
 const STAR_REPO = process.env.GITHUB_STAR_REPO ?? 'genius0412/dsim';
+/* ⚠️ SAID AT BOOT, NOT AT THE FIRST SWEEP. The sweep is HOURLY, so a warning raised inside it
+   arrives an hour after the deploy that got the configuration wrong — long after whoever ran
+   the deploy has stopped reading the log. `warnNoToken` is once-per-process, so this is the
+   only place it actually prints. */
+if (dbEnabled && !process.env.GITHUB_TOKEN) warnNoToken();
 const starSweeper = setInterval(() => {
   if (!dbEnabled) return;
   void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN).catch((e) =>
