@@ -33,6 +33,9 @@ const indexable = (game: GameId): boolean => INDEXABLE.some((s) => s.key === gam
 export const SITE_URL = 'https://www.playdsim.com';
 
 const HOME_TITLE = 'DSIM: Online FTC Driving Simulator';
+/** the browser tab reads this on EVERY route — the per-route titles below only
+ *  feed og:title / twitter:title (link previews). Keep in sync with `index.html`. */
+export const TAB_TITLE = 'DSIM presented by Offset Robotics';
 // the on-page sentence plus what you can do here. Descriptions are what shows
 // under the link in a search result — say what the page IS, don't sell it.
 // "DECODE or Chain Reaction" — named from the registry, so a hidden season cannot
@@ -164,7 +167,7 @@ export function applyRouteMeta(
         ? `${fullNameOf(s)} · DSIM`
         : meta.title
       : `${meta.title} · ${season} · DSIM`;
-  document.title = title;
+  document.title = TAB_TITLE;
   if (meta) {
     const description = gameHome
       ? `${s.blurb} Drive it in DSIM, ${APP_BLURB[0].toLowerCase()}${APP_BLURB.slice(1, -1)}.`
