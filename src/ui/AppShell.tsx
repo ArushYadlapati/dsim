@@ -232,6 +232,12 @@ export function AppShell({
  * reachable that way), is crawlable, and opens in a new tab on middle/modifier click. A plain
  * left click stays in the SPA through the app's own `navigate` (`go`). The hrefs mirror
  * `screenSuffix` in App.tsx, which the router's `parseScreen` reads back.
+ *
+ * The click also puts the page back at its TOP (owner, 2026-09-23). `.ds-app` is the scroll
+ * container, not the window (html/body are overflow:hidden for the game canvas), and a
+ * navigation that keeps this shell mounted keeps its scroll offset — so the destination opened
+ * already scrolled down to where the footer was. Synchronous is fine: the offset belongs to the
+ * container, which either survives the navigation (and stays at 0) or is replaced by a fresh one.
  */
 function FootLink({
   href,
@@ -253,6 +259,7 @@ function FootLink({
         if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
         e.preventDefault();
         go();
+        e.currentTarget.closest('.ds-app')?.scrollTo({ top: 0 });
       }}
     >
       {children}
