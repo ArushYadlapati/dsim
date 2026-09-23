@@ -385,8 +385,9 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
     <>
       {/* ---- LAUNCHER ---- */}
       <h3 className="ds-subh">Launcher</h3>
-      {/* THREE cards: a launcher is mandatory, so there is no "none" to offer. */}
-      <div className="ds-opts three">
+      {/* THREE cards: a launcher is mandatory, so there is no "none" to offer. `card4`, not
+          `three`: a fixed three-up squeezed each blurb to one word a line on a phone. */}
+      <div className="ds-opts card4">
         {BB_SCORE_MODES.map((m) => (
           <button
             key={m}
@@ -507,7 +508,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
       {/* THREE cards, same anatomy as the launcher picker above: every build carries an intake,
           so there is no "none" to offer. All three take a ground POLLEN identically; the blurb
           says the one thing that actually differs — whether it reaches into a FLOWER. */}
-      <div className="ds-opts three">
+      <div className="ds-opts card4">
         {BB_INTAKE_KINDS.map((k) => (
           <button
             key={k}

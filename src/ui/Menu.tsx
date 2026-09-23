@@ -24,7 +24,6 @@ import {
   CHAIN_STORAGE_MIN,
   CHAIN_SCORE_MODES,
   CHAIN_DEFAULT_SCORE_MODE,
-  CHAIN_DEFAULT_INTAKE,
   CHAIN_PRESETS,
   chainStorageMax,
   chainMassFloorBump,
@@ -74,7 +73,8 @@ import { coerceSpec, coerceAssists, PLAYER_ASSISTS } from '../sim/spawn';
 import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
 import { moduleFor } from '../games';
-import { DRIVETRAIN_LABELS, INTAKE_SHORT } from './robotLabels';
+import { DRIVETRAIN_LABELS, buildWords, teamLine } from './robotLabels';
+import { RobotCard } from './RobotCard';
 import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
 import { starPoints } from '../render/drawRobot';
@@ -84,15 +84,6 @@ const INTAKE_LABELS: Record<IntakeStyle, string> = {
   vector: 'Vector wheel',
   triangle: 'Triangle',
 };
-
-/** the shooting range a flywheel inertia is tuned for: a LOW-inertia wheel spins
- * up fast for close rapid-fire, a HIGH-inertia wheel holds speed to sustain long
- * shots (matches the flywheel-recovery cadence model). */
-function optimizedZone(inertia: number): string {
-  if (inertia <= 0.4) return 'Close range';
-  if (inertia <= 0.7) return 'Mid range';
-  return 'Long range';
-}
 
 // Chain Reaction robot config blurbs (CR-only builder controls). The LABELS
 // (CHAIN_MODE_LABELS / CHAIN_INTAKE_LABELS) are shared with the leaderboard config
@@ -514,10 +505,9 @@ export function Menu({ settings, onChange }: Props) {
   const mod = moduleFor(settings.game);
   const Preview = mod.Preview;
   const Builder = mod.Builder;
-  // the saved-robot card's BODY, when the game owns it. BIOBUZZ shows a 3D thumbnail of the
-  // build on the 3D view and its summary sentence on the 2D one; the two branches below are
-  // DECODE's and CR's, unchanged.
-  const SavedCard = mod.savedCard;
+  // the saved-robot card's THUMBNAIL, when the game draws one: BIOBUZZ renders the build on the
+  // 3D view. DECODE and CR draw none, and their cards are the name and the build line.
+  const SavedThumb = mod.savedThumb;
   // slider envelopes come from the SAME limit functions coerceSpec clamps with,
   // in the same dependency order (intake → size, drivetrain → rpm, drivetrain ×
   // inertia → mass), so the UI and the validator can never disagree
@@ -558,23 +548,24 @@ export function Menu({ settings, onChange }: Props) {
   // how many leading cards are real robots rather than archetype demos, so the section can
   // rule off between them. 0 ⇒ no divider (every current non-slot game is one or the other).
   const realPresets = gamePresets?.realCount ?? 0;
-  // The hero's PER-GAME stat tiles, same slot shape and for the same reason: the two-valued
-  // branch below is an `else`, so a third game was shown Chain Reaction's CATALYST tile — off
-  // `spec.catalystType`, which a BIOBUZZ spec does not even carry. An empty array is a game
-  // deliberately contributing no tile, so the test is on the SLOT, not on the length.
-  const gameStatTiles = mod.statTiles?.(spec);
-  const isCustom = !presets.some((p) => presetMatches(spec, p));
+  // THE HERO'S NUMBERS: how this build drives, what it weighs and how big it is. A fixed six,
+  // in every game, so the grid is the same shape whatever a season contributes. The build's
+  // WORDS (drivetrain, mechanisms) are the line under the team — `buildWords`, which reads the
+  // game's `statTiles` slot before either inline arm, so a third game is described in its own
+  // terms and never in Chain Reaction's. Drive rpm is not here: it is a slider with its value
+  // printed beside it, and top speed and accel are what it changes.
+  const heroTeam = teamLine(spec);
+  const heroStats: readonly (readonly [string, string, string])[] = [
+    ['Top speed', dp.maxSpeed.toFixed(0), 'in/s'],
+    ['Accel', dp.accel.toFixed(0), 'in/s²'],
+    ['Turn', dp.maxTurn.toFixed(1), 'rad/s'],
+    ['Turn accel', dp.turnAccel.toFixed(1), 'rad/s²'],
+    ['Mass', String(spec.massLb), 'lb'],
+    ['W × L', `${spec.width} × ${spec.length}`, 'in'],
+  ];
 
   // ---- the player's SAVED robot library (their own full robots, up to 3) ----
   const savedRobots = settings.savedRobots;
-  // The ONE line that says what a build is — the module's `labels.configSummary`, which the
-  // leaderboard, the lobby roster and the strategy card already print through `buildSummary`.
-  // Read here for the same reason the preset list is: the two-valued branch below is an
-  // `else`, not a default, so a third game was not described plainly — it was described in
-  // Chain Reaction's words, off `scoreMode`, the LOSSY legacy MIRROR `src/sim/spawn.ts`
-  // writes unconditionally. A launcher-less BIOBUZZ build therefore read as a turret it does
-  // not have, and the LIFT half of its mechanism was never mentioned at all.
-  const gameSummary = mod.labels?.configSummary;
   // a saved slot is the active one when the whole robot matches (identity + build)
   const sameRobot = (a: RobotSpec, b: RobotSpec): boolean =>
     specMatches(a, b) &&
@@ -605,121 +596,48 @@ export function Menu({ settings, onChange }: Props) {
       {/* the page heading is owned by the Configure host */}
       <div className="ds-robot">
         {/* ---------- robot hero ----------
-            BACK AT THE TOP, pinned, as ONE compact row (owner, 2026-09-22 — the 260px rail it
-            replaces read as a widget parked beside the build). The sticky strip that shipped
-            before the rail held 26% of a 720px viewport, and the reason was the STAT TILES, not
-            the sprite: two wrapped rows of a 96px grid. The height is budgeted in the CSS
-            instead — the 96px sprite box sets it, the tiles are one-line chips that wrap inside
-            that box, and the card lands at 105px. See `.ds-hero` in shell.css. */}
+            PINNED AT THE TOP from 1100px up (owner, 2026-09-22), and ONE card at every width: the
+            picture, who the robot is, what it is built from, and how it drives. It was a strip of
+            nine one-line chips wrapped inside the sprite's 96px, which scrolled in both directions
+            between 1100 and 1280 and clipped its top chip; and under 1100 it was a 509px card, 690px
+            on a phone. The chips said the build's words and its numbers in one wall. They are two
+            things now: the WORDS are one line under the team (`buildWords`, the same line every robot
+            card prints) and the NUMBERS are a fixed grid, so no stat can widen the card. The layout
+            follows the CARD's width, not the viewport's — see `.ds-hero` in shell.css. */}
         <div className="ds-hero">
-          <div className="ds-hero-view">
-            {/* TWO components, not one with a `chain` flag: DECODE's schematic is
-                main's, untouched, and Chain Reaction's is its own — so work on one
-                game's mechanisms can never change how the other's robot looks. */}
-            {Preview ? (
-              // `allow3d`: this is ONE preview on screen and it is the whole point of the
-              // screen, so a game with a 3D generator may mount a live scene here. The
-              // strategy cards pass no such thing — see `GamePreviewProps`.
-              <Preview spec={spec} size={160} alliance={settings.alliance} allow3d />
-            ) : isDecode ? (
-              <RobotPreview spec={spec} size={160} />
-            ) : (
-              <ChainRobotPreview spec={spec} size={160} />
-            )}
-          </div>
-          <div className="ds-hero-info">
-            <div>
-              <div className="ds-hero-name">
-                {spec.name || 'Unnamed'}
-                {isCustom && <span className="cust">CUSTOM</span>}
-              </div>
-              <div className="ds-hero-team">
-                {spec.teamName || 'No team'}
-                {spec.teamNumber ? ` · #${spec.teamNumber}` : ''}
-              </div>
-            </div>
-            <div className="ds-stats">
-              <div className="ds-stat">
-                <span className="sv">{dp.maxSpeed.toFixed(0)}</span>
-                <span className="sl">in/s top</span>
-              </div>
-              <div className="ds-stat">
-                <span className="sv">{dp.accel.toFixed(0)}</span>
-                <span className="sl">in/s² accel</span>
-              </div>
-              <div className="ds-stat">
-                <span className="sv">{dp.maxTurn.toFixed(1)}</span>
-                <span className="sl">rad/s turn</span>
-              </div>
-              <div className="ds-stat">
-                <span className="sv">{dp.turnAccel.toFixed(1)}</span>
-                <span className="sl">rad/s² ang. accel</span>
-              </div>
-              <div className="ds-stat">
-                <span className="sv">{spec.massLb}</span>
-                <span className="sl">lb mass</span>
-              </div>
-              <div className="ds-stat">
-                <span className="sv">{spec.driveRpm}</span>
-                <span className="sl">drive rpm</span>
-              </div>
-              <div className="ds-stat">
-                <span className="sv sm">
-                  {DRIVETRAIN_LABELS[spec.drivetrain]}
-                </span>
-                <span className="sl">drivetrain</span>
-              </div>
-              {/* The PER-GAME tiles. They used to print DECODE's intake style for both
-                  games, so a Chain Reaction robot claimed a "Sloped" intake — a DECODE
-                  part it does not have. CR has a single intake design, so naming it says
-                  nothing; the SCORING ARCHETYPE is that game's defining build choice and
-                  is otherwise absent from this summary.
-                  A game may now own these outright through the `statTiles` slot; the two
-                  branches below are DECODE's and CR's, unchanged. */}
-              {gameStatTiles ? (
-                // the game writes its own tiles — it is the only thing that knows which of
-                // its mechanisms is worth a tile and what an EMPTY slot should say
-                gameStatTiles.map((t) => (
-                  <div className="ds-stat" key={t.label}>
-                    <span className="sv sm">{t.value}</span>
-                    <span className="sl">{t.label}</span>
-                    {t.sub ? <span className="sl">{t.sub}</span> : null}
-                  </div>
-                ))
+          <div className="ds-hero-in">
+            <div className="ds-hero-view">
+              {/* TWO components, not one with a `chain` flag: DECODE's schematic is
+                  main's, untouched, and Chain Reaction's is its own — so work on one
+                  game's mechanisms can never change how the other's robot looks.
+                  NO CAPTION: at 88px the dimension line was 5px type. The size is a stat. */}
+              {Preview ? (
+                // `allow3d`: this is ONE preview on screen and it is the whole point of the
+                // screen, so a game with a 3D generator may mount a live scene here. The
+                // strategy cards pass no such thing — see `GamePreviewProps`.
+                <Preview spec={spec} size={160} alliance={settings.alliance} allow3d caption={false} />
               ) : isDecode ? (
-                <div className="ds-stat">
-                  <span className="sv sm">
-                    {INTAKE_SHORT[spec.intake]}
-                    {spec.canSort ? ' · sorter' : ''}
-                  </span>
-                  <span className="sl">intake</span>
-                </div>
+                <RobotPreview spec={spec} size={160} caption={false} />
               ) : (
-                <>
-                  <div className="ds-stat">
-                    <span className="sv sm">
-                      {CHAIN_MODE_LABELS[spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE]}
-                    </span>
-                    <span className="sl">scoring</span>
-                  </div>
-                  {/* THE CATALYST, which this summary never mentioned. It is half the build
-                      in CR — a whole mechanism with a type, a place on the chassis and, now,
-                      a direction it swings — and changing any of that left every tile on the
-                      card reading exactly the same, which looks like the picker did nothing. */}
-                  <div className="ds-stat">
-                    <span className="sv sm">
-                      {CHAIN_CATALYST_LABELS[spec.catalystType ?? CHAIN_DEFAULT_CATALYST]}
-                    </span>
-                    <span className="sl">catalyst</span>
-                    <span className="sl">
-                      {catalystSwingOf(spec)
-                        ? `swing ${catalystSwingOf(spec) === 'fb' ? '↕' : '↔'} · ${CHAIN_CATALYST_MOUNT_LABELS[catalystMountOf(spec)]}`
-                        : CHAIN_CATALYST_MOUNT_LABELS[catalystMountOf(spec)]}
-                    </span>
-                  </div>
-                </>
+                <ChainRobotPreview spec={spec} size={160} caption={false} />
               )}
             </div>
+            <div className="ds-hero-info">
+              <div className="ds-hero-name">{spec.name || 'Unnamed'}</div>
+              {heroTeam ? <div className="ds-hero-team">{heroTeam}</div> : null}
+              <div className="ds-hero-build">{buildWords(spec, settings.game).join(' · ')}</div>
+            </div>
+            <dl className="ds-hero-stats">
+              {heroStats.map(([label, value, unit]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>
+                    {value}
+                    <span className="u">{unit}</span>
+                  </dd>
+                </div>
+              ))}
+            </dl>
           </div>
         </div>
 
@@ -734,6 +652,9 @@ export function Menu({ settings, onChange }: Props) {
             <h2 className="ds-panel-title">Start from</h2>
           </div>
           <div className="ds-panel-body stack">
+            {/* ONE CARD SYSTEM for both rows (`RobotCard`): a name, a team when there is one, and
+                one build line. `.robots` is an auto-FILL grid, so a lone saved robot is one card
+                wide, the width of a preset, instead of a slab across the whole panel. */}
             {savedRobots.length > 0 && (
               <div className="ds-field">
                 <span className="cap">
@@ -742,136 +663,56 @@ export function Menu({ settings, onChange }: Props) {
                     {savedRobots.length}/{MAX_SAVED_ROBOTS}
                   </span>
                 </span>
-                <div className="ds-opts">
-            {savedRobots.map((r, i) => (
-              // the card and its ✕ are SIBLINGS in a slot — a button nested inside a
-              // button-role card had no clean name and leaked its keypresses to the card
-              <div key={i} className="ds-opt-slot">
-              <button
-                className={`ds-opt ${sameRobot(spec, r) ? 'on' : ''}`}
-                aria-pressed={sameRobot(spec, r)}
-                onClick={() => applySpec({ ...r })}
-              >
-                <span className="ot">{r.name || 'Unnamed'}</span>
-                <span className="od">
-                  {r.teamNumber ? `${r.teamNumber} · ` : ''}
-                  {r.teamName || 'No team'}
-                </span>
-                {/* GAME-AWARE, like the preset cards above. This line used to print
-                    the DECODE fields whatever game you were in — intake preset,
-                    flywheel inertia, colour sorter — none of which a Chain Reaction
-                    robot has or uses, so a CR saved slot described a robot that did
-                    not exist. Same split the leaderboard's spec summary makes.
-                    A game may now own the sentence outright through `labels.configSummary`;
-                    the two branches below are DECODE's and CR's, unchanged. */}
-                {SavedCard ? (
-                  // the game owns the whole body, because what belongs there is not always a
-                  // sentence: BIOBUZZ puts a rendered thumbnail of the build here on the 3D view
-                  <SavedCard spec={r} alliance={settings.alliance} />
-                ) : gameSummary ? (
-                  // the game writes its own sentence — the SAME one the leaderboard, the
-                  // lobby roster and the strategy card print, so a saved slot and a record
-                  // row can never describe one robot in two different vocabularies
-                  <span className="om">{gameSummary(r)}</span>
-                ) : isDecode ? (
-                  <span className="om">
-                    {DRIVETRAIN_LABELS[r.drivetrain]} · {r.massLb} lb · {r.driveRpm} rpm ·{' '}
-                    {INTAKE_SHORT[r.intake]} · {r.flywheelInertia} inertia
-                    {r.canSort ? ' · sorter' : ''}
-                  </span>
-                ) : (
-                  <span className="om">
-                    {DRIVETRAIN_LABELS[r.drivetrain]} · {r.massLb} lb · {r.driveRpm} rpm ·{' '}
-                    {CHAIN_INTAKE_LABELS[r.chainIntake ?? CHAIN_DEFAULT_INTAKE]} ·{' '}
-                    {CHAIN_MODE_LABELS[r.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE]}
-                  </span>
-                )}
-              </button>
-              <button
-                className="ds-opt-del"
-                title="Delete this robot"
-                aria-label={`Delete ${r.name || 'Unnamed'}`}
-                onClick={() => deleteSavedRobot(i)}
-              >
-                ✕
-              </button>
-              </div>
-            ))}
+                <div className="ds-opts robots">
+                  {savedRobots.map((r, i) => (
+                    <RobotCard
+                      key={i}
+                      spec={r}
+                      game={settings.game}
+                      on={sameRobot(spec, r)}
+                      team={teamLine(r)}
+                      // the game's own picture, when it draws one: BIOBUZZ renders the build on
+                      // the 3D view. It sits BESIDE the name and never replaces the line.
+                      thumb={SavedThumb ? <SavedThumb spec={r} alliance={settings.alliance} /> : undefined}
+                      onPick={() => applySpec({ ...r })}
+                      onDelete={() => deleteSavedRobot(i)}
+                    />
+                  ))}
                 </div>
               </div>
             )}
 
             <div className="ds-field">
-              {/* only as a divider from "Your robots": alone, "Presets" under "Start from" names
-                  nothing the panel title has not */}
               {savedRobots.length > 0 && <span className="cap">Presets</span>}
-              <div className="ds-opts">
-            {presets.map((p, i) => (
-              <button
-                key={p.name}
-                // `.real` marks a documented, real-world robot. Marking the CARDS rather than
-                // ruling a line between the two groups is what survives `.ds-opts` being an
-                // auto-fit grid: a divider "after the fourth card" lands mid-row the moment
-                // the grid reflows to three or five columns, but a per-card mark never lies.
-                aria-pressed={presetMatches(spec, p)}
-                className={`ds-opt ${presetMatches(spec, p) ? 'on' : ''} ${
-                  i < realPresets ? 'real' : ''
-                }`}
-                onClick={() =>
-                  // copy the BUILD only — keep the player's own name/team/number.
-                  // applySpec swaps assists to the preset's drivetrain slot (so the
-                  // Cypher swerve preset loads field-centric, the rest robot-centric).
-                  applySpec({
-                    ...p,
-                    name: spec.name,
-                    teamName: spec.teamName,
-                    teamNumber: spec.teamNumber,
-                  })
-                }
-              >
-                <span className="ot">{p.name}</span>
-                <span className="od">
-                  {gamePresets || !isDecode ? p.teamName : `${p.teamNumber} · ${p.teamName}`}
-                </span>
-                {gamePresets ? (
-                  // the game writes its own card body — it is the only thing that knows
-                  // which of its fields are worth a line
-                  (() => {
-                    const { meta, zone } = gamePresets.lines(p);
-                    return (
-                      <>
-                        <span className="om">{meta}</span>
-                        {zone ? <span className="oz">{zone}</span> : null}
-                      </>
-                    );
-                  })()
-                ) : isDecode ? (
-                  <>
-                    <span className="om">
-                      {DRIVETRAIN_LABELS[p.drivetrain]} · {p.massLb} lb · {p.driveRpm} rpm ·{' '}
-                      {INTAKE_SHORT[p.intake]} · {p.flywheelInertia} inertia
-                      {p.canSort ? ' · sorter' : ''}
-                    </span>
-                    <span className="oz">{optimizedZone(p.flywheelInertia)}</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="om">
-                      {DRIVETRAIN_LABELS[p.drivetrain]} · {p.massLb} lb · {p.driveRpm} rpm ·{' '}
-                      {CHAIN_INTAKE_LABELS[p.chainIntake ?? CHAIN_DEFAULT_INTAKE]}{' '}
-                      {CHAIN_INTAKE_MOUNT_LABELS[intakeMountOf(p)]} · {p.ballStorage} store
-                    </span>
-                    {/* a turret is top-mounted, so naming its shooter mount would be noise */}
-                    <span className="oz">
-                      {CHAIN_MODE_LABELS[p.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE]}
-                      {!isTurreted(p.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE)
-                        ? ` · ${CHAIN_SHOOTER_MOUNT_LABELS[shooterMountOf(p)]}`
-                        : ''}
-                    </span>
-                  </>
-                )}
-              </button>
-            ))}
+              <div className="ds-opts robots">
+                {presets.map((p, i) => (
+                  <RobotCard
+                    key={p.name}
+                    spec={p}
+                    game={settings.game}
+                    on={presetMatches(spec, p)}
+                    // `.real` marks a documented, real-world robot. Marking the CARDS rather than
+                    // ruling a line between the two groups is what survives `.ds-opts` being an
+                    // auto-fill grid: a divider "after the fourth card" lands mid-row the moment
+                    // the grid reflows to three or five columns, but a per-card mark never lies.
+                    real={i < realPresets}
+                    // a REAL team's number and name are who built it. A demo's `teamName` is a
+                    // tagline ("Dumper · sweeps both ends, shifts to push") that the build line
+                    // under it already says, so it is not printed.
+                    team={p.teamNumber ? teamLine(p) : undefined}
+                    onPick={() =>
+                      // copy the BUILD only — keep the player's own name/team/number.
+                      // applySpec swaps assists to the preset's drivetrain slot (so the
+                      // Cypher swerve preset loads field-centric, the rest robot-centric).
+                      applySpec({
+                        ...p,
+                        name: spec.name,
+                        teamName: spec.teamName,
+                        teamNumber: spec.teamNumber,
+                      })
+                    }
+                  />
+                ))}
               </div>
             </div>
           </div>

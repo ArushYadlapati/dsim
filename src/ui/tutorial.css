@@ -123,9 +123,9 @@
  * its base. It lives in this file anyway because it belongs to the tutorial feature and because
  * `shell.css` is the file this split exists to stay out of.
  *
- * `.ds-rejoin` is `justify-content: space-between` on a wrapping row, which puts a two-line
- * banner's button on the far right of the first line; this makes the text a column so the
- * sub-line sits under the heading and the button keeps the right edge.
+ * `.ds-rejoin` is `justify-content: space-between` on a wrapping row: the heading on the left,
+ * the button on the right edge. The sub-line that sat between them is gone (it restated the
+ * button), so the heading is the row's only text.
  */
 .ds-tut-offer {
   align-items: center;
@@ -133,13 +133,6 @@
 
 .ds-tut-offer > b {
   flex: 0 0 auto;
-}
-
-.ds-tut-offer-sub {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: var(--ds-t-sm);
-  color: var(--ds-ink-dim);
 }
 
 /*

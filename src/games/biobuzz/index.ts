@@ -1,6 +1,6 @@
 import type { GameModule } from '../module';
 import { BiobuzzGalleryRoute } from './GalleryRoute';
-import { BiobuzzPreview3D, BiobuzzSavedCard } from './Preview3D';
+import { BiobuzzPreview3D, BiobuzzSavedThumb } from './Preview3D';
 import {
   BiobuzzBuilderSlot,
   BiobuzzHudChips,
@@ -13,7 +13,7 @@ import { drawBiobuzzField } from './drawField';
 import { drawBiobuzzFlowerReadout } from './drawFlowerReadout';
 import { drawBiobuzzRobot } from './drawRobot';
 import { bbConfigSummary, bbStatTiles } from './labels';
-import { BB_PRESET_LIST, BB_REAL_PRESETS, bbPresetLines, bbSpecMatches } from './presets';
+import { BB_PRESET_LIST, BB_REAL_PRESETS, bbSpecMatches } from './presets';
 import { BIOBUZZ_SIM } from './sim';
 import { BiobuzzStartEditor } from './StartEditor';
 import { BIOBUZZ_TUTORIAL } from './tutorial';
@@ -62,9 +62,9 @@ export const BIOBUZZ_MODULE: GameModule = {
    * host's `allow3d` it IS the schematic, byte for byte what this slot was before.
    */
   Preview: BiobuzzPreview3D,
-  /** the saved-robot card's body: a 3D thumbnail on the 3D view, the build summary on the 2D
-   * one. See `GameModule.savedCard` for why the GAME makes that choice and not the menu. */
-  savedCard: BiobuzzSavedCard,
+  /** the saved-robot card's thumbnail: a 3D render on the 3D view, nothing on the 2D one. See
+   * `GameModule.savedThumb` for why the GAME makes that choice and not the menu. */
+  savedThumb: BiobuzzSavedThumb,
   hudChips: BiobuzzHudChips,
   scoreBar: BiobuzzScoreBar,
   pinnedNotice: BiobuzzPinnedNotice,
@@ -77,10 +77,11 @@ export const BIOBUZZ_MODULE: GameModule = {
   // no auto-fire: the driver fires, and Aim Assist only releases a shot that would land
   offersAutoFire: false,
   /**
-   * THE BUILDER HERO'S PER-GAME TILES. The second instance of the preset bug, and the same
-   * shape of fix: the hero picked its mechanism tiles with `isDecode ? … : …`, so BIOBUZZ fell
-   * into the CHAIN arm and showed a **CATALYST** — Chain Reaction's mechanism, off a field
-   * `coerceBiobuzzSpec` deletes. This says launcher and lift, which is what a BIOBUZZ robot has.
+   * THE BUILDER'S MECHANISM WORDS (the hero's build line and every robot card's line, through
+   * `buildWords`). The second instance of the preset bug, and the same shape of fix: the hero
+   * picked its mechanism tiles with `isDecode ? … : …`, so BIOBUZZ fell into the CHAIN arm and
+   * showed a **CATALYST** — Chain Reaction's mechanism, off a field `coerceBiobuzzSpec` deletes.
+   * This says launcher and lift, which is what a BIOBUZZ robot has.
    */
   statTiles: bbStatTiles,
   /**
@@ -103,7 +104,6 @@ export const BIOBUZZ_MODULE: GameModule = {
   presets: {
     list: BB_PRESET_LIST,
     matches: bbSpecMatches,
-    lines: bbPresetLines,
     realCount: BB_REAL_PRESETS,
   },
   /**

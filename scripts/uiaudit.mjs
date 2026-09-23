@@ -89,7 +89,10 @@ const BASELINE = {
   // the replay export menu's 10px pads, `.legal-warn`, `.ann-item-head`, `.ds-replay-saving`.
   // 133 → 122, 2026-09-22: design review wave 4 (the keycap/card consolidation, the LAN move and
   // `.ds-dl-hero`'s 22px pad, which is --ds-s-5 now).
-  'off-grid-gap': 122,
+  // → 120, 2026-09-23: merged upstream's builder-hero rebuild onto design review wave 5.
+  'off-grid-gap': 120,
+  // 143 → 141, 2026-09-22: the builder hero's rebuild. Its narrow-screen card was spaced in
+  // `18px` twice (gap and padding); the one card it became is on the token scale throughout.
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
   // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
   // not the 31 first measured. The other two start where they stand: paying them down needs a
@@ -101,7 +104,11 @@ const BASELINE = {
   // `--ds-t-control` (17 control/body literals became the token), the h1/h2 clamps are
   // `--ds-t-h1`/`--ds-t-h2`, and every 10px chrome label moved UP to `--ds-t-xs`, the floor.
   // What is left is display type (16/18/19/22/24) and the standing gauge's SVG user units.
-  'off-scale-font-size': 12,
+  // → 11, 2026-09-23: merged upstream's builder-hero rebuild onto design review wave 5.
+  'off-scale-font-size': 11,
+  // 45 → 43, 2026-09-22: the builder hero's `24px` name and the `10px` CUSTOM chip beside it.
+  // The name is `--ds-t-xl`, and the chip is gone: the preset cards right under the hero
+  // already show whether the build is one of them.
   // 14 → 13, 2026-09-19: `.perf-readout`'s `border-radius: 6px` went with the `?perf=1` line.
   // 13 → 12, 2026-09-22: `.net-overlay-card`'s `14px` is `--ds-round-lg`, which is what it was
   // approximating — it sat beside `.overlay-panel`, which already used the token.
@@ -124,7 +131,8 @@ const BASELINE = {
   // tokens in the same commit, leaving the odd values (1.02, 1.3, 1.35, 16px …) and the `/n`
   // inside `font:` shorthands.
   // 33 → 32, 2026-09-22: `.as-field input` restated .ds-input with its own `/ 1.4`; it is gone.
-  'literal-line-height': 31,
+  // → 29, 2026-09-23: merged upstream's builder-hero rebuild onto design review wave 5.
+  'literal-line-height': 29,
   // measured 2026-09-22 (design review 13-12), when the tip, the banners, the danger button and
   // the LAN panel moved to shell.css. The four left are deliberate: `.ds-dialog-title` is the one
   // title contract the match overlays share with the shell dialogs, `.ds-key.capturing` sits in

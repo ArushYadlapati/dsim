@@ -27,7 +27,16 @@ const DIM_FONT = 1.7;
  * app. Purely presentational; reads nothing but the spec + a few geometry
  * constants (matching the sim's own robotExtents / turret placement rules).
  */
-export function ChainRobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: number }) {
+export function ChainRobotPreview({
+  spec,
+  size = 200,
+  caption = true,
+}: {
+  spec: RobotSpec;
+  size?: number;
+  /** print the dimension line under the robot (see `RobotPreview`'s prop of the same name) */
+  caption?: boolean;
+}) {
   const w = spec.width;
   const len = spec.length;
 
@@ -68,14 +77,15 @@ export function ChainRobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?
   const catBottom = onBack ? spec.length / 2 + catOut : 0;
   const catSide = onSide ? spec.width / 2 + catOut : 0;
   const dimLabel = `${w}" wide · ${len}" long`;
-  const labelHalf = (dimLabel.length * DIM_FONT * 0.56) / 2; // ~0.56em avg advance
+  const labelHalf = caption ? (dimLabel.length * DIM_FONT * 0.56) / 2 : 0; // ~0.56em avg advance
   const halfSpan = Math.max(w / 2, cHalf, labelHalf, catSide) + 2.5;
   const top = Math.min(tipY, catTop) - 2;
   // The label clears everything that hangs off the BACK — a rear sweeper or a rear-mounted
   // claw. It used to sit at the chassis half-length, so a rear/frontback intake printed the
   // dimensions straight over its own rollers.
   const labelY = Math.max(cRearY, catBottom) + 2.6;
-  const bottom = labelY + DIM_FONT + 0.9;
+  // with no caption the drawing ends at the robot, plus the same margin the top gets
+  const bottom = caption ? labelY + DIM_FONT + 0.9 : Math.max(cRearY, catBottom) + 2;
   const vbW = halfSpan * 2;
   const vbH = bottom - top;
 
@@ -566,16 +576,18 @@ export function ChainRobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?
       {cLauncherEl}
 
       {/* width dimension label */}
-      <text
-        x={0}
-        y={labelY}
-        textAnchor="middle"
-        fill="var(--ds-mut)"
-        fontSize={DIM_FONT}
-        fontFamily="var(--ds-font-mono)"
-      >
-        {dimLabel}
-      </text>
+      {caption && (
+        <text
+          x={0}
+          y={labelY}
+          textAnchor="middle"
+          fill="var(--ds-mut)"
+          fontSize={DIM_FONT}
+          fontFamily="var(--ds-font-mono)"
+        >
+          {dimLabel}
+        </text>
+      )}
     </svg>
   );
 }

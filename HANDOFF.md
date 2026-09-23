@@ -1,4 +1,60 @@
-# HANDOFF — 2026-09-22e (repeat fouls, the BIOBUZZ mass model, presets, builder strip, box tube, front marks, copy)
+# HANDOFF — 2026-09-22f (logos out, HUD, box tube, bots, controls, rewards, robot cards)
+
+**State: green, all on `origin/alpha` (tip `83a6aec`).** `npm test`, `build`, `server:check`,
+`uiaudit`, `contrast`, `docaudit`, `dbtest`, `bundleaudit` pass. The one known flake is BIOBUZZ's
+`step3d p95` perf check under machine load; rerun once. The alpha server (`dsim-alpha`) was
+redeployed from `7c179bb` (migration 0048 applied, boot award job: 7 grants over 2 periods).
+The later commits are client-only.
+
+What landed, by owner request:
+- **FIRST logos out** (`58ebb3e`): reverted fa2d021 / 60c030b / e5c66da and `brandUrl`.
+  `public/brand/` is gone, Chain Reaction's own marks included. The plain-text season name in
+  the app bar stays.
+- **Top-right HUD** (`db906cc`): RAMP UP/DOWN chip deleted, main's NECTAR column restored.
+- **Offset box tube** (`40d6b1b`, `7c179bb`): a vertical three-tube slide with a claw that lands
+  on the flower's bore. 2D, builder and 3D share one geometry, and the stowed tower has a
+  rounded collider. This changes 3D physics for Box Tube robots, so their replays diverge.
+  SIM_VERSION is unchanged.
+- **Bots** (`33ea7cf`..`03e7951`): rewritten policy, six-robot non-default build roster picked
+  by (seed, seat), server rooms seat bots on their builds. `npm run bench:ai` measures;
+  hard solo 62 → 248 pts. New constants live in `src/games/biobuzz/ai/tuning.ts`.
+- **Controls** (`5a0f5b4`): shared binds only under All games, season tabs show only that
+  season's actions, touch first, Network is its own Configure section, no per-row SYNCED.
+  `coerceSettings` folds season-only overrides into main settings and DROPS per-season overrides
+  of shared controls. That drop is lossy, but only affects alpha data from the last few days.
+- **Rewards** (`3a1a24c`, `31b3976`): every grant is a pending `reward_grants` row claimed in a
+  dialog (Claim / Equip now). A grant only skips the dialog if its `REWARD_SOURCES` entry is
+  flagged silent. Profile splits into `/account/appearance` and `/account`. Badges carry counts,
+  and up to 3 can be worn. Payouts: act top 3 on 1v1 and 2v2, and season records top 3 plus #1
+  per drivetrain. Act 0 excluded. One job runs at boot and at rollover, keyed by
+  `reward_periods`. `season_awards` (0045) is retired, and its titles stay wearable.
+- **Copy and cards** (`bd93ecf`, `b7009c4`, `06f8971`, `83a6aec`): the pass-picker hint and the
+  lift blurbs are gone, and the rail and Configure sub-nav carry labels only (home keycaps keep
+  their hints). The builder hero is one card that fits every width; saved robots and presets are
+  one card with one build line, and that line leaves out an absent Box Tube.
+
+Next:
+- **Production** runs migration 0036. Promoting alpha applies 0037–0048, and the first boot pays
+  every closed act and season as pending rewards. Ask the owner before deploying.
+- **Owner decisions open:** a Box Tube build deploys to ~22.6 in against a declared 14 in height
+  (should the builder require more?), and duo record boards are left out of the season payout
+  (`RECORD_AWARD_MODES` in `server/db/repo.ts` turns them on).
+- **Box tube leftovers:** a side-cell turret next to the tube can still overlap the tower (only
+  the centre turret is checked), corner-mount colliders are up to 0.6 in larger than the drawn
+  tower, and the claw is drawn empty.
+- **Bot leftovers:** 2D easy/medium still give away some G407 points (3.5 / 1.5 per alliance),
+  and the old `BB_AI_*` constants in `config.ts` are unused.
+
+Gotchas:
+- `Agent` with `isolation: "worktree"` twice produced a worktree at a 347-commit-old commit
+  (`fae45c2`), not alpha. Check `git merge-base --is-ancestor origin/alpha HEAD` in a new
+  worktree, or create it yourself with `git worktree add <dir> -b <branch> origin/alpha`.
+- `.claude/worktrees/agent-af14a4e6938867157` could not be removed (a process holds a file);
+  `git worktree remove --force` it later.
+- A contributor ("crescent") pushes to alpha directly (`4a1d7ee Update shell.css`); fetch
+  before every push.
+
+# (older) HANDOFF — 2026-09-22e (repeat fouls, the BIOBUZZ mass model, presets, builder strip, box tube, front marks, copy)
 
 **State: green.** `npm test` (2288 + 4972, ALL PASS, no flakes hit), `npm run build`, `server:check`,
 `uiaudit` (baselines: `literal-radius` 13→12, `off-scale-font-size` 46→45), `docaudit`, `contrast`

@@ -4,7 +4,6 @@ import type { GamePreviewProps, GameSavedCardProps, RobotPreviewFactory, RobotPr
 import { moduleFor } from '../index';
 import { BB3_STOW_MAX, bbDeployedHeightIn, bbStowHeightIn } from './config';
 import { getViewPref, setViewPref, subscribeViewPref, type ViewPref } from './graphics/store';
-import { bbConfigSummary } from './labels';
 import { BiobuzzRobotPreview } from './RobotPreview';
 import { bbSpecKey } from './specKey';
 
@@ -124,7 +123,7 @@ async function drain(): Promise<void> {
       batch.length = 0;
     }
   } catch (err) {
-    // no WebGL2, a software renderer, a failed chunk — the cards fall back to their summary line
+    // no WebGL2, a software renderer, a failed chunk — the cards drop their thumbnail
     // eslint-disable-next-line no-console
     console.warn('BIOBUZZ: no 3D thumbnails on this machine.', err);
   } finally {
@@ -242,7 +241,13 @@ function LiveTurntable({
  * no behaviour change for the match-strategy cards that render four of these at once. The builder
  * hero passes it.
  */
-export function BiobuzzPreview3D({ spec, size = 200, alliance = 'red', allow3d = false }: GamePreviewProps) {
+export function BiobuzzPreview3D({
+  spec,
+  size = 200,
+  alliance = 'red',
+  allow3d = false,
+  caption = true,
+}: GamePreviewProps) {
   const pref = useViewPref();
   const [unsupported, setUnsupported] = useState<string | null>(null);
   const [stowed, setStowed] = useState(false);
@@ -262,24 +267,32 @@ export function BiobuzzPreview3D({ spec, size = 200, alliance = 'red', allow3d =
     [spec, showStowed, stowHeight],
   );
 
-  if (!allow3d) return <BiobuzzRobotPreview spec={spec} size={size} />;
+  if (!allow3d) return <BiobuzzRobotPreview spec={spec} size={size} caption={caption} />;
 
   const live = pref === '3d' && unsupported === null;
+  // WHAT IS SHOWN, not what was asked for. When the scene cannot start, the schematic is on screen,
+  // so 2D is the segment that reads as pressed and 3D reads as unavailable (dashed, the chassis
+  // map's TAKEN spelling) with the reason in its title. The reason used to be a sentence inside
+  // the preview column, which in the hero's 96px strip widened that column until the robot's name
+  // was cut to "My Ro…" and the stats beside it scrolled both ways.
+  const failed = pref === '3d' && unsupported !== null;
+  const shows2d = pref === '2d' || failed;
   return (
     <div className="bb-prev">
       <div className="ds-segs bb-prev-tabs" role="group" aria-label="Robot preview">
         <button
           type="button"
-          className={`ds-seg${pref === '2d' ? ' on' : ''}`}
-          aria-pressed={pref === '2d'}
+          className={`ds-seg${shows2d ? ' on' : ''}`}
+          aria-pressed={shows2d}
           onClick={() => setViewPref('2d')}
         >
           2D
         </button>
         <button
           type="button"
-          className={`ds-seg${pref === '3d' ? ' on' : ''}`}
-          aria-pressed={pref === '3d'}
+          className={`ds-seg${live ? ' on' : ''}${failed ? ' off' : ''}`}
+          aria-pressed={live}
+          title={failed ? 'Couldn’t start the 3D preview on this device. Click to try again.' : undefined}
           onClick={() => {
             // a retry as well as a pick: somebody who was sent back to 2D by a failed context gets
             // to try again without a reload, exactly as the Graphics section's 3D button does
@@ -304,29 +317,34 @@ export function BiobuzzPreview3D({ spec, size = 200, alliance = 'red', allow3d =
       {live ? (
         <LiveTurntable spec={shown} alliance={alliance} onUnsupported={onUnsupported} />
       ) : (
-        <BiobuzzRobotPreview spec={spec} size={size} />
+        <BiobuzzRobotPreview spec={spec} size={size} caption={caption} />
       )}
-      {unsupported !== null ? <p className="ds-hint">Couldn’t start the 3D preview. Showing the schematic.</p> : null}
+      {/* the same fact for a screen reader, which cannot see a dashed border */}
+      <span className="ds-sr" role="status">
+        {failed ? 'Couldn’t start the 3D preview on this device.' : ''}
+      </span>
     </div>
   );
 }
 
-// ──────────────────────────────────────────────────── the saved-robot card ──
+// ─────────────────────────────────────────────────── the saved-robot thumbnail ──
 
 /**
- * `GameModule.savedCard` for BIOBUZZ — one saved build's card body.
+ * `GameModule.savedThumb` for BIOBUZZ — the picture beside one saved build's name.
  *
- * On the 3D view it is a thumbnail of the robot, rendered once per build through the same scene
- * the builder preview uses. On the 2D view it is the build summary, which is what the card has
- * always shown and is still the better answer when there is no 3D picture to compare against.
+ * On the 3D view it is a render of the robot, made once per build through the same scene the
+ * builder preview uses. On the 2D view it is NOTHING: the card is its name and build line, which
+ * is what it always said, and a schematic at thumbnail size is a smudge rather than a picture.
  *
- * The box is the SAME HEIGHT either way (`.bb-savedthumb`), so the card does not jump when an
- * image lands — §1.4 of `docs/ui-standard.md`, and the reason the placeholder is an empty box
- * rather than nothing at all.
+ * The box holds its size while the image is still rendering, so the card does not jump when it
+ * lands (§1.4 of `docs/ui-standard.md`). A render that FAILED — no WebGL2, a software renderer —
+ * takes the box away rather than leaving an empty dark square beside the name for the life of the
+ * page; that is one change, once, on a machine that cannot draw the picture at all.
  */
-export function BiobuzzSavedCard({ spec, alliance }: GameSavedCardProps) {
+export function BiobuzzSavedThumb({ spec, alliance }: GameSavedCardProps) {
   const pref = useViewPref();
-  const [url, setUrl] = useState<string>(() => thumbs.get(thumbKey(spec, alliance)) ?? '');
+  // undefined: still rendering · '': this machine cannot · a data URL: the picture
+  const [url, setUrl] = useState<string | undefined>(() => thumbs.get(thumbKey(spec, alliance)));
 
   useEffect(() => {
     if (pref !== '3d') return;
@@ -339,10 +357,10 @@ export function BiobuzzSavedCard({ spec, alliance }: GameSavedCardProps) {
     };
   }, [pref, spec, alliance]);
 
-  if (pref !== '3d') return <span className="om">{bbConfigSummary(spec)}</span>;
+  if (pref !== '3d' || url === '') return null;
   return (
-    <span className="bb-savedthumb">
-      {/* DECORATIVE: the card already names the robot and its team above this, so an alt text
+    <span className="ds-robot-card-thumb">
+      {/* DECORATIVE: the card already names the robot and its team beside this, so an alt text
           would be a third reading of the same thing for a screen reader. */}
       {url ? <img src={url} alt="" /> : null}
     </span>

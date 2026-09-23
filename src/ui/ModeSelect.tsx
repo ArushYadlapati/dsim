@@ -81,33 +81,31 @@ export function ModeSelect({
           changes shape is harder to learn than a banner that goes away. */}
       {onTutorial && !seen && (
         <div className="ds-rejoin ds-tut-offer">
+          {/* NO SUB-LINE. "Learn the controls on the real field." said what the button under it
+              says, and NO STEP COUNT either: it was "Six steps", which is BIOBUZZ’s number —
+              DECODE’s tutorial has four, and a build with no Box Tube is asked five. The count is
+              resolved per game and per ROBOT (`TutorialStep.applies`), so the only honest place it
+              can be printed is the card itself, which does print it. */}
           <b>New to {APP_NAME}?</b>
-          {/* NO STEP COUNT. It was "Six steps", which is BIOBUZZ’s number: DECODE’s tutorial has
-              four, and a build with no Box Tube is asked five. The count is resolved per game and
-              per ROBOT (`TutorialStep.applies`), so the only honest place it can be printed is the
-              card itself, which does print it. */}
-          <span className="ds-tut-offer-sub">
-            Learn the controls on the real field.
-          </span>
           <button className="ds-btn primary" onClick={onTutorial}>
             Start the tutorial →
           </button>
         </div>
       )}
 
-      {/* Offline, always available — the safe default (Solo Practice is primary) */}
+      {/* Offline, always available — the safe default (Solo Practice is primary).
+          A TILE IS ITS TITLE: the mono kicker over each one (SOLO, RECORDS, LIVE …) repeated the
+          title or the set's own label, so it is gone. */}
       <section className="ds-tileset">
         <p className="ds-tileset-label">Practice · offline</p>
         <div className="ds-tiles">
           <button className="ds-tile primary" onClick={onSoloMatch}>
-            <span className="k">Solo</span>
             <span>
               <span className="t">Solo Practice</span>
             </span>
           </button>
 
           <button className="ds-tile" onClick={onFreeDrive}>
-            <span className="k">Practice</span>
             <span>
               <span className="t">Free Drive</span>
             </span>
@@ -121,7 +119,6 @@ export function ModeSelect({
         <p className="ds-tileset-label">Compete · online</p>
         <div className="ds-tiles">
           <button className="ds-tile" onClick={onRanked} disabled={!multiplayer || !signedIn}>
-            <span className="k">Ranked</span>
             <span>
               <span className="t">
                 Find Match
@@ -145,7 +142,6 @@ export function ModeSelect({
           </button>
 
           <button className="ds-tile" onClick={onRecordRun} disabled={!multiplayer}>
-            <span className="k">Records</span>
             <span>
               <span className="t">Solo Record</span>
               {!multiplayer && <span className="d">Needs the game server</span>}
@@ -153,7 +149,6 @@ export function ModeSelect({
           </button>
 
           <button className="ds-tile" onClick={onDuoRecord} disabled={!multiplayer}>
-            <span className="k">Records</span>
             <span>
               <span className="t">Duo Record</span>
               {!multiplayer && <span className="d">Needs the game server</span>}
@@ -168,14 +163,12 @@ export function ModeSelect({
         <p className="ds-tileset-label">Custom · online</p>
         <div className="ds-tiles">
           <button className="ds-tile" onClick={onCustomRoom} disabled={!multiplayer}>
-            <span className="k">Custom</span>
             <span>
               <span className="t">Custom Room</span>
               {!multiplayer && <span className="d">Needs the game server</span>}
             </span>
           </button>
           <button className="ds-tile" onClick={onWatch} disabled={!multiplayer}>
-            <span className="k">Live</span>
             <span>
               <span className="t">Watch Live</span>
               {!multiplayer && <span className="d">Needs the game server</span>}
@@ -195,7 +188,6 @@ export function ModeSelect({
           <p className="ds-tileset-label">LAN · same network</p>
           <div className="ds-tiles">
             <button className="ds-tile" onClick={onLan}>
-              <span className="k">LAN</span>
               <span>
                 <span className="t">Host or Join</span>
               </span>

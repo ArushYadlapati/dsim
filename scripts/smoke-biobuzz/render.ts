@@ -4042,13 +4042,26 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
         'decode and chain do NOT (no 3D generator for either)',
         moduleFor('decode').previewScene === undefined && moduleFor('chain').previewScene === undefined,
       );
-      check('biobuzz fills the savedCard slot', typeof bbMod.savedCard === 'function');
+      check('biobuzz fills the savedThumb slot', typeof bbMod.savedThumb === 'function');
       check(
         'the builder hero opts INTO a live scene; the strategy cards do not',
         menuSrc.includes('allow3d') &&
           !readFileSync(join(root, 'src', 'ui', 'MatchStrategy.tsx'), 'utf8').includes('allow3d'),
       );
-      check('Menu routes the savedCard slot ahead of its own two branches', menuSrc.includes('<SavedCard spec={r}'));
+      check('Menu hands the savedThumb slot to the saved-robot card', menuSrc.includes('<SavedThumb spec={r}'));
+      // the picture sits BESIDE the name and never replaces the build line: a thumbnail that did
+      // not render used to leave a tall card with nothing on it but a name (owner, 2026-09-22)
+      check(
+        '...and the thumbnail is the card’s picture, not its body',
+        readFileSync(join(root, 'src', 'ui', 'RobotCard.tsx'), 'utf8').includes('{thumb}') &&
+          !slotCode.includes('bbConfigSummary'),
+      );
+      // THE HERO'S 3D FAILURE is a segment state, not a sentence in the 96px preview column —
+      // the sentence widened the column until the robot's name was cut to "My Ro…"
+      check(
+        'a preview that cannot start marks the 3D segment (.off + title), with no visible sentence',
+        slotCode.includes("failed ? ' off' : ''") && !slotCode.includes('<p className="ds-hint">'),
+      );
 
       // ── THE HEIGHT PAIR (R102 / R105.A) ──────────────────────────────────────────────────
       check(

@@ -15,7 +15,8 @@ import { RoleSwapBar } from './RoleSwapBar';
 import { SupporterBadge } from './SupporterBadge';
 import { TitleMark } from './TitleChip';
 import { Menu } from './Menu';
-import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
+import { buildWords, teamLine } from './robotLabels';
+import { RobotCard } from './RobotCard';
 import { gameServers, lanActive, multiServer, roomServerUrl, roomServerUrlWith, selectedServer } from '../net/env';
 import { roomJoinRegion } from '../net/roomRegion';
 import { takePendingLanRoom } from '../lan/pending';
@@ -630,6 +631,15 @@ export function Lobby({
   };
 
   const mySpec = me?.spec ?? settings.spec;
+  /** is this saved robot the one this seat is bringing? The chassis fields, as the swap row
+   * has always compared them. */
+  const isMine = (r: RobotSpec): boolean =>
+    r.length === mySpec.length &&
+    r.width === mySpec.width &&
+    r.intake === mySpec.intake &&
+    r.drivetrain === mySpec.drivetrain &&
+    r.driveRpm === mySpec.driveRpm &&
+    r.massLb === mySpec.massLb;
 
   // 2v2 ROLE + consent swap: first robot on the alliance = CLOSE, second = FAR;
   // either can propose a swap the other must accept (see useRoleSwap).
@@ -1166,32 +1176,29 @@ export function Lobby({
         {me && (
           <section className="ds-sec">
             <h2>Your robot</h2>
-            <p className="ds-sub ds-sub-tight">
-              {mySpec.name} · {buildSummary(mySpec, settings.game)}
-            </p>
-            <div className="ds-opts">
-              {settings.savedRobots.map((r, i) => {
-                const active =
-                  r.length === mySpec.length &&
-                  r.width === mySpec.width &&
-                  r.intake === mySpec.intake &&
-                  r.drivetrain === mySpec.drivetrain &&
-                  r.driveRpm === mySpec.driveRpm &&
-                  r.massLb === mySpec.massLb;
-                return (
-                  <button
-                    key={i}
-                    className={`ds-opt mini ${active ? 'on' : ''}`}
-                    aria-pressed={active}
-                    onClick={() => pickSpec({ ...r })}
-                  >
-                    <span className="ot">{r.name || `Robot ${i + 1}`}</span>
-                    <span className="od">{DRIVETRAIN_LABELS[r.drivetrain]}</span>
-                  </button>
-                );
-              })}
+            {/* WHAT YOU ARE BRINGING, said once. When it is one of your saved robots, the lit
+                card below says it; this line is for a build that is not saved, which no card
+                can show. It used to print over the lit card too, in a second vocabulary. */}
+            {!settings.savedRobots.some(isMine) && (
+              <p className="ds-sub ds-sub-tight">
+                {mySpec.name} · {buildWords(mySpec, settings.game).join(' · ')}
+              </p>
+            )}
+            <div className="ds-opts robots">
+              {settings.savedRobots.map((r, i) => (
+                // the builder's own card (`RobotCard`), so a saved robot reads the same here as
+                // it does in Configure: name, team, one build line
+                <RobotCard
+                  key={i}
+                  spec={r}
+                  game={settings.game}
+                  on={isMine(r)}
+                  team={teamLine(r)}
+                  onPick={() => pickSpec({ ...r })}
+                />
+              ))}
               <button className="ds-opt mini" onClick={() => setBuilding(true)}>
-                <span className="ot">Edit build ✎</span>
+                <span className="ot">Edit build</span>
               </button>
             </div>
           </section>
