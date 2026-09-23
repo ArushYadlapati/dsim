@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { APP_NAME } from '../seasons';
 import { QueueCounts } from './QueueCounts';
 import { useLanEnabled } from './useLanEnabled';
-import { tutorialSeen } from '../tutorial/flag';
+import { markTutorialSeen, tutorialSeen } from '../tutorial/flag';
+import type { GameId } from '../games/types';
 
 /**
  * Game-mode select — reached from PLAY. These are the tiles that used to live on
@@ -24,6 +25,7 @@ export function ModeSelect({
   onWatch,
   compete = true,
   onTutorial,
+  game,
 }: {
   multiplayer: boolean;
   signedIn: boolean;
@@ -53,6 +55,9 @@ export function ModeSelect({
    * Controls keeps an entry that runs it again for anybody who wants it.
    */
   onTutorial?: () => void;
+  /** the season the offer is for: the seen flag is kept PER GAME (design review 12-12).
+   *  Absent ⇒ the legacy reading, "has this device been through any tutorial". */
+  game?: GameId;
 }) {
   const lanOn = useLanEnabled();
   /**
@@ -60,7 +65,7 @@ export function ModeSelect({
    * set by the tutorial itself, so re-reading it on every render would make the card vanish
    * mid-interaction if this page happened to re-render while a run was finishing elsewhere.
    */
-  const [seen] = useState(() => tutorialSeen());
+  const [seen, setSeen] = useState(() => tutorialSeen(game));
   return (
     <>
       <h1 className="ds-h1">Pick a mode</h1>
@@ -80,16 +85,30 @@ export function ModeSelect({
           because it disappears for good once the device has been through it and a grid that
           changes shape is harder to learn than a banner that goes away. */}
       {onTutorial && !seen && (
-        <div className="ds-rejoin ds-tut-offer">
+        <div className="ds-tut-offer">
           {/* NO SUB-LINE. "Learn the controls on the real field." said what the button under it
               says, and NO STEP COUNT either: it was "Six steps", which is BIOBUZZ’s number —
               DECODE’s tutorial has four, and a build with no Box Tube is asked five. The count is
               resolved per game and per ROBOT (`TutorialStep.applies`), so the only honest place it
               can be printed is the card itself, which does print it. */}
           <b>New to {APP_NAME}?</b>
-          <button className="ds-btn primary" onClick={onTutorial}>
-            Start the tutorial →
-          </button>
+          {/* NOT NOW sets the flag that finishing or exiting a run sets (design review 12-13): an
+              experienced driver on a new device should not have to start the tutorial to get
+              rid of the offer for it. */}
+          <span className="ds-tut-offer-acts">
+            <button
+              className="ds-btn ghost"
+              onClick={() => {
+                markTutorialSeen(game);
+                setSeen(true);
+              }}
+            >
+              Not now
+            </button>
+            <button className="ds-btn primary" onClick={onTutorial}>
+              Start the tutorial →
+            </button>
+          </span>
         </div>
       )}
 

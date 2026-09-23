@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { showConsentSettings } from '../ads/adsense';
-import { APP_NAME, seasonFor } from '../seasons';
+import { APP_NAME, fullNameOf, seasonFor } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
 import { useLanEnabled } from './useLanEnabled';
 import type { GameId } from '../games/types';
@@ -112,8 +112,9 @@ export function AppShell({
         {/* WHICH SEASON IS LOADED, on every shell screen (owner, 2026-09-22: "the UI does not show
             which game mode I am in"). The app is DSIM and the season is what is loaded, so the
             two are separate words with a separator, not one name. Plain text, not a control: the
-            game is switched on the home page. */}
-        <span className="ds-bar-season" aria-label={`Season: ${season.name}`}>
+            game is switched on the home page. No aria-label: that is not allowed on a generic
+            span, and the visible name is the whole message. */}
+        <span className="ds-bar-season">
           <span className="sep" aria-hidden="true">·</span>
           {season.name}
         </span>
@@ -181,11 +182,17 @@ export function AppShell({
 
       <footer className="ds-foot">
         <span className="ds-foot-brand">
-          {APP_NAME} · {season.name} {season.years}
+          {APP_NAME}
           {/* the app's presenting sponsor, on EVERY shell screen. The home menu
               announces it; this is the standing credit that makes "presented by"
               a property of the product rather than of its landing page. */}
           <SponsorFooterMark />
+        </span>
+        {/* THE SEASON, as its own footer item (design review 22-04). It used to sit inside the
+            brand run, so "DSIM · BIOBUZZ 2026–27 PRESENTED BY OFFSET" read as Offset presenting
+            the game. The season's presenter is FIRST's (RTX, goBILDA) and says so here. */}
+        <span className="ds-foot-season">
+          {fullNameOf(season)} · {season.years}
         </span>
         <span className="ds-foot-links">
           {/* TWO GROUPS, by position and weight: the product's own destinations at the

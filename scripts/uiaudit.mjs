@@ -119,7 +119,8 @@ const BASELINE = {
   'literal-radius': 3,
   // 14 → 12, 2026-09-22: design review wave 4. The cinema button's glow and the presence dot's
   // halo are gone (No-Blur Rule); every keycap edge is one `--cap-edge` declaration.
-  'shadow-sprawl': 12,
+  // 12 → 11, 2026-09-23: design review wave 6 — the `.ds-opt.real` stripe's shadow went with it.
+  'shadow-sprawl': 11,
   // measured 2026-09-22 (design review 13-11), when the rule was written. The scrims among them
   // (styles.css .overlay/.net-overlay and friends) have --ds-scrim / --ds-scrim-strong waiting.
   // 29 → 26, 2026-09-22: design review wave 3.

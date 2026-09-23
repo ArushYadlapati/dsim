@@ -4,6 +4,7 @@ import type { HudSnapshot } from '../../game';
 import type { ArtifactColor } from '../../types';
 import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
 import { fmtTime, timerPanel } from '../../ui/timerPanel';
+import { FoulChip } from '../../ui/FoulChip';
 import { BiobuzzBuilder } from './Builder';
 import { BB_NECTAR_COUNT, BB_PTS } from './config';
 import type { BbCellHud, BbPinHud, BiobuzzFieldHud } from './hud';
@@ -432,6 +433,9 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
         )}
         {pending && <span>{pending}</span>}
         {pin && <span className="warn">{pinLine(pin)}</span>}
+        {/* the shared running foul tally — the same chip, in the same row, as DECODE's and
+            Chain Reaction's (design review 22-02). CONTROL 5+ and PIN stay this game's own. */}
+        <FoulChip hud={hud} />
       </div>
       <div className="scorebar" data-hud-band>
         <div className={`score-panel bb red ${hud.alliance === 'red' ? 'mine' : ''}`}>

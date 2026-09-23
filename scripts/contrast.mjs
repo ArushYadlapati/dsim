@@ -443,8 +443,8 @@ const serverPairs = (t) => {
     ['--ds-viz-2 on panel (1.4.11)', t('--ds-viz-2'), panel, NON_TEXT],
     ['--ds-viz-3 on panel (1.4.11)', t('--ds-viz-3'), panel, NON_TEXT],
     ['--ds-viz-4 on panel (1.4.11)', t('--ds-viz-4'), panel, NON_TEXT],
-    // .ds-tut-offer: 12% accent over the page; the sub line must be --ds-ink-dim, not an opacity
-    ['.ds-tut-offer-sub', t('--ds-ink-dim'), composite(t('--ds-accent'), 0.12, bg), AA],
+    // .ds-tut-offer: the heading on the plain panel fill
+    ['.ds-tut-offer > b', t('--ds-ink'), panel, AA],
   ];
 };
 

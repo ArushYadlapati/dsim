@@ -9,7 +9,8 @@ import { moduleFor } from '../../src/games';
 import { DEFAULT_BINDINGS, cloneBindings } from '../../src/input/bindings';
 import { TutorialRunner } from '../../src/tutorial/runner';
 import { markTutorialSeen, tutorialSeen } from '../../src/tutorial/flag';
-import { control, driveHint } from '../../src/tutorial/hints';
+import { TUTORIAL_SEEN_KEY } from '../../src/storageKeys';
+import { control, driveHint, hintText } from '../../src/tutorial/hints';
 import type { TutorialHintCtx, TutorialSpec, TutorialStep } from '../../src/tutorial/types';
 import { BIOBUZZ_TUTORIAL } from '../../src/games/biobuzz/tutorial';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
@@ -260,7 +261,7 @@ export function tutorialChecks(check: Check): void {
     // the NUDGE fires on the step's own `nudgeS`, and never advances by itself
     const one: TutorialSpec = {
       game: 'biobuzz',
-      steps: [{ id: 'never', title: 'Never', hint: () => 'x', done: () => false, nudgeS: 1 }],
+      steps: [{ id: 'never', title: 'Never', hint: () => ['x'], done: () => false, nudgeS: 1 }],
     };
     const runner = new TutorialRunner(one, BB_DEFAULT_SPEC);
     const w = tutorialWorld('blue', BB_DEFAULT_SPEC, '2d');
@@ -279,7 +280,7 @@ export function tutorialChecks(check: Check): void {
     // a spec every step refuses ⇒ FINISHED, not broken
     const none: TutorialSpec = {
       game: 'biobuzz',
-      steps: [{ id: 'nope', title: 'Nope', hint: () => 'x', done: () => true, applies: () => false }],
+      steps: [{ id: 'nope', title: 'Nope', hint: () => ['x'], done: () => true, applies: () => false }],
     };
     const runner = new TutorialRunner(none, BB_DEFAULT_SPEC);
     check(
@@ -294,47 +295,82 @@ export function tutorialChecks(check: Check): void {
   {
     const shoot = BIOBUZZ_TUTORIAL.steps.find((s) => s.id === 'shoot')!;
     const kb: TutorialHintCtx = { bindings: DEFAULT_BINDINGS, gamepad: false, touch: false };
-    check('hint: the default fire binding renders as SPACE', shoot.hint(kb).includes('SPACE'), shoot.hint(kb));
+    check('hint: the default fire binding renders as SPACE', hintText(shoot.hint(kb)).includes('SPACE'), hintText(shoot.hint(kb)));
     // REBIND IT. This is the whole reason a hint is a function of the bindings: a tutorial that
     // told a player to press a key they had moved would be worse than one with no hints at all.
     const rebound = cloneBindings(DEFAULT_BINDINGS);
     rebound.keys.fire = ['j'];
     const reb: TutorialHintCtx = { bindings: rebound, gamepad: false, touch: false };
-    check('hint: a rebound fire key renders as the NEW key', shoot.hint(reb).includes('J') && !shoot.hint(reb).includes('SPACE'), shoot.hint(reb));
+    check('hint: a rebound fire key renders as the NEW key', hintText(shoot.hint(reb)).includes('J') && !hintText(shoot.hint(reb)).includes('SPACE'), hintText(shoot.hint(reb)));
     // A PAD IN THEIR HANDS ⇒ name the button, not the key.
     const pad: TutorialHintCtx = { bindings: DEFAULT_BINDINGS, gamepad: true, touch: false };
-    check('hint: with a pad connected it names the pad button (RT)', shoot.hint(pad).includes('RT'), shoot.hint(pad));
-    check('hint: …and does not also name the key', !shoot.hint(pad).includes('SPACE'));
+    check('hint: with a pad connected it names the pad button (RT)', hintText(shoot.hint(pad)).includes('RT'), hintText(shoot.hint(pad)));
+    check('hint: …and does not also name the key', !hintText(shoot.hint(pad)).includes('SPACE'));
     // An UNBOUND action says so rather than printing `undefined`.
     const unbound = cloneBindings(DEFAULT_BINDINGS);
     unbound.keys.fire = [];
     check(
-      'hint: an UNBOUND action reads "unbound", never "undefined"',
-      shoot.hint({ bindings: unbound, gamepad: false, touch: false }).includes('unbound'),
-      shoot.hint({ bindings: unbound, gamepad: false, touch: false }),
+      'hint: an UNBOUND action is named, with where to bind it — never "unbound" or "undefined" in a sentence (12-09)',
+      hintText(shoot.hint({ bindings: unbound, gamepad: false, touch: false })).startsWith('Shoot has no key. Bind one in Controls.'),
+      hintText(shoot.hint({ bindings: unbound, gamepad: false, touch: false })),
     );
+    // a NESTED hint (driveHint inside a step's sentence) with an unbound key collapses to the one
+    // line too — it once resolved inside the inner `say` and was pasted mid-sentence
+    const noUp = cloneBindings(DEFAULT_BINDINGS);
+    noUp.keys.driveUp = [];
+    for (const s of [...BIOBUZZ_TUTORIAL.steps, ...DECODE_TUTORIAL.steps]) {
+      const t = hintText(s.hint({ bindings: noUp, gamepad: false, touch: false }));
+      if (!/has no key/.test(t)) continue;
+      check(`hint: ${s.id} with an unbound nested key is exactly the one line`, /^\w[\w ]* has no key\. Bind one in Controls\.$/.test(t), t);
+    }
     // the DRIVE hint: the four translation keys on a keyboard, the stick pick on a pad
-    const dk = driveHint(kb);
+    const dk = hintText(driveHint(kb));
     check('hint: the drive line names the four bound translation keys', ['W', 'A', 'S', 'D'].every((k) => dk.includes(k)), dk);
-    const dp = driveHint(pad);
-    check('hint: on a pad it names the chosen drive stick instead', dp.includes('left stick') && dp.includes('right stick'), dp);
+    const dp = hintText(driveHint(pad));
+    check('hint: on a pad it names the chosen drive stick instead', /left stick/i.test(dp) && /right stick/i.test(dp), dp);
     /* ⚠️ 'C', NOT 'Z': `bbPlace` shares Chain Reaction's claw key now (owner, 2026-09-22 —
        the defaults must be allowed duplicates across games, by ROLE, or they run out of keys).
        The old NAME of this check was "falls back to the key when the action has no pad twin",
        which describes a case that no longer exists at all: `bbPass` was the last action with no
        pad button and it shares L3 now, so `PAD_DEFAULT_EXEMPT` is empty and the shared suite
        asserts it. What this actually tests is that a KEYBOARD context names the key. */
-    check('control(): a keyboard context names the bound KEY', control(kb, 'bbPlace') === 'C', control(kb, 'bbPlace'));
+    check('control(): a keyboard context names the bound KEY', control(kb, 'bbPlace').key === 'C', control(kb, 'bbPlace').key);
     // A PHONE HAS NO KEYBOARD. A hint that said "hold SHIFT" under two on-screen joysticks is the
     // same failure as naming an unbound key, one device further along — measured at 375px while
     // this was being built, which is why `touch` is in the context at all.
     const touch: TutorialHintCtx = { bindings: DEFAULT_BINDINGS, gamepad: false, touch: true };
-    check('hint: on touch the fire control is the on-screen SHOOT button', shoot.hint(touch).includes('SHOOT') && !shoot.hint(touch).includes('SPACE'), shoot.hint(touch));
-    check('hint: on touch the drive line names the sticks, not WASD', driveHint(touch).includes('stick') && !driveHint(touch).includes('W’’'.slice(0, 1) + 'ASD'), driveHint(touch));
-    check('hint: a PAD still wins over touch (a pad on a tablet is what is in their hands)', shoot.hint({ bindings: DEFAULT_BINDINGS, gamepad: true, touch: true }).includes('RT'));
+    check('hint: on touch the fire control is the on-screen SHOOT button', hintText(shoot.hint(touch)).includes('SHOOT') && !hintText(shoot.hint(touch)).includes('SPACE'), hintText(shoot.hint(touch)));
+    check('hint: on touch the drive line names the sticks, not WASD', hintText(driveHint(touch)).includes('stick') && !hintText(driveHint(touch)).includes('W’’'.slice(0, 1) + 'ASD'), hintText(driveHint(touch)));
+    check('hint: a PAD still wins over touch (a pad on a tablet is what is in their hands)', hintText(shoot.hint({ bindings: DEFAULT_BINDINGS, gamepad: true, touch: true })).includes('RT'));
     // and the PARK clause, which names a key with no on-screen button, is DROPPED on touch
     const park = BIOBUZZ_TUTORIAL.steps.find((s) => s.id === 'park')!;
-    check('hint: the PARK key clause is dropped on touch (there is no on-screen PARK button)', !park.hint(touch).includes(' P ') && park.hint(kb).includes('P '), park.hint(touch));
+    check('hint: the PARK key clause is dropped on touch (there is no on-screen PARK button)', !hintText(park.hint(touch)).includes(' P ') && hintText(park.hint(kb)).includes('P '), hintText(park.hint(touch)));
+    // CONTROLS ARRIVE AS PARTS, drawn as keycaps on the card (12-10) — the drive keys one cap each
+    check('hint: a control is a keycap PART, not text run into the sentence', shoot.hint(kb).some((p) => typeof p !== 'string' && p.key === 'SPACE'));
+    check('hint: the keyboard drive line is six caps (four translate, two turn)', driveHint(kb).filter((p) => typeof p !== 'string').length === 6);
+    // an unbound PAD bind says "button", not "key"
+    const noPad = cloneBindings(DEFAULT_BINDINGS);
+    noPad.pad.buttons.fire = [];
+    noPad.pad.combos.fire = [];
+    const np = hintText(shoot.hint({ bindings: noPad, gamepad: true, touch: false }));
+    check('hint: an unbound PAD action says the action has no button', np.startsWith('Shoot has no button.'), np);
+    // EVERY HINT, BOTH GAMES, EVERY DEVICE: opens with a capital (12-08, the pad drive line was
+    // "left stick to drive…" at the start of a sentence) and stays short enough not to grow the
+    // card across the joysticks on a phone (12-05 — BIOBUZZ's retrieve hint was 55 words).
+    const rightStick = cloneBindings(DEFAULT_BINDINGS);
+    rightStick.pad.driveStick = 'right';
+    const ctxs: TutorialHintCtx[] = [kb, pad, touch, { bindings: rightStick, gamepad: true, touch: false }];
+    const lower: string[] = [];
+    const long: string[] = [];
+    for (const s of [...BIOBUZZ_TUTORIAL.steps, ...DECODE_TUTORIAL.steps]) {
+      for (const c of ctxs) {
+        const t = hintText(s.hint(c));
+        if (/^[a-z]/.test(t)) lower.push(`${s.id}: ${t}`);
+        if (t.split(/\s+/).length > 25) long.push(`${s.id} (${t.split(/\s+/).length} words)`);
+      }
+    }
+    check('hint: every hint opens with a capital, on every device (12-08)', lower.length === 0, lower.join(' | '));
+    check('hint: every hint is 25 words or fewer, on every device (12-05)', long.length === 0, long.join(', '));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -351,6 +387,32 @@ export function tutorialChecks(check: Check): void {
       threw = true;
     }
     check('flag: markTutorialSeen() swallows a storage failure', !threw);
+  }
+  {
+    // PER-GAME, with the legacy '1' read as "every game" (12-12). A Map stands in for storage for
+    // the length of this block only, so the fail-open checks above still see no `localStorage`.
+    const store = new Map<string, string>();
+    const g = globalThis as { localStorage?: unknown };
+    g.localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    };
+    try {
+      markTutorialSeen('decode');
+      check('flag: finishing DECODE’s tutorial marks DECODE seen', tutorialSeen('decode'));
+      check('flag: …and does NOT hide BIOBUZZ’s offer', !tutorialSeen('biobuzz'));
+      markTutorialSeen('biobuzz');
+      markTutorialSeen('decode');
+      check('flag: both games seen, each id written once', tutorialSeen('biobuzz') && [...store.values()][0] === 'decode,biobuzz', [...store.values()].join());
+      store.clear();
+      store.set(TUTORIAL_SEEN_KEY, '1');
+      check('flag: the legacy "1" reads as seen for every game (no re-nag after the upgrade)', tutorialSeen('decode') && tutorialSeen('biobuzz') && tutorialSeen());
+      markTutorialSeen('decode');
+      check('flag: marking a game over the legacy value keeps it', [...store.values()][0] === '1');
+    } finally {
+      delete g.localStorage;
+    }
   }
   {
     /**
@@ -396,12 +458,12 @@ export function tutorialChecks(check: Check): void {
     check('steps: titles are sentence case with no full stop (docs/area/ui.md)', caseBad.length === 0, caseBad.map((s) => s.title).join(' | '));
     const kb: TutorialHintCtx = { bindings: DEFAULT_BINDINGS, gamepad: false, touch: false };
     const hintBad = steps.filter((s) => {
-      const h = s.hint(kb);
+      const h = hintText(s.hint(kb));
       return h.length < 12 || !h.endsWith('.');
     });
     check('steps: every hint is a sentence and ends with a full stop', hintBad.length === 0, hintBad.map((s) => s.id).join(','));
     // no ASCII apostrophes or three-dot ellipses in player-facing copy
-    const punct = steps.filter((s) => /'|\.\.\./.test(s.title + s.hint(kb)));
+    const punct = steps.filter((s) => /'|\.\.\./.test(s.title + hintText(s.hint(kb))));
     check('steps: typographic punctuation only (’ and …)', punct.length === 0, punct.map((s) => s.id).join(','));
   }
   {
@@ -510,7 +572,7 @@ export function tutorialChecks(check: Check): void {
     const kb: TutorialHintCtx = { bindings: DEFAULT_BINDINGS, gamepad: false, touch: false };
     check(
       'DECODE: titles are sentence case, hints are sentences with typographic punctuation',
-      dec.steps.every((s) => /^[A-Z][^.]*$/.test(s.title) && s.hint(kb).endsWith('.') && !/'|\.\.\./.test(s.hint(kb))),
+      dec.steps.every((s) => /^[A-Z][^.]*$/.test(s.title) && hintText(s.hint(kb)).endsWith('.') && !/'|\.\.\./.test(hintText(s.hint(kb)))),
       dec.steps.map((s) => s.title).join(' | '),
     );
 

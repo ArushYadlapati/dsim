@@ -137,6 +137,9 @@ button {
 }
 
 .game-root {
+  /* the score bar's top edge. What stacks above the bar (the breakdown row, and the tutorial
+     card, which is `.hud`'s SIBLING — hence the root) sits one grid step over it. */
+  --hud-bottom: 68px;
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
@@ -441,7 +444,7 @@ button {
    inset straight back where it was. The slot has to be a real box in both axes to reserve. */
 .breakdown-row {
   position: absolute;
-  bottom: 76px;
+  bottom: calc(var(--hud-bottom) + var(--ds-s-2));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -451,7 +454,9 @@ button {
   gap: 8px;
 }
 
-.breakdown-row span {
+/* `>`: a chip may carry inner spans (`FoulChip`'s visible shorthand and its `.ds-sr` words),
+   and a descendant selector drew a pill inside the pill. */
+.breakdown-row > span {
   background: var(--ds-hud-soft);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-full);
@@ -467,7 +472,7 @@ button {
    `--ds-mut` because NECTAR LOCKED, RAMP and the rest describe where the match IS; BIOBUZZ's
    G421 line is 20 points every three seconds and has to carry the same weight here as the
    `.chip.warn` it mirrors in the desktop chip row — this row is the only one a phone renders. */
-.breakdown-row span.warn {
+.breakdown-row > span.warn {
   color: var(--ds-warn);
   border-color: var(--ds-warn);
 }
@@ -1613,6 +1618,15 @@ button {
 .overlay-panel h2 {
   letter-spacing: 3px;
   font-size: 20px;
+  font-weight: 800;
+}
+/* the side as a FILLED alliance chip (design review 05-12) at the title's own size — `.chip`
+   alone is the 12px HUD chip. The fill and ink are `.chip.alliance-*`'s fixed pair. */
+.overlay-panel h2 .chip {
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  padding: var(--ds-s-1) var(--ds-s-4);
 }
 
 .overlay-panel .big {
@@ -1847,7 +1861,10 @@ button {
 }
 .resx-title {
   margin: 0;
-  font-size: calc(5.4 * var(--resx-u));
+  /* DEMOTED (design review 06-13): the sting has already said MATCH RESULTS, so the header is a
+     label over the board, not its headline. At 5.4u it out-sized WINNER; the order by size is
+     now totals (11u), WINNER (5.2u), alliance names (4u), then this. */
+  font-size: calc(3 * var(--resx-u));
   letter-spacing: var(--ds-track-caps);
   font-weight: 800;
 }
@@ -2409,14 +2426,14 @@ button {
    margin would break the baseline `.resx-total` aligns on. */
 .resx-total-label {
   margin: 0;
-  font-size: calc(5.2 * var(--resx-u));
+  /* one step UNDER the winbanner's 5.2u (06-13): at the same size, WINNER did not read first */
+  font-size: calc(4 * var(--resx-u));
   font-weight: 800;
   letter-spacing: 0.03em;
 }
 .resx-total-num {
   font-family: var(--ds-font-mono);
-  /* 11u against the title's 5.4u holds the 2:1 this screen has always had between the score
-     and its own heading. The old `6vw` was the only WIDTH-driven size here and it pinned at
+  /* 11u: the largest thing on the stage, about 2:1 over WINNER (5.2u). The old `6vw` was the only WIDTH-driven size here and it pinned at
      its 72px ceiling on every desktop, so the number stopped growing while nothing else had
      started. It lives in the alliance panel, so it costs the breakdown's budget nothing. */
   font-size: calc(11 * var(--resx-u));
@@ -2454,6 +2471,16 @@ button {
   text-align: center;
   font-weight: 700;
   font-size: calc(2 * var(--resx-u));
+  color: var(--ds-on-field);
+}
+/* "You won by 14" — the local driver's result, the first line of the block the eye lands on
+   once the totals settle. Absent for a spectator, a tie, and a one-sided board. */
+.resx-outcome {
+  margin: 0;
+  text-align: center;
+  font-size: calc(3 * var(--resx-u));
+  font-weight: 800;
+  letter-spacing: 0.03em;
   color: var(--ds-on-field);
 }
 .resx-note {
@@ -2660,16 +2687,23 @@ button {
 .intro-col.right {
   align-items: flex-start;
 }
+/* FILLED, not tinted ink (design review 05-12; DESIGN's Don'ts): the raw --ds-red/--ds-blue
+   as text is the alliance-by-colour-alone it forbids. The `-chip` fill with its fixed `-ink`,
+   as on `.chip.alliance-*` and the pre-match title. */
 .intro-side-label {
   font-size: 14px;
   font-weight: 800;
   letter-spacing: 4px;
+  padding: var(--ds-s-1) var(--ds-s-3);
+  border-radius: var(--ds-round-full);
 }
 .intro-side-label.red {
-  color: var(--ds-red);
+  background: var(--ds-red-chip);
+  color: var(--ds-red-chip-ink);
 }
 .intro-side-label.blue {
-  color: var(--ds-blue);
+  background: var(--ds-blue-chip);
+  color: var(--ds-blue-chip-ink);
 }
 /* no `opacity: .75` — it composited toward the near-black scrim. --ds-on-field-dim IS
    the dimmed-on-canvas value, applied as a colour so the contrast is knowable. */
@@ -3031,7 +3065,7 @@ button {
     flex-wrap: wrap;
     justify-content: center;
   }
-  .breakdown-row span {
+  .breakdown-row > span {
     letter-spacing: 0;
     padding: 2px 8px;
     white-space: nowrap;
@@ -3090,15 +3124,20 @@ button {
     gap: 6px 8px;
     padding: 6px 10px;
   }
-  /* compact top-left menu/reset so the map can use the top */
+  /* compact top-left menu/reset so the map can use the top — compact TYPE, not a compact
+     target (design review 18-16): 36px tall and 44px wide at the least, and 12px between caps so
+     a thumb reaching for MENU does not land on RESET, which restarts the run. The status card
+     below is placed 38px under the same inset, so 36 still clears it. */
   .game-buttons {
     top: max(6px, env(safe-area-inset-top));
     left: max(6px, env(safe-area-inset-left));
-    gap: 6px;
+    gap: var(--ds-s-3);
   }
   .game-btn {
     padding: 6px 12px;
     font-size: 12px;
+    min-height: 36px;
+    min-width: 44px;
   }
 }
 /* LANDSCAPE is height-starved — squeeze the score menu harder + drop the breakdown row
@@ -3176,7 +3215,7 @@ button {
     min-width: 124px;
     gap: 4px;
   }
-  .breakdown-row span {
+  .breakdown-row > span {
     padding: 1px 6px;
   }
   /* the status chips keep the top-right corner but must stay INSIDE the gutter
@@ -3736,4 +3775,12 @@ button {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: var(--ds-s-2);
+}
+
+/* the score bar is shorter where it goes compact — the SAME query as the compact bar, so the
+   tutorial card follows the bar it sits on (the phone breakdown row keeps its own offset) */
+@media (pointer: coarse), (max-height: 520px) {
+  .game-root {
+    --hud-bottom: 56px;
+  }
 }

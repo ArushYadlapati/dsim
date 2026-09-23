@@ -523,8 +523,8 @@ export function App() {
    * a forged one could do is show a moderator's panel to somebody the API then refuses.
    */
   const [replayMatch, setReplayMatch] = useState<string | null>(null);
-  // one-time "this simulation isn't realistic" disclaimer (shown the first time CR is
-  // the selected game, on this device; dismissal persists in localStorage)
+  // one-time "this simulation isn't realistic" disclaimer (shown the first time the Play
+  // screen opens with CR selected, on this device; dismissal persists in localStorage)
   const [showChainDisclaimer, setShowChainDisclaimer] = useState(false);
   const dismissChainDisclaimer = (): void => {
     markChainDisclaimerSeen();
@@ -606,10 +606,13 @@ export function App() {
     setPadNavPrefs(settings.bindings.pad);
   }, [settings.bindings.pad]);
 
-  // surface the one-time Chain Reaction disclaimer the first time CR is selected
+  // surface the one-time Chain Reaction disclaimer on the first PLAY with CR loaded, not on the
+  // switch itself (design review 22-06): firing on `settings.game` threw a blocking modal over
+  // home before the player had done anything. The Play screen is where a match starts, and the
+  // dialog is modal, so it is read before one can.
   useEffect(() => {
-    setShowChainDisclaimer(settings.game === 'chain' && !chainDisclaimerSeen());
-  }, [settings.game]);
+    setShowChainDisclaimer(screen === 'modes' && settings.game === 'chain' && !chainDisclaimerSeen());
+  }, [screen, settings.game]);
 
   /** the single way screens change — updates state AND the URL */
   const navigate = (next: Screen, args: Partial<RouteArgs> = {}): void => {
@@ -1894,6 +1897,7 @@ export function App() {
 
       {screen === 'modes' && (
         <ModeSelect
+          game={settings.game}
           multiplayer={multiplayer}
           signedIn={signedIn}
           activeGame={activeGame ? { kind: activeGame.kind } : null}

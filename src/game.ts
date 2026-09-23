@@ -1865,7 +1865,7 @@ export class GameController {
       // FINISHED: the device flag is set here rather than on the way out of the screen, because
       // this is the moment it becomes true, and a player who closes the tab on the sign-off card
       // has still been through it.
-      markTutorialSeen();
+      markTutorialSeen(gameOf(this.world).id);
       this.world.events.push('TUTORIAL COMPLETE');
     }
   }
@@ -1938,7 +1938,7 @@ export class GameController {
     if (!this.tutorial) return;
     this.tutorial.abandon();
     this.tutorial = null;
-    markTutorialSeen();
+    markTutorialSeen(gameOf(this.world).id);
     this.rebuildForTutorial();
   }
 

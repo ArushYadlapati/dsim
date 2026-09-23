@@ -1,6 +1,6 @@
 import type { Alliance, Artifact, RobotSpec, RobotState, Vec2, World } from '../../types';
 import type { TutorialSpec, TutorialStep } from '../../tutorial/types';
-import { control, driveHint } from '../../tutorial/hints';
+import { control, driveHint, say } from '../../tutorial/hints';
 import { robotIntersectsRect } from '../../sim/physics';
 import { datan2, hyp } from '../../math';
 import {
@@ -281,7 +281,7 @@ const steps: TutorialStep[] = [
   {
     id: 'drive',
     title: 'Drive to your garden',
-    hint: (c) => `${driveHint(c)}. Your GARDEN is the taped strip in the far corner.`,
+    hint: (c) => say`${driveHint(c)}. Your GARDEN is the taped strip in the far corner.`,
     stage: (w, id) => place(w, id, 40, -10, Math.PI / 2),
     done: (w, id) => {
       const r = me(w, id);
@@ -297,7 +297,7 @@ const steps: TutorialStep[] = [
     id: 'capture',
     title: 'Pick up a pollen',
     hint: (c) =>
-      `Drive onto a POLLEN with ${control(c, 'intake', 'intake')} held. The hopper pips fill as it goes in.`,
+      say`Drive onto a POLLEN with ${control(c, 'intake', 'intake')} held. The hopper pips fill as it goes in.`,
     stage: (w, id) => {
       place(w, id, 58, 50, Math.PI / 2);
       const r = me(w, id);
@@ -321,7 +321,7 @@ const steps: TutorialStep[] = [
     id: 'shoot',
     title: 'Shoot into your hive',
     hint: (c) =>
-      `Line up on the open side of the up CELL and hold ${control(c, 'fire', 'fire')}. The turret aims for you.`,
+      say`Line up on the open side of the up CELL and hold ${control(c, 'fire', 'fire')}. The turret aims for you.`,
     stage: (w, id) => place(w, id, BB_HIVE_X + 6, BB_HIVE_CELL_DY + 38, Math.PI / 2),
     done: (w, id) => {
       const r = me(w, id);
@@ -339,7 +339,7 @@ const steps: TutorialStep[] = [
     id: 'tip',
     title: 'Tip the hive',
     hint: (c) =>
-      `One more POLLEN tips it. Hold ${control(c, 'fire', 'fire')} and the CELL swings over and drops its load.`,
+      say`One more POLLEN tips it. Hold ${control(c, 'fire', 'fire')} and the CELL swings over and drops its load.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (r) loadCell(w, r.alliance, 2);
@@ -361,7 +361,7 @@ const steps: TutorialStep[] = [
     title: 'Place a nectar in a flower',
     applies: canPlaceNectar,
     hint: (c) =>
-      `Drive up to the FLOWER and press ${control(c, 'bbPlaceNectar', 'bbPlaceNectar')}. Your NECTAR on top makes the FLOWER yours.`,
+      say`Drive up to the FLOWER and press ${control(c, 'bbPlaceNectar', 'bbPlaceNectar')}. Your NECTAR on top makes the FLOWER yours.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (!r) return;
@@ -384,9 +384,11 @@ const steps: TutorialStep[] = [
     title: 'Take a pollen from a flower',
     applies: (spec: RobotSpec) => !canPlaceNectar(spec),
     // the lesson lends a sweeper-only build SIDE ROLLERS (see `stage`), and says so: the robot on
-    // screen grows a pair for this step, and the driver should know why their own build cannot
+    // screen grows a pair for this step, and the driver should know why their own build cannot.
+    // ≤ 25 WORDS, like every hint (design review 12-05): this one was 55, and on a phone the
+    // bottom-anchored card grew up across the joysticks. The smoke lane holds the cap.
     hint: (c) =>
-      `Drive square into the FLOWER’s foot with ${control(c, 'intake', 'intake')} held. POLLEN come out of the bottom, and only an intake that reaches into the opening can take them, so this lesson lends you side rollers. Line one END of the intake up on the opening: the pair is too far apart to straddle it.`,
+      say`This lesson lends you side rollers. Line one END of the intake up on the FLOWER’s opening and drive in with ${control(c, 'intake', 'intake')} held.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (!r) return;
@@ -416,7 +418,7 @@ const steps: TutorialStep[] = [
     hint: (c) =>
       // the PARK key has no on-screen button, so the clause that names it is dropped on touch
       // rather than naming a key a phone does not have.
-      `${driveHint(c)}. Get any part of the robot over the tape.${c.touch ? '' : ` ${control(c, 'park', 'park')} caps your speed for the last few inches.`}`,
+      say`${driveHint(c)}. Get any part of the robot over the tape.${c.touch ? '' : say` ${control(c, 'park', 'park')} caps your speed near the tape.`}`,
     stage: (w, id) => place(w, id, 0, -40, Math.PI),
     done: (w, id) => {
       const r = me(w, id);

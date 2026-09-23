@@ -25,15 +25,18 @@
 /*
  * BOTTOM CENTRE, above the score bar.
  *
- * `bottom` clears the bar (~76px, the same offset `.breakdown-row` uses) — and the tutorial runs
- * in FREE DRIVE, where BIOBUZZ's bar is the single FREE DRIVE panel and the breakdown row is not
- * rendered at all, so the two never contend for the line.
+ * `bottom` is the score bar's top edge plus one grid step, read from `--hud-bottom` rather than
+ * stated as an offset (design review 12-18) — and the tutorial runs in FREE DRIVE, where BIOBUZZ's
+ * bar is the single FREE DRIVE panel and the breakdown row is not rendered at all, so the two
+ * never contend for the line.
+ *
+ * `--hud-bottom` is declared on `.game-root` (styles.css), which `.breakdown-row` reads too.
  *
  * `pointer-events: auto` because `.hud` above it is `none`: the buttons have to be clickable.
  */
 .ds-tut {
   position: absolute;
-  bottom: 76px;
+  bottom: calc(var(--hud-bottom) + var(--ds-s-2));
   left: 50%;
   transform: translateX(-50%);
   z-index: 11;
@@ -85,6 +88,70 @@
   color: var(--ds-mut);
 }
 
+/* the counter and the step pips, on one line */
+.ds-tut-head {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+}
+
+/*
+ * THE STEP PIPS (design review 12-06): one segment per step, filled as steps are done, so a
+ * completed step is visible progress rather than only a counter's text changing under a field
+ * that has just been rebuilt. Empty segments are `--ds-mut` rings, not `--ds-hud-line`, for the
+ * `.hopper-pip` reason: a ring that has to read on the translucent HUD card needs the token whose
+ * job is reading against the surface. The current step is ringed in the accent.
+ */
+.ds-tut-pips {
+  display: flex;
+  gap: var(--ds-s-1);
+}
+
+.ds-tut-pips > span {
+  width: var(--ds-s-3);
+  height: var(--ds-s-1);
+  border: 1px solid var(--ds-mut);
+  border-radius: var(--ds-round-full);
+  transition: background-color var(--ds-dur-fade) ease;
+}
+
+.ds-tut-pips > span.cur {
+  border-color: var(--ds-accent);
+}
+
+.ds-tut-pips > span.on {
+  border-color: var(--ds-accent);
+  background: var(--ds-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-tut-pips > span {
+    transition: none;
+  }
+}
+
+/*
+ * THE CONTROLS IN A HINT, as the app's keycap (design review 12-10) — `.ds-key.fixed`, sized down
+ * the way `.ds-padhint` sizes it for a legend (`--ds-s-0` is allowed inside a chip, §2), and on
+ * the HUD pair rather than `--ds-panel`/`--ds-line`: the 3D scrim redefines `--ds-mut` to the
+ * light on-field ink, which on a light `--ds-panel` cap would vanish. `--ds-hud-soft` is
+ * redefined with it. Adjacent caps (the drive keys) sit a hair apart instead of running together.
+ */
+.ds-tut-hint .ds-key.fixed {
+  display: inline;
+  min-width: 0;
+  padding: 0 var(--ds-s-1);
+  border-color: var(--ds-hud-line);
+  background: var(--ds-hud-soft);
+  box-shadow: none;
+  font-size: var(--ds-t-xs);
+  color: var(--ds-ink);
+}
+
+.ds-tut-hint .ds-key.fixed + .ds-key.fixed {
+  margin-left: var(--ds-s-0);
+}
+
 /* the nudge APPEARS, so it must not move the card: the card is bottom-anchored and grows upward,
    which keeps the buttons and the score bar exactly where they were. */
 .ds-tut-nudge {
@@ -119,20 +186,40 @@
  * THE FIRST-RUN OFFER on the Modes page (`ModeSelect.tsx`).
  *
  * A DIFFERENT SURFACE from everything above: it is page chrome on the app shell, not a HUD card
- * over the field, so it takes the themed ink tokens and `.ds-rejoin`'s accent-tinted banner as
- * its base. It lives in this file anyway because it belongs to the tutorial feature and because
- * `shell.css` is the file this split exists to stay out of.
+ * over the field, so it takes the themed ink tokens. It lives in this file anyway because it
+ * belongs to the tutorial feature and because `shell.css` is the file this split exists to stay
+ * out of.
  *
- * `.ds-rejoin` is `justify-content: space-between` on a wrapping row: the heading on the left,
- * the button on the right edge. The sub-line that sat between them is gone (it restated the
- * button), so the heading is the row's only text.
+ * ITS OWN BLOCK, not `.ds-rejoin` with overrides (design review 12-07): that is the "you're already
+ * in a game" ALERT, the two can stack, and two components sharing a container class is the
+ * `.ds-dl` bug (CLAUDE.md). It is deliberately QUIETER than the alert it sits under — the panel
+ * fill with the ordinary line, not an accent fill (and no one-side stripe — C51) — because an offer is not an alarm. Same row
+ * geometry as the banner (14/18 chrome rhythm), so the two line up when both are shown.
+ *
+ * A wrapping row: the heading on the left, Not now + Start on the right edge. The sub-line that
+ * sat between them is gone (it restated the button), so the heading is the row's only text.
  */
 .ds-tut-offer {
+  display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-4);
+  flex-wrap: wrap;
+  margin: var(--ds-s-0) 0 var(--ds-s-5);
+  padding: 14px 18px;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-panel);
 }
 
 .ds-tut-offer > b {
   flex: 0 0 auto;
+}
+
+.ds-tut-offer-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
 }
 
 /*
@@ -146,7 +233,6 @@
     flex-direction: column;
     align-items: stretch;
     gap: var(--ds-s-1);
-    bottom: 64px;
     max-width: min(420px, calc(100% - var(--ds-s-4)));
     padding: var(--ds-s-1) var(--ds-s-2);
   }

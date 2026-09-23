@@ -90,7 +90,7 @@ export const SEASONS: readonly Season[] = [
     presenter: 'goBILDA',
     program: 'Unofficial FTC · CAD Competition',
     years: '2026',
-    blurb: 'The 2026 Unofficial FTC CAD-competition game - a new shooter (rules to come).',
+    blurb: 'Shoot particles through the accelerator, hook catalysts for a multiplier, then ascend the ring stand or park in the Lab.',
     playable: true,
   },
   {

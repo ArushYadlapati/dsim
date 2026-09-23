@@ -1,5 +1,5 @@
 import type { RobotSpec } from '../../types';
-import { WHEEL_INSET } from '../../config';
+import { COLORS, WHEEL_INSET } from '../../config';
 import {
   BB_BOX_TUBE_SECTIONS,
   BB_BOX_TUBE_WALL,
@@ -124,8 +124,10 @@ export function BiobuzzRobotPreview({
   const wheelW = isTank ? 1.9 : 1.5;
   const wheelH = isTank ? 4.2 : 3.2;
 
-  const stroke = 'var(--ds-ink-dim)';
-  const accent = 'var(--ds-accent)';
+  // ON THE FIELD'S DARK MAT, like DECODE's preview (design review C50): category-3 tokens,
+  // which never theme, because the ground they sit on never does. See `ui/RobotPreview.tsx`.
+  const stroke = 'var(--ds-on-field-dim)';
+  const accent = 'var(--ds-on-field-accent)';
 
   const ROBOT_FRAME = 'matrix(0,-1,-1,0,0,0)';
   const deg = (rad: number): number => (rad * 180) / Math.PI;
@@ -146,7 +148,7 @@ export function BiobuzzRobotPreview({
           width={dia}
           height={spanHalf * 2}
           rx={dia * 0.42}
-          fill="var(--ds-bg)"
+          fill={COLORS.mat}
           stroke={stroke}
           strokeWidth={0.22}
         />
@@ -212,7 +214,7 @@ export function BiobuzzRobotPreview({
                       cx={f.depth + BB_SIDE_ROLLER_OUT}
                       cy={sg * bbSideRollerY(f.half)}
                       r={BB_SIDE_ROLLER_R}
-                      fill="var(--ds-bg)"
+                      fill={COLORS.mat}
                       stroke={stroke}
                       strokeWidth={0.22}
                     />
@@ -269,7 +271,7 @@ export function BiobuzzRobotPreview({
           cx={0}
           cy={0}
           r={tR}
-          fill="var(--ds-bg)"
+          fill={COLORS.mat}
           stroke={nectar ? accent : stroke}
           strokeWidth={nectar ? 0.55 : 0.35}
         />
@@ -290,7 +292,7 @@ export function BiobuzzRobotPreview({
         })}
         {nectar ? <circle cx={0} cy={0} r={tR - 0.75} fill="none" stroke={accent} strokeWidth={0.32} /> : null}
         {/* the FEED HOLE an element rises through, dead centre on the turret axis */}
-        <circle cx={0} cy={0} r={BB_POLLEN_R + 0.15} fill="var(--ds-bg)" stroke={stroke} strokeWidth={0.2} />
+        <circle cx={0} cy={0} r={BB_POLLEN_R + 0.15} fill={COLORS.mat} stroke={stroke} strokeWidth={0.2} />
         {/* THE SHOOTER HEAD: two parallel PLATES with a flywheel between them, no barrel */}
         {[1, -1].map((sg) => (
           <rect
@@ -314,7 +316,7 @@ export function BiobuzzRobotPreview({
           width={gap - 0.2}
           height={1.5}
           rx={0.4}
-          fill="var(--ds-bg)"
+          fill={COLORS.mat}
           stroke={stroke}
           strokeWidth={0.22}
         />
@@ -381,7 +383,7 @@ export function BiobuzzRobotPreview({
               <rect key={i} x={b.u0} y={b.v0} width={b.u1 - b.u0} height={b.v1 - b.v0} fill={stroke} />
             ))}
           <rect x={-w0 / 2} y={-w0 / 2} width={w0} height={w0} fill={stroke} />
-          <rect x={-bore} y={-bore} width={bore * 2} height={bore * 2} fill="var(--ds-bg)" />
+          <rect x={-bore} y={-bore} width={bore * 2} height={bore * 2} fill={COLORS.mat} />
         </g>
         <circle cx={place.x} cy={place.y} r={R} fill="none" stroke={accent} strokeWidth={0.3} />
       </g>
@@ -394,6 +396,7 @@ export function BiobuzzRobotPreview({
 
   return (
     <svg
+      className="ds-robot-sprite"
       width={fluid ? '100%' : size}
       height={fluid ? undefined : (size * vbH) / vbW}
       // a fluid svg needs the intrinsic ratio to keep its height; a sized one already has both
@@ -403,26 +406,24 @@ export function BiobuzzRobotPreview({
       role="img"
       aria-label={ariaLabel}
     >
+      {/* the field's mat, edge to edge, so the robot is drawn on the ground it is tuned for */}
+      <rect x={-halfSpan} y={top} width={vbW} height={vbH} fill={COLORS.mat} />
       {intakeEl}
 
       {/* chassis.
 
-          DELIBERATELY still `--ds-panel`, not the supporter chassis colour. This preview lives
-          on a THEMED UI panel, while the in-game sprite sits on the hardcoded-dark field — and
-          every `CHASSIS_COLORS` value is tuned for that dark ground. Painting one here would
-          put `--ds-accent` wheels and pods (a DARK green in light theme) on a dark chassis
-          fill, which is the exact fill-vs-text collision shell.css warns about. The colour is
-          previewed by its swatch in the builder instead. */}
+          On the mat, in the field's own greys (`COLORS.tile` deck, `COLORS.wall` bumper),
+          not the supporter chassis colour: the colour is previewed by its swatch in the
+          builder. */}
       {/* BUMPER BAND + DECK, mirroring the in-game `drawChassisBody` so the builder previews
           the same OBJECT rather than a plain outline. Neutral, not alliance-coloured: a
-          preview has no alliance to show, and the fill note above rules out a strong fill
-          here anyway. */}
+          preview has no alliance to show. */}
       <rect
         x={-w / 2}
         y={-len / 2}
         width={w}
         height={len}
-        fill="var(--ds-line)"
+        fill={COLORS.wall}
         stroke={stroke}
         strokeWidth={0.35}
       />
@@ -431,7 +432,7 @@ export function BiobuzzRobotPreview({
         y={-len / 2 + bumpW}
         width={w - bumpW * 2}
         height={len - bumpW * 2}
-        fill="var(--ds-panel)"
+        fill={COLORS.tile}
         stroke={stroke}
         strokeWidth={0.24}
       />
@@ -450,7 +451,7 @@ export function BiobuzzRobotPreview({
             width={hubW}
             height={hubH}
             rx={0.45}
-            fill="var(--ds-bg)"
+            fill={COLORS.mat}
             stroke={stroke}
             strokeWidth={0.28}
           />
@@ -545,7 +546,7 @@ export function BiobuzzRobotPreview({
           x={0}
           y={labelY}
           textAnchor="middle"
-          fill="var(--ds-mut)"
+          fill="var(--ds-on-field-dim)"
           fontSize={DIM_FONT}
           fontFamily="var(--ds-font-mono)"
         >

@@ -493,7 +493,7 @@ export function Leaderboard({
                               <span className="ds-dt lb-duo-tag">DUO</span>
                             </>
                           )}
-                          {isMe && <span className="ds-dt lb-you-tag">YOU</span>}
+                          {isMe && <span className="ds-badge accent">YOU</span>}
                           {/* NO ERA CHIP. There was a 2D/3D tag here while the two eras shared
                               this board; every row on it is now 3D, and a chip whose value never
                               varies is furniture beside a name that has two real ones. */}

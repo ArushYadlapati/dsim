@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { GameSettings } from '../game';
 import type { GameId } from '../types';
-import { APP_NAME, LINKS, seasonFor } from '../seasons';
+import { APP_NAME, LINKS, fullNameOf, seasonFor } from '../seasons';
 import { visibleGames } from '../seasonVisibility';
 import { fetchGlobalStats, type GlobalStats } from '../net/api';
 import { RAIL_ITEMS } from './NavRail';
@@ -42,6 +42,7 @@ export function HomeMenu({
   // this release channel are selectable; the switcher hides itself until there are
   // ≥2 to choose between.
   const games = visibleGames();
+  const season = seasonFor(settings.game);
 
   // site-wide counters (players + games played), when the server is configured
   const [stats, setStats] = useState<GlobalStats | null>(null);
@@ -113,7 +114,33 @@ export function HomeMenu({
           ))}
         </div>
       )}
+      {/* the loaded season's own identity, one muted line straight from the registry. Its
+          presenter (RTX, goBILDA) is FIRST's, not the app sponsor above — a different fact
+          (docs/area/sponsor.md), so it sits under the switcher, not beside the Offset mark. */}
+      <p className="ds-home-season">
+        {fullNameOf(season)} · {season.program} {season.years}
+      </p>
 
+      <nav className="ds-menu" aria-label="Main">
+        {RAIL_ITEMS.map((it, i) => (
+          <button
+            key={it.id}
+            className={`ds-menu-btn${i === 0 ? ' primary' : ''}`}
+            onClick={() => onNav(it.id)}
+          >
+            {/* THE LABEL ALONE. Each button carried the nav rail's sub-line under it
+                ("Practice & compete" under Play), which on the home page is a second menu
+                saying the first one again, in smaller type. */}
+            <span className="ml">
+              {it.label}
+              {it.id === 'play' && <QueueCounts className="menu" />}
+            </span>
+          </button>
+        ))}
+      </nav>
+
+      {/* outbound links AFTER the destinations (design review 01-02): above the menu they
+          sat between choosing a season and acting on it */}
       <div className="ds-home-links">
         <a className="ds-home-link" href={LINKS.discord} target="_blank" rel="noreferrer">
           <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="currentColor">
@@ -146,24 +173,6 @@ export function HomeMenu({
           GitHub
         </a>
       </div>
-
-      <nav className="ds-menu" aria-label="Main">
-        {RAIL_ITEMS.map((it, i) => (
-          <button
-            key={it.id}
-            className={`ds-menu-btn${i === 0 ? ' primary' : ''}`}
-            onClick={() => onNav(it.id)}
-          >
-            {/* THE LABEL ALONE. Each button carried the nav rail's sub-line under it
-                ("Practice & compete" under Play), which on the home page is a second menu
-                saying the first one again, in smaller type. */}
-            <span className="ml">
-              {it.label}
-              {it.id === 'play' && <QueueCounts className="menu" />}
-            </span>
-          </button>
-        ))}
-      </nav>
 
       {stats && (
         <div className="ds-homestats">

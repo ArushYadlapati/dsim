@@ -1,5 +1,6 @@
-import { keyLabel, padBindLabel, padBinds, type KeyAction, type PadAction } from '../input/bindings';
-import type { TutorialHintCtx } from './types';
+import { keyLabel, keyName, padBindLabel, padBinds, type KeyAction, type PadAction } from '../input/bindings';
+import { ACTION_LABELS } from '../ui/controlsLayout';
+import type { Hint, HintKey, HintPart, TutorialHintCtx } from './types';
 
 /**
  * HINTS NAME THE PLAYER'S OWN CONTROLS — the whole point of routing them through
@@ -40,18 +41,23 @@ const TOUCH_LABELS: Partial<Record<KeyAction, string>> = {
   bbNectar: 'NECTAR',
 };
 
-/** the FIRST key bound to an action, as a keycap label, or `—` when it is unbound. */
-export function keyFor(ctx: TutorialHintCtx, action: KeyAction): string {
+/** the name an unbound action is called by in the sentence that says so: the Controls row's own
+ * label ("Shoot (hold)") without its parenthetical, so the player looks for the same words there. */
+const actionName = (a: KeyAction): string => ACTION_LABELS[a].replace(/ \(.*\)$/, '');
+
+/** the FIRST key bound to an action, as a keycap — or, when it is unbound, a `missing` part that
+ * `resolveHint` turns into "Shoot has no key. Bind one in Controls." (design review 12-09). */
+export function keyFor(ctx: TutorialHintCtx, action: KeyAction): HintKey {
   const k = ctx.bindings.keys[action][0];
-  return k === undefined ? 'unbound' : keyLabel(k);
+  return k === undefined ? { key: '', missing: actionName(action) } : { key: keyLabel(k), name: keyName(k) };
 }
 
-/** the FIRST pad bind of an action — a face label, or a combo's buttons joined by `+` — or
- * `unbound` when it has none. `padBinds` lists singles before combos, so a player who kept a
+/** the FIRST pad bind of an action — a face label, or a combo's buttons joined by `+` — or a
+ * `missing` part when it has none. `padBinds` lists singles before combos, so a player who kept a
  * single is told the single. */
-export function padFor(ctx: TutorialHintCtx, action: PadAction): string {
+export function padFor(ctx: TutorialHintCtx, action: PadAction): HintKey {
   const b = padBinds(ctx.bindings.pad, action)[0];
-  return b === undefined ? 'unbound' : padBindLabel(b);
+  return b === undefined ? { key: '', missing: actionName(action), pad: true } : { key: padBindLabel(b) };
 }
 
 /**
@@ -61,12 +67,47 @@ export function padFor(ctx: TutorialHintCtx, action: PadAction): string {
  * `pad` is optional because three keyboard actions have no pad twin (the tank right-side
  * pair, and the strafe/turn keys, which a pad does with a stick).
  */
-export function control(ctx: TutorialHintCtx, key: KeyAction, pad?: PadAction): string {
+export function control(ctx: TutorialHintCtx, key: KeyAction, pad?: PadAction): HintKey {
   if (ctx.gamepad && pad) return padFor(ctx, pad);
   // a PAD wins over touch: somebody who plugged one into a tablet is holding it, and the
   // on-screen pad is what they stopped using.
-  if (ctx.touch && TOUCH_LABELS[key]) return TOUCH_LABELS[key]!;
+  if (ctx.touch && TOUCH_LABELS[key]) return { key: TOUCH_LABELS[key]! };
   return keyFor(ctx, key);
+}
+
+/**
+ * COMPOSE A HINT — a template tag, so a step's copy still reads as one sentence:
+ * `` say`Hold ${control(c, 'fire', 'fire')}. The turret tracks the goal for you.` ``.
+ *
+ * A value may be a string, a control, or another `Hint` (`driveHint`, or a clause that is `''`
+ * on touch), and nested hints are flattened. ⚠️ If ANY control in it is unbound, the whole hint
+ * becomes the one line that says so (`resolveHint`): a sentence composed around a missing key
+ * reads "Hold .", and the step it is on is the one that was supposed to teach that control.
+ */
+export function say(strings: TemplateStringsArray, ...vals: (HintPart | Hint)[]): Hint {
+  const out: HintPart[] = [];
+  const put = (v: HintPart | Hint): void => {
+    if (Array.isArray(v)) (v as Hint).forEach(put);
+    else if (v !== '') out.push(v as HintPart);
+  };
+  strings.forEach((s, i) => {
+    put(s);
+    if (i < vals.length) put(vals[i]);
+  });
+  return out;
+}
+
+/** the hint as shown: if ANY control in it is unbound, the one line that says so. Applied once, at
+ * the top (`runner.view`, `hintText`), not inside `say` — a nested `driveHint` collapsed early
+ * would be pasted mid-sentence into the outer hint. */
+export function resolveHint(h: Hint): Hint {
+  const gap = h.find((p): p is HintKey => typeof p !== 'string' && p.missing !== undefined);
+  return gap ? [`${gap.missing} has no ${gap.pad ? 'button' : 'key'}. Bind one in Controls.`] : h;
+}
+
+/** a hint as one plain string, each control inlined as its label — for checks and logs. */
+export function hintText(h: Hint): string {
+  return resolveHint(h).map((p) => (typeof p === 'string' ? p : p.key)).join('');
 }
 
 /**
@@ -74,17 +115,17 @@ export function control(ctx: TutorialHintCtx, key: KeyAction, pad?: PadAction): 
  *
  * The keyboard form lists the four translation keys and the two turn keys, in the order a
  * driver's hand sits on them, and it reads the bound values so a rebound WASD prints as
- * whatever it is now. The pad form names the stick the player picked for driving
- * (`pad.driveStick`) and says the other one turns, which is the only thing about a pad a
- * driver has to be told.
+ * whatever it is now — each one its own keycap, so `NUM8NUM4…` cannot run together. The pad form
+ * names the stick the player picked for driving (`pad.driveStick`) and says the other one turns,
+ * which is the only thing about a pad a driver has to be told. It opens a sentence, so it is
+ * capitalised in every form (design review 12-08).
  */
-export function driveHint(ctx: TutorialHintCtx): string {
-  if (!ctx.gamepad && ctx.touch) return 'Left stick to drive, right stick to turn';
+export function driveHint(ctx: TutorialHintCtx): Hint {
+  if (!ctx.gamepad && ctx.touch) return ['Left stick to drive, right stick to turn'];
   if (ctx.gamepad) {
-    const drive = ctx.bindings.pad.driveStick === 'left' ? 'left' : 'right';
-    const turn = drive === 'left' ? 'right' : 'left';
-    return `${drive} stick to drive, ${turn} stick to turn`;
+    const left = ctx.bindings.pad.driveStick === 'left';
+    return [left ? 'Left stick to drive, right stick to turn' : 'Right stick to drive, left stick to turn'];
   }
-  const k = (a: KeyAction): string => keyFor(ctx, a);
-  return `${k('driveUp')}${k('driveLeft')}${k('driveDown')}${k('driveRight')} to drive, ${k('rotateCCW')} and ${k('rotateCW')} to turn`;
+  const k = (a: KeyAction): HintKey => keyFor(ctx, a);
+  return say`${k('driveUp')}${k('driveLeft')}${k('driveDown')}${k('driveRight')} to drive, ${k('rotateCCW')} and ${k('rotateCW')} to turn`;
 }

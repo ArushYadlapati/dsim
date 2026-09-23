@@ -1,5 +1,6 @@
 import { SIM_DT } from '../config';
 import type { RobotSpec, World } from '../types';
+import { resolveHint } from './hints';
 import type { TutorialHintCtx, TutorialSpec, TutorialStep, TutorialView } from './types';
 
 /** the default nudge delay, in seconds, for a step that names none. */
@@ -133,7 +134,7 @@ export class TutorialRunner {
         count: this.steps.length,
         id: 'done',
         title: 'Tutorial complete',
-        hint: 'Free drive from here — the field is yours.',
+        hint: ['Free drive from here — the field is yours.'],
         elapsedS,
         stuck: false,
         finished: true,
@@ -144,7 +145,7 @@ export class TutorialRunner {
       count: this.steps.length,
       id: s.id,
       title: s.title,
-      hint: s.hint(ctx),
+      hint: resolveHint(s.hint(ctx)),
       elapsedS,
       stuck: elapsedS >= (s.nudgeS ?? DEFAULT_NUDGE_S),
       finished: false,

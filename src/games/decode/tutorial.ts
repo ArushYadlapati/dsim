@@ -1,6 +1,6 @@
 import type { Alliance, RobotState, World } from '../../types';
 import type { TutorialSpec, TutorialStep } from '../../tutorial/types';
-import { control, driveHint } from '../../tutorial/hints';
+import { control, driveHint, say } from '../../tutorial/hints';
 import { baseZone, driverSide } from '../../sim/field';
 import { robotInLaunchZone } from '../../sim/robot';
 import { wheelContacts } from '../../sim/physics';
@@ -92,7 +92,7 @@ const steps: TutorialStep[] = [
   {
     id: 'drive',
     title: 'Drive into your launch zone',
-    hint: (c) => `${driveHint(c)}. You can only shoot from inside a LAUNCH ZONE.`,
+    hint: (c) => say`${driveHint(c)}. You can only shoot from inside a LAUNCH ZONE.`,
     stage: (w, id) => place(w, id, 34, -22, Math.PI / 2),
     done: (w, id) => {
       const r = me(w, id);
@@ -108,7 +108,7 @@ const steps: TutorialStep[] = [
     id: 'intake',
     title: 'Pick up an artifact',
     hint: (c) =>
-      `Drive onto the ARTIFACT with ${control(c, 'intake', 'intake')} held. The hopper holds three.`,
+      say`Drive onto the ARTIFACT with ${control(c, 'intake', 'intake')} held. The hopper holds three.`,
     stage: (w, id) => {
       place(w, id, 34, -22, Math.PI / 2);
       const r = me(w, id);
@@ -127,7 +127,7 @@ const steps: TutorialStep[] = [
   {
     id: 'score',
     title: 'Score in your goal',
-    hint: (c) => `Hold ${control(c, 'fire', 'fire')}. The turret tracks the goal for you.`,
+    hint: (c) => say`Hold ${control(c, 'fire', 'fire')}. The turret tracks the goal for you.`,
     stage: (w, id) => place(w, id, 30, 12, Math.PI / 2),
     done: (w, id) => {
       const r = me(w, id);
@@ -146,7 +146,7 @@ const steps: TutorialStep[] = [
     title: 'Return to your base',
     hint: (c) =>
       // same as BIOBUZZ's park step: no on-screen PARK button, so the clause goes on touch.
-      `${driveHint(c)}. Get a wheel inside the BASE square. All four is worth more.${c.touch ? '' : ` ${control(c, 'park', 'park')} caps your speed.`}`,
+      say`${driveHint(c)}. Get a wheel inside the BASE square. All four is worth more.${c.touch ? '' : say` ${control(c, 'park', 'park')} caps your speed.`}`,
     stage: (w, id) => place(w, id, 22, 6, -Math.PI / 2),
     done: (w, id) => {
       const r = me(w, id);

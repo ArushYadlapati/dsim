@@ -20,7 +20,7 @@ export function ChainHudChips({ hud }: GameHudProps) {
   const chain = hud.chain;
   if (!chain) return null;
 
-  const multSaid = `Multiplier ${chain.mult}x.`;
+  const multSaid = `Multiplier ×${chain.mult}.`;
   const catalystsSaid = `${chain.catalysts} of 4 catalysts seated.`;
   const holdSaid =
     chain.ringAction !== null
@@ -35,7 +35,8 @@ export function ChainHudChips({ hud }: GameHudProps) {
     <div className="cr-hud">
       <div className="cr-hud-left">
         <span className={`mult-badge${chain.mult > 1 ? ' on' : ''}`} role="img" aria-label={multSaid}>
-          {chain.mult}x
+          {/* ×, the notation the rest of the product prints a multiplier in (design review 22-11) */}
+          ×{chain.mult}
         </span>
         <div className="hopper vertical" role="img" aria-label={catalystsSaid}>
           {Array.from({ length: 4 }, (_, i) => (

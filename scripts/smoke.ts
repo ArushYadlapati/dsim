@@ -25464,6 +25464,19 @@ const dumperSetup = (): RobotSetup => {
       String(Math.min(...packed.buttons.map((c) => c.size))),
     );
   }
+
+  // with no free cell anywhere the pad SHRINKS to the 44px floor, then stacks at its own side's
+  // top — it never drops a button on the middle of the field (design review 18-21)
+  {
+    const vp = { w: 480, h: 260 };
+    const packed = packTouchControls(visibleTouchButtons('biobuzz', ctx(mech('twinturret', true, 'ramp'))), DEFAULT_MOBILE_LAYOUT, vp);
+    check(
+      '⚠️ touch: a cramped viewport never centres a button over the field',
+      packed.buttons.every((c) => Math.abs(c.x - vp.w / 2) > c.size / 2 || Math.abs(c.y - vp.h / 2) > c.size / 2),
+      packed.buttons.map((c) => `${c.button.action}@${Math.round(c.x)},${Math.round(c.y)}`).join(' '),
+    );
+    check('touch: and every button it placed there is still at least 44px', packed.buttons.every((c) => c.size >= 44));
+  }
 }
 
 // COLORS.backdrop* is the canvas letterbox and must be the page floor, per theme, or the field

@@ -545,8 +545,8 @@ export function Menu({ settings, onChange }: Props) {
   const gamePresets = mod.presets;
   const presets = gamePresets ? gamePresets.list : isDecode ? ROBOT_PRESETS : CHAIN_PRESETS;
   const presetMatches = gamePresets ? gamePresets.matches : isDecode ? specMatches : chainSpecMatches;
-  // how many leading cards are real robots rather than archetype demos, so the section can
-  // rule off between them. 0 ⇒ no divider (every current non-slot game is one or the other).
+  // how many leading cards are real robots rather than archetype demos; each gets a "Real robot"
+  // badge. 0 ⇒ none (every current non-slot game is one or the other).
   const realPresets = gamePresets?.realCount ?? 0;
   // THE HERO'S NUMBERS: how this build drives, what it weighs and how big it is. A fixed six,
   // in every game, so the grid is the same shape whatever a season contributes. The build's
@@ -691,7 +691,7 @@ export function Menu({ settings, onChange }: Props) {
                     spec={p}
                     game={settings.game}
                     on={presetMatches(spec, p)}
-                    // `.real` marks a documented, real-world robot. Marking the CARDS rather than
+                    // `real` badges a documented, real-world robot. Marking the CARDS rather than
                     // ruling a line between the two groups is what survives `.ds-opts` being an
                     // auto-fill grid: a divider "after the fourth card" lands mid-row the moment
                     // the grid reflows to three or five columns, but a per-card mark never lies.

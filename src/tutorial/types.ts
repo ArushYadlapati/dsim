@@ -44,6 +44,28 @@ export interface TutorialHintCtx {
   touch: boolean;
 }
 
+/**
+ * A CONTROL IN A HINT — drawn as a keycap on the card (`.ds-key`), so "hold SHIFT near the
+ * POLLEN" can tell the key from the manual noun when both are in capitals (design review 12-10).
+ * `missing` is set, and `key` empty, when the action has no bind at all: `say` then replaces the
+ * whole hint with one that says so, rather than composing a sentence around a hole.
+ */
+export interface HintKey {
+  key: string;
+  /** the spoken name, when the glyph is not one ("Left arrow" for ←) */
+  name?: string;
+  /** the action's name ("Shoot"), present only when it is unbound */
+  missing?: string;
+  /** the unbound control is a pad button rather than a key */
+  pad?: boolean;
+}
+
+/** one run of a hint: prose, or a control. */
+export type HintPart = string | HintKey;
+
+/** a composed hint — build one with `say` (`./hints.ts`), flatten one with `hintText`. */
+export type Hint = readonly HintPart[];
+
 /** one step of a tutorial. */
 export interface TutorialStep {
   /** stable, kebab-case. It is in the HUD card's DOM and in the smoke lane's check names, so
@@ -58,7 +80,7 @@ export interface TutorialStep {
    * plugged in mid-tutorial: a hint baked at module load says SPACE to somebody who moved
    * fire onto F, which is the single most confusing thing a tutorial can do.
    */
-  hint(ctx: TutorialHintCtx): string;
+  hint(ctx: TutorialHintCtx): Hint;
   /**
    * STAGE the situation this step teaches, on a world that has just been built.
    *
@@ -114,7 +136,7 @@ export interface TutorialView {
   count: number;
   id: string;
   title: string;
-  hint: string;
+  hint: Hint;
   /** seconds spent on this step (sim time, so a paused tab does not age it) */
   elapsedS: number;
   /** the nudge line is due */

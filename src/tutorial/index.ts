@@ -8,5 +8,5 @@
  */
 export { TutorialRunner } from './runner';
 export { tutorialSeen, markTutorialSeen, clearTutorialSeen } from './flag';
-export { control, driveHint, keyFor, padFor } from './hints';
-export type { TutorialHintCtx, TutorialSpec, TutorialStep, TutorialView } from './types';
+export { control, driveHint, hintText, keyFor, padFor, say } from './hints';
+export type { Hint, HintKey, HintPart, TutorialHintCtx, TutorialSpec, TutorialStep, TutorialView } from './types';

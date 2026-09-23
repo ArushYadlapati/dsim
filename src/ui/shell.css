@@ -425,15 +425,17 @@
   z-index: 10;
 }
 /* the loaded SEASON beside the app mark — muted, so DSIM stays the brand and the season reads
-   as its state. The separator is its own span so the name alone is what a reader hears. */
+   as its state. The separator is its own span so the name alone is what a reader hears.
+   PLAIN TEXT, and styled as such (design review 22-07): at 700 with tracking, beside the brand
+   where a context switcher conventionally sits, it read as a control that did nothing. Body
+   weight, no tracking — a caption, not a button. */
 .ds-bar-season {
   display: inline-flex;
   align-items: center;
   gap: 12px;
   margin-left: -8px; /* pulls the dot toward the mark; the bar's own gap is 20px */
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  font-size: var(--ds-t-md);
+  font-weight: 400;
   color: var(--ds-mut);
   white-space: nowrap;
 }
@@ -1191,19 +1193,39 @@
   line-height: var(--ds-lh-tight);
   margin: 0 0 var(--ds-s-4);
 }
-/* game switcher (DECODE / Chain Reaction) — centered under the title */
+/* game switcher (DECODE / Chain Reaction / BIOBUZZ) — centered under the title. The season
+   changes every screen after it, so on home it is the shared `.ds-seg` at control size with a
+   visible edge on the unpicked ones (design review 01-01): the bare 12px strip read as the
+   smallest thing on the page, under the social pills. Colour/border only between states, so
+   nothing moves on click (shiftaudit). */
 .ds-home-games {
   justify-content: center;
-  margin: 0 0 var(--ds-s-5);
+  gap: var(--ds-s-2);
+  margin: 0 0 var(--ds-s-2);
 }
-/* Discord / Instagram / GitHub — prominent pills near the top of the home menu. They WRAP:
-   three pills no longer fit side by side on the narrowest phones. */
+.ds-home-games .ds-seg {
+  font-size: var(--ds-t-lg);
+  padding: var(--ds-s-2) var(--ds-s-4);
+  border-color: var(--ds-line);
+}
+.ds-home-games .ds-seg.on {
+  border-color: var(--ds-accent);
+}
+/* one muted line of the loaded season's identity under the switcher (22-05). Mixed case on
+   purpose: `fullNameOf` carries goBILDA, which an uppercase transform would flatten. */
+.ds-home-season {
+  margin: 0 0 var(--ds-s-5);
+  font-size: var(--ds-t-md);
+  color: var(--ds-mut);
+}
+/* Discord / Instagram / GitHub — outbound, so AFTER the menu (01-02). They WRAP: three pills
+   no longer fit side by side on the narrowest phones. */
 .ds-home-links {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   gap: 10px;
-  margin: 0 0 var(--ds-s-5);
+  margin: var(--ds-s-5) 0 0;
 }
 /* "Join Discord Lobby" — only rendered inside a Discord Activity, as the FIRST
    item in the home content flow. It was `position: fixed` top-left, but on the
@@ -1484,13 +1506,18 @@
 .ds-foot-brand {
   font-family: var(--ds-font-mono);
   letter-spacing: 0.02em;
-  /* TWO ITEMS, not one run: the app/season text (an anonymous flex item) and the sponsor
+  /* TWO ITEMS, not one run: the app name (an anonymous flex item) and the sponsor
      credit. Inline, "DSIM · DECODE 2025–26" ran straight into "PRESENTED BY" 8px away and
      read as one line in two sizes, and a phone broke it mid-credit (design review 11-20). */
   display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--ds-s-1) var(--ds-s-4);
+}
+/* the season sits between brand and links (`space-between`), in the brand's face (22-04) */
+.ds-foot-season {
+  font-family: var(--ds-font-mono);
+  letter-spacing: 0.02em;
 }
 /* WRAP. `.ds-foot` itself wraps, so the brand and the links already stack on a
    phone — but this row did not, and it is a flex row whose contents outgrew the
@@ -2964,11 +2991,7 @@ button.ds-key:where(:not(:disabled)):active,
 tr.lb-you > td {
   background: color-mix(in srgb, var(--ds-accent) 12%, transparent);
 }
-.lb-you-tag {
-  margin-left: 2px;
-  color: var(--ds-accent-ink);
-  background: var(--ds-accent);
-}
+/* the row's YOU marker is `.ds-badge.accent` */
 
 /* leaderboard record config (expandable robot column) */
 .lb-robot {
@@ -4356,18 +4379,6 @@ tr.lb-detail td {
   min-height: 62px;
   justify-content: center;
 }
-/* A preset card for a REAL, documented robot (a manufacturer StarterBot, a real team's
-   build) as opposed to an archetype demo. The two kinds answer different questions — "what
-   did that team actually bring" vs "what does a drum shooter feel like" — and a player
-   choosing between them deserves to know which is which.
-
-   An inset left edge rather than a divider between the groups, because `.ds-opts` is an
-   auto-fit grid: any rule drawn "between card 4 and card 5" is wrong at every column count
-   but one. Inset (not `border-left`) so the card's own 1px border stays unbroken and the
-   mark cannot be mistaken for a selection state — `.on` owns that. */
-.ds-opt.real {
-  box-shadow: 2px 2px 0 var(--card-edge, var(--ds-line-soft)), inset 3px 0 0 color-mix(in srgb, var(--ds-accent) 55%, transparent);
-}
 /* Drivetrain grid (the only `.ds-opts.four`): now label-only chips — center the
    label so the four read as an even segmented row instead of top-left labels. */
 .ds-opts.four .ds-opt {
@@ -4712,6 +4723,11 @@ tr.lb-detail td {
 }
 .ds-robot-card > .od {
   grid-column: 1 / -1;
+}
+/* a real, documented robot (a kit shape, a real team's build) says so in a word beside its name,
+   not a stripe down one edge (design review C51) */
+.ds-robot-card > .ot .ds-badge {
+  margin-left: var(--ds-s-2);
 }
 /* the build line is a sentence of words, not a row of figures, so it takes the UI face */
 .ds-robot-card > .om {
@@ -7025,7 +7041,7 @@ a.ds-cta {
   margin: 0 0 var(--ds-s-5);
 }
 /* FOOTER — the standing credit, on every shell screen. It is the second flex item of
-   `.ds-foot-brand`, after the app/season line, so it wraps as ONE unit (11-20).
+   `.ds-foot-brand`, after the app name, so it wraps as ONE unit (11-20).
    24px of hit area round a 14px logo (WCAG 2.5.8); the negative margin cancels the
    padding in layout, so the footer line does not grow. `(pointer: coarse)` takes it to 32. */
 .ds-foot-sponsor .sponsor-mark {

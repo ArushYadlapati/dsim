@@ -1,4 +1,9 @@
-import type { TutorialView } from '../tutorial/types';
+import { useEffect, useRef, useState } from 'react';
+import type { Hint, TutorialView } from '../tutorial/types';
+
+/** how long the counter holds "Step N done" after a step completes — real time, UI only, so the
+ *  sim (which has already rebuilt the field for the next step) is untouched. */
+const ACK_MS = 800;
 
 /**
  * THE TUTORIAL STEP CARD — the one surface a tutorial adds to the game screen.
@@ -18,7 +23,8 @@ import type { TutorialView } from '../tutorial/types';
  *
  * ── THE COPY ──────────────────────────────────────────────────────────────────
  * Sentence case, typographic punctuation, no padding words (`docs/area/ui.md`). The hint is
- * composed by the step itself against the player's LIVE bindings, so nothing here spells a key.
+ * composed by the step itself against the player's LIVE bindings, so nothing here spells a key;
+ * the controls in it arrive as parts and are drawn as the app's keycap (design review 12-10).
  */
 export function TutorialCard({
   view,
@@ -31,13 +37,36 @@ export function TutorialCard({
   onReplay: () => void;
   onExit: () => void;
 }) {
+  /**
+   * THE STEP ACKNOWLEDGEMENT (design review 12-06). A completed step rebuilds the field on the
+   * same tick, and with only the counter's text changing a new driver reads the jump as a reset.
+   * So the counter holds "Step N done" for a beat and the pip row fills. A SKIP is not a success,
+   * so it is marked here — the runner deliberately does not tell the two apart.
+   */
+  const [ack, setAck] = useState<number | null>(null);
+  const prev = useRef(view.index);
+  const skipped = useRef(false);
+  useEffect(() => {
+    const was = prev.current;
+    prev.current = view.index;
+    const byHand = skipped.current;
+    skipped.current = false;
+    if (view.index <= was || byHand) {
+      setAck(null);
+      return;
+    }
+    setAck(was);
+    const t = setTimeout(() => setAck(null), ACK_MS);
+    return () => clearTimeout(t);
+  }, [view.index]);
+
   if (view.finished) {
     return (
       <div className="ds-tut" data-hud-band role="status">
         <div className="ds-tut-body">
           <p className="ds-tut-step">Done</p>
           <p className="ds-tut-title">{view.title}</p>
-          <p className="ds-tut-hint">{view.hint}</p>
+          <HintLine hint={view.hint} />
         </div>
         <div className="ds-tut-acts">
           <button className="game-btn primary" onClick={onExit}>
@@ -57,12 +86,20 @@ export function TutorialCard({
             on every 10 Hz poll would flood. Wears `ds-tut-body` itself so the column's gap
             between its lines is unchanged. */}
         <div className="ds-tut-body" role="status" aria-atomic="true">
-          <p className="ds-tut-step">
-            Step {view.index + 1} of {view.count}
-          </p>
+          <div className="ds-tut-head">
+            <p className="ds-tut-step">
+              {ack !== null ? `✓ Step ${ack + 1} done` : `Step ${view.index + 1} of ${view.count}`}
+            </p>
+            {/* the counter already says it in words, so the pips are for the eye only */}
+            <span className="ds-tut-pips" aria-hidden="true">
+              {Array.from({ length: view.count }, (_, i) => (
+                <span key={i} className={i < view.index ? 'on' : i === view.index ? 'cur' : undefined} />
+              ))}
+            </span>
+          </div>
           <p className="ds-tut-title">{view.title}</p>
         </div>
-        <p className="ds-tut-hint">{view.hint}</p>
+        <HintLine hint={view.hint} />
         {/* THE NUDGE, after the step's own `nudgeS`. It appears rather than replacing anything,
             and it never skips on its own — a tutorial that moved on while somebody was still
             trying would be a tutorial that decided they had failed. */}
@@ -74,7 +111,14 @@ export function TutorialCard({
         <button className="game-btn" onClick={onReplay} title="Put this step back the way it started">
           Replay
         </button>
-        <button className="game-btn" onClick={onSkip} title="Move on to the next step">
+        <button
+          className="game-btn"
+          onClick={() => {
+            skipped.current = true;
+            onSkip();
+          }}
+          title="Move on to the next step"
+        >
           Skip
         </button>
         <button className="game-btn" onClick={onExit} title="Leave the tutorial and keep driving">
@@ -82,5 +126,24 @@ export function TutorialCard({
         </button>
       </div>
     </div>
+  );
+}
+
+/** the hint line: prose as text, each control as a non-interactive keycap (`.ds-key.fixed`). */
+function HintLine({ hint }: { hint: Hint }) {
+  return (
+    <p className="ds-tut-hint">
+      {hint.map((p, i) =>
+        typeof p === 'string' ? (
+          p
+        ) : (
+          // a <kbd> has no role, so an aria-label on it may be ignored: the spoken name is text
+          <kbd key={i} className="ds-key fixed">
+            <span aria-hidden={p.name ? true : undefined}>{p.key}</span>
+            {p.name && <span className="ds-sr">{p.name}</span>}
+          </kbd>
+        ),
+      )}
+    </p>
   );
 }

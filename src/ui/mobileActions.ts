@@ -237,11 +237,16 @@ export const TOUCH_BTN_SECONDARY = 64;
 const TOUCH_GAP = 8;
 /**
  * WHAT THE TOP STRIP ALREADY OWNS, per side, measured on a phone-width viewport: the left is
- * the MENU/RESET stack with the sponsor mark under it (102 px) and the event log below that;
- * the right is the status chip row (58 px). Two numbers rather than one because a landscape
- * phone is 360 px tall and the difference is a whole row of buttons.
+ * the MENU/RESET stack with the sponsor mark under it and the event log below that; the right
+ * is the status chip row (58 px). Two numbers rather than one because a landscape phone is
+ * 360 px tall and the difference is a whole row of buttons.
+ * The left stack was 102 px until the caps took a 36 px touch floor and a 12 px gap (design
+ * review 18-16): 6 + 36 + 12 + 36 + 12 + 26 (the sponsor chip) = 128, plus the one gap. A
+ * 360 px-tall landscape phone still fits three rows of secondary buttons under it.
  */
-const TOUCH_TOP_RESERVE = { left: 116, right: 76 } as const;
+const TOUCH_TOP_RESERVE = { left: 136, right: 76 } as const;
+/** the smallest circle a finger hits reliably — the floor the secondary button size is set by */
+const TOUCH_MIN_TARGET = 44;
 /** the score bar is bottom-CENTRE, so only the safe-area strip is owed at the two corners */
 const TOUCH_BOTTOM_RESERVE = 8;
 /** how far inboard the thumb columns may march before giving up. Four is what a 360 px-tall
@@ -392,15 +397,29 @@ export function packTouchControls(
   // PASS 2 — the rest climb their own thumb's columns. A side with no room left falls back to
   // the other one before it gives up, so a short landscape phone stacks rather than drops: a
   // button that is not on screen is the bug this whole module exists to stop.
+  // ⚠️ AND THEN IT SHRINKS, NEVER CENTRES (design review 18-21). With no free cell at full
+  // size it tries again at the 44 px floor, and with none at that either it goes to the top of
+  // its OWN side column — overlapping, but under the thumb. The old last resort was the middle
+  // of the screen, which on a field is on top of the robot.
+  const lastResort = { left: 0, right: 0 };
   for (const b of auto) {
-    const size = (b.primary ? TOUCH_BTN_PRIMARY : TOUCH_BTN_SECONDARY) * scale;
+    const full = (b.primary ? TOUCH_BTN_PRIMARY : TOUCH_BTN_SECONDARY) * scale;
     const other = b.side === 'left' ? 'right' : 'left';
-    const cands = [
-      ...candidates(b.side, size, vp, b.side === 'left' ? drive : turn),
-      ...candidates(other, size, vp, other === 'left' ? drive : turn),
-    ];
-    const spot = cands.find((c) => !taken.some((t) => overlaps(c, t))) ?? cands[cands.length - 1];
-    const p = spot ?? clampOn({ x: vp.w / 2, y: vp.h / 2, size }, vp);
+    let p: PlacedControl | undefined;
+    for (const size of full > TOUCH_MIN_TARGET ? [full, TOUCH_MIN_TARGET] : [full]) {
+      const cands = [
+        ...candidates(b.side, size, vp, b.side === 'left' ? drive : turn),
+        ...candidates(other, size, vp, other === 'left' ? drive : turn),
+      ];
+      p = cands.find((c) => !taken.some((t) => overlaps(c, t)));
+      if (p) break;
+    }
+    // clampOn pulls this to the outer column's edge and just under the top strip; each further
+    // last resort on that side steps one pitch down, so two never land on the same spot
+    if (!p) {
+      const size = Math.min(full, TOUCH_MIN_TARGET);
+      p = clampOn({ x: b.side === 'left' ? 0 : vp.w, y: TOUCH_TOP_RESERVE.left + size / 2 + lastResort[b.side]++ * (size + TOUCH_GAP), size }, vp);
+    }
     taken.push(p);
     out.push({ ...p, button: b, stored: false });
   }

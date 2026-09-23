@@ -1,5 +1,5 @@
 import type { RobotSpec } from '../../types';
-import { WHEEL_INSET } from '../../config';
+import { COLORS, WHEEL_INSET } from '../../config';
 import {
   CHAIN_DEFAULT_INTAKE,
   CHAIN_DEFAULT_SCORE_MODE,
@@ -100,8 +100,10 @@ export function ChainRobotPreview({
   const wheelW = isTank ? 1.9 : 1.5;
   const wheelH = isTank ? 4.2 : 3.2;
 
-  const stroke = 'var(--ds-ink-dim)';
-  const accent = 'var(--ds-accent)';
+  // ON THE FIELD'S DARK MAT, like DECODE's preview (design review C50): category-3 tokens,
+  // which never theme, because the ground they sit on never does. See `ui/RobotPreview.tsx`.
+  const stroke = 'var(--ds-on-field-dim)';
+  const accent = 'var(--ds-on-field-accent)';
 
   const ROBOT_FRAME = 'matrix(0,-1,-1,0,0,0)';
   const deg = (rad: number): number => (rad * 180) / Math.PI;
@@ -123,7 +125,7 @@ export function ChainRobotPreview({
           width={dia}
           height={spanHalf * 2}
           rx={dia * 0.42}
-          fill="var(--ds-bg)"
+          fill={COLORS.mat}
           stroke={stroke}
           strokeWidth={0.22}
         />
@@ -186,10 +188,10 @@ export function ChainRobotPreview({
       {catType === 'arm' ? (
         <>
           {/* pivot block, tapered boom, and two curved claw jaws — a mechanism, not an arrow */}
-          <rect x={catDist - 2} y={-1.5} width={1.9} height={3} rx={0.4} fill="var(--ds-bg)" stroke={stroke} strokeWidth={0.35} />
+          <rect x={catDist - 2} y={-1.5} width={1.9} height={3} rx={0.4} fill={COLORS.mat} stroke={stroke} strokeWidth={0.35} />
           <polygon
             points={`${catDist - 1.1},-0.85 ${catDist + CHAIN_ARM_DRAW - 0.4},-0.55 ${catDist + CHAIN_ARM_DRAW - 0.4},0.55 ${catDist - 1.1},0.85`}
-            fill="var(--ds-bg)"
+            fill={COLORS.mat}
             stroke={stroke}
             strokeWidth={0.35}
           />
@@ -207,7 +209,7 @@ export function ChainRobotPreview({
         <>
           <polygon
             points={`${catDist - 0.4},-2.2 ${catDist + 1.9},-1.2 ${catDist + 1.9},1.2 ${catDist - 0.4},2.2`}
-            fill="var(--ds-bg)"
+            fill={COLORS.mat}
             stroke={stroke}
             strokeWidth={0.4}
           />
@@ -242,7 +244,7 @@ export function ChainRobotPreview({
               ))}
             </>
           )}
-          <circle cx={catDist - 0.8} cy={0} r={2.1} fill="var(--ds-bg)" stroke={stroke} strokeWidth={0.4} />
+          <circle cx={catDist - 0.8} cy={0} r={2.1} fill={COLORS.mat} stroke={stroke} strokeWidth={0.4} />
           <line x1={catDist - 0.8} y1={0} x2={catDist + 2.8} y2={0} stroke={accent} strokeWidth={0.5} />
         </>
       )}
@@ -287,7 +289,7 @@ export function ChainRobotPreview({
           width={drumDia}
           height={drumHalf * 2}
           rx={drumDia * 0.34}
-          fill="var(--ds-bg)"
+          fill={COLORS.mat}
           stroke={stroke}
           strokeWidth={0.3}
         />
@@ -357,7 +359,7 @@ export function ChainRobotPreview({
       // chassis in the preview while the sim had it comfortably inboard.
       <g transform={`translate(${-tOrigin.y},${-tOrigin.x})`}>
         {/* the SLEW RING it turns on, toothed like the sprite's */}
-        <circle cx={0} cy={0} r={cTurretR} fill="var(--ds-bg)" stroke={stroke} strokeWidth={0.35} />
+        <circle cx={0} cy={0} r={cTurretR} fill={COLORS.mat} stroke={stroke} strokeWidth={0.35} />
         {Array.from({ length: teeth }, (_, i) => {
           const a = (i / teeth) * Math.PI * 2;
           return (
@@ -375,7 +377,7 @@ export function ChainRobotPreview({
         })}
         {/* the FEED HOLE the Particle rises through, dead centre on the turret axis — the
             reason the launcher straddles the ring instead of hanging off one side of it */}
-        <circle cx={0} cy={0} r={CHAIN_PARTICLE_R + 0.15} fill="var(--ds-bg)" stroke={stroke} strokeWidth={0.2} />
+        <circle cx={0} cy={0} r={CHAIN_PARTICLE_R + 0.15} fill={COLORS.mat} stroke={stroke} strokeWidth={0.2} />
         {/* the SHOOTER HEAD: a body with the Particle channel cut through it and a pair of
             flywheels at the muzzle. A TWIN draws both, at the offsets the sim launches from —
             the preview shows it stowed forward, so the head points up. */}
@@ -419,7 +421,7 @@ export function ChainRobotPreview({
                 width={gap - 0.2}
                 height={1.5}
                 rx={0.4}
-                fill="var(--ds-bg)"
+                fill={COLORS.mat}
                 stroke={stroke}
                 strokeWidth={0.22}
               />
@@ -432,34 +434,32 @@ export function ChainRobotPreview({
 
   return (
     <svg
+      className="ds-robot-sprite"
       width={size}
       height={(size * vbH) / vbW}
       viewBox={`${-halfSpan} ${top} ${vbW} ${vbH}`}
       role="img"
       aria-label={`${spec.width} by ${spec.length} inch robot, ${spec.chainIntake ?? CHAIN_DEFAULT_INTAKE} intake, ${cMode} scorer`}
     >
+      {/* the field's mat, edge to edge, so the robot is drawn on the ground it is tuned for */}
+      <rect x={-halfSpan} y={top} width={vbW} height={vbH} fill={COLORS.mat} />
       {cIntakeEl}
       {cCatalystEl}
 
       {/* chassis.
 
-          DELIBERATELY still `--ds-panel`, not the supporter chassis colour. This
-          preview lives on a THEMED UI panel, while the in-game sprite sits on the
-          hardcoded-dark field — and every `CHASSIS_COLORS` value is tuned for that
-          dark ground. Painting one here would put `--ds-accent` wheels and pods
-          (a DARK green in light theme) on a dark chassis fill, which is the exact
-          fill-vs-text collision shell.css warns about. The colour is previewed by
-          its swatch in the builder instead. */}
+          On the mat, in the field's own greys (`COLORS.tile` deck, `COLORS.wall` bumper),
+          not the supporter chassis colour: the colour is previewed by its swatch in the
+          builder. */}
       {/* BUMPER BAND + DECK, mirroring the in-game `drawChassisBody` so the builder previews
           the same OBJECT rather than a plain outline. Neutral, not alliance-coloured: a
-          preview has no alliance to show, and the fill note above rules out a strong fill
-          here anyway. */}
+          preview has no alliance to show. */}
       <rect
         x={-w / 2}
         y={-len / 2}
         width={w}
         height={len}
-        fill="var(--ds-line)"
+        fill={COLORS.wall}
         stroke={stroke}
         strokeWidth={0.35}
       />
@@ -468,7 +468,7 @@ export function ChainRobotPreview({
         y={-len / 2 + bumpW}
         width={w - bumpW * 2}
         height={len - bumpW * 2}
-        fill="var(--ds-panel)"
+        fill={COLORS.tile}
         stroke={stroke}
         strokeWidth={0.24}
       />
@@ -487,7 +487,7 @@ export function ChainRobotPreview({
             width={hubW}
             height={hubH}
             rx={0.45}
-            fill="var(--ds-bg)"
+            fill={COLORS.mat}
             stroke={stroke}
             strokeWidth={0.28}
           />
@@ -581,7 +581,7 @@ export function ChainRobotPreview({
           x={0}
           y={labelY}
           textAnchor="middle"
-          fill="var(--ds-mut)"
+          fill="var(--ds-on-field-dim)"
           fontSize={DIM_FONT}
           fontFamily="var(--ds-font-mono)"
         >

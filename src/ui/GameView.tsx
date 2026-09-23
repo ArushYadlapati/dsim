@@ -15,6 +15,7 @@ import { effectiveBindings, keyLabel, padBindLabel, padBinds } from '../input/bi
 import { POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
 import { timerPanel } from './timerPanel';
+import { FoulChip } from './FoulChip';
 import { AdSlot, useAdUnitActive } from './AdSlot';
 import { SponsorGameChip } from './Sponsor';
 import { Results } from './Results';
@@ -830,7 +831,11 @@ export function GameView({
       </div>
       {hud?.phase === 'pre' && hud.countdown === null && !session && (
         <MatchOverlay titleId="gv-pre-title">
-          <h2 id="gv-pre-title">{hud.alliance.toUpperCase()} ALLIANCE</h2>
+          {/* FILLED, not ink (design review 05-12): which side you are on is the one fact this
+              panel exists for, and DESIGN reserves the alliance chip fill for exactly it. */}
+          <h2 id="gv-pre-title">
+            <span className={`chip alliance-${hud.alliance}`}>{hud.alliance.toUpperCase()} ALLIANCE</span>
+          </h2>
           {hud.game === 'decode' && (
             <p>
               {/* the dots' own label says "Motif", so the visible word is not read twice */}
@@ -1024,17 +1029,22 @@ function Hud({
             {hud.score.autoPattern + (hud.phase === 'post' ? hud.score.telePattern : 0)} PTS
           </span>
           <span>RAMP {hud.rampCount}/9</span>
+          <FoulChip hud={hud} />
         </div>
       )}
 
       {hud.mode === 'match' && cr && hud.chain && (
         <div className="breakdown-row" data-hud-band>
+          {/* EACH FACT ONCE (design review 05-14, 22-11). MULT and CATALYSTS were printed here
+              AND drawn as the badge + pips in `ChainHudChips`, which every pointer now gets, so
+              the card is their one home. ASCENDED / PARKED is the `.park-status` card on a fine
+              pointer and this chip on a coarse one, never both: a landscape gutter has no height
+              for a third card, and this row is the one a phone renders at full size. */}
           <span>PARTICLES {hud.chain.scored}</span>
-          <span>MULT ×{hud.chain.mult}</span>
-          <span>CATALYSTS {hud.chain.catalysts}/4</span>
-          {hud.chain.endgame !== 'none' && (
+          {coarsePointer && hud.chain.endgame !== 'none' && (
             <span>{hud.chain.endgame === 'ascended' ? 'ASCENDED' : 'PARKED'}</span>
           )}
+          <FoulChip hud={hud} />
         </div>
       )}
 
@@ -1073,7 +1083,13 @@ function Hud({
               {dec && (
                 <div className="dec-hud">
                   <div className="dec-hud-left">
-                    <div className="hopper vertical">
+                    {/* spoken like Chain's and BIOBUZZ's columns (design review 22-12): the pips
+                        are colour alone, and `.hud` takes no pointer, so a `title` never shows */}
+                    <div
+                      className="hopper vertical"
+                      role="img"
+                      aria-label={`Hopper ${hud.hopper.length} of 3${hud.hopper.length ? `: ${hud.hopper.join(', ')}` : ''}.`}
+                    >
                       {[0, 1, 2].map((i) => (
                         <span key={i} className={`hopper-pip ${hud.hopper[i] ?? 'empty'}`} />
                       ))}
@@ -1103,9 +1119,10 @@ function Hud({
                   names a destination per chip):
                     · SERVER <region>, WATCHING <n>, ⚠ DESYNC → the bottom-right `.net-corner`,
                       below (on a phone, DESYNC alone, at the foot of this cluster);
-                    · WAITING · <name>, FOULS, PIN / CONTROL 5+ → pinned lines in the event log
+                    · WAITING · <name>, PIN / CONTROL 5+ → pinned lines in the event log
                       (`GamePinnedNotice` / `eventlog-pinned`), because each is a call to action
-                      rather than a standing fact;
+                      rather than a standing fact — shown whatever the messages toggle says;
+                    · FOULS → `FoulChip`, in every game's breakdown row (design review C39);
                     · REVERSED / butterfly / card → the `.sub-hud` under this card;
                     · Chain Reaction's mult/catalyst/hold state → `ChainHudChips` (`GameChips`
                       above), its ASCENDED/PARKED status → the `.park-status` card below;
@@ -1169,8 +1186,8 @@ function Hud({
               the sim itself, see `chainStep`), so no default/reminder state to render.
               Border colour matches the existing on-canvas badge over the robot
               (`drawChain.ts`: ascended gold, parked white) see HUD-RELOCATION.md. */}
-          {/* NOT on a phone: the breakdown row prints the same ASCENDED / PARKED, and a landscape
-              gutter has no height for the word twice. */}
+          {/* NOT on a phone: there the breakdown row prints ASCENDED / PARKED instead (and only
+              there — see that row), because a landscape gutter has no height for a third card. */}
           {!coarsePointer && cr && hud.chain && (hud.chain.endgame === 'ascended' || hud.chain.endgame === 'parked') && (
             <div className={`park-status ${hud.chain.endgame}`}>
               {hud.chain.endgame === 'ascended' ? 'ASCENDED' : 'PARKED'}
@@ -1242,30 +1259,31 @@ function Hud({
         </div>
       )}
 
-      {/* polite: match events shouldn't interrupt, but they are the only non-visual
-          channel for scoring/gate/penalty state. Hideable — some drivers want the
-          field corner clear, and nothing here is actionable. */}
-      {showEventLog && (
-        <div className="eventlog" aria-live="polite">
-          {GamePinnedNotice && <GamePinnedNotice hud={hud} />}
-          {/* a call to action, not a standing fact — pinned like the per-game notices
-              above rather than parked as a chip in the HUD card. */}
-          {hud.net?.waitingFor && (
-            <div className="eventlog-line eventlog-pinned">WAITING · {hud.net.waitingFor}</div>
-          )}
-          {dec && hud.mode === 'match' &&
-            (hud.fouls[hud.alliance].minor > 0 || hud.fouls[hud.alliance].major > 0) && (
-              <div className="eventlog-line eventlog-pinned">
-                FOULS {hud.fouls[hud.alliance].minor} MIN · {hud.fouls[hud.alliance].major} MAJ
-              </div>
-            )}
-          {hud.toasts.map((t) => (
-            <div key={t.id} className="eventlog-line">
-              {t.text}
-            </div>
-          ))}
-        </div>
-      )}
+      {/* polite: match events shouldn't interrupt, but they are the only non-visual channel for
+          scoring/gate/penalty state, so the REGION IS ALWAYS MOUNTED (design review C39: 05-11,
+          17-10). The "In-match messages" toggle hides the fading TOASTS from the eye only — they
+          go `.ds-sr`, still announced — and never the pinned lines, which are calls to action
+          (a PIN counting, CONTROL 5+, WAITING) and were the one thing a driver who cleared the
+          corner could not afford to lose. With the toggle off and nothing pinned the column is
+          empty and draws nothing. The canvas label's promise ("announced in the event log")
+          holds either way. */}
+      <div className="eventlog" aria-live="polite">
+        {GamePinnedNotice && <GamePinnedNotice hud={hud} />}
+        {hud.net?.waitingFor && (
+          <div className="eventlog-line eventlog-pinned">WAITING · {hud.net.waitingFor}</div>
+        )}
+        {/* the pre-match countdown, spoken: the big digits are keyed per tick and in no live
+            region, so "3, 2, 1" was never announced (17-10). A changing text node in a polite
+            region is. */}
+        {hud.phase === 'pre' && hud.countdown !== null && (
+          <div className="ds-sr">{hud.countdown > 3 ? 'Match begins in' : hud.countdown}</div>
+        )}
+        {hud.toasts.map((t) => (
+          <div key={t.id} className={showEventLog ? 'eventlog-line' : 'ds-sr'}>
+            {t.text}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

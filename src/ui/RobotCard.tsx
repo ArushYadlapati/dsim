@@ -20,8 +20,11 @@ import { buildWords } from './robotLabels';
  * and the mechanisms. The numbers are the hero's; the tagline was flavour. A thumbnail, when the
  * game draws one (`GameModule.savedThumb`), sits beside the name and never replaces the line.
  *
- * It is a `.ds-opt`, so selection, hover, press, focus and the `.real` mark are the option card's
- * and cannot drift from every other pick in the app.
+ * It is a `.ds-opt`, so selection, hover, press and focus are the option card's and cannot drift
+ * from every other pick in the app. A real robot says so in a WORD beside its name (`.ds-badge`):
+ * it was a 3px accent stripe down the card's left edge, which nothing on screen explained and
+ * which read as half-selected (design review C51). "Real robot", not "Real team": the one card
+ * that carries it today is BIOBUZZ's StarterBot, a kit shape, not any team's build.
  */
 export function RobotCard({
   spec,
@@ -40,7 +43,7 @@ export function RobotCard({
   /** the identity line, or nothing. The CALLER decides: a preset prints a team only when it is a
    * real one, because a demo's `teamName` is a tagline. */
   team?: string;
-  /** a documented real-world robot rather than an archetype demo (`.ds-opt.real`) */
+  /** a documented real-world robot rather than an archetype demo — a "Real robot" badge */
   real?: boolean;
   /** the game's thumbnail, if it draws one; it may render nothing */
   thumb?: ReactNode;
@@ -48,11 +51,14 @@ export function RobotCard({
   /** present ⇒ a delete ✕ beside the card, in a `.ds-opt-slot` */
   onDelete?: () => void;
 }) {
-  const cls = `ds-opt ds-robot-card${on ? ' on' : ''}${real ? ' real' : ''}`;
+  const cls = `ds-opt ds-robot-card${on ? ' on' : ''}`;
   const body = (
     <>
       {thumb}
-      <span className="ot">{spec.name || 'Unnamed'}</span>
+      <span className="ot">
+        {spec.name || 'Unnamed'}
+        {real ? <span className="ds-badge">Real robot</span> : null}
+      </span>
       {team ? <span className="od">{team}</span> : null}
       <span className="om">{buildWords(spec, game).join(' · ')}</span>
     </>

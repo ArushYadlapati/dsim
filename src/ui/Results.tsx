@@ -917,6 +917,19 @@ export function Results({
         ? `LAN${format ? ` ${format}` : ''}`
         : `CUSTOM${format ? ` ${format}` : ''}`;
 
+  // THE DRIVER'S OWN OUTCOME (06-13), said beside the actions. Read off the ROSTER's `isLocal`
+  // rather than `hud.alliance`, which always names a side: only a driver actually seated in
+  // this match gets a "You won", and a tie is left to the TIE banner.
+  const localSide: Alliance | null = redRoster.some((p) => p.isLocal)
+    ? 'red'
+    : blueRoster.some((p) => p.isLocal)
+      ? 'blue'
+      : null;
+  const outcome =
+    !solo && localSide && winner !== 'tie'
+      ? `You ${winner === localSide ? 'won' : 'lost'} by ${Math.abs(redFinal - blueFinal)}`
+      : null;
+
   const soloSections: SoloSection[] | undefined = solo
     ? sections.map(([title, rows]) => [
         title,
@@ -1012,6 +1025,7 @@ export function Results({
           ))}
         {doneVisible && (
           <div className="resx-secondary">
+            {outcome && <p className="resx-outcome">{outcome}</p>}
             {/* A VOIDED total is 0 with a full breakdown above it, which reads as a bug unless
                 the reason is stated. Say it plainly. */}
             {(red.voided || blue.voided) && (

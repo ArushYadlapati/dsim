@@ -84,7 +84,7 @@ export const PREDICTION_KEY = 'decodesim.prediction';
 export const PREDICTION_OFF_NOTICE_KEY = 'decodesim.prediction.offNotice';
 /** usage analytics on/off. Absent means ON — `src/analytics.ts` says why */
 export const ANALYTICS_KEY = 'decodesim.analytics';
-/** the tutorial has been offered and finished (or skipped) on this device */
+/** which games’ tutorials this device has finished, exited or turned down (comma-separated ids; legacy `1` = all) */
 export const TUTORIAL_SEEN_KEY = 'decodesim.tutorial.v1';
 /** the Chain Reaction "unofficial game" disclaimer has been dismissed */
 export const CHAIN_DISCLAIMER_KEY = 'decodesim.chainDisclaimer.v2';
@@ -272,7 +272,7 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     storage: 'local',
     category: 'preference',
     purpose:
-      'That the tutorial has been offered and finished or skipped on this device, so the first-run card is not shown again.',
+      'Which games’ tutorials you have finished, left or turned down on this device, so the first-run card for that game is not shown again.',
     retention: 'Until you clear your browser data.',
   },
   {
