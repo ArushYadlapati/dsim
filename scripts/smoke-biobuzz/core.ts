@@ -550,12 +550,16 @@ export function coreChecks(check: Check): void {
       check(`biobuzz card lines never say "${word}"`, !cardLines.includes(word));
     }
     check(
-      'a card line is the drivetrain, then the game’s own two mechanism words',
+      'a card line is the drivetrain, then the game’s own mechanism words, minus the absent ones',
       builds.every((b) => {
         const w = words(b);
-        const tiles = bbTiles ? bbTiles(bbCoerce(b)) : [];
+        const tiles = (bbTiles ? bbTiles(bbCoerce(b)) : []).filter((t) => !t.absent);
         return w.length === 1 + tiles.length && w.slice(1).every((x, i) => x.startsWith(tiles[i].value));
       }),
+    );
+    check(
+      'a card line never lists an absent Box Tube ("No box tube")',
+      !cardLines.includes('no box tube'),
     );
     check(
       'a Box Tube CHANGES the card line',

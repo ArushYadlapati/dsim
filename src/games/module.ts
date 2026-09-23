@@ -340,6 +340,9 @@ export interface GameStatTile {
   /** an optional SECOND caption line, for a fact the value has no room for: where the
    * mechanism is mounted, what it is dialled to. Absent renders nothing. */
   sub?: string;
+  /** the build has NO such mechanism. The builder's tile still says so, because the slot is a
+   * choice there; a robot card's one-line summary leaves it out rather than list an absence. */
+  absent?: boolean;
 }
 
 /** one results-screen section: a heading and its rows, each `[label, mine, opp]`. */

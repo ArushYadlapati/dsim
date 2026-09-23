@@ -65,7 +65,7 @@ export function buildWords(spec: RobotSpec, game: GameId): string[] {
   const words = [DRIVETRAIN_LABELS[spec.drivetrain]];
   const tiles = moduleFor(game).statTiles?.(spec);
   if (tiles) {
-    for (const t of tiles) words.push(t.sub ? `${t.value}, ${t.sub}` : t.value);
+    for (const t of tiles) if (!t.absent) words.push(t.sub ? `${t.value}, ${t.sub}` : t.value);
   } else if (game === 'chain') {
     const mode = spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
     // a turret aims itself from wherever it is bolted, so its mount says nothing

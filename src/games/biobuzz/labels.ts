@@ -227,6 +227,7 @@ export function bbStatTiles(spec: RobotSpec): readonly GameStatTile[] {
       value: bbLiftLabel(lift),
       label: 'flower scoring',
       sub: lift ? BB_MOUNT_POS_LABELS[lift.mount] : undefined,
+      absent: !lift,
     },
   ];
 }
