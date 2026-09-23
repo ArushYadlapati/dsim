@@ -1,4 +1,48 @@
-# HANDOFF — 2026-09-23b (owner polish: home, hints, play tiles, privacy, queue spacing)
+# HANDOFF — 2026-09-23c (Controls status in the card title; Practice card on Match)
+
+**State: green, UNCOMMITTED on `alpha`.** `build`, `server:check`, `uiaudit` (after
+`uiindex`), `contrast` and `docaudit` pass. `npm test`: 5021 checks. The failures are the known
+perf flakes under load (`PREDICT_FULL_BUDGET` ×3, Auto probe, BIOBUZZ `step3d` median/p95 ×4),
+plus ONE that was already there before this session: `lan guide: the clone command is built from
+LINKS.repo` (`scripts/smoke.ts` ~8243). Its regex holds two LITERAL backspace bytes (0x08) where
+`` was meant, and HEAD has the same bytes. The fix is a one-byte change on each side of `LINKS`.
+It was left alone as out of scope.
+
+The owner asked for two things:
+- **Configure ▸ Controls gap.** The reserved `.ds-hint` status line under the scope switch is
+  gone. The message now REPLACES THE TITLE of the card holding the row being edited (`panelFor`
+  in `ControlsSection.tsx`; `.ds-panel-title.notice`: accent, sentence case, ellipsis, same
+  line-height). The real title moves to a `.ds-sr` span. Prompts stay while a slot is armed, and
+  notices fade after `NOTICE_MS` = 4s. The switch now sits `--ds-s-5` above the first card.
+- **Configure ▸ Match ▸ Practice card** (below Match setup). It holds Practice physics (3D games
+  only) and Partner / Opponent 1 / Opponent 2, each None · Dummy · AI, with a per-seat difficulty
+  row that is disabled unless the seat is AI (`OptRow` gained `disabled`). AI is offered only
+  where a `BotDriver` exists (BIOBUZZ).
+  - Stored per game: `GameSettings.practiceSeats`, coerced in `coerceSettings`; read through
+    `practiceSeatsFor`. The legacy `practiceBots`/`practiceDummies` are left in the blob and no
+    longer read. The default is all None.
+  - Spawned by `practiceSetups` (settings.ts, pure) in BOTH Solo practice and Free drive.
+    `GameController.seatBots` now takes an id→tier map. The BIOBUZZ policy already played in
+    `freeplay`, so it needed no change.
+  - A practice run records `others` (`PracticeRunMeta`). Practice replays shows a "With robots"
+    badge.
+  - The tutorial override sets `practiceSeats: {}`.
+
+New checks:
+- smoke.ts "PRACTICE SEATS" block: coerce round-trip and rejects, and the line-up
+  ids/sides/anchors/passive/tiers.
+- smoke-biobuzz/ai.ts: an AI drives in free drive, in both 2D and 3D.
+- aiplay.ts: the `build` source check now reads `settings.ts`.
+
+Next:
+- The owner reviews, then commit. Suggested split: (1) the Controls title swap, (2) practice
+  seats, with settings + spawn + UI + tests + docs.
+- Not run this session: `shiftaudit` (needs `vite preview`) and the Electron screenshots of the
+  Controls title swap and the two-card Match page (DECODE vs BIOBUZZ, phone + desk).
+
+---
+
+# (older) HANDOFF — 2026-09-23b (owner polish: home, hints, play tiles, privacy, queue spacing)
 
 **State: green, committed on `alpha`, NOT pushed.** `build`, `uiaudit`, `contrast` and `docaudit` pass. `npm test`: 5019 checks, and the only failures are the known perf flakes under load (`PREDICT_FULL_BUDGET` ×3, the Auto probe, and BIOBUZZ `step3d` median/p95). Two LAN source-grep checks were updated for `ConsoleHead`. Electron screenshots (desk light, phone dark) of home, /modes, /configure, /privacy and Custom room look right.
 

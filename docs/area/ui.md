@@ -142,16 +142,29 @@ that season has none) — then three bind panels —
   deadzone and curve head the Driving panel's gamepad column). A season scope is ONE panel: that
   season's own actions. A row carries **Sync only while it differs** from All games, and nothing
   while it matches — the SYNCED/CUSTOM marker on every row is gone, and so is a reserved
-  invisible slot for the button, which wrapped Intake's keycaps on a phone in every season. One
-  status line under the switch (the Backspace hint when idle, so a message never moves the
-  panels) reports a refused bind, and what a main edit took from a row the scope does not show
-  ("Took C from Catalyst … and Place POLLEN …"); a season's button carries a red dot while one of
-  its own rows has no bind (`seasonUnbound`).
+  invisible slot for the button, which wrapped Intake's keycaps on a phone in every season. **The
+  status message takes the place of the TITLE of the card holding the row it is about**
+  (`panelFor`): while Park mode is armed, "Press a key for Park mode…" replaces DRIVING; the title
+  stays in a `.ds-sr` span so the card keeps its heading. The title slot keeps its line-height and
+  ellipsizes (`.ds-panel-title.notice`), so a message never moves the panels. That is also why
+  there is no status line under the switch any more: a reserved empty line there cost ~25px of gap
+  above the first card. A prompt stays while its slot is armed; a confirmation, refusal or loss
+  notice ("Took C from Catalyst … and Place POLLEN …") fades after `NOTICE_MS` (4s). A season's
+  button carries a red dot while one of its own rows has no bind (`seasonUnbound`).
   ⚠️ **The capture effects on the controls screen depend on `capture` ALONE**, with
   `bindings`/`onChange` in refs: `onChange` is a fresh arrow every render and the App re-renders
   on its own every few seconds (the presence poll), which restarted the pad effect mid-capture
   and swept the buttons still held into `alreadyDown` — the release then bound nothing. A
   single-press capture never showed it; commit-on-release made it a real window.
+- **Configure ▸ Match is two cards: Match setup, then Practice.** Practice holds Practice
+  physics (only where the game offers 3D) and the three other robots — Partner / Opponent 1 /
+  Opponent 2, each None · Dummy · AI (AI only where the game registers a `BotDriver`) with its own
+  difficulty row, which is always rendered and DISABLED unless the seat is AI (§1.4: no rows
+  appear or vanish). Stored per game in `GameSettings.practiceSeats`, a sibling of the legacy
+  `practiceBots`/`practiceDummies` (left in the blob, no longer read, so older clients keep
+  theirs). Applies in Solo practice AND Free drive; the spawn is `practiceSetups` in
+  `settings.ts`, DOM-free so `npm test` holds it. A run with other robots gets a "With robots"
+  badge in Practice replays (`PracticeRunMeta.others`) — practice runs are never ranked anyway.
 - "Flip front" reverses robot-centric drive so the shooter side leads — applied at INPUT level
   in `GameController`, sim untouched; REVERSED chip in the HUD.
 - All `GameSettings` persist to `localStorage['decodesim.settings.v1']` via `src/settings.ts`
