@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { APP_NAME, LINKS } from '../seasons';
+import { LINKS } from '../seasons';
 import type { GameId } from '../games/types';
 import { desktop, type LanHostStatus } from '../desktop';
 import { LanHost, type HostHealth } from '../lan/hostRuntime';
@@ -14,7 +14,7 @@ import { useEscape } from './useEscape';
 import { appBuild, clearLanServer, lanActive, lanServerUrl, setLanServer } from '../net/env';
 import { LAN_DEFAULT_PORT, mixedContentBlock, parseLanAddress } from '../net/lanAddress';
 import { copyText } from './copyText';
-import { Logo } from './Logo';
+import { ConsoleHead } from './ConsoleHead';
 import { RoomFriendsLayout } from './Lobby';
 
 /**
@@ -436,18 +436,7 @@ export function LanPanel({
     >
       <div className="ds-console">
         <div className="ds-console-in narrow">
-          <div className="ds-head">
-            <button className="ds-back" onClick={onBack}>
-              ← Back
-            </button>
-            <span className="ds-mark">
-              <Logo size={24} />
-              {APP_NAME}
-            </span>
-          </div>
-          <div className="ds-title">
-            <h1>LAN play</h1>
-          </div>
+          <ConsoleHead onBack={onBack} title="LAN play" />
 
           {active && (
             <div className="ds-panel ds-panel-body stack">

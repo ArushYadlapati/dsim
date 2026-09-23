@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
-import { APP_NAME, seasonFor } from '../seasons';
+import { seasonFor } from '../seasons';
 import type { GameId } from '../types';
-import { Logo } from './Logo';
+import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
 import { fetchLobbies, type DiscordLobby } from '../net/api';
 import { generateRoomCode } from '../net/roomCode';
@@ -76,28 +76,11 @@ export function DiscordLobbyList({
   return (
     <div className="ds-console">
       <div className="ds-console-in narrow">
-        <div className="ds-head">
-          <button className="ds-back" onClick={onBack}>
-            ← Back
-          </button>
-          <span className="ds-mark">
-            <Logo size={24} />
-            {APP_NAME}
-          </span>
-          <span className="ds-head-spacer" />
-        </div>
-        <div className="ds-title">
-          <h1>
-            Discord lobbies
-          </h1>
-        </div>
-        {/* bare `.ds-sub`, as every other page pairs it under a `.ds-title` (Download, Donate,
-            Legal, Profile). It carried `style={{ marginTop: -10 }}`, which is banned twice over
-            — an inline spacing literal, and off the 4px grid — and slipped past `uiaudit` only
-            because that rule's regex does not match a leading minus. */}
-        <p className="ds-sub">
-          Everyone in this activity sees the same lobbies.
-        </p>
+        <ConsoleHead
+          onBack={onBack}
+          title="Discord lobbies"
+          sub="Everyone in this activity sees the same lobbies."
+        />
 
         <section className="ds-sec">
           <button className="ds-cta" disabled={mainFull} onClick={() => onEnter(mainCode, mainGame)}>

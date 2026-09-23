@@ -7992,7 +7992,13 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
   {
     const lan = readFileSync('src/ui/LanPanel.tsx', 'utf8');
     const app = readFileSync('src/ui/App.tsx', 'utf8');
-    check('lan screen: renders a .ds-back control', /className="ds-back"/.test(lan));
+    // the back control is the shared console header's (`ConsoleHead`, 2026-09-23), which
+    // renders the `.ds-back` itself
+    const consoleHead = readFileSync('src/ui/ConsoleHead.tsx', 'utf8');
+    check(
+      'lan screen: renders a .ds-back control',
+      /<ConsoleHead\s+onBack=\{onBack\}/.test(lan) && /className="ds-back"/.test(consoleHead),
+    );
     check(
       'lan screen: Esc is the same exit as the button, not a second one',
       lan.includes('useEscape(onBack)') && lan.includes("from './useEscape'"),
@@ -8159,7 +8165,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     // the four commands, and that the clone URL is not a second copy of the repo address
     check(
       'lan guide: the clone command is built from LINKS.repo, not a hardcoded URL',
-      lan.includes('git clone ${LINKS.repo}') && /import \{ APP_NAME, LINKS \}/.test(lan),
+      lan.includes('git clone ${LINKS.repo}') && /import \{[^}]*LINKS[^}]*\} from '\.\.\/seasons'/.test(lan),
     );
     check(
       'lan guide: the printed command is the one package.json actually defines',

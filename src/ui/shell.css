@@ -4062,10 +4062,15 @@ tr.lb-detail td {
 .ds-console *::after {
   box-sizing: border-box;
 }
-/* the console's sub-line sits under its title, not a gap away from it: this cancels
-   most of `.ds-console-in`'s 22px row gap for this one element. */
-.ds-console-in > .ds-sub-tight {
-  margin-top: -10px;
+/* ONE OWNER PER GAP (ui-standard §2) on the queue/join pages: `.ds-console-in`'s own `gap`
+   spaces everything in the column, and nothing in it may add a margin on top. The sub's 24px
+   bottom margin and `.ds-panel + .ds-panel`'s 16px used to stack on the gap, which put the
+   first card 46px under a sub and LAN's two cards 38px apart, beside 22px everywhere else
+   (owner, 2026-09-23). The same holds one level down, inside a `.ds-sec`. */
+.ds-console-in > .ds-sub,
+.ds-sec > .ds-sub,
+.ds-console-in > .ds-panel + .ds-panel {
+  margin-block: 0;
 }
 /* a CAPTION of the control above it (Ranked's queue-depth line under the 1v1/2v2 pick):
    it takes back most of the stack gap, so it belongs to that control rather
@@ -4096,16 +4101,16 @@ tr.lb-detail td {
      and a shell screen share one gutter. */
   width: min(900px, 100% - 44px);
   margin: 0 auto;
-  padding: 26px 0 72px;
+  padding: var(--ds-s-5) 0 var(--ds-s-7);
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: var(--ds-s-5);
 }
 
 .ds-head {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: var(--ds-s-3);
   flex-wrap: wrap;
 }
 /* Same "pressable keycap" language as `.ds-btn` — a bare bordered rect with no
@@ -4141,6 +4146,20 @@ tr.lb-detail td {
    everything else), and the 2px gap was only ever visible by navigating between them,
    which is how it survived. Only the margin differs: `.ds-h1` reserves space for a
    `.ds-sub`, and the console pages always render one. */
+/* the title and its sub-line are ONE group (`ConsoleHead`): the sub is the title's caption,
+   8px under it, and the column's gap spaces the whole group from what follows. */
+.ds-title {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+.ds-title > .ds-sub {
+  margin: 0;
+}
+/* a sub that comes and goes keeps its line (Ranked's "searching…"), so the panel never moves */
+.ds-title > .ds-sub.reserve {
+  min-height: 1lh;
+}
 .ds-title h1 {
   font-size: var(--ds-t-h1);
   font-weight: 800;
@@ -4240,7 +4259,7 @@ tr.lb-detail td {
 .ds-sec {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--ds-s-3);
 }
 /* the section's gap already spaces its panels; `.ds-panel + .ds-panel` would add 16 on top */
 .ds-sec > .ds-panel + .ds-panel {
@@ -5858,7 +5877,7 @@ a.ds-cta {
 .ds-players {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--ds-s-2);
 }
 .ds-player {
   display: flex;
@@ -5939,7 +5958,7 @@ a.ds-cta {
 .ds-strat-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 10px;
+  gap: var(--ds-s-3);
 }
 .ds-strat-card {
   display: flex;
@@ -5971,7 +5990,7 @@ a.ds-cta {
 }
 .ds-actions {
   display: flex;
-  gap: 10px;
+  gap: var(--ds-s-3);
   flex-wrap: wrap;
   align-items: center;
 }

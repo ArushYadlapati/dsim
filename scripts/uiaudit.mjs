@@ -91,7 +91,8 @@ const BASELINE = {
   // `.ds-dl-hero`'s 22px pad, which is --ds-s-5 now).
   // → 120, 2026-09-23: merged upstream's builder-hero rebuild onto design review wave 5.
   // → 117, 2026-09-23: design review wave 7x (replay rail/builder polish, dead server-picker CSS).
-  'off-grid-gap': 117,
+  // → 112, 2026-09-23: queue pages on the spacing tokens (console column, head, actions, strategy cards, players).
+  'off-grid-gap': 112,
   // 143 → 141, 2026-09-22: the builder hero's rebuild. Its narrow-screen card was spaced in
   // `18px` twice (gap and padding); the one card it became is on the token scale throughout.
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds

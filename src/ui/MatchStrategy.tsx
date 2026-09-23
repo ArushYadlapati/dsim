@@ -20,8 +20,7 @@ import { buildSummary, teamLine } from './robotLabels';
 import { RobotCard } from './RobotCard';
 import { Menu } from './Menu';
 import { MatchAudio } from '../audio';
-import { APP_NAME } from '../seasons';
-import { Logo } from './Logo';
+import { ConsoleHead } from './ConsoleHead';
 
 /** beep once per second over the final STRAT_TICK_FROM seconds of the strategy
  * deadline, rising in pitch as it nears (like a match countdown). */
@@ -199,15 +198,7 @@ export function MatchStrategy({
     return (
       <div className="ds-console">
         <div className="ds-console-in">
-          <div className="ds-head">
-            <button className="ds-back" onClick={() => setBuilding(false)}>
-              ← Done
-            </button>
-            <span className="ds-mark">
-              <Logo size={24} />
-              {APP_NAME}
-            </span>
-          </div>
+          <ConsoleHead onBack={() => setBuilding(false)} backLabel="← Done" />
           <Menu settings={settings} onChange={onBuilderChange} />
           <div className="ds-actions">
             <button className="ds-cta" onClick={() => setBuilding(false)}>
@@ -229,22 +220,13 @@ export function MatchStrategy({
   return (
     <div className="ds-console">
       <div className="ds-console-in">
-        <div className="ds-head">
-          <button className="ds-back" onClick={onLeave}>
-            ← Leave
-          </button>
-          <span className="ds-mark">
-            <Logo size={24} />
-            {APP_NAME}
-          </span>
-        </div>
+        <ConsoleHead onBack={onLeave} backLabel="← Leave" />
         <div className="ds-title">
           <h1>
             {ranked ? 'Match strategy' : 'Starting the match'}
           </h1>
-        </div>
-        {/* the negative margin cancelling `.ds-console-in`'s gap is gone: two spacing
-            systems fighting over one axis. The countdown chip's tooltip is gone too —
+        {/* the sub sits INSIDE `.ds-title`, the title's caption (see `ConsoleHead`). The
+            countdown chip's tooltip is gone —
             the `.ds-hint` at the foot of this screen states the same rule at length.
 
             NO CLOCK IN A CUSTOM ROOM'S WINDOW: its deadline starts the match instead of
@@ -260,6 +242,7 @@ export function MatchStrategy({
             </span>
           )}
         </p>
+        </div>
 
         {/* opponents — minimal (server redacts their builds) */}
         {opponents.length > 0 && (

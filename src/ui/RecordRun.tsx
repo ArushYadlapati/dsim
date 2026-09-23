@@ -11,8 +11,7 @@ import { moduleFor } from '../games';
 import { serverPhysics } from '../games/types';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { announcePhysicsReady } from '../net/roomPhysics';
-import { APP_NAME } from '../seasons';
-import { Logo } from './Logo';
+import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
 
 /**
@@ -215,21 +214,7 @@ export function RecordRun({
   const page = (title: JSX.Element, sub: string, body: JSX.Element): JSX.Element => (
     <div className="ds-console">
       <div className="ds-console-in narrow">
-        <div className="ds-head">
-          <button className="ds-back" onClick={onCancel}>
-            ← Back
-          </button>
-          <span className="ds-mark">
-            <Logo size={24} />
-            {APP_NAME}
-          </span>
-        </div>
-        <div className="ds-title">
-          <h1>{title}</h1>
-        </div>
-        <p className="ds-sub ds-sub-tight">
-          {sub}
-        </p>
+        <ConsoleHead onBack={onCancel} title={title} sub={sub} />
         <div className="ds-panel ds-panel-body stack">{body}</div>
       </div>
     </div>
@@ -293,7 +278,9 @@ export function RecordRun({
           run cannot be requested until it lands (a record run never falls back to 2D); the
           cold boot is the server waking. Saying "the server is waking" while the hold-up is
           local sends somebody to check a connection that is fine. */}
-      <p className="ds-loading">{status}</p>
+      {/* a line in the stack, not `.ds-loading`: that one's 32px padding is for an empty
+          panel, and inside this 16px body it read as a hollow card */}
+      <p className="ds-hint">{status}</p>
       {!loading3d && (
         <p className="ds-hint">
           First run after a quiet spell waits a few seconds for the server to wake.

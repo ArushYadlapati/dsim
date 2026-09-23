@@ -28,8 +28,7 @@ import { roomCapacity, type LobbyPlayer, type QueueMode, type RoomConfig, type E
 import type { NetSession } from '../net/session';
 import { useServerNotice } from '../net/notice';
 import { generateRoomCode, normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
-import { APP_NAME } from '../seasons';
-import { Logo } from './Logo';
+import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
 import { DISCORD_REGION } from '../net/discordActivity';
 import { serverCaps } from '../net/api';
@@ -728,20 +727,7 @@ export function Lobby({
       >
       <div className="ds-console">
         <div className="ds-console-in narrow">
-          <div className="ds-head">
-            <button className="ds-back" onClick={onCancel}>
-              ← Back
-            </button>
-            <span className="ds-mark">
-              <Logo size={24} />
-              {APP_NAME}
-            </span>
-          </div>
-          <div className="ds-title">
-            <h1>
-              {isRecord ? 'Duo record run' : 'Custom room'}
-            </h1>
-          </div>
+          <ConsoleHead onBack={onCancel} title={isRecord ? 'Duo record run' : 'Custom room'} />
           <div className="ds-panel ds-panel-body stack">
             {/* THE ROOM LOOKS IDENTICAL EITHER WAY, so this screen has to say which it is.
                 It is the last point before a socket is opened, and the consequence — the
@@ -881,15 +867,7 @@ export function Lobby({
       >
       <div className="ds-console">
         <div className="ds-console-in">
-          <div className="ds-head">
-            <button className="ds-back" onClick={() => setBuilding(false)}>
-              ← Done
-            </button>
-            <span className="ds-mark">
-              <Logo size={24} />
-              {APP_NAME}
-            </span>
-          </div>
+          <ConsoleHead onBack={() => setBuilding(false)} backLabel="← Done" />
           <Menu settings={settings} onChange={onBuilderChange} />
           <div className="ds-actions">
             <button className="ds-cta" onClick={() => setBuilding(false)}>
@@ -913,25 +891,16 @@ export function Lobby({
     >
     <div className="ds-console">
       <div className="ds-console-in">
-        <div className="ds-head">
-          <button className="ds-back" onClick={onCancel}>
-            ← Leave
-          </button>
-          <span className="ds-mark">
-            <Logo size={24} />
-            {APP_NAME}
-          </span>
-        </div>
+        <ConsoleHead onBack={onCancel} backLabel="← Leave" />
         <div className="ds-title">
           <h1>
             {isRecord ? 'Duo' : 'Room'} {code}
           </h1>
-        </div>
         {/* NOT centred: `.ds-console` is left-aligned throughout — the title, every
             `<h2>`, the roster and the action row all start at x=0 of the column — and
             this line was centred inside its own 64ch cap rather than the column, so it
             landed about a quarter of the way across and lined up with nothing. */}
-        <p className="ds-sub ds-sub-tight ds-sub-row">
+        <p className="ds-sub ds-sub-row">
           <span>
             {isHost ? 'You are the host' : 'Waiting for the host to start'} · {players.length}/
             {capacity} drivers
@@ -955,6 +924,7 @@ export function Lobby({
             {copied ? '✓ Copied' : 'Copy code'}
           </button>
         </p>
+        </div>
 
         <section className="ds-sec">
           <h2>Drivers</h2>
@@ -1180,7 +1150,7 @@ export function Lobby({
                 card below says it; this line is for a build that is not saved, which no card
                 can show. It used to print over the lit card too, in a second vocabulary. */}
             {!settings.savedRobots.some(isMine) && (
-              <p className="ds-sub ds-sub-tight">
+              <p className="ds-sub">
                 {mySpec.name} · {buildWords(mySpec, settings.game).join(' · ')}
               </p>
             )}

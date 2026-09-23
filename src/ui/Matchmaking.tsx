@@ -23,8 +23,7 @@ import {
 import { useParkedQueue } from './QueueBar';
 import { usePresence } from './usePresence';
 import { useServerNotice } from '../net/notice';
-import { APP_NAME } from '../seasons';
-import { Logo } from './Logo';
+import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
 import { OptRow, ToggleRow } from './OptRow';
 import { formatLabel, type PendingChallenge } from './challenge';
@@ -954,23 +953,10 @@ export function Matchmaking({
   const page = (title: string, sub: string, body: JSX.Element): JSX.Element => (
     <div className="ds-console">
       <div className="ds-console-in narrow">
-        <div className="ds-head">
-          <button className="ds-back" onClick={onCancel}>
-            ← Back
-          </button>
-          <span className="ds-mark">
-            <Logo size={24} />
-            {APP_NAME}
-          </span>
-        </div>
-        <div className="ds-title">
-          <h1>{title}</h1>
-        </div>
-        {/* ALWAYS rendered, with a non-breaking space when there is nothing to say.
-            `sub` is '' on every state except searching, so pressing FIND MATCH used to
-            add a line to the header block and push the panel down with it. Every sub
-            this page passes is a single line, so one reserved line is exactly right. */}
-        <p className="ds-sub ds-sub-tight">{sub || ' '}</p>
+        {/* the sub's line is RESERVED: `sub` is '' on every state except searching, so
+            pressing FIND MATCH used to add a line to the header block and push the panel
+            down with it. Every sub this page passes is a single line. */}
+        <ConsoleHead onBack={onCancel} title={title} sub={sub} reserveSub />
         <div className="ds-panel ds-panel-body stack">{body}</div>
       </div>
     </div>
