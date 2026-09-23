@@ -3,8 +3,8 @@
  *
  * Kept as template-literal strings (the `src/contributors.ts` / `src/download.ts`
  * data-module convention) and rendered by the zero-dep `Markdown` component in
- * `src/ui/markdown.tsx`. That renderer downshifts headings (`#` -> h3), so these
- * documents start at `##` and sit under the page's own `.ds-h1`.
+ * `src/ui/markdown.tsx`. Legal renders them with `baseLevel={1}`, so `##` is a real h2 and
+ * these documents start at `##`, under the page's own `.ds-h1`.
  *
  * The supported markdown subset is narrow: headings, paragraphs, bullets, **bold**,
  * *italic*, `code`, [links](url), and `---` rules. No tables, no blockquotes, no
@@ -317,8 +317,8 @@ also tagged as being for users below the age of consent for advertising purposes
 
 If you are in the UK, the EEA, or Switzerland you will be asked for your
 advertising choices through a Google-certified consent tool before any ads are
-personalised, and you can reopen that choice at any time from the “Privacy &
-cookie settings” link in the site footer or from “Your data” below. Outside those
+personalised, and you can reopen that choice at any time from the “Data” link in
+the site footer or from “Your data” below. Outside those
 regions the tool has no consent to withdraw, so it does not open; the page says so
 rather than leaving you clicking at nothing.
 
@@ -371,7 +371,8 @@ which is the setting that decides that, and where the consent tool applies you c
 change it yourself from “Your data” below. We do not offer financial incentives in
 exchange for personal information. You have the same rights of access, deletion and
 portability set out below, exercised the same way — the buttons on this page, or the
-mailbox at the bottom of it — and we will not treat you differently for using them.
+contact address at the end of this policy — and we will not treat you differently for
+using them.
 
 ## How long it is kept
 

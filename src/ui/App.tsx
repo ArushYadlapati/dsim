@@ -2124,8 +2124,11 @@ export function App() {
           cosmetically irrelevant but semantically load-bearing — first-in-DOM is
           what a crawler reads as the page's main content, and patch notes were
           winning that slot over the homepage itself. (Fresh visitors never see
-          it at all now — see `useAnnouncements`.) */}
-      <Announcements muted={settings.audio.volume.master <= 0} onActiveChange={setAnnActive} />
+          it at all now — see `useAnnouncements`.) It stands down on the legal pages like the
+          gates above: a full-screen reveal over /privacy covered the document itself. */}
+      {!legalScreen && (
+        <Announcements muted={settings.audio.volume.master <= 0} onActiveChange={setAnnActive} />
+      )}
       </AppShell>
     </FriendsProvider>
   );

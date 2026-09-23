@@ -191,7 +191,7 @@ export function AppShell({
         <span className="ds-foot-links">
           {/* TWO GROUPS, by position and weight: the product's own destinations at the
               link weight, then the legal set small and muted (design review 11-19). The
-              consent link's label is fixed by the privacy policy, which names it verbatim
+              consent link's label ("Data") is fixed by the privacy policy, which names it verbatim
               (legalText.ts), and outside the EEA/UK/CH it lands on the same page as Privacy
               — so the two sit together at the legal weight instead of reading as six peers.
               No `.bold` on any of them: within a group they are peers. No Discord link
@@ -261,7 +261,9 @@ function FootLink({
 }
 
 /**
- * "Privacy & cookie settings" — reopens the consent message, or explains why it cannot.
+ * "Data" — reopens the consent message, or explains why it cannot. It was labelled
+ * "Privacy & cookie settings" until 2026-09-23 (owner); the policy names it by its label
+ * (legalText.ts), so the two change together.
  *
  * Required rather than a nicety: consent that cannot be withdrawn as easily as it was given is
  * not valid consent, and the privacy policy points at this exact link BY NAME, so it has to
@@ -302,7 +304,7 @@ function ConsentLink({ onPrivacy }: { onPrivacy: () => void }) {
         }, 0);
       }}
     >
-      Privacy &amp; cookie settings
+      Data
     </button>
   );
 }

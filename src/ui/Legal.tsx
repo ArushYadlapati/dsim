@@ -1,9 +1,10 @@
+import { useEffect } from 'react';
 import { Markdown } from './markdown';
 import { PRIVACY_MD, TERMS_MD, LEGAL_UPDATED, LEGAL_IDENTIFIED, LEGAL_CONTACT } from '../legalText';
 import { YourData } from './YourData';
 
 /**
- * Privacy policy + terms pages. Both are the same shape — an eyebrow, a title, a
+ * Privacy policy + terms pages. Both are the same shape — a title, a
  * "last updated" line, and one long Markdown body — so they share `LegalPage` and
  * differ only in their copy (`src/legalText.ts`).
  *
@@ -50,15 +51,24 @@ function LegalPage({ title, sub, body }: { title: string; sub?: string; body: st
  * question, so it should be the page that answers it.
  */
 export function Privacy() {
+  // A DEEP LINK to a section (`/privacy#your-data`, the documented fallback for the footer's
+  // "Data" link) has to be followed by hand: the browser looks for the anchor on the initial
+  // load, before React has rendered it, and finds nothing.
+  useEffect(() => {
+    const id = decodeURIComponent(window.location.hash.slice(1));
+    if (!id) return;
+    const t = setTimeout(() => document.getElementById(id)?.scrollIntoView({ block: 'start' }), 0);
+    return () => clearTimeout(t);
+  }, []);
   return (
-    <>
+    <div className="ds-legal-col">
       <LegalPage
         title="Privacy Policy"
         sub="What DSIM collects, why, and how to get rid of it."
         body={PRIVACY_MD}
       />
       <YourData />
-    </>
+    </div>
   );
 }
 
@@ -78,7 +88,9 @@ export function Terms() {
           about your account or a payment.
         </p>
       )}
-      <LegalPage title="Terms of Use" body={TERMS_MD} />
+      <div className="ds-legal-col">
+        <LegalPage title="Terms of Use" body={TERMS_MD} />
+      </div>
     </>
   );
 }

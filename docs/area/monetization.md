@@ -23,7 +23,7 @@ Not yet deployed. `HANDOFF.md` has the full write-up; the load-bearing rules:
   off: the terms set 13+, so asserting child-directed would be inaccurate, not cautious.
 - **A CMP (Google Funding Choices) is REQUIRED, not optional** — without a certified CMP
   Google serves EEA/UK/CH users no ads at all. It loads with the client id; the message
-  itself is authored in the AdSense dashboard. The footer "Privacy & cookie settings"
+  itself is authored in the AdSense dashboard. The footer "Data" (was "Privacy & cookie settings")
   link must keep existing (consent you can't withdraw isn't consent).
 - **Three ad units, each with its own slot id**: `menu` (shell pages) and `results`
   (post-match) are SAFE; `game` (columns flanking the live field) is the risky one —

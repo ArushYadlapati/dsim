@@ -1496,7 +1496,7 @@
   font-weight: 600;
   text-decoration: none; /* most items are real <a href> destinations (FootLink) */
 }
-/* the LEGAL group (Privacy · Privacy & cookie settings · Terms) closes the row one step
+/* the LEGAL group (Privacy · Data · Terms) closes the row one step
    down: smaller, lighter and muted, so the product links lead (design review 11-19).
    Colour and size only, so `:hover` below still lifts it to ink. */
 .ds-foot-link.legal {
@@ -2030,11 +2030,21 @@ button.ds-key:where(:not(:disabled)):active,
 .ds-panel-body {
   padding: var(--ds-s-4);
 }
-/* the legal documents' card hugs its 68ch column (`.legal-md`) instead of stretching past it
-   and leaving a dead band on the right (design review 11-10) */
-.ds-legal-card {
+/* ONE COLUMN for a legal page: the policy card and the "Your data" panels under it share one
+   right edge. The card used to be `width: fit-content` (hugging `.legal-md`'s 68ch, design
+   review 11-10) while the panels below stayed full width, so /privacy had two right edges.
+   Now the COLUMN is as wide as the policy card (`fit-content`: the card's max-content, which
+   `.legal-md`'s 68ch caps), and everything else in it stretches to that width without
+   widening it — `contain: inline-size` makes an element contribute no intrinsic width, so the
+   Your-data tables (whose max-content is far wider) cannot drive the column. A `ch` cap on
+   the column itself does not work: the column's font is larger than the document's 14px, so
+   its 68ch was ~140px wider than the text. */
+.ds-legal-col {
   width: fit-content;
   max-width: 100%;
+}
+.ds-legal-col > :not(.ds-legal-card) {
+  contain: inline-size;
 }
 /* the two body LAYOUTS that were being hand-written beside it — three different stack
    gaps (10, 14, 16) for the same job on one page. The child margin reset is

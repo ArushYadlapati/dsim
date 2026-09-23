@@ -199,7 +199,7 @@ function AnalyticsRow() {
 /**
  * THE COPY FOR "there is no consent dialog to reopen", in one place.
  *
- * Exported because the footer's "Privacy & cookie settings" link used to DELETE ITSELF when
+ * Exported because the footer's "Data" link (was "Privacy & cookie settings") used to DELETE ITSELF when
  * `showConsentSettings()` answered false, which is the normal case outside the EEA/UK/CH — so
  * the one control the privacy policy names by name would silently not exist for most of the
  * world, and the only way to find that out was to read the source. The link now lands here
