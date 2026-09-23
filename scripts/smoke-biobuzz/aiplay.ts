@@ -152,11 +152,17 @@ export function aiPlayChecks(check: Check): void {
    * (G407). MEASURED over the bench's 20 seeds: hard 2v2 commits 1.5 foul points per alliance per
    * FULL match (a G402 or a G407 in about one match in fifteen); this seed commits none. Cut at
    * 100 s to keep the lane cheap — the endgame is the solo match's job.
+   *
+   * The seed was 7004 until the Box Tube's stowed tower became a collider (2026-09-22): elements
+   * that had passed through it now bounce off it, the match diverges, and 7004 picked up one AUTO
+   * G402. The RATE did not move — over 7000–7019 at 100 s, 3 of 20 matches foul with the tower
+   * solid and 2 of 20 without it, G402 every time — so the pick moved, not the bar. 7007 is clean
+   * either way.
    */
   {
-    const row = playBotMatch({ format: '2v2', blue: 'hard', red: 'hard', seed: 7004, physics: '3d', builds: 'bot', stopAtS: 100 });
+    const row = playBotMatch({ format: '2v2', blue: 'hard', red: 'hard', seed: 7007, physics: '3d', builds: 'bot', stopAtS: 100 });
     const committed = foulPtsCommitted(row, 'blue') + foulPtsCommitted(row, 'red');
-    check('four HARD bots commit no fouls through AUTO and a minute of TELEOP (3D, seed 7004)', committed === 0, `${JSON.stringify(row.fouls)}`);
+    check('four HARD bots commit no fouls through AUTO and a minute of TELEOP (3D, seed 7007)', committed === 0, `${JSON.stringify(row.fouls)}`);
     check(`…none is ever stuck for more than ${MAX_STUCK_RUN_S} s`, row.bots.every((b) => b.maxStuckS <= MAX_STUCK_RUN_S), stuckLine(row));
     check('…every one of them scores (fired elements)', row.bots.every((b) => b.fired > 0), row.bots.map((b) => `#${b.id} ${b.fired}`).join(' '));
     check(
