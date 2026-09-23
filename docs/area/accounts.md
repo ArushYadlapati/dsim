@@ -146,6 +146,12 @@ also `supporter: true`. **Badge colours must be SATURATED IN BOTH THEMES**: the 
 checks the glyph against its own fill, NOT the badge against the card behind it, so the
 lavender pastel (#34305c in dark) passed contrast while being invisible on the dark
 panel. Distinguish by SHAPE as well as hue.
+**ADMIN IS `--ds-staff`** (`shell.css` `:root`, cyan `#0e6f8e` light / `#6ec8e8` dark, with
+`--ds-staff-ink`): off every other job — not alliance blue (admin was `--ds-blue-chip` once and
+vanished on the results board's blue half), not the owner's `--ds-accent`, not the supporter's
+`--ds-gold`. It INVERTS with its ink like the accent, so the ◆ disc (`.sup-badge.admin`) stays
+saturated on both panels. The admin console's role label is the same hue as a text badge:
+`.ds-badge.staff` (admin) / `.ds-badge.accent` (owner), in `AdminUser.tsx` and `adminBits.tsx`.
 **THE BADGE GOES ON EVERY NAME**, and the failure mode is SILENT — a query that just
 doesn't project the two columns still compiles and still renders, only bare, which is how
 the ranked board sat badge-less next to a record board that was fine. So: `badgeCols(alias

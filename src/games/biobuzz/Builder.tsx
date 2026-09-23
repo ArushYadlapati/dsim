@@ -469,14 +469,15 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
 
       {/* ---- FLOWER SCORING: the Box Tube ---- */}
       <h3 className="ds-subh">Flower scoring</h3>
+      {/* label-only, so `mini` chips — the same size as every other label-only pick in the builder */}
       <div className="ds-opts two">
-        <button className={`ds-opt ${lift === null ? 'on' : ''}`} aria-pressed={lift === null} onClick={() => pickLift(null)}>
+        <button className={`ds-opt mini ${lift === null ? 'on' : ''}`} aria-pressed={lift === null} onClick={() => pickLift(null)}>
           <span className="ot">None</span>
         </button>
         {BB_LIFT_KINDS.map((k) => (
           <button
             key={k}
-            className={`ds-opt ${lift?.kind === k ? 'on' : ''}`}
+            className={`ds-opt mini ${lift?.kind === k ? 'on' : ''}`}
             aria-pressed={lift?.kind === k}
             onClick={() => pickLift(k)}>
             <span className="ot">{bbLiftKindLabel(k)}</span>

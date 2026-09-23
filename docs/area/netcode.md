@@ -411,7 +411,8 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
       ever fires — the field drew into a 1280×545 element at 1280×516 and came out squashed. An
       effect, not a per-frame check: React has committed the row by then, and reading
       `clientWidth` 60 times a second would force a layout flush for something that changes
-      twice a match. It skips while a REAL-TIME capture runs, which is filming that canvas.
+      twice a match. It skips while a REAL-TIME capture runs, which is filming that canvas; `startRealtime`
+      refits ONCE itself (flushSync, then refit, then `rec.start()`), so the taller recording bar is in place before the first frame.
     - **THE VIDEO CARRIES ITS OWN SCOREBOARD** (`src/ui/replayOverlay.ts`). The viewer's score
       strip is React DOM sitting ABOVE the canvas, so a canvas capture had no score, no clock,
       no phase and no match start in it at all — invisible on screen, where the page supplies

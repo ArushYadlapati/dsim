@@ -344,17 +344,13 @@ const hudPairs = (t) => {
 };
 
 /** Screens that only render with a game server configured (Leaderboard, MatchHistory,
- *  ServerPicker, Account/Auth). They are the easiest place for a stale literal to hide,
+ *  Account/Auth). They are the easiest place for a stale literal to hide,
  *  because a `npm run dev` without VITE_GAME_SERVER_URL never draws them. */
 const serverPairs = (t) => {
   const panel = t('--ds-panel');
   const bg = t('--ds-bg');
   const tile = t('--ds-tile');
   return [
-    ['ServerPicker .ping-dot.good (1.4.11)', t('--ds-ok-ink'), tile, NON_TEXT],
-    ['ServerPicker .ping-dot.fair (1.4.11)', t('--ds-warn'), tile, NON_TEXT],
-    ['ServerPicker .ping-dot.poor (1.4.11)', t('--ds-danger'), tile, NON_TEXT],
-    ['ServerPicker .ping-dot.down (1.4.11)', t('--ds-mut'), tile, NON_TEXT],
     ['MatchHistory .mh-player.al-red', t('--ds-red-ink'), panel, AA],
     ['MatchHistory .mh-player.al-blue', t('--ds-blue-ink'), panel, AA],
     ['UsernameField hint / available', t('--ds-ok-ink'), panel, AA],

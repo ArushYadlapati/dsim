@@ -1504,9 +1504,10 @@
   font-size: 13px;
   color: var(--ds-mut);
 }
+/* THE UI FACE, not mono (design review 01-04): "DSIM" is the wordmark the app bar's `.ds-mark`
+   sets in the UI face, and a season name is a name, not a reading — mono is for numbers a driver
+   glances at. The sponsor credit inside carries its own face (`.sponsor-pre`). */
 .ds-foot-brand {
-  font-family: var(--ds-font-mono);
-  letter-spacing: 0.02em;
   /* TWO ITEMS, not one run: the app name (an anonymous flex item) and the sponsor
      credit. Inline, "DSIM · DECODE 2025–26" ran straight into "PRESENTED BY" 8px away and
      read as one line in two sizes, and a phone broke it mid-credit (design review 11-20). */
@@ -1515,11 +1516,9 @@
   align-items: center;
   gap: var(--ds-s-1) var(--ds-s-4);
 }
-/* the season sits between brand and links (`space-between`), in the brand's face (22-04) */
-.ds-foot-season {
-  font-family: var(--ds-font-mono);
-  letter-spacing: 0.02em;
-}
+/* the season sits between brand and links (`space-between`), in the brand's face (22-04) —
+   the UI face, as the home page prints the same season line (`.ds-home-season`). No rule of
+   its own: it inherits the footer's. */
 /* WRAP. `.ds-foot` itself wraps, so the brand and the links already stack on a
    phone — but this row did not, and it is a flex row whose contents outgrew the
    viewport: it went from four links (Download / Contributors / Changes / Discord)
@@ -1843,9 +1842,9 @@ button.ds-key:where(:not(:disabled)):active,
   /* on the type scale (20-08): 22px was the one off-scale size in the stat family */
   font-size: var(--ds-t-xl);
 }
+/* the words in the UI face; the counts carry `.ds-num`, so only the digits are mono (01-04) */
 .ds-homestats-break {
-  font-family: var(--ds-font-mono);
-  font-size: 12px;
+  font-size: var(--ds-t-sm);
   color: var(--ds-mut);
 }
 
@@ -2251,7 +2250,7 @@ button.ds-key:where(:not(:disabled)):active,
   margin: 0;
   font-weight: inherit;
   font-family: var(--ds-font-mono);
-  font-size: 12px;
+  font-size: var(--ds-t-sm);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ds-mut);
@@ -2459,87 +2458,6 @@ button.ds-key:where(:not(:disabled)):active,
   background: var(--ds-accent);
   color: var(--ds-accent-ink);
   font-weight: 700;
-}
-
-/* ---- server (region) picker ----------------------------------------- */
-/* both call sites (Account panel, Record Run console) are left-aligned padded
-   containers that own their own spacing — the picker just fills them */
-.server-picker {
-  text-align: left;
-}
-.server-picker-h {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px;
-}
-.server-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.server-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  font: inherit;
-  padding: 10px 12px;
-  border-radius: var(--ds-round);
-  color: var(--ds-ink);
-  /* `--ds-panel-2` never existed (the HUD bridge token is `--panel-2`), so this
-     silently fell back to a 3%-white wash from the pre-redesign dark theme — i.e.
-     transparent on the light panel. The recessed surface is `--ds-tile`. */
-  background: var(--ds-tile);
-  border: 1px solid var(--ds-line);
-  cursor: pointer;
-  text-align: left;
-}
-.server-row:hover {
-  border-color: var(--ds-accent);
-}
-.server-row.on {
-  border-color: var(--ds-accent);
-  box-shadow: inset 0 0 0 1px var(--ds-accent);
-}
-.server-row .server-name {
-  flex: 1;
-  font-weight: 600;
-}
-.server-row .server-region {
-  color: var(--ds-mut);
-  font-weight: 400;
-  text-transform: uppercase;
-  font-size: 12px;
-}
-.server-row .server-ping {
-  font-family: var(--ds-font-mono);
-  font-size: 12px;
-  color: var(--ds-mut);
-}
-.ping-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  flex: none;
-  background: var(--ds-mut);
-}
-/* A 9px dot is a graphical object (1.4.11, 3:1). The old literals were a dark-theme
-   set: #22c55e / #eab308 / #f97316 landed at 2.2 / 1.85 / 2.9 on the LIGHT tile — the
-   "fair" dot was all but invisible. These four themed tokens carry the same
-   green → amber → red → grey ladder and are asserted by `npm run contrast`.
-   (The ms figure renders as text alongside, so the dot has never been the sole cue.) */
-.ping-dot.good {
-  background: var(--ds-ok-ink);
-}
-.ping-dot.fair {
-  background: var(--ds-warn);
-}
-.ping-dot.poor {
-  background: var(--ds-danger);
-}
-.ping-dot.down {
-  background: var(--ds-mut);
 }
 
 .ds-table {
@@ -3161,12 +3079,23 @@ tr.lb-detail td {
   color: var(--ds-blue-ink);
 }
 .ds-replay-score .rs-mid {
+  /* PHASE OVER CLOCK (09-07). Wide enough for DRIVER-CONTROLLED, so the scores either side do
+     not move when the phase word changes. */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   font-size: var(--ds-t-sm);
   font-weight: 700;
+  line-height: var(--ds-lh-heading);
   letter-spacing: var(--ds-track-caps);
   color: var(--ds-mut);
-  min-width: 5ch;
+  min-width: 20ch;
   text-align: center;
+}
+/* DIGITS ARE MONO (DESIGN.md, 09-06): the clock ticks during playback */
+.ds-replay-score .rs-clock {
+  font-family: var(--ds-font-mono);
+  letter-spacing: normal;
 }
 .ds-replay-score.final .rs-mid {
   color: var(--ds-accent);
@@ -3211,7 +3140,8 @@ tr.lb-detail td {
   font-variant-numeric: tabular-nums;
   font-size: var(--ds-t-md);
   color: var(--ds-mut);
-  width: 44px;
+  /* "m:ss / m:ss" (09-04); fixed so the flex seek beside it does not resize as it ticks */
+  width: 11ch;
   text-align: right;
 }
 /* Pause and Play share ONE grid cell, the idle label `visibility: hidden` (so it still takes
@@ -3576,6 +3506,7 @@ tr.lb-detail td {
   background: var(--ds-panel);
 }
 .rr-cmp-num {
+  font-family: var(--ds-font-mono);
   font-size: var(--ds-t-lg);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -3607,26 +3538,22 @@ tr.lb-detail td {
   gap: 4px;
   min-width: 0;
 }
-.rr-field input {
+/* the inputs are `.ds-input` (09-12); only the layout, the mono score digits and the
+   alliance focus tint are the rail's own */
+.rr-field .ds-input {
   width: 100%;
-  padding: 8px;
-  border: 1px solid var(--ds-line);
-  border-radius: var(--ds-round-sm);
-  background: var(--ds-panel);
-  color: var(--ds-ink);
-  font: 600 var(--ds-t-md) / var(--ds-lh-heading) var(--ds-font-mono);
+}
+.rr-field:not(.wide) .ds-input {
+  font-family: var(--ds-font-mono);
 }
 .rr-field.wide {
   grid-column: 1 / -1;
 }
-.rr-field.wide input {
-  font: 400 var(--ds-t-sm) / var(--ds-lh-prose) var(--ds-font-ui);
+.rr-field.red .ds-input:focus-visible {
+  outline-color: var(--ds-red-ink);
 }
-.rr-field.red input:focus-visible {
-  outline: 2px solid var(--ds-red-ink);
-}
-.rr-field.blue input:focus-visible {
-  outline: 2px solid var(--ds-blue-ink);
+.rr-field.blue .ds-input:focus-visible {
+  outline-color: var(--ds-blue-ink);
 }
 .rr-outcome {
   margin: 0;
@@ -3642,11 +3569,6 @@ tr.lb-detail td {
   font-size: var(--ds-t-xs);
   line-height: var(--ds-lh-prose);
   color: var(--ds-mut);
-}
-.rr-status {
-  margin: 0;
-  font-size: var(--ds-t-sm);
-  color: var(--ds-ok-ink);
 }
 .rr-players,
 .rr-hist {
@@ -3807,8 +3729,9 @@ tr.lb-detail td {
 /* ---- replay recording bar --------------------------------------------
    REPLACES `.ds-replay-controls` while a capture runs, rather than greying it out. The video
    is of the canvas itself, so every transport control has to be locked (scrubbing mid-record
-   scrubs the FILE) — and a row of dead controls does not explain itself. Same bar surface,
-   same padding, so the swap does not move the canvas above it. */
+   scrubs the FILE) — and a row of dead controls does not explain itself. Same bar surface and
+   padding, but the note makes it TALLER, so the canvas shrinks: `startRealtime` re-fits the
+   canvas after the swap and before the first recorded frame (09-13). */
 .ds-replay-rec {
   display: flex;
   align-items: center;
@@ -4312,7 +4235,10 @@ tr.lb-detail td {
   margin: 0;
 }
 
-/* a lighter in-section subheading (e.g. the CR "Scoring archetype" groups) */
+/* a SUB-SECTION HEADING (`<h3>`) over a group of fields — Drivetrain, Scoring, Intake, Frame —
+   one tier above the `.cap` field labels it heads, so it is not a second label system (design
+   review 03-05). NO MARGIN: `.ds-panel-body.stack` owns the gap, and already zeroed the old
+   `4px 0 -4px` from the higher-specificity `.stack > *`. */
 .ds-subh {
   font-family: var(--ds-font-mono);
   font-size: var(--ds-t-xs);
@@ -4320,7 +4246,7 @@ tr.lb-detail td {
   text-transform: uppercase;
   color: var(--ds-mut);
   font-weight: 600;
-  margin: 4px 0 -4px;
+  margin: 0;
 }
 
 /* ---- selectable option cards ---------------------------------------- */
@@ -4343,15 +4269,13 @@ tr.lb-detail td {
 .ds-opts.four {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
-/* FIVE-up, for a row that genuinely has five options (the drivetrain picker). Without it
-   those five land in the four-column `.four` track and leave a lone orphan on a second row
-   while every button still has ~20px of slack — the row wraps when it doesn't need to. */
+/* FIVE-up, for a row of short label-only chips (the drivetrain and DECODE intake pickers).
+   Without it five land in the four-column `.four` track and leave a lone orphan on a second
+   row while every button still has ~20px of slack — the row wraps when it doesn't need to.
+   NO ALIGNMENT OF ITS OWN: it used to centre its labels, which made it the one `.mini` row in
+   the builder that did not read like the others (design review 03-12). Width only. */
 .ds-opts.five {
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-}
-.ds-opts.five .ds-opt {
-  justify-content: center;
-  text-align: center;
 }
 /* Same fix for a row of CARDS (title + blurb, left-aligned): the base `.ds-opts` 200px
    track only fits three at panel width, so a four-archetype row broke 3+1. A three-card row
@@ -4394,14 +4318,15 @@ tr.lb-detail td {
 /* Label-only option toggles (those whose helper `.od` line was removed) would
    otherwise sit ~20px shorter than their descriptive siblings, leaving a visible
    dip where a two-line row meets a one-line one. Give them a floor height and
-   center the label so mixed sections keep an even rhythm. `.mini` cards (e.g. the
-   drivetrain grid) are deliberately compact and keep their natural chip height. */
+   center the label so mixed sections keep an even rhythm. `.mini` cards are deliberately
+   compact and keep their natural chip height — EVERY label-only pick in the builder is one. */
 .ds-opt:not(.mini):not(:has(.od)) {
   min-height: 62px;
   justify-content: center;
 }
-/* Drivetrain grid (the only `.ds-opts.four`): now label-only chips — center the
-   label so the four read as an even segmented row instead of top-left labels. */
+/* The four-edge MOUNT pickers (CR shooter/intake, BIOBUZZ intake) and the Settings rows that
+   pass `cols="four"`: some of their cards carry a sub-line, so labels share a TOP baseline
+   rather than centring per card (see `.ds-opt.mini`). */
 .ds-opts.four .ds-opt {
   justify-content: flex-start;
   text-align: left;
@@ -4631,21 +4556,6 @@ tr.lb-detail td {
   letter-spacing: 0.02em;
   color: var(--ds-ink-dim);
 }
-.ds-opt .oz {
-  margin-top: 3px;
-  align-self: flex-start;
-  font-size: var(--ds-t-xs);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  /* NEUTRAL: a range is a CATEGORY of the preset, not a state of the control. In accent it read
-     as a second selection mark on every card. */
-  color: var(--ds-ink-dim);
-  background: var(--ds-tile);
-  border: 1px solid var(--ds-line);
-  border-radius: var(--ds-round-full);
-  padding: 2px 8px;
-}
 /* "Play a friend" format picker — a column of .ds-opt tiles in a modal. */
 .ds-chal {
   max-width: 420px;
@@ -4778,7 +4688,9 @@ tr.lb-detail td {
   object-fit: cover;
   transform: scale(1.35);
 }
-/* SCREEN-READER ONLY: in the accessibility tree, out of the layout */
+/* A LABEL FOR A SCREEN READER AND NOT FOR THE EYE — the app's one visually-hidden utility
+   (analytics' From/To, the results live line, "Link copied", the connection word). Use it
+   instead of visible helper text that restates its own control (ui-standard §8). */
 .ds-sr {
   position: absolute;
   width: 1px;
@@ -5043,8 +4955,11 @@ input[type='range'].ds-range:disabled {
   line-height: var(--ds-lh-tight);
   white-space: nowrap;
 }
+/* the UNIT is a word, not a digit: the UI face at a lower weight, so only the number reads as
+   telemetry (design review 03-09) */
 .ds-hero-stats .u {
   margin-left: var(--ds-s-1);
+  font-family: var(--ds-font-ui);
   font-size: var(--ds-t-xs);
   font-weight: 500;
   color: var(--ds-mut);
@@ -5828,13 +5743,15 @@ a.ds-cta {
   gap: var(--ds-s-2);
   min-width: 0;
 }
+/* the builder's `.ds-subh` tier, spelled for this column (14-09): one sub-section heading look */
 .ds-bind-col > h3 {
   margin: 0;
   font-family: var(--ds-font-mono);
-  font-size: 11px;
+  font-size: var(--ds-t-xs);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--ds-mut);
+  font-weight: 600;
 }
 /* LABEL LEFT, KEYCAPS RIGHT, AND THE LABEL GIVES WAY FIRST. This was a flex row where both
    sides shrank, so a long label and three keycaps split the difference and the keycaps wrapped
@@ -5847,9 +5764,12 @@ a.ds-cta {
   gap: var(--ds-s-3);
   min-height: 28px;
 }
+/* THE SAME LABEL AS `.ds-field > .cap` (design review 04-07): the Driving panel's gamepad column
+   stacks the stick picker and two sliders (`.cap` labels) directly over these rows, and a 13px
+   ink-dim label under a 12px muted one read as a second form glued on. */
 .ds-bind-label {
-  color: var(--ds-ink-dim);
-  font-size: 13px;
+  color: var(--ds-mut);
+  font-size: var(--ds-t-sm);
 }
 .ds-keys {
   display: flex;
@@ -7172,18 +7092,6 @@ a.ds-cta {
 }
 .an-dash {
   color: var(--ds-mut);
-}
-
-/* A LABEL FOR A SCREEN READER AND NOT FOR THE EYE — the app's one visually-hidden utility
-   (analytics' From/To, the results live line, "Link copied", the connection word). Use it
-   instead of visible helper text that restates its own control (ui-standard §8). */
-.ds-sr {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
 }
 
 /* ---- filter chips ---- */

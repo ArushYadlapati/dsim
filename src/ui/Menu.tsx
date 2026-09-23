@@ -943,12 +943,14 @@ export function Menu({ settings, onChange }: Props) {
                 {/* ---- INTAKE ---- */}
                 <h3 className="ds-subh">Intake</h3>
                 {isDecode ? (
-                  <div className="ds-opts">
+                  // label-only, so CHIP height like the drivetrain row above it — a 62px slab
+                  // directly under 36px chips read as a different kind of control
+                  <div className="ds-opts five">
                     {(Object.keys(INTAKE_LABELS) as IntakeStyle[]).map((i) => (
                       <button
                         key={i}
                         aria-pressed={spec.intake === i}
-                        className={`ds-opt ${spec.intake === i ? 'on' : ''}`}
+                        className={`ds-opt mini ${spec.intake === i ? 'on' : ''}`}
                         onClick={() => selectIntake(i)}
                       >
                         <span className="ot">{INTAKE_LABELS[i]}</span>

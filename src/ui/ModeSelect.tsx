@@ -114,7 +114,7 @@ export function ModeSelect({
               Not now
             </button>
             <button className="ds-btn primary" onClick={onTutorial}>
-              Start the tutorial →
+              Start the tutorial
             </button>
           </span>
         </div>

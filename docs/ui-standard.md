@@ -36,10 +36,15 @@ uses most and drops the near-duplicates around it.
    allowed only for borders (`1px`), and for geometry that is genuinely one-off and
    documented in a comment saying why.
 3. **Every interactive element has `:hover`, `:active`, `:focus-visible` and `:disabled`.**
-   The focus ring is ONE base rule in `shell.css` (`:where(button, a, summary, [tabindex]):focus-visible`,
-   2px `--ds-accent`, offset 2px), so a new control is ringed without writing one. Write a
-   `:focus-visible` only when the ring must differ: on the field (on-field tokens), on its own
-   accent fill, or inset in a tight list. Never `outline: none` without a replacement.
+   The focus ring is ONE base rule in `shell.css`
+   (`:where(button, a, summary, [tabindex]:not([tabindex='-1'])):focus-visible`, 2px
+   `--ds-accent`, offset 2px), so a new control is ringed without writing one. The browser's
+   own ring is NOT suppressed anywhere; the base rule replaces it. Write a `:focus-visible`
+   only when the ring must differ: on the field (on-field tokens), on its own accent fill, or
+   inset in a tight list. Never `outline: none` without a replacement. The two that exist
+   have one: a dialog card focused by script (`[role='dialog'][tabindex='-1']`, not a target
+   the user moved to) and `.ds-username-input .ds-input`, whose wrapper rings on
+   `:focus-within`.
 4. **No state change may move layout.** Pressed, hovered, selected, loading, error and empty
    states must not change an element's box. Use `transform`, `box-shadow` and colour.
    `npm run shiftaudit` enforces this; it is not advisory.
@@ -64,6 +69,14 @@ uses most and drops the near-duplicates around it.
   Nowhere else.
 - **BANNED: 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 18, 20px.** Round to the nearest token. `10 →
   8` when it separates things inside one component, `10 → 12` when it separates components.
+- **The one sanctioned exception: the chrome's 14/18/22 layout rhythm** (owner ruling on the
+  2026-09-22 design review, G1). It is the page gutters and the gaps between layout blocks,
+  and only these: `.ds-bar` (`14px 22px`), `.ds-main` (`28px 22px 48px`), `.ds-rail`
+  (`24px 14px 40px`), `.ds-foot` (`16px 22px`), `.ds-subnav-layout` and `.ds-console-in`
+  (gap 22), `.ds-fields` (gap 18), `.ds-tiles`/`.ds-tile` (gap 14, `16px 18px`),
+  `.ds-menu-btn` (`16px 18px`) and `.overlay-panel` (gap 14). It is kept because it is the
+  most visible spacing in the app and it is consistent. Inside a component, the grid binds.
+  A new layout shell may join the list only by being added to it here.
 - **Padding is symmetric or it is on the grid.** `13px 15px` and `9px 11px` are banned. A
   horizontal/vertical difference is fine (`8px 12px`); an arbitrary one is not.
 - **One owner per gap.** The space between stacked children belongs to the PARENT's `gap`,
@@ -76,10 +89,10 @@ uses most and drops the near-duplicates around it.
 
 ```css
 --ds-t-xs: 11px;       /* eyebrows, mono labels, tick marks — the FLOOR, HUD included */
---ds-t-sm: 12px;       /* hints, sub-lines, table meta                               */
+--ds-t-sm: 12px;       /* hints, sub-lines, table meta, ALL-CAPS panel titles        */
 --ds-t-md: 13px;       /* body — the default                                         */
 --ds-t-control: 14px;  /* buttons, inputs, tabs, table cells, Markdown body          */
---ds-t-lg: 15px;       /* panel titles, emphasis                                     */
+--ds-t-lg: 15px;       /* emphasis                                                   */
 --ds-t-xl: 20px;       /* dialog titles, sub-heads                                   */
 --ds-t-2xl: 28px;      /* badge glyphs, reward headings                              */
 --ds-t-h2: clamp(19px, 2.4vw, 24px);  /* .ds-h2                                      */
@@ -99,8 +112,8 @@ Amended 2026-09-22 (design review C42) to match the code: 14px was the real cont
 Nothing renders below `--ds-t-xs`: the 8–10px HUD and eyebrow labels were raised to it.
 
 - **Weights: 400, 500, 600, 700, 750, 800, 900 — and no eighth.** Both families are
-  VARIABLE cuts, which `shell.css:164` documents, so half-steps like 750 are real type
-  rather than a rounding accident, and 500 is a genuine de-emphasis. An earlier draft of
+  VARIABLE cuts, which the `--ds-font-*` comment in `shell.css` `:root` documents, so
+  half-steps like 750 are real type rather than a rounding accident, and 500 is a genuine de-emphasis. An earlier draft of
   this document banned 500/750/900 without reading that comment; the rule now guards
   against a NEW weight appearing instead of churning three deliberate ones.
 - **No fractional PIXEL sizes.** 8.5, 9.5, 10.5, 11.5, 12.5, 13.5, 14.5, 15.5 and 16.5 were
@@ -112,7 +125,10 @@ Nothing renders below `--ds-t-xs`: the 8–10px HUD and eyebrow labels were rais
   declaration, thirteen rules silently set nothing for months. Grep a token before using it.
 - **Prefer the longhands.** `font:` shorthand also resets `font-family` and `line-height`,
   which is how that bug stayed invisible.
-- **Line height comes from a `--ds-lh-*` token.** `uiaudit` ratchets the literals that remain.
+- **Line height comes from a `--ds-lh-*` token**: `--ds-lh-tight` (1) for single-line UI,
+  `--ds-lh-heading` (1.2) for wrapped display type, `--ds-lh-prose` (1.45) for paragraphs,
+  `--ds-lh-long` (1.65) for legal/Markdown at a 68ch measure. `uiaudit`
+  (`literal-line-height`) ratchets the literals that remain.
 - **Big numbers are mono with tabular figures** (`.ds-num`, DESIGN.md Digits-Are-Mono).
 
 ## 4. Radius and borders
@@ -144,7 +160,12 @@ variant.
 **Page** — `ds-eyebrow` → `ds-h1` → optional `ds-sub` → panels, `--ds-s-5` between panels.
 
 **Panel** — `.ds-panel` > `.ds-panel-h` (title + optional action) > body at `--ds-s-4`.
-The title is a **short noun phrase**, sentence case, no trailing period, no full sentences.
+The title is a **short noun phrase**, no trailing period, no full sentences. `.ds-panel-title`
+RENDERS in ALL-CAPS mono (`text-transform: uppercase`, `--ds-mut`, 0.12em tracking), and that
+is a sanctioned exception to sentence case (G3), the fifth beside the four in
+`docs/area/ui.md`'s copy rules. Write the SOURCE text in sentence case ("Touch controls") so
+it reads correctly to a screen reader and anywhere the transform does not apply. It may be an
+`<h2>`: the class resets the margin and the heading weight.
 
 **Row** — label left, value right, both vertically centred, `--ds-s-3` between rows. Values
 in one column share an alignment and a format.
@@ -152,7 +173,9 @@ in one column share an alignment and a format.
 **Option grid** (`.ds-opts`/`.ds-opt`) — every tile in a grid is the **same height whether or
 not it has a sub-line**. A grid that re-flows when one option gains a description is broken.
 
-**Dialog** — title, body, actions last. **Primary action is rightmost, always.** Destructive
+**Dialog** — title, body, actions last. The title is `.ds-dialog-title` (`--ds-t-xl`, sentence
+case) on every shell dialog, `.ds-modal` included; the behaviour is `useDialog`
+(`docs/area/ui.md`). **Primary action is rightmost, always.** Destructive
 actions are `danger` and confirm; a confirm must name the target and the effect.
 
 **List states** — every list has four: loading (`.ds-loading`), empty (`.ds-empty` with a
@@ -166,6 +189,12 @@ share the same padding**, so the panel does not jump height when data lands.
 - `prefers-reduced-motion` must cap **`animation-iteration-count: 1`** as well as duration.
   Capping only the duration makes an infinite animation loop faster, not stop.
 - No animation on first paint of a list or panel.
+- **Named exception: the results reveal** (`Results.tsx`, the `.resx-*` keyframes in
+  `styles.css`; design review 06-14). Its sections and rows land in sequence on first paint
+  because the order carries information: the breakdown before the totals, the totals before
+  the verdict. The allowance is the stagger, not the style. It settles on ease-out and never
+  scales past 1 (the old overshoot and `brightness()` punches are gone), and under
+  `prefers-reduced-motion` every element is one short cross-fade with the sting removed.
 
 ## 8. Copy
 
@@ -187,12 +216,12 @@ Before claiming UI work done:
 npm run contrast && npm run build && npm run shiftaudit
 ```
 
-And these must all return nothing:
+And these must return nothing but comments:
 
 ```bash
 grep -rnE "style=\{\{[^}]*(margin|padding|gap)" src/ui/*.tsx
-grep -rnE "font-size: *[0-9]+\.[0-9]" src/ui/*.css
-grep -rnE "font-weight: *(500|750|900)" src/ui/*.css
+grep -rnE "font-size: *[0-9]+\.[0-9]+px" src/ui/*.css
+grep -rnE "font-weight: *[0-9]+" src/ui/*.css | grep -vE ": *(400|500|600|700|750|800|900)\b"
 grep -rn "var(--[a-z-]*, *#" src/ui/*.css
 ```
 
@@ -208,13 +237,15 @@ instead. A bare `font: inherit` and `var(--x, inherit)` are both fine.
 Recorded so it is not mistaken for precedent. These predate the standard; **new code does not
 get to match them.**
 
-- 105 inline spacing declarations in JSX (43 of them `marginTop`).
-- 237 off-grid gap/padding values. (Fractional sizes and stray weights: cleared.)
-- `10px` radius inlined 14×; `999px` 6× where `--ds-round-full` exists.
-- ~20 interactive elements with `:hover` and no `:focus-visible`, including `.game-btn`,
-  `.overlay-buttons button` and `button.ds-key` (the keybinding capture control).
-- Dead rule families (`.server-picker/-list/-row`, `.ping-dot*`, `.final-score*`,
-  `.ds-status`, `.ds-season*`, `.ds-kick`) and 6 palette tokens with no call sites, 5 of
-  which `scripts/contrast.mjs` still audits.
-- `styles.css` claims to be in-match-only; ~28% of it is shell UI, and 7 class namespaces are
-  split across both stylesheets.
+Re-counted 2026-09-23 by `npm run uiaudit` (the baselines are the live numbers):
+
+- Inline spacing in JSX: **0** (was 105). Fractional sizes and stray weights: cleared.
+- 117 off-grid gap/padding values (was 237), the chrome rhythm in §2 among them.
+- 3 literal radii; 11 font sizes off the scale; 29 literal line-heights; 14 raw colours.
+- The `:focus-visible` gap is closed: the base ring in §1.3 covers every button, link,
+  summary and tabbable element, `button.ds-key` included, and `.game-btn` /
+  `.overlay-buttons button` carry their own on-field rings.
+- Deleted dead rule families: `.server-picker*`, `.server-row*`, `.ping-dot*`,
+  `.final-score*`, `.ds-status`, `.ds-season*`, `.ds-kick`, and the pastel palette tokens.
+- `styles.css` claims to be in-match-only; 2 `.ds-*` shell rules still live in it
+  (`ds-outside-shell`).

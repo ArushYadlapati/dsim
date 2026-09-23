@@ -134,7 +134,9 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
   byte for byte, and the field is pruned back to absent when the last override is synced away.
   **UI** (`ControlsSection.tsx`, with the row lists in the DOM-free `controlsLayout.ts` so the
   smoke run can hold them to the kinds): the scope switch comes first — `All games` plus one
-  entry per **visible** season. All games is Touch controls, Tutorial, then three bind panels —
+  entry per **visible** season. All games opens with ONE panel of two rows — Touch controls, then
+the ACTIVE season's tutorial, titled "{Season} tutorial" (`tutorialGame`; the row is absent when
+that season has none) — then three bind panels —
   Driving, Mechanisms (Intake and Shoot), Match — each a keyboard column and a gamepad column,
   and a Gamepad panel for the trigger threshold, combo wait and menu navigation (the stick role,
   deadzone and curve head the Driving panel's gamepad column). A season scope is ONE panel: that
@@ -345,7 +347,10 @@ four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow no
   phone — three of its own handoffs recorded that and none of them could fail a build.
   Two rules fall out of it. **An ASSISTED action is ghosted, never hidden**: hiding them left a
   default DECODE phone with NO action buttons, because auto intake and auto fire are both on by
-  default and they were the only two the pad had. And **positions are computed, not stored** —
+  default and they were the only two the pad had. The ghosting is the fill, the ring and the
+  glyph (`.mobile-btn.auto`, `.mb-ico` at 0.45), **never `opacity` on the button**: that took
+  the LABEL down with it on a control that still takes presses. The label keeps full on-field
+  ink. And **positions are computed, not stored** —
   a `mobileLayout` fraction cannot be right in both orientations (the shipped default overlapped
   SHOOT with INTAKE in portrait and hung the drive stick off the left edge), so the pad packs
   itself into two thumb columns against the live viewport and reads a stored position only once
@@ -383,9 +388,18 @@ same arguments are not had again:
   The admin console composes its own through **`adminFail()` (`src/ui/adminCopy.ts`)**,
   which existed because five spellings of `Failed - check admin sign-in` had accumulated
   across two files, none of which said WHICH action failed.
-- **Sentence case** for `ds-btn` and every heading. ALL CAPS is correct in exactly four
-  places and they are all deliberate: `.overlay-buttons button` (13/13), the HUD chips (the
-  FTC scoring display is uppercase), `ds-cta` (14/14), and the admin console (29/34).
+- **Sentence case** for `ds-btn`, every heading, and the mode tiles (`Solo practice`, `Free
+  drive`, `Custom room`). ALL CAPS is correct in exactly five places and they are all
+  deliberate: `.overlay-buttons button` (13/13), the HUD chips (the FTC scoring display is
+  uppercase), `ds-cta` (14/14), the admin console (29/34), and `.ds-panel-title` — mono,
+  uppercased BY CSS, often an `<h2>`, so its source text stays sentence case.
+- **One name per thing.** The rating is "rating", never "ELO", in anything a player reads (the
+  system is Glicko-2). A player-made room is a **"Custom room"** everywhere it is named.
+- **A CTA carries no trailing ▶**, and **no label is a dingbat alone**: a ✕ or ▶ is
+  `aria-hidden` beside words or under an `aria-label` that names the target.
+- **Errors are plain language.** The raw text ("Failed to fetch", "HTTP 502", a server
+  message) goes to `console.warn` with a `[area]` prefix; the screen says `Couldn’t …` and
+  what to do next.
 - **`.ds-empty` for an empty list** (`.big` headline, no period, then one sentence with
   one), **`.ds-loading` for a loading state** (9/10 already did).
 - **A name always gets `SupporterBadge`, as a SIBLING** — see the badge rules above — and,
@@ -432,9 +446,12 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   localStorage and sync to Postgres per account, so a "in the tutorial right now" bit would follow
   the account to another machine and survive a reload onto a screen with no idea what was staged.
   It is a `GameView` prop and a `GameController` option, and it does not survive a refresh.
-- **The seen flag is `decodesim.tutorial.v1`**, per device and FAIL-OPEN both ways
+- **The seen flag is `decodesim.tutorial.v1`**, per device, PER GAME, and FAIL-OPEN both ways
   (`src/tutorial/flag.ts`, the `chainDisclaimer.ts` pattern): a read that throws answers "not
-  seen" so the offer appears, and a write that throws is swallowed. Set on completion AND on Exit.
+  seen" so the offer appears, and a write that throws is swallowed. Set on completion, on Exit,
+  and on the Modes card's Not now. The value is a comma list of game ids; the legacy value
+  `'1'` means EVERY game (whichever tutorial wrote it cannot be recovered, and re-offering one
+  to somebody who has done one is the nag the flag exists to stop).
 - **Predicates are evaluated every SIM TICK**, not at the 10 Hz HUD poll: several of the things a
   step asks for are cleaned up by the ticks that follow them (an up CELL is emptied by the tip it
   caused), so a predicate read six ticks late can look at a field that has already been tidied.
@@ -447,6 +464,19 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   rebindable, and a tutorial that names a key the player has moved is worse than one with no hints:
   they press what it says, nothing happens, and the step they are stuck on is the one that was
   meant to teach them the control. A connected pad names the BUTTON instead.
+  **Compose them with the `say` template tag** (`src/tutorial/hints.ts`):
+  `` say`Hold ${control(c, 'fire', 'fire')}. The turret aims for you.` ``. A hint is a list of
+  parts: prose, and controls that `TutorialCard` renders as `.ds-key.fixed` keycaps with the
+  key's spoken name in a `.ds-sr` span (an `aria-label` on a `<kbd>` may be ignored). **An
+  unbound control collapses the WHOLE hint** to "Shoot has no key. Bind one in Controls." via
+  `resolveHint`, applied ONCE at the top (`runner.view`, `hintText`), never inside `say`, or a
+  nested `driveHint` would collapse mid-sentence. The TUTORIAL lane holds the prose: **≤ 25
+  words** on every device, opens with a capital, **game nouns lowercase** in hint prose (the
+  caps belong to the HUD chips; a keycap part keeps its own), and aim assist worded once, the
+  same in both games: "The turret aims for you."
+- **The finished card** reads eyebrow "Tutorial complete", title "Try a Solo practice match",
+  hint "Open MENU and pick Solo practice for a full scored match." (sentence case, matching the
+  mode tile) — a next action, not a sign-off.
 - **A step may not apply to a build.** `TutorialStep.applies(spec)` is resolved once, when the
   runner is constructed, so the card numbers the steps that are actually going to be asked for.
   BIOBUZZ's two FLOWER steps are exactly complementary (place a NECTAR needs a Box Tube *and* a
@@ -458,9 +488,10 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   `.game-root.view-3d [data-hud-band]` is what gives it the fixed dark scrim a lit 3D background
   needs. Its CSS is `src/ui/tutorial.css`, imported from `main.tsx` for the reason
   `predict.css` is.
-- **Surfaces**: the first-run card on the Modes page (hidden once the flag is set), and a
-  permanent "Run the tutorial" entry in Controls — which is where somebody who skipped it, or who
-  has just rebound half their keys, gets it back.
+- **Surfaces**: the first-run card on the Modes page (hidden once THIS game's flag is set), and a
+  permanent "{Season} tutorial" row with a Start button in Controls ▸ All games, running the
+  ACTIVE season's tutorial — which is where somebody who skipped it, or who has just rebound half
+  their keys, gets it back. A game with no `tutorial` (Chain Reaction) shows neither.
 - **Verification**: the `TUTORIAL` lane in `scripts/smoke-biobuzz/` (`npm run test:bb`, also
   inside `npm test`). It drives every step of both games to completion with scripted commands
   under both physics and both alliances, and asserts non-vacuity, ball conservation, the
@@ -476,9 +507,18 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   (`GameView`'s `RED ALLIANCE`). The six sentence-case dialogs in `App.tsx` inherited it and
   came out as 20px of plain ink spaced like a sign — no chosen weight (the browser's `bold`
   stood in), no token colour, no line-height, and the one heading in the app that belonged to
-  no design system. `.ds-dialog-title` puts them on `.ds-h2`'s type, and the same class fixes
+  no design system. `.ds-dialog-title` is `--ds-t-xl` at 800, `--ds-track-tight`,
+  `--ds-lh-heading`, `--ds-ink` (NOT `.ds-h2`'s clamp), and the same class fixes
   `.net-overlay-card h3` ("Connection lost", "Reconnecting…"), a bare `h3` for the same reason.
-  It pairs with `.ds-dialog-actions`, which made exactly this split for the BUTTONS already.
+  It is declared BARE as well as compound, because it is the title of EVERY shell dialog,
+  **`.ds-modal` included** (`AuthPanel`, `ChallengePicker`, `TermsGate`, `UsernameGate`,
+  `RewardDialog`), not only the `App.tsx` overlays. It pairs with `.ds-dialog-actions`, which
+  made exactly this split for the BUTTONS already.
+- **`useDialog` (`src/ui/useDialog.ts`) IS the dialog behaviour.** Attach its ref to the element
+  carrying `role="dialog" aria-modal="true" aria-labelledby=…` — those stay in the JSX, where a
+  reader of the markup sees them — and it moves focus in on open (first control, else the card:
+  give it `tabIndex={-1}`), traps Tab, calls `onClose` on Escape (omit it for a dialog that must
+  be answered, like `TermsGate`), and hands focus back on close. Do not hand-roll a trap.
 - **`.ds-title h1` is `.ds-h1`'s type.** It was 26→40 against 26→38 — the same heading on two
   page shells, two clamps, visible only by navigating between them.
 - **A NAME CLAMPS; IT DOES NOT BREAK ITS ROW.** `.lb-name-h` / `.lb-at` are nowrap ellipses
@@ -492,3 +532,46 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
 - **`.ds-segs.even`** is the modifier for a strip that cannot fit: under 640px it becomes an
   `auto-fit` grid, so the six drivetrain filters read as a deliberate 3 + 3 rather than a
   ragged 4 + 2. Not a scroller — a filter must not hide how many options there are.
+
+## Shared primitives, touch and phone layout (design review 2026-09-22)
+
+- **`.ds-sr` is the ONE visually-hidden utility** (`shell.css`). Use it for a spoken name
+  beside a glyph or a keycap, a live region's text, a table caption. Do not write another
+  clip-rect rule for a single component.
+- **`.ds-badge` is the one inline status tag** (`shell.css`): neutral on `--ds-tile`, mono
+  `--ds-t-xs` caps, pill. Tones `.accent` / `.ok` / `.warn` / `.danger` / `.staff` colour the
+  TEXT and EDGE only; `.count` is the one filled form. Never `--ds-red` (that is an alliance,
+  not an error). It replaced `.adm-pill`, `.ann-badge` and `.fr-badge` — do not revive a
+  per-screen pill.
+- **`.ds-table-scroll` is the one table scroller** (it replaced `mh-`/`yd-`/`an-scroll` and
+  `adm-table-wrap`): edge shadows show there is more, `[aria-busy='true']` fades it to 0.5
+  while a page loads. `.tall` caps it at 70vh and makes the header row sticky — at ≥641px only,
+  because a sticky header on a phone eats the rows it is labelling.
+- **TOUCH TARGETS KEY ON `(pointer: coarse)`, NOT WIDTH** (18-02). A narrow desktop window has a
+  mouse; a landscape tablet is wide and has a finger. The coarse block only raises SIZES
+  (min-height / padding) — `.ds-key` and the range track are deliberately left alone (a keycap
+  is a label, not a button). The sponsor mark's coarse rule sits AFTER its base rule on
+  purpose; the file position is the tiebreak.
+- **`--hud-bottom`** is the height the in-match score bar reserves: 68px on `.game-root`, 56px
+  under `@media (pointer: coarse), (max-height: 520px)` — the SAME query as the compact score
+  bar, so the two cannot disagree. `.breakdown-row` and the tutorial card read it; anything
+  new that sits above the bar reads it too instead of a literal.
+- **Contrast blind spots are audited now.** `scripts/contrast.mjs` covers the in-match
+  surfaces that used to be skipped: the 3D view's scrim (its tokens are parsed from
+  `.game-root.view-3d .eventlog` in `styles.css`, so retuning the scrim retunes the check), the
+  prediction panel, the server notice, the touch pad's ghosted labels and rings, the score-bar
+  tips and the replay-video labels, plus the results stage on `--ds-stage-bg`. A new in-match
+  surface gets its pairs there.
+- **Career tiles hide when empty** (G9). `CareerPanel` renders `.ds-stats` only when the player
+  has played a match or holds a best — a wall of zeros tells a new player nothing.
+- **PHONE LAYOUT.** At ≤900px `.ds-body` wraps into ONE nav row: the rail (order 1) and the
+  collapsed friends chip (order 2) share the first line and the content takes its own
+  (`.ds-body > .ds-main` order 3). The strips WRAP, they do not scroll. In a room, friends
+  drops BELOW the console, capped at `min(42dvh, 360px)`. At ≤640px the rail's Home item goes
+  (the DSIM mark routes home), the subnav becomes an `auto-fit` grid, and the friends chip is
+  icon-only, its label visually hidden
+  but still read. The profile hero is a CONTAINER query
+  (`@container hero (max-width: 439px)`): picture + name on top, stats three across below.
+- ⚠️ **Breakpoints are literals, repeated across CSS and TS** (18-10: no shared module yet).
+  `FriendsPanel.tsx`'s `SQUEEZE` query (`(max-width: 1099px) and (min-width: 901px)`) must
+  match `shell.css` by hand — change one, grep for the other.

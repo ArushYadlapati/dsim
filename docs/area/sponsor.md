@@ -22,7 +22,13 @@ any of this.
   is split off it because an image import would choke the `tsx` suite.
 - ⚠️ **`Season.presenter` IS A DIFFERENT FACT.** That is FIRST's sponsor of the GAME (DECODE
   presented by RTX), not ours and not for sale. Both lines are true on the home menu at once;
-  never fold one into the other.
+  never fold one into the other. The home menu reads `DSIM`, then the Offset line
+  (`SponsorPresents`), then the game switcher, then ONE muted season line under it
+  (`.ds-home-season`: `fullNameOf(season) · program years`) — there is no season eyebrow
+  above the app name any more. The footer splits the same way: `DSIM` + `SponsorFooterMark`
+  are the brand run (`.ds-foot-brand`), and the season is its own item (`.ds-foot-season`).
+  Inside the brand run, "DSIM · BIOBUZZ … PRESENTED BY OFFSET" read as Offset presenting the
+  game (design review 22-04).
 - ⚠️ **THE IN-GAMEPLAY CHIP IS NOT AN AD, AND MUST NEVER BE ROUTED THROUGH `src/ads/`.** That
   gate renders nothing on touch, nothing under Electron and nothing for a supporter — i.e.
   it would be invisible on every phone, in the desktop app, and to the most engaged players

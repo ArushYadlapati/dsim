@@ -154,6 +154,10 @@ Sizes are working days for one agent; "exists" cites what the survey found so no
   (never over the field). Skip and replay; completes into normal practice. Per-device
   `decodesim.tutorial.v1` seen flag; offered on the first Practice and from Controls. Engine
   shared (`src/tutorial/`), content per game (BIOBUZZ first, DECODE second, CR later).
+- **State (2026-09-23).** BIOBUZZ and DECODE ship one (`tutorial:` on their `GameModule`).
+  **Chain Reaction has NO tutorial**: its module leaves the slot absent, and every tutorial
+  surface (the Modes card, the Controls row) hides itself for it. The seen flag is per game now
+  (`docs/area/ui.md`).
 - **Verify.** A smoke lane runs each step's predicate against scripted commands (every step is
   completable and none completes vacuously); `uiaudit`/`shiftaudit` for the card; a manual run on
   keyboard and gamepad.

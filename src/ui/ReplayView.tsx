@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { fetchReplay, ReplayPrivateError } from '../net/api';
 import {
   ReplayPlayer,
@@ -24,7 +25,7 @@ import { Renderer } from '../render/renderer';
 import { rangeFill } from './rangeFill';
 import { resolveReplayView } from './replayViewMode';
 import { clamp } from '../math';
-import { drawReplayHud, fieldScreenBottom, HUD_RESERVE, loadSponsorMark } from './replayOverlay';
+import { drawReplayHud, fieldScreenBottom, HUD_RESERVE, hudLabels, loadSponsorMark, type HudLabels } from './replayOverlay';
 import { trackEvent } from '../analytics';
 import { sponsorActive } from '../sponsor';
 import {
@@ -41,7 +42,6 @@ import {
 import { SIM_DT, BALANCE_VERSION, SIM_VERSION } from '../config';
 import { parsePenaltyEvent } from '../sim/penaltyLog';
 import { PenaltyLog, ScoreEditor, type PenaltyEntry } from './ReplayRail';
-import type { MatchPhase } from '../types';
 
 /** how many times faster than real time the WebCodecs path encodes, measured across VP9, VP8
  *  and H.264 at a 1920 long edge (5.2-5.7×; the low end is the honest one to quote) */
@@ -59,6 +59,12 @@ interface FoulTally {
 }
 const NO_FOULS: FoulTally = { minor: 0, major: 0, awarded: 0, yellow: 0, red: 0 };
 const EMPTY_FOULS: Record<'red' | 'blue', FoulTally> = { red: NO_FOULS, blue: NO_FOULS };
+
+/** playback rates. Only the wall-clock dt fed to the accumulator is scaled, so every tick is
+ *  still one `stepOnce()` — a 2× replay is the same match, reached sooner (design review 09-03) */
+const SPEEDS = [0.5, 1, 2] as const;
+/** how far ←/→ jump: five seconds of ticks */
+const SEEK_JUMP = Math.round(5 / SIM_DT);
 
 /** m:ss from seconds. Rounds ONCE, before splitting — rounding the two halves separately
  *  prints "1:00" for 119.7 s, because the minutes half floors the unrounded value. */
@@ -172,8 +178,11 @@ export function ReplayView({
   const [total, setTotal] = useState(1);
   // live scoreboard, sampled with the progress readout (never per frame)
   const [score, setScore] = useState({ red: 0, blue: 0 });
-  const [phase, setPhase] = useState<MatchPhase>('pre');
-  const [timeLeft, setTimeLeft] = useState(0);
+  /** the middle of the scoreboard, in the HUD's own words — `hudLabels` is what the burned-in
+   *  video draws too, so the screen and the file cannot name a phase two ways (09-07) */
+  const [labels, setLabels] = useState<HudLabels>({ phase: 'PRE-MATCH', clock: null, result: null });
+  const [speed, setSpeed] = useState<number>(1);
+  const speedRef = useRef(1);
   /**
    * PENALTIES, ON EVERY REPLAY AND FOR EVERYBODY.
    *
@@ -451,7 +460,7 @@ export function ReplayView({
       const dt = Math.min((t - lastT) / 1000, 0.25);
       lastT = t;
       if (playingRef.current && scrubTo.current === null) {
-        acc += dt;
+        acc += dt * speedRef.current;
         let n = 0;
         while (acc >= SIM_DT && n < 8 && !p.done) {
           p.stepOnce();
@@ -598,6 +607,38 @@ export function ReplayView({
     };
   }, [menuOpen]);
 
+  /**
+   * TRANSPORT KEYS (design review 09-03): Space plays/pauses, ←/→ jump five seconds. Window-
+   * level, like the `t` view key, because the canvas is not focusable. Off while a real-time
+   * capture runs (the transport is locked then), under any modifier, and while typing. Space on
+   * a focused button is left to the button — its own activation already does what was pressed,
+   * and handling it here too would toggle twice. On the seek bar ←/→ are taken over: its native
+   * step is one tick, which cannot scrub a 9,000-tick match.
+   */
+  useEffect(() => {
+    if (status !== 'ready' || recording) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      const el = e.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(textarea|select)$/i.test(el.tagName))) return;
+      if (el?.tagName === 'INPUT' && !el.classList.contains('ds-replay-seek')) return;
+      const p = player.current;
+      if (!p) return;
+      // a held key auto-repeats: Space would flicker play/pause, and every ← re-steps from tick 0
+      if (e.repeat) return;
+      if (e.key === ' ') {
+        if (el?.closest('button, a')) return;
+        e.preventDefault();
+        setPlay(!playingRef.current);
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        seek(clamp(p.world.tick + (e.key === 'ArrowLeft' ? -SEEK_JUMP : SEEK_JUMP), 0, total));
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [status, recording, total]);
+
   /** pull tick + scoreboard off the sim in one go, so seeking/restarting can't
    *  leave the score showing a different moment than the field does. */
   const sync = (): void => {
@@ -606,8 +647,7 @@ export function ReplayView({
     if (!p || !w || scrubTo.current !== null) return;
     setTick(w.tick);
     setScore({ red: w.match.scores.red.total, blue: w.match.scores.blue.total });
-    setPhase(w.match.phase);
-    setTimeLeft(Math.max(0, Math.round(w.match.phaseTimeLeft)));
+    setLabels(hudLabels(w, null, p.done));
     const cards = w.match.cards;
     setFouls({
       red: {
@@ -678,6 +718,12 @@ export function ReplayView({
   };
 
   const pct = Math.round((tick / total) * 100);
+  /** match time, not a percentage (09-04): "37%" does not say where AUTO ends */
+  const timeText = `${mmss(tick * SIM_DT)} / ${mmss(total * SIM_DT)}`;
+  const setRate = (v: number): void => {
+    speedRef.current = v;
+    setSpeed(v);
+  };
   /**
    * SAVE THE REPLAY WHILE IT IS STILL EXACT — as a VIDEO, mainly.
    *
@@ -1037,8 +1083,19 @@ export function ReplayView({
     stopVisibility.current = () => document.removeEventListener('visibilitychange', onVisibility);
 
     recorder.current = rec;
-    setCapturing(id);
-    setRecording(true);
+    /**
+     * SWAP THE ROW, RE-FIT, THEN FILM (design review 09-13). The recording bar is taller than
+     * the transport row it replaces (its note wraps), and the refit effect deliberately skips
+     * while a capture runs — so it has to happen HERE, after React has committed the bar
+     * (`flushSync`) and before the first frame is recorded. Otherwise the field is squashed for
+     * the whole file. On stop, `onstop` clears `recorder` first, so the effect re-fits then.
+     */
+    flushSync(() => {
+      setCapturing(id);
+      setRecording(true);
+    });
+    refit.current?.();
+    setRate(1); // a real-time capture IS real time: the file and the "left" readout assume 1×; left at 1× after, on purpose
     rebuild(); // record the whole match, not from wherever the viewer is paused
     rec.start();
     playingRef.current = true;
@@ -1135,7 +1192,6 @@ export function ReplayView({
   // FINAL only at the recorded end: a replay runs up to the tick its match was FINALIZED, and
   // between the buzzer and that tick the score can still change
   const done = player.current?.done ?? false;
-  const clock = `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, '0')}`;
   // the REAL-TIME capture runs at 1×, so what is left of the replay is what is left of it
   const runtime = total * SIM_DT;
   /** a fast save is running in the background; the viewer stays fully usable */
@@ -1157,6 +1213,14 @@ export function ReplayView({
    * real time (5.2-5.7× across every codec and quantizer tried at 1920), rounded DOWN to be
    * the pessimistic end of that range rather than the flattering one.
    */
+  // PHASE OVER CLOCK, in the live HUD's words (09-07). `hudLabels` says FINAL only at the
+  // recorded end and MATCH OVER in the settling window before it, as the old ternary did.
+  const mid = (
+    <span className="rs-mid">
+      <span className="rs-phase">{labels.phase}</span>
+      {labels.clock && <span className="rs-clock">{labels.clock}</span>}
+    </span>
+  );
   const fastEta = `~${Math.max(5, Math.round(runtime / FAST_ENCODE_SPEED))}s`;
   const remaining = Math.max(0, total - tick) * SIM_DT;
 
@@ -1364,12 +1428,12 @@ export function ReplayView({
             <>
               <span className="rs-side red">RED</span>
               <b className="rs-num">{score.red}</b>
-              <span className="rs-mid">{done ? 'FINAL' : phase === 'post' ? 'MATCH OVER' : clock}</span>
+              {mid}
               <b className="rs-num">{score.blue}</b>
               <span className="rs-side blue">BLUE</span>
             </>
           )}
-          {solo && <span className="rs-mid">{done ? 'FINAL' : phase === 'post' ? 'MATCH OVER' : clock}</span>}
+          {solo && mid}
         </div>
       )}
       {/* PENALTIES, ON THE FACE OF IT. One always-present row under the scoreboard, mirroring
@@ -1469,6 +1533,19 @@ export function ReplayView({
             </span>
           </button>
           <button className="ds-btn" onClick={rebuild}><span aria-hidden="true">⟲</span> Restart</button>
+          {/* the segmented idiom the header's 2D/3D uses: every rate on screen, the live one on */}
+          <div className="ds-segs" role="group" aria-label="Playback speed">
+            {SPEEDS.map((v) => (
+              <button
+                key={v}
+                className={`ds-seg${speed === v ? ' on' : ''}`}
+                aria-pressed={speed === v}
+                onClick={() => setRate(v)}
+              >
+                {v}×
+              </button>
+            ))}
+          </div>
           <input
             type="range"
             className="ds-replay-seek"
@@ -1492,8 +1569,10 @@ export function ReplayView({
             }}
             onLostPointerCapture={commitScrub}
             aria-label="Seek"
+            aria-valuetext={timeText}
+            title="Space plays or pauses. ← and → jump 5 seconds."
           />
-          <span className="ds-replay-time">{pct}%</span>
+          <span className="ds-replay-time">{timeText}</span>
         </div>
       )}
     </div>
@@ -1522,13 +1601,13 @@ function FoulChip({ side, t, cost }: { side: 'red' | 'blue'; t: FoulTally; cost?
       ) : (
         <>
           {(t.minor > 0 || t.major > 0) && (
-            <span className="pen-count">
+            <span className="pen-count ds-num">
               {t.minor} MIN · {t.major} MAJ
             </span>
           )}
           {solo
-            ? (cost as number) > 0 && <span className="pen-awarded">−{cost} from the score</span>
-            : t.awarded > 0 && <span className="pen-awarded">+{t.awarded} awarded</span>}
+            ? (cost as number) > 0 && <span className="pen-awarded"><span className="ds-num">−{cost}</span> from the score</span>
+            : t.awarded > 0 && <span className="pen-awarded"><span className="ds-num">+{t.awarded}</span> awarded</span>}
           {/* the card's NAME is on the chip, not just its colour (design review 09-02, WCAG 1.4.1) */}
           {t.yellow > 0 && <span className="pen-card yellow"><span aria-hidden="true">■ {t.yellow} YC</span><span className="ds-sr">{t.yellow} yellow card{t.yellow > 1 ? 's' : ''}</span></span>}
           {t.red > 0 && <span className="pen-card red"><span aria-hidden="true">■ {t.red} RC</span><span className="ds-sr">{t.red} red card{t.red > 1 ? 's' : ''}</span></span>}

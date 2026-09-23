@@ -7,11 +7,14 @@
  * sell. This module is the OTHER thing: who presents DSIM, the application. The
  * home menu therefore reads
  *
- *     BIOBUZZ presented by RTX                           (the season eyebrow)
  *     DSIM                                               (the app)
  *     …presented by Offset Robotics                      (this module)
+ *     [ DECODE | Chain Reaction | BIOBUZZ ]              (the game switcher)
+ *     BIOBUZZ presented by RTX · FIRST Tech Challenge 2026–27   (the season, muted)
  *
- * and both stay true at once.
+ * and both stay true at once. The footer keeps the same split: `DSIM` + the sponsor
+ * mark are one brand run, and the season is its own item (`.ds-foot-season`), so the
+ * line never reads as Offset presenting the game.
  *
  * DOM-FREE ON PURPOSE. The artwork is imported through Vite in
  * `src/ui/sponsorAssets.ts`, because the Electron build runs from `file://` with

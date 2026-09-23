@@ -3,6 +3,7 @@ import { adminCorrectMatchScore, adminFetchMatch, type AdminMatch } from '../net
 import { adminFail } from './adminCopy';
 import type { PenaltyLine } from '../sim/penaltyLog';
 import type { MatchPhase } from '../types';
+import { ENDGAME_START } from '../config';
 
 /**
  * THE REPLAY RAIL — what is beside the field rather than on it.
@@ -29,25 +30,26 @@ export interface PenaltyEntry {
   line: PenaltyLine;
 }
 
-/** THE HOUSE WORDS, not shorter ones invented for a narrow column. Teleop is
- *  DRIVER-CONTROLLED on every surface that names it (the live HUD, `world.events`, the
- *  burned-in video overlay) and this is the fourth; a log that said TELEOP would be the drift
- *  those three were brought into line to remove. The row wraps instead. */
+/** THE HOUSE WORDS, not shorter ones invented for a narrow column: the live HUD's
+ *  (`timerPanel`) and the burned-in video's (`hudLabels`), END GAME split out of teleop the same
+ *  way. It said AUTO and POST-MATCH until design review 09-07 — the drift this list exists to
+ *  prevent. The row wraps instead. */
 const PHASE_LABEL: Record<MatchPhase, string> = {
   pre: 'PRE-MATCH',
-  auto: 'AUTO',
+  auto: 'AUTONOMOUS',
   transition: 'TRANSITION',
   teleop: 'DRIVER-CONTROLLED',
-  post: 'POST-MATCH',
+  post: 'MATCH OVER',
   freeplay: 'FREE DRIVE',
 };
 
-/** `AUTO 0:12` — the phase and its remaining clock, which is how a match is actually read.
- *  A bare offset into the file tells a watcher nothing about when in the MATCH it happened. */
+/** `AUTONOMOUS 0:12` — the phase and its remaining clock, which is how a match is actually
+ *  read. A bare offset into the file tells a watcher nothing about when in the MATCH it happened. */
 function whenLabel(e: PenaltyEntry): string {
   const m = Math.floor(e.timeLeft / 60);
   const s = String(e.timeLeft % 60).padStart(2, '0');
-  return `${PHASE_LABEL[e.phase] ?? e.phase} ${m}:${s}`;
+  const phase = e.phase === 'teleop' && e.timeLeft <= ENDGAME_START ? 'END GAME' : PHASE_LABEL[e.phase] ?? e.phase;
+  return `${phase} ${m}:${s}`;
 }
 
 /**
@@ -172,7 +174,7 @@ export function ScoreEditor({
   const [blue, setBlue] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = (): void => {
     void adminFetchMatch(matchId).then((m) => {
@@ -217,10 +219,13 @@ export function ScoreEditor({
     const done = await adminCorrectMatchScore(matchId, nextRed, nextBlue, note.trim() || undefined);
     setBusy(false);
     if (!done) {
-      setStatus(adminFail('correct the score'));
+      setStatus({ ok: false, text: adminFail('correct the score') });
       return;
     }
-    setStatus(`Saved. Red ${done.redBefore} → ${done.redAfter}, blue ${done.blueBefore} → ${done.blueAfter}.`);
+    setStatus({
+      ok: true,
+      text: `Saved. Red ${done.redBefore} → ${done.redAfter}, blue ${done.blueBefore} → ${done.blueAfter}.`,
+    });
     setNote('');
     load();
   };
@@ -278,6 +283,7 @@ export function ScoreEditor({
             type="number"
             min={0}
             inputMode="numeric"
+            className="ds-input"
             value={red}
             onChange={(e) => setRed(e.target.value)}
           />
@@ -288,6 +294,7 @@ export function ScoreEditor({
             type="number"
             min={0}
             inputMode="numeric"
+            className="ds-input"
             value={blue}
             onChange={(e) => setBlue(e.target.value)}
           />
@@ -303,6 +310,7 @@ export function ScoreEditor({
         <span className="rr-cap">Why</span>
         <input
           type="text"
+          className="ds-input"
           value={note}
           maxLength={300}
           placeholder="What the replay shows"
@@ -323,7 +331,12 @@ export function ScoreEditor({
         players left this match with stands.
       </p>
 
-      {status && <p className="rr-status">{status}</p>}
+      {/* a failed save in the error colour, not the success one (design review 09-11) */}
+      {status && (
+        <p className={`ds-hint ${status.ok ? 'ok' : 'err'}`} role="status">
+          {status.text}
+        </p>
+      )}
 
       <h3 className="rr-h4">Who played</h3>
       <ul className="rr-players">
