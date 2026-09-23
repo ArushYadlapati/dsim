@@ -10,8 +10,9 @@ import { PerfHud } from './PerfHud';
 import { PERF_DISPLAY_LEVELS } from '../settings';
 import type { PerfDisplay } from '../types';
 import { effectiveBindings, keyLabel, padBindLabel, padBinds } from '../input/bindings';
-import { ENDGAME_START, POWER_DRAW_MAX } from '../config';
+import { POWER_DRAW_MAX } from '../config';
 import { MobileControls } from './MobileControls';
+import { timerPanel } from './timerPanel';
 import { AdSlot, useAdUnitActive } from './AdSlot';
 import { SponsorGameChip } from './Sponsor';
 import { Results } from './Results';
@@ -896,21 +897,6 @@ export function GameView({
   );
 }
 
-function fmtTime(s: number): string {
-  const total = Math.max(0, Math.ceil(s));
-  const m = Math.floor(total / 60);
-  return `${m}:${String(total % 60).padStart(2, '0')}`;
-}
-
-const PHASE_LABEL: Record<string, string> = {
-  pre: 'PRE-MATCH',
-  auto: 'AUTONOMOUS',
-  transition: 'TRANSITION',
-  teleop: 'DRIVER-CONTROLLED',
-  post: 'FINAL',
-  freeplay: 'FREE DRIVE',
-};
-
 /** styled after the FTC live scoring audience display: red panel | timer | blue panel */
 function Hud({
   hud,
@@ -929,8 +915,7 @@ function Hud({
   const GameScoreBar = moduleFor(hud.game).scoreBar;
   const GameChips = moduleFor(hud.game).hudChips;
   const GamePinnedNotice = moduleFor(hud.game).pinnedNotice;
-  const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
-  const endgame = hud.timeLeft <= ENDGAME_START && hud.phase === 'teleop';
+  const timer = timerPanel(hud);
   const redScore = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blueScore = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
   // Chain Reaction is scored (its own breakdown); DECODE shows motif + its breakdown.
@@ -961,21 +946,13 @@ function Hud({
             {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
             <span className="panel-score">{redScore}</span>
           </div>
-          <div className={`timer-panel ${urgent ? 'urgent' : endgame ? 'warning' : ''}`}>
+          <div className={`timer-panel ${timer.cls}`}>
             {/* status on the PHASE only — the digits beside it retick every frame and
                 would flood a screen reader. This changes ~4 times a match. */}
             <span className="timer-phase" role="status">
-              {/* FINAL only once the score is final: between the buzzer and the field coming to
-                  rest it can still change, and the bar must not call it FINAL beside it */}
-              {endgame
-                ? 'END GAME'
-                : hud.phase === 'post' && !hud.resultFinal
-                  ? 'MATCH OVER'
-                  : PHASE_LABEL[hud.phase]}
+              {timer.label}
             </span>
-            <span className="timer-time">
-              {hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)}
-            </span>
+            <span className="timer-time">{timer.time}</span>
             {dec && (
               <span className="timer-motif">
                 {hud.motif.map((c, i) => (

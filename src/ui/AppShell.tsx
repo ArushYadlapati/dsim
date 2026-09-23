@@ -188,31 +188,31 @@ export function AppShell({
           <SponsorFooterMark />
         </span>
         <span className="ds-foot-links">
-          <button className="ds-foot-link" onClick={onDownload}>
+          <FootLink href={`/${game}/download`} go={onDownload}>
             Download
-          </button>
-          <button className="ds-foot-link" onClick={onContributors}>
+          </FootLink>
+          <FootLink href={`/${game}/contributors`} go={onContributors}>
             Contributors
-          </button>
+          </FootLink>
           {/* hidden until the tier is actually open for business - see
               SUPPORT_ENABLED. A link to a page that cannot take a payment is a
               dead end, and a broken purchase path is a cited AdSense rejection. */}
           {SUPPORT_ENABLED && (
-            <button className="ds-foot-link" onClick={onDonate}>
+            <FootLink href={`/${game}/donate`} go={onDonate}>
               Support
-            </button>
+            </FootLink>
           )}
-          <button className="ds-foot-link" onClick={onPrivacy}>
+          <FootLink href={`/${game}/privacy`} go={onPrivacy}>
             Privacy
-          </button>
+          </FootLink>
           {/* immediately after Privacy, not after Terms. Its label is fixed by the
               privacy policy, which names the link verbatim (legalText.ts), so it
               cannot be shortened — but two items both starting "Privacy" should at
               least sit together rather than have Terms between them. */}
           <ConsentLink onPrivacy={onPrivacy} />
-          <button className="ds-foot-link" onClick={onTerms}>
+          <FootLink href={`/${game}/terms`} go={onTerms}>
             Terms
-          </button>
+          </FootLink>
           {/* main replaced the bare GitHub link with Changes — keep that, plus
               monetization's Support/Privacy/Terms destinations.
 
@@ -223,13 +223,35 @@ export function AppShell({
               it by POSITION. No Discord link here: the home page carries it, and
               the footer copy came back through a main merge with no `<a>` rule
               behind it (a0bb3b4 had removed both). */}
-          <button className="ds-foot-link" onClick={onChangelog}>
+          <FootLink href={`/${game}/changelogs`} go={onChangelog}>
             Changes
-          </button>
+          </FootLink>
         </span>
       </footer>
     </div>
     </PresenceProvider>
+  );
+}
+
+/**
+ * A footer DESTINATION: a real `<a href>` so it works without JS (Legal.tsx needs the policy
+ * reachable that way), is crawlable, and opens in a new tab on middle/modifier click. A plain
+ * left click stays in the SPA through the app's own `navigate` (`go`). The hrefs mirror
+ * `screenSuffix` in App.tsx, which the router's `parseScreen` reads back.
+ */
+function FootLink({ href, go, children }: { href: string; go: () => void; children: ReactNode }) {
+  return (
+    <a
+      className="ds-foot-link"
+      href={href}
+      onClick={(e) => {
+        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+        e.preventDefault();
+        go();
+      }}
+    >
+      {children}
+    </a>
   );
 }
 

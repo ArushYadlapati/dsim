@@ -178,6 +178,13 @@ grep -rnE "font-weight: *(500|750|900)" src/ui/*.css
 grep -rn "var(--[a-z-]*, *#" src/ui/*.css
 ```
 
+`npm run uiaudit` runs these and more as a ratchet (`scripts/uiaudit.mjs`). Its zero-baseline
+rules are hard errors. One of them, `font-inherit-mix`, flags a CSS-wide keyword (`inherit`,
+`initial`, `unset`, `revert`) used inside a `font:` shorthand next to other values. Such a
+keyword is only valid as the WHOLE value, so `font: 600 12px/1 inherit` is invalid and the
+declaration is silently dropped: no weight, no size, no line-height. Write the longhands
+instead. A bare `font: inherit` and `var(--x, inherit)` are both fine.
+
 ## 10. Known debt
 
 Recorded so it is not mistaken for precedent. These predate the standard; **new code does not

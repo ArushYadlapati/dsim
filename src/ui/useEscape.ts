@@ -13,7 +13,9 @@ export function useEscape(fn: () => void, enabled = true): void {
   useEffect(() => {
     if (!enabled) return;
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') fn();
+      // a child that already consumed this Escape (Select closing its listbox — React's
+      // root-delegated handler runs before this window listener) must not also exit the screen
+      if (e.key === 'Escape' && !e.defaultPrevented) fn();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

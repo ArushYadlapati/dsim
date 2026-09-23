@@ -98,7 +98,10 @@ function CinematicReveal({
 function WhatsNew({ items, onClose }: { items: Announcement[]; onClose: () => void }): JSX.Element {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape' || e.key === 'Enter') {
+      // Enter on a focused control (a link in the notes) must activate IT, not dismiss the dialog
+      const onControl =
+        e.target instanceof Element && e.target.closest('a, button, input, textarea, select') !== null;
+      if (e.key === 'Escape' || (e.key === 'Enter' && !onControl)) {
         e.preventDefault();
         onClose();
       }

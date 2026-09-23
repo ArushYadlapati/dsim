@@ -3,6 +3,7 @@ import type { Alliance } from '../../types';
 import type { HudSnapshot } from '../../game';
 import type { ArtifactColor } from '../../types';
 import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
+import { fmtTime, timerPanel } from '../../ui/timerPanel';
 import { BiobuzzBuilder } from './Builder';
 import { BB_NECTAR_COUNT, BB_PTS } from './config';
 import type { BbCellHud, BbPinHud, BiobuzzFieldHud } from './hud';
@@ -94,11 +95,6 @@ function heldPhrase(held: readonly ArtifactColor[]): string {
  */
 const cellLine = (c: BbCellHud | undefined): string =>
   !c ? '' : c.tipping > 0 ? 'TIPPING' : `${c.needed} MORE TO TIP`;
-
-const fmtTime = (s: number): string => {
-  const t = Math.max(0, Math.ceil(s));
-  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
-};
 
 /** seconds a G407 CONTROL warning stays on screen after the count moves. */
 const BB_WARN_HOLD_S = 3;
@@ -368,15 +364,6 @@ export function BiobuzzPinnedNotice({ hud }: GameHudProps) {
   );
 }
 
-const PHASE_LABEL: Record<HudSnapshot['phase'], string> = {
-  pre: 'PRE-MATCH',
-  auto: 'AUTONOMOUS',
-  transition: 'TRANSITION',
-  teleop: 'DRIVER-CONTROLLED',
-  post: 'FINAL',
-  freeplay: 'FREE DRIVE',
-};
-
 /**
  * The whole bottom bar — red | timer | blue, each alliance's up-CELL line under its total.
  *
@@ -404,7 +391,8 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
   const pending = pendingLine(f, hud.alliance);
   const red = hud.alliance === 'red' ? hud.score.total : hud.oppTotal;
   const blue = hud.alliance === 'blue' ? hud.score.total : hud.oppTotal;
-  const urgent = hud.timeLeft <= 10 && (hud.phase === 'auto' || hud.phase === 'teleop');
+  // the timer panel is the SHARED one (END GAME, MATCH OVER until the field settles)
+  const timer = timerPanel(hud);
   if (hud.mode !== 'match') {
     return (
       <div className="scorebar" data-hud-band>
@@ -454,13 +442,13 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
             {cellLine(f?.cells.red)}
           </span>
         </div>
-        <div className={`timer-panel ${urgent ? 'urgent' : ''}`}>
+        <div className={`timer-panel ${timer.cls}`}>
           {/* status on the PHASE only — the digits beside it retick every frame and would
               flood a screen reader. This changes ~4 times a match. */}
           <span className="timer-phase" role="status">
-            {PHASE_LABEL[hud.phase]}
+            {timer.label}
           </span>
-          <span className="timer-time">{hud.phase === 'post' ? '0:00' : fmtTime(hud.timeLeft)}</span>
+          <span className="timer-time">{timer.time}</span>
         </div>
         <div className={`score-panel bb blue ${hud.alliance === 'blue' ? 'mine' : ''}`}>
           {hud.alliance === 'blue' && <span className="you-tag">YOU</span>}

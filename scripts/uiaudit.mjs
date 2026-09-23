@@ -14,13 +14,18 @@
  * the baseline when it goes down. New code is held to the standard immediately; the
  * existing debt is paid off in whatever order suits, and can never grow back.
  *
- * Two rules have a baseline of 0 and are hard errors, because both describe bugs that
+ * Several rules have a baseline of 0 and are hard errors, because each describes a bug that
  * shipped silently and cost real time to find:
  *
  *   • UNDEFINED CUSTOM PROPERTY — `--ds-font` was used 13 times and never defined. In a
  *     `font:` shorthand an unresolvable var() voids the WHOLE declaration, so those rules
  *     set no weight, size or line-height at all, for months, with nothing in the console.
  *     `--accent` was the same bug wearing a fallback.
+ *
+ *   • `inherit` INSIDE A `font:` SHORTHAND — a CSS-wide keyword is only valid as the
+ *     WHOLE value, so `font: 600 12px/1 inherit` is invalid and the declaration drops;
+ *     five HUD rules set no weight, size or line-height that way. (`font: inherit` alone
+ *     and `var(--x, inherit)` are both fine.)
  *
  *   • DUPLICATE SELECTOR — `.ds-dl` was declared twice for two unrelated components. The
  *     later block won and laid the replay export menu out as a column. Both files are one
@@ -49,6 +54,7 @@ const BASELINE = {
   'undefined-token': 0,
   'duplicate-selector': 0,
   'var-literal-fallback': 0,
+  'font-inherit-mix': 0,
   'ghost-primary': 0,
   // 29 → 5, 2026-09-19: the admin console rebuild took its 24 out. `.admin-card` is a flex
   // column with a gap of its own and eleven of its children carried an inline margin too,
@@ -118,6 +124,22 @@ for (const f of css) {
 for (const f of css) {
   read(f).forEach((l, i) => {
     if (/var\(\s*--[a-zA-Z0-9-]+\s*,\s*(#|rgb|hsl)/.test(l)) hit('var-literal-fallback', f, i + 1, l);
+  });
+}
+
+// ── 2b. a CSS-wide keyword inside a `font:` shorthand ─────────────────────────
+// `inherit`/`initial`/`unset`/`revert` are only valid as the ENTIRE value; beside other
+// values the whole shorthand is invalid and silently dropped. var() fallbacks are stripped
+// first, because `var(--ds-font-ui, inherit)` is valid.
+for (const f of css) {
+  read(f).forEach((l, i) => {
+    const code = l.replace(/\/\*.*?\*\//g, '');
+    for (const m of code.matchAll(/(?:^|[\s;{])font\s*:\s*([^;}]+)/g)) {
+      const v = m[1].replace(/var\([^()]*\)/g, 'V').trim();
+      if (/\b(inherit|initial|unset|revert)\b/.test(v) && !/^(inherit|initial|unset|revert)(\s*!important)?$/.test(v)) {
+        hit('font-inherit-mix', f, i + 1, l);
+      }
+    }
   });
 }
 
@@ -305,6 +327,7 @@ const DESC = {
   'undefined-token': 'var() names a custom property that is defined nowhere',
   'duplicate-selector': 'one selector declared by two top-level blocks',
   'var-literal-fallback': 'var(--x, #literal) — the fallback hides a missing token',
+  'font-inherit-mix': 'inherit/initial beside other values in font: — the whole declaration drops',
   'ghost-primary': 'ghost + primary on one button — the label goes white on the page surface',
   'inline-spacing': 'spacing literal in JSX; it belongs to a class',
   'fractional-font-size': 'fractional font-size; the scale has six whole steps',

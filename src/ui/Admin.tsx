@@ -17,6 +17,8 @@ import {
   type AnnouncementKind,
 } from '../net/api';
 import { Markdown } from './markdown';
+import { SEASONS } from '../seasons';
+import type { GameId } from '../types';
 import { AdminLive } from './AdminLive';
 import { AdminReports, type WatchReplay } from './AdminReports';
 import { AdminAudit } from './AdminAudit';
@@ -161,6 +163,7 @@ export function Admin({
   const [seasonBusy, setSeasonBusy] = useState(false);
 
   // moderation — leaderboard records
+  const [recGame, setRecGame] = useState<GameId>('decode');
   const [recMode, setRecMode] = useState<RecMode>('solo');
   const [recDt, setRecDt] = useState<string>('overall');
   const [records, setRecords] = useState<AdminRecordRow[]>([]);
@@ -188,10 +191,11 @@ export function Admin({
 
   const loadRecords = async (): Promise<void> => {
     setRecBusy(true);
-    const rows = await adminFetchRecords(recMode, recDt);
+    const rows = await adminFetchRecords(recMode, recDt, recGame);
     setRecBusy(false);
     setRecords(rows);
-    setRecStatus(rows.length ? `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}.` : 'No records in this bucket. If you expected some, check that you are still signed in as an admin.');
+    const gameName = SEASONS.find((s) => s.key === recGame)?.name ?? recGame;
+    setRecStatus(rows.length ? `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'} · ${gameName}.` : 'No records in this bucket. If you expected some, check that you are still signed in as an admin.');
   };
 
   const deleteRecord = async (row: AdminRecordRow): Promise<void> => {
@@ -661,6 +665,11 @@ export function Admin({
       <div className="admin-card">
         <div className="admin-field">
           <span>Board</span>
+          <select aria-label="Game" value={recGame} onChange={(e) => setRecGame(e.target.value as GameId)}>
+            {SEASONS.map((g) => (
+              <option key={g.key} value={g.key}>{g.name}</option>
+            ))}
+          </select>
           <select value={recMode} onChange={(e) => setRecMode(e.target.value as RecMode)}>
             <option value="solo">Solo</option>
             <option value="duo">Duo</option>
@@ -678,7 +687,7 @@ export function Admin({
               className="ds-btn ghost small"
               onClick={() =>
                 downloadCsv(
-                  `records-${recMode}-${recDt}.csv`,
+                  `records-${recGame}-${recMode}-${recDt}.csv`,
                   ['rank', 'userId', 'handle', 'score', 'drivetrain', 'recordId', 'replayId', 'createdAt'],
                   records.map((r, i) => [
                     i + 1, r.userId, r.handle, r.score, r.drivetrain, r.recordId, r.replayId ?? '', r.createdAt,

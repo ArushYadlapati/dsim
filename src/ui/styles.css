@@ -146,7 +146,7 @@ button {
   height: 100%;
   /* MOBILE: the whole game surface is a control pad — no text selection, no
      long-press callout, no pinch/scroll-zoom, no rubber-band overscroll. Pairs with
-     the viewport meta (user-scalable=no) + the gesturestart guard in GameView. */
+     the gesturestart guard in GameView. Page zoom stays ON outside the game (WCAG 1.4.4). */
   touch-action: none;
   -webkit-touch-callout: none;
   -webkit-user-select: none;

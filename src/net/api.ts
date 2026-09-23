@@ -1542,12 +1542,13 @@ export interface AdminRecordRow {
 export async function adminFetchRecords(
   mode: 'solo' | 'duo',
   drivetrain: string,
+  game: GameId,
   limit = 100,
 ): Promise<AdminRecordRow[]> {
   const base = gameServerHttpUrl();
   const token = await getAuthToken();
   if (!base || !token) return [];
-  const q = new URLSearchParams({ mode, drivetrain, limit: String(limit) });
+  const q = new URLSearchParams({ mode, drivetrain, game, limit: String(limit) });
   const res = await fetch(base + '/api/admin/records?' + q.toString(), {
     headers: { authorization: `Bearer ${token}` },
   });

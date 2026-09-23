@@ -5,6 +5,7 @@ import { MatchSetup } from './MatchSetup';
 import { ControlsSection } from './ControlsSection';
 import { AudioSection } from './AudioSection';
 import { NetworkSection } from './NetworkSection';
+import { moduleFor } from '../games';
 /**
  * LAZY, unlike its five siblings — and the reason is the bundle, not the screen.
  *
@@ -86,13 +87,19 @@ export function Configure({
   /** run the tutorial (roadmap item 6); absent when the active game has no tutorial. */
   onTutorial?: () => void;
 }) {
+  // Graphics only exists for a game with a 3D view (the module's `scene` slot) — every row in it
+  // is a 3D setting. The route key stays valid so a bookmarked /configure/graphics under a 2D
+  // game lands on Robot rather than a blank page (design review 22-03).
+  const has3d = !!moduleFor(settings.game).scene;
+  const sections = CONFIGURE_SECTIONS.filter((s) => s !== 'graphics' || has3d);
+  if (!sections.includes(section)) section = 'robot';
   return (
     <>
       <h1 className="ds-h1">Configure</h1>
 
       <div className="ds-subnav-layout">
         <nav className="ds-subnav" aria-label="Configure sections">
-          {CONFIGURE_SECTIONS.map((s) => (
+          {sections.map((s) => (
             <button
               key={s}
               className={`ds-subnav-btn${section === s ? ' on' : ''}`}

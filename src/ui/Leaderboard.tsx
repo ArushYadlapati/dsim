@@ -508,7 +508,23 @@ export function Leaderboard({
                       {!isRecords && <td>{(r as EloRow).games}</td>}
                       <td className="sc">
                         {isRecords ? rec.score : (r as EloRow).rating}
-                        {watchable && <span className="ds-watch"> ▶</span>}
+                        {/* the button is the keyboard path; the row click is a mouse convenience,
+                            so the button stops propagation or it would open the replay twice */}
+                        {watchable && (
+                          <>
+                            {' '}
+                            <button
+                              className="ds-btn ghost mh-watch"
+                              aria-label={`Watch replay, score ${rec.score}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onWatch!(rec.replayId!);
+                              }}
+                            >
+                              Watch ▶
+                            </button>
+                          </>
+                        )}
                       </td>
                     </tr>
                     {isRecords && isOpen && cfg && (
