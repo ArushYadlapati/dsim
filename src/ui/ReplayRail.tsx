@@ -319,7 +319,7 @@ export function ScoreEditor({
           re-rate it without re-rating everything after it for everyone involved. A moderator
           who assumed either way would be wrong half the time. */}
       <p className="rr-note">
-        Ratings are not recalculated. The result and the win are corrected; the ELO both
+        Ratings are not recalculated. The result and the win are corrected; the rating both
         players left this match with stands.
       </p>
 

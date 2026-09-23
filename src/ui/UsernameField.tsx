@@ -71,7 +71,7 @@ export function useUsernameCheck(raw: string, ownValue?: string): UsernameCheck 
           : status === 'checking'
             ? 'Checking…'
             : status === 'available'
-              ? 'Available ✓'
+              ? 'Available.'
               : status === 'taken'
                 ? 'That username is taken.'
                 : 'Couldn’t check right now. Try again.';

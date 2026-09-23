@@ -3148,7 +3148,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     // paying for swerve, and 435 rpm because this robot spends the match crossing the field
     // rather than winning a shove.
     //   mass: 20.5 lb of hardware, built properly, is 24.5.
-    name: 'Pollinator', teamName: 'Turret and Box Tube · the HIVE and the FLOWERS', teamNumber: 0,
+    name: 'Pollinator', teamName: 'Turret and Box Tube · the hive and the flowers', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 24.5, drivetrain: 'mecanum',
     driveRpm: 435, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
     scoreMode: 'turret',

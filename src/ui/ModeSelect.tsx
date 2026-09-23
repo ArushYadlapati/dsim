@@ -69,6 +69,14 @@ export function ModeSelect({
   return (
     <>
       <h1 className="ds-h1">Pick a mode</h1>
+      {/* NO GAME SERVER is said ONCE, as the page's sub-line, not as a "Needs the game server"
+          line on each of the five online tiles (design review 02-04). `multiplayer` is a
+          build-time flag, so in practice only dev and audit builds ever show this. */}
+      {!multiplayer && (
+        <p className="ds-sub" role="status">
+          Online play is unavailable: this build has no game server.
+        </p>
+      )}
 
       {activeGame && (
         <div className="ds-rejoin" role="alert">
@@ -120,13 +128,13 @@ export function ModeSelect({
         <div className="ds-tiles">
           <button className="ds-tile primary" onClick={onSoloMatch}>
             <span>
-              <span className="t">Solo Practice</span>
+              <span className="t">Solo practice</span>
             </span>
           </button>
 
           <button className="ds-tile" onClick={onFreeDrive}>
             <span>
-              <span className="t">Free Drive</span>
+              <span className="t">Free drive</span>
             </span>
           </button>
         </div>
@@ -140,7 +148,7 @@ export function ModeSelect({
           <button className="ds-tile" onClick={onRanked} disabled={!multiplayer || !signedIn}>
             <span>
               <span className="t">
-                Find Match
+                Find match
                 <QueueCounts className="tile" />
               </span>
               {/* ⚠️ CONDITIONAL, and it must stay that way. A previous pass rendered
@@ -152,9 +160,9 @@ export function ModeSelect({
                   and most visitors are signed out, where the line is there from the
                   start and never moves at all. If the shift is worth fixing, thread an
                   `authReady` flag down from AccountSync; do not reserve the line. */}
-              {(!multiplayer || !signedIn) && (
+              {multiplayer && !signedIn && (
                 <span className="d">
-                  {!multiplayer ? 'Needs the game server' : 'Sign in to play ranked'}
+                  Sign in to play ranked
                 </span>
               )}
             </span>
@@ -162,15 +170,13 @@ export function ModeSelect({
 
           <button className="ds-tile" onClick={onRecordRun} disabled={!multiplayer}>
             <span>
-              <span className="t">Solo Record</span>
-              {!multiplayer && <span className="d">Needs the game server</span>}
+              <span className="t">Solo record run</span>
             </span>
           </button>
 
           <button className="ds-tile" onClick={onDuoRecord} disabled={!multiplayer}>
             <span>
-              <span className="t">Duo Record</span>
-              {!multiplayer && <span className="d">Needs the game server</span>}
+              <span className="t">Duo record run</span>
             </span>
           </button>
         </div>
@@ -183,14 +189,12 @@ export function ModeSelect({
         <div className="ds-tiles">
           <button className="ds-tile" onClick={onCustomRoom} disabled={!multiplayer}>
             <span>
-              <span className="t">Custom Room</span>
-              {!multiplayer && <span className="d">Needs the game server</span>}
+              <span className="t">Custom room</span>
             </span>
           </button>
           <button className="ds-tile" onClick={onWatch} disabled={!multiplayer}>
             <span>
-              <span className="t">Watch Live</span>
-              {!multiplayer && <span className="d">Needs the game server</span>}
+              <span className="t">Watch live</span>
             </span>
           </button>
         </div>
@@ -208,7 +212,7 @@ export function ModeSelect({
           <div className="ds-tiles">
             <button className="ds-tile" onClick={onLan}>
               <span>
-                <span className="t">Host or Join</span>
+                <span className="t">Host or join</span>
               </span>
             </button>
           </div>

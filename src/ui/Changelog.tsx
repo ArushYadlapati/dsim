@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react';
 import { fetchAnnouncements, type Announcement } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { LINKS } from '../seasons';
-import { KindBadge } from './Announcements';
-import { Markdown } from './markdown';
+import { AnnouncementItem } from './Announcements';
 
 /**
  * Changelog — every published announcement (patch notes, new seasons, new
@@ -48,28 +47,29 @@ export function Changelog() {
           </a>
         </div>
         <div className="ds-panel-body">
+          {/* "No changelog yet" was false here: the changelog exists, this build just can't
+              reach it. Say that, and point at where the releases are readable anyway. */}
           {!configured ? (
             <div className="ds-empty">
-              <div className="big">No changelog yet</div>
+              <div className="big">Changelog unavailable</div>
+              It loads from the game server, which this build isn’t connected to. Release notes
+              are also on{' '}
+              <a href={`${LINKS.repo}/releases`} target="_blank" rel="noreferrer">
+                GitHub
+              </a>
+              .
             </div>
           ) : items === null ? (
             <div className="ds-loading">Loading…</div>
           ) : items.length === 0 ? (
             <div className="ds-empty">
               <div className="big">Nothing published yet</div>
+              Patch notes appear here when an update ships.
             </div>
           ) : (
             <div className="cl-list">
               {items.map((a) => (
-                <article key={a.id} className={`ann-item ${a.kind}`}>
-                  <header className="ann-item-head">
-                    <KindBadge kind={a.kind} />
-                    <time className="ds-hint">{new Date(a.publishedAt).toLocaleDateString()}</time>
-                  </header>
-                  <h2 className="ann-item-title">{a.title}</h2>
-                  {a.tagline && <p className="ann-item-tag">{a.tagline}</p>}
-                  {a.body.trim() && <Markdown text={a.body} className="ann-md" />}
-                </article>
+                <AnnouncementItem key={a.id} a={a} />
               ))}
             </div>
           )}

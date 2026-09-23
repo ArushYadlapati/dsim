@@ -184,10 +184,6 @@ function ReplayPrivacy() {
         <h2 className="ds-panel-title">Privacy</h2>
       </div>
       <div className="ds-panel-body stack start">
-        <p className="ds-hint">
-          Only the people who played in a match can watch it back. Your results, scores and
-          rating stay on your public profile.
-        </p>
         {value === null ? (
           <p className="ds-hint">Checking…</p>
         ) : (
@@ -324,26 +320,33 @@ export function DeleteAccount() {
       // The privacy policy promises deletion either way, so a failure has to fall
       // back to the promise we can always keep - a human answering the mailbox -
       // rather than leaving someone stuck on a button that does nothing.
+      // The server's wording is logged, not shown: it is not written for a person.
       const msg = e instanceof Error ? e.message : '';
+      console.warn('[account] delete failed:', msg);
       setErr(
         /404|not found|unavailable/i.test(msg)
           ? `Self-service deletion isn’t available on this server yet. Email ${LEGAL_CONTACT} and your account will be deleted.`
-          : msg || 'Couldn’t delete the account.',
+          : `Couldn’t delete the account. Try again, or email ${LEGAL_CONTACT} and it will be deleted for you.`,
       );
       setBusy(false);
     }
   };
 
   return (
-    <div className="ds-panel">
+    // `danger`: the frame itself marks the one irreversible panel (design review 08-05), and the
+    // key sentence leads rather than closing an eleven-item list
+    <div className="ds-panel danger">
       <div className="ds-panel-h">
         <h3 className="ds-panel-title">Delete account</h3>
       </div>
       <div className="ds-panel-body stack">
+        <p>
+          <strong>This cannot be undone.</strong>
+        </p>
         <p className="ds-hint">
           Permanently deletes your profile, username, saved settings and robot presets, records
           and practice runs with their replays, ranked rating and history, your playtime and
-          account standing, and every friendship, block, and invite. This cannot be undone.
+          account standing, and every friendship, block, and invite.
         </p>
         <p className="ds-hint">
           Matches you played stay on other players' history without your name, and payment records
@@ -368,7 +371,7 @@ export function DeleteAccount() {
           </button>
         </div>
         {err && (
-          <p className="ds-claim-msg err" role="status">
+          <p className="ds-hint err" role="status">
             {err}
           </p>
         )}

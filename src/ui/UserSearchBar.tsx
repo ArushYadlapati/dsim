@@ -1,38 +1,20 @@
-import { useEffect, useRef, useState } from 'react';
-import { searchUsers, type PublicProfile } from '../net/api';
-import { PersonRow } from './FriendsPanel';
+import { useState } from 'react';
+import { PersonRow, useUserSearch } from './FriendsPanel';
 
 /**
  * "Search name or @username" — a standalone public search, independent of the friends
- * panel's own add-friend box. Same debounce/sequence-guard shape as
- * `FriendsPanel`'s `AddFriend` (250ms, drop stale responses), but this one just
- * opens a profile — no friend-request affordance.
+ * panel's own add-friend box. The same `useUserSearch` as `FriendsPanel`'s `AddFriend`
+ * (debounce, stale-drop, a pending state), but this one just opens a profile — no
+ * friend-request affordance.
  */
 export function UserSearchBar({ onOpenProfile }: { onOpenProfile: (username: string) => void }) {
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<PublicProfile[]>([]);
-  const seq = useRef(0);
-
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setResults([]);
-      return;
-    }
-    const mine = ++seq.current;
-    const t = window.setTimeout(() => {
-      void searchUsers(q).then((users) => {
-        if (seq.current === mine) setResults(users);
-      });
-    }, 250);
-    return () => window.clearTimeout(t);
-  }, [query]);
+  const { results, searching } = useUserSearch(query);
 
   const pick = (username: string | null): void => {
     if (!username) return;
     onOpenProfile(username);
-    setQuery('');
-    setResults([]);
+    setQuery(''); // clears the results too: a short query empties the search
   };
 
   return (
@@ -51,7 +33,7 @@ export function UserSearchBar({ onOpenProfile }: { onOpenProfile: (username: str
       {query.trim().length >= 2 && (
         <div className="ds-usersearch-results">
           {results.length === 0 ? (
-            <p className="fr-empty">No players found.</p>
+            <p className="fr-empty">{searching ? 'Searching…' : 'No players found.'}</p>
           ) : (
             results.map((p) => (
               <PersonRow key={p.userId} p={p} onOpenProfile={pick} />

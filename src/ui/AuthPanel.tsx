@@ -5,6 +5,7 @@ import { isEmbeddedBrowser } from '../lib/browserEnv';
 import { acceptTerms, updateUsername } from '../net/api';
 import { TermsAgreement } from './TermsGate';
 import { UsernameInput, useUsernameCheck, usernameHintClass } from './UsernameField';
+import { CloseGlyph } from './FriendsPanel';
 import { useDialog } from './useDialog';
 
 /** which of the three forms the modal is showing */
@@ -28,7 +29,6 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
   const [mode, setMode] = useState<AuthMode>('in');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
   const [username, setUsername] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -55,7 +55,7 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
   /* A BACKDROP CLICK CLOSES ONLY AN UNTOUCHED FORM. On a phone the 380px card leaves a lot
      of scrim, and a stray tap there used to throw away a half-typed sign-up. The ✕ and Esc
      are deliberate, so they still close whatever is typed. */
-  const touched = !!(email || password || name || username || agreed);
+  const touched = !!(email || password || username || agreed);
 
   const copyLink = async () => {
     try {
@@ -95,7 +95,11 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
     setError('');
     try {
       if (mode === 'up') {
-        await client.signUp.email({ email, password, name: name || email });
+        // ONE NAME ON SIGN-UP (design review 08-10). A "Display name" field above the username
+        // asked for a name twice without saying why, took any length, and fell back to the
+        // email ADDRESS, which then showed on the leaderboard. The username (already 4–20 and
+        // moderated) seeds the display name; Appearance changes it.
+        await client.signUp.email({ email, password, name: uname.normalized });
         // claim the chosen username on our own profile (server verifies the fresh
         // JWT). If it doesn't land here — e.g. the token isn't ready yet — the
         // blocking UsernameGate will prompt for it on the next load.
@@ -193,7 +197,7 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
       >
         <div className="ds-modal-h">
           <h2 className="ds-dialog-title" id={TITLE_ID}>{TITLES[mode]}</h2>
-          <button className="ds-btn ghost small" onClick={onClose} aria-label="Close">✕</button>
+          <button className="ds-btn ghost small" onClick={onClose} aria-label="Close"><CloseGlyph /></button>
         </div>
         {mode === 'forgot' ? (
           <>
@@ -215,7 +219,8 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
                     onChange={(e) => setEmail(e.target.value)}
                   />
                 </label>
-                {error && <div className="ds-form-err" role="alert">{error}</div>}
+                {/* the reserved status line (ui-standard §1.4): a failed attempt does not grow the form */}
+                <div className={`ds-form-hint${error ? ' err' : ''}`} role="alert">{error}</div>
                 <button className="ds-btn primary" type="submit" disabled={busy}>
                   {busy ? 'Sending…' : 'Send reset link'}
                 </button>
@@ -230,10 +235,6 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
             <form className="ds-form" onSubmit={submit}>
               {mode === 'up' && (
                 <>
-                  <label>
-                    <span>Display name</span>
-                    <input className="ds-input" autoComplete="nickname" value={name} onChange={(e) => setName(e.target.value)} placeholder="On the leaderboard" />
-                  </label>
                   {/* the hint sits OUTSIDE the label, as on the username gate: inside, its
                       text would be read into the input's name as well as its description */}
                   <label>
@@ -294,13 +295,15 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
                   </span>
                 </label>
               )}
-              {error && <div className="ds-form-err" role="alert">{error}</div>}
+              <div className={`ds-form-hint${error ? ' err' : ''}`} role="alert">{error}</div>
               <button
                 className="ds-btn primary"
                 type="submit"
                 disabled={busy || (mode === 'up' && !uname.ok)}
               >
-                {busy ? 'Working…' : mode === 'in' ? 'Sign in' : 'Create account'}
+                {busy
+                  ? mode === 'in' ? 'Signing in…' : 'Creating account…'
+                  : mode === 'in' ? 'Sign in' : 'Create account'}
               </button>
             </form>
             {embedded ? (

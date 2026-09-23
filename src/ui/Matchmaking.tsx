@@ -56,8 +56,10 @@ const BACKGROUND_QUEUE_TIP = (
  * complaint this fixes.
  *
  * The numbers are READ from the same constants the server counts on, so the sentence cannot
- * go stale if either window is tuned. It is shown on the queue screen and again while
- * searching, because the second one is where people walk away.
+ * go stale if either window is tuned. It is shown on the queue screen, where the decision is
+ * made, and again once a match is found, where the reload guard below points at it. NOT while
+ * searching: that state already carries the widen hint and the Back tip, and a third block
+ * of prose restating the idle screen was one treatment too many (design review 02-14).
  *
  * AND IT NAMES THE RELOAD. "Stay at your keyboard" does not cover the one action that
  * turns a twenty-second grace into an instant charge: a queue lives in memory
@@ -949,7 +951,7 @@ export function Matchmaking({
 
   /** the console scaffold every full-screen setup surface shares (Lobby, Record
    * Run, MatchStrategy) — back control + brand mark, then a titled panel. */
-  const page = (title: JSX.Element, sub: string, body: JSX.Element): JSX.Element => (
+  const page = (title: string, sub: string, body: JSX.Element): JSX.Element => (
     <div className="ds-console">
       <div className="ds-console-in narrow">
         <div className="ds-head">
@@ -978,17 +980,15 @@ export function Matchmaking({
   // everyone — the server also rejects an anonymous queue as a backstop.
   if (!signedIn) {
     return page(
-      <>
-        Ranked <span className="accent">Match</span>
-      </>,
+      'Ranked match',
       '',
       <>
         <p className="ds-hint">
-          Ranked needs an account. Custom Rooms are open to everyone.
+          Ranked needs an account. Custom rooms are open to everyone.
         </p>
         <div className="ds-actions">
           <button className="ds-cta" onClick={onSignIn}>
-            SIGN IN ▶
+            SIGN IN
           </button>
         </div>
       </>,
@@ -1034,9 +1034,7 @@ export function Matchmaking({
    */
   if (found) {
     return page(
-      <>
-        Match <span className="accent">found</span>
-      </>,
+      'Match found',
       `${mode.toUpperCase()} · loading into the match`,
       <>
         <p className="ds-hint">{READY_WINDOW_NOTE}</p>
@@ -1055,9 +1053,7 @@ export function Matchmaking({
     // describe something that isn't happening.
     if (ch) {
       return page(
-        <>
-          Waiting for <span className="accent">@{ch.opponent}</span>
-        </>,
+        `Waiting for @${ch.opponent}`,
         // a closed pair has no queue to report a depth for; a premade genuinely is
         // in the open 2v2 pool once both have accepted, so show it
         ch.partyOnly
@@ -1086,9 +1082,7 @@ export function Matchmaking({
       );
     }
     return page(
-      <>
-        Finding a <span className="accent">match…</span>
-      </>,
+      'Finding a match…',
       `${mode.toUpperCase()} · ${queue.size}/${queue.need} in queue · ${elapsed}s`,
       <>
         {/* region-local first; widen automatically as you wait, or on demand */}
@@ -1098,7 +1092,6 @@ export function Matchmaking({
           </p>
         )}
         <p className="ds-tip">{BACKGROUND_QUEUE_TIP}</p>
-        <p className="ds-hint">{READY_WINDOW_NOTE}</p>
         {error && <p className="ds-form-err">⚠ {error}</p>}
         {dodgeNote()}
         {lockNote()}
@@ -1120,9 +1113,7 @@ export function Matchmaking({
   }
 
   return page(
-    <>
-      Ranked <span className="accent">Match</span>
-    </>,
+    'Ranked match',
     '',
     <>
       {/* OptRow, so the pick carries aria-pressed and not only the `.on` fill */}
@@ -1174,7 +1165,7 @@ export function Matchmaking({
       )}
       <div className="ds-actions">
         <button className="ds-cta" disabled={restartPending} onClick={() => void find()}>
-          FIND MATCH ▶
+          FIND MATCH
         </button>
       </div>
     </>,

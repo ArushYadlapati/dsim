@@ -8,7 +8,7 @@ import { averageMatch, playtimeLong, playtimeText } from '../playtime';
 
 /**
  * The competitive-stats panel shared by "My Stats" (own account) and the public
- * `/profile/<username>` page: overall 1v1/2v2 ELO + rank, solo/duo record bests +
+ * `/profile/<username>` page: overall 1v1/2v2 rating + rank, solo/duo record bests +
  * rank, ranked W–L, and recent match history. Purely presentational — the caller
  * (a `CareerView`) fetches the `UserStats` for the selected period and prints the
  * period heading above it. `name` is the chip shown in the panel header;
@@ -67,9 +67,12 @@ export function CareerPanel({
 
       {status === 'loading' && <div className="ds-loading">Loading…</div>}
       {status === 'error' && (
-        <div className="ds-empty">
-          <div className="big">Couldn’t load stats</div>
-          {error}
+        /* never `{error}` as the body: the raw text ("Failed to fetch", "HTTP 502") is not a
+           step a player can take (design review 07-04 / 19-03). It stays in the tooltip for
+           whoever is debugging. */
+        <div className="ds-empty" title={error}>
+          <div className="big">Couldn’t load career stats</div>
+          Check your connection and reload the page.
         </div>
       )}
 
@@ -83,7 +86,7 @@ export function CareerPanel({
             <div className="ds-stats">
               <div className="ds-stat">
                 <span className="sv">{stats.activity.games}</span>
-                <span className="sl">GAMES PLAYED</span>
+                <span className="sl">Games played</span>
                 <span className="sl" title={playtimeLong({ games: stats.activity.allGames, seconds: stats.activity.allSeconds })}>
                   {stats.activity.allGames !== stats.activity.games
                     ? `${stats.activity.allGames} across all games`
@@ -92,7 +95,7 @@ export function CareerPanel({
               </div>
               <div className="ds-stat">
                 <span className="sv">{playtimeText(stats.activity.seconds)}</span>
-                <span className="sl">PLAYTIME</span>
+                <span className="sl">Playtime</span>
                 <span className="sl">
                   {stats.activity.games > 0
                     ? `~${playtimeText(averageMatch({ games: stats.activity.games, seconds: stats.activity.seconds }))} a match`
@@ -116,12 +119,12 @@ export function CareerPanel({
           <div className="ds-stats">
             <div className="ds-stat">
               <span className="sv">{elo1 ? elo1.rating : '—'}</span>
-              <span className="sl">1V1 ELO</span>
+              <span className="sl">1v1 rating</span>
               <span className="sl">{elo1 ? `${rankTag(elo1.rank)} · ${elo1.games} games` : 'Unplaced'}</span>
             </div>
             <div className="ds-stat">
               <span className="sv">{elo2 ? elo2.rating : '—'}</span>
-              <span className="sl">2V2 ELO</span>
+              <span className="sl">2v2 rating</span>
               <span className="sl">{elo2 ? `${rankTag(elo2.rank)} · ${elo2.games} games` : 'Unplaced'}</span>
             </div>
             <div className="ds-stat">

@@ -137,7 +137,7 @@ export function PracticeReplays({
       ) : rows.length === 0 ? (
         <div className="ds-empty">
           <div className="big">No practice runs yet</div>
-          Finish a Solo Practice match and it is kept here.
+          Finish a Solo practice match and it is kept here.
         </div>
       ) : (
         <>

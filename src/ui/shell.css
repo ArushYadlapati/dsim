@@ -1089,9 +1089,10 @@
 }
 /* the two coloured variants of the shared base above. This is NOT the duplicate-selector
    bug `uiaudit` looks for — a base group plus per-variant overrides is the normal shape,
-   and collapsing it is what turned `.fr-empty` red. */
+   and collapsing it is what turned `.fr-empty` red. Error text is ONE token app-wide,
+   --ds-danger (design review 08-04): --ds-red-ink is alliance identity. */
 .fr-error {
-  color: var(--ds-red-ink);
+  color: var(--ds-danger);
 }
 .fr-note {
   color: var(--ds-ok-ink);
@@ -2019,6 +2020,12 @@ button.ds-key:where(:not(:disabled)):active,
 .ds-panel-body {
   padding: var(--ds-s-4);
 }
+/* the legal documents' card hugs its 68ch column (`.legal-md`) instead of stretching past it
+   and leaving a dead band on the right (design review 11-10) */
+.ds-legal-card {
+  width: fit-content;
+  max-width: 100%;
+}
 /* the two body LAYOUTS that were being hand-written beside it — three different stack
    gaps (10, 14, 16) for the same job on one page. The child margin reset is
    load-bearing: `.ds-claim-row` and `.ds-claim-msg` carry their own margin-top, which
@@ -2084,12 +2091,12 @@ button.ds-key:where(:not(:disabled)):active,
 .ds-panel-body.stack > .ds-hint {
   min-height: 1.45em;
 }
-/* the status pair `.ds-claim-msg` already has */
+/* the status pair `.ds-claim-msg` already has. Error text is --ds-danger everywhere (08-04). */
 .ds-hint.ok {
   color: var(--ds-ok-ink);
 }
 .ds-hint.err {
-  color: var(--ds-red-ink);
+  color: var(--ds-danger);
 }
 .ds-hint.warn {
   color: var(--ds-warn);
@@ -2155,6 +2162,14 @@ button.ds-key:where(:not(:disabled)):active,
 /* the Danger zone heading opens a new group, a step further from the panel above */
 .ds-danger-head {
   margin-top: var(--ds-s-5);
+}
+/* THE IRREVERSIBLE PANEL (Delete account, 08-05): the frame says so before the copy does.
+   Colour only, so the panel keeps its size and place. */
+.ds-panel.danger {
+  border-color: var(--ds-danger);
+}
+.ds-panel.danger .ds-panel-title {
+  color: var(--ds-danger);
 }
 .ds-fold-body.ds-acct-id {
   display: flex;
@@ -3938,8 +3953,10 @@ tr.lb-detail td {
   outline-offset: 1px;
   border-color: transparent;
 }
+/* the same size and colour as `.ds-form-hint.err` (08-04), which is the one to reach for:
+   it reserves its line, so the form does not grow when a message lands */
 .ds-form-err {
-  font-size: 13px;
+  font-size: var(--ds-t-sm);
   color: var(--ds-danger);
 }
 .ds-form-hint {
@@ -4186,9 +4203,9 @@ tr.lb-detail td {
   letter-spacing: var(--ds-track-tight);
   margin: 0;
 }
-.ds-title .accent {
-  color: var(--ds-accent);
-}
+/* NO TWO-TONE TITLE. `.ds-title .accent` coloured half of every console heading ("Multi|player",
+   "Ranked |Match") in the accent, which DESIGN.md keeps for controls, links, focus and state,
+   not ornament. Titles are solid ink (design review 02-06). */
 
 /* vertical stack of builder sections (My Robot content) */
 .ds-robot {
@@ -4280,6 +4297,10 @@ tr.lb-detail td {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* the section's gap already spaces its panels; `.ds-panel + .ds-panel` would add 16 on top */
+.ds-sec > .ds-panel + .ds-panel {
+  margin-top: 0;
 }
 .ds-sec > h2 {
   font-family: var(--ds-font-mono);
@@ -6392,15 +6413,15 @@ a.ds-cta {
   min-width: 0;
 }
 
-/* Claim result. --ds-ok-ink / --ds-red-ink rather than the raw fills: both are
-   the text-safe siblings, and this is status text on a panel. */
+/* Claim result. --ds-ok-ink rather than the raw fill (the text-safe sibling), and
+   --ds-danger, the one error-text token (08-04). */
 .ds-claim-msg {
   margin-top: 10px;
   font-size: var(--ds-t-control);
   line-height: var(--ds-lh-prose);
 }
 .ds-claim-msg.ok { color: var(--ds-ok-ink); }
-.ds-claim-msg.err { color: var(--ds-red-ink); }
+.ds-claim-msg.err { color: var(--ds-danger); }
 
 /* ---- live ranked queue depth (QueueCounts.tsx) ------------------------
    Shown wherever a player might decide to queue: the header on every menu
@@ -8504,11 +8525,6 @@ a.ds-cta {
 .admin-card + .adm-stats {
   margin-top: var(--ds-s-4);
 }
-/* the "N sessions belong to N accounts + N guests…" line right under the tiles — same
-   missing-gap bug, one sibling further down. */
-.adm-stats + .ds-hint {
-  margin-top: var(--ds-s-4);
-}
 .adm-stats { display: flex; flex-wrap: wrap; gap: var(--ds-s-3); }
 .adm-stat {
   flex: 1 1 120px;
@@ -8547,8 +8563,6 @@ a.ds-cta {
 /* layout only — the control is `.ds-input` (DESIGN.md "Input Fields"), like every admin field */
 .adm-filter {
   width: 100%;
-  margin-top: var(--ds-s-5);
-  margin-bottom: var(--ds-s-3);
 }
 
 /* the table itself is `.ds-table` (16-13); `.adm-table` adds the floor its wrapper scrolls past */

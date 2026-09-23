@@ -54,7 +54,7 @@ const LABELS: Record<ConfigureSection, { label: string }> = {
   controls: { label: 'Controls' },
   match: { label: 'Match' },
   // route key stays 'audio' — /configure/audio is deep-linkable and already shipped
-  audio: { label: 'Audio and Visual' },
+  audio: { label: 'Audio and visual' },
   graphics: { label: 'Graphics' },
   network: { label: 'Network' },
 };
@@ -124,6 +124,7 @@ export function Configure({
           {section === 'match' && <MatchSetup settings={settings} onChange={onChange} />}
           {section === 'controls' && (
             <ControlsSection
+              tutorialGame={settings.game}
               bindings={settings.bindings}
               onChange={(bindings) => onChange({ ...settings, bindings })}
               onEditTouchControls={onEditTouchControls}

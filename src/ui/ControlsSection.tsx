@@ -79,6 +79,9 @@ interface Props {
   /** run the tutorial (roadmap item 6) — absent when the active game has no tutorial, and the
    *  panel is then not rendered at all rather than shown disabled. */
   onTutorial?: () => void;
+  /** the game `onTutorial` runs. The row sits in the All games scope but runs the ACTIVE
+   *  season's tutorial, so its title names that season (design review 12-20). */
+  tutorialGame?: GameId;
 }
 
 /** "A", "A and B", "A, B and C" */
@@ -162,7 +165,7 @@ function PadSlider({
   );
 }
 
-export function ControlsSection({ bindings, onChange, onEditTouchControls, onTutorial }: Props) {
+export function ControlsSection({ bindings, onChange, onEditTouchControls, onTutorial, tutorialGame }: Props) {
   const [scope, setScope] = useState<Scope>('all');
   const coarse = useCoarsePointer();
   const [capture, setCapture] = useState<Capture | null>(null);
@@ -650,7 +653,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         </div>
         {onTutorial && (
           <div className="ds-ctl-row">
-            <h2 className="ds-panel-title">Tutorial</h2>
+            <h2 className="ds-panel-title">{tutorialGame ? `${seasonFor(tutorialGame).name} tutorial` : 'Tutorial'}</h2>
             <button className="ds-btn small" onClick={onTutorial}>
               Start
             </button>

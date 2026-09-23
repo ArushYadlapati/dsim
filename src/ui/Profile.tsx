@@ -60,20 +60,10 @@ export function Profile({
             say the same thing about the same person. */}
         <TitleMark title={stats?.title} badges={stats?.badges} />
       </h1>
-      <p className="ds-sub">
-        {stats?.username ? `@${stats.username} · ` : ''}
-        {/* Same precedence as the badge. Staff are entitled to the supporter
-            perks, so `supporter` is true for them too — without this an admin's
-            profile would introduce them as a Supporter rather than as staff. */}
-        {stats?.role === 'owner'
-          ? 'Owner · '
-          : stats?.role === 'admin'
-            ? 'Admin · '
-            : stats?.supporter
-              ? 'Supporter · '
-              : ''}
-        Public profile
-      </p>
+      {/* the @name only (design review 08-24): the role word repeated the badge in the h1 just
+          above, and "Public profile" restated the URL. The route's own name stands in until
+          the stats land, so the line never appears late. */}
+      <p className="ds-sub">@{stats?.username ?? username}</p>
     </>
   );
 
@@ -83,8 +73,8 @@ export function Profile({
         {head(null)}
         <div className="ds-panel">
           <div className="ds-empty">
-            <div className="big">Profiles need the game server</div>
-            Set <code>VITE_GAME_SERVER_URL</code>.
+            <div className="big">Profiles aren’t available here</div>
+            This build isn’t connected to a game server.
           </div>
         </div>
       </>

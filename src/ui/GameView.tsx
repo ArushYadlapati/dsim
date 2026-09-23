@@ -145,7 +145,7 @@ const DT_LABEL: Record<DrivetrainType, string> = {
   mecanum: 'Mecanum',
   tank: 'Tank',
   swerve: 'Swerve',
-  xdrive: 'X-Drive',
+  xdrive: 'X-drive',
   butterfly: 'Butterfly',
 };
 
@@ -711,7 +711,7 @@ export function GameView({
       )}
       {editingLayout && (
         <div className="mobile-edit-bar">
-          <span className="meb-hint">Drag the sticks &amp; buttons to reposition</span>
+          <span className="meb-hint">Drag the sticks and buttons to reposition</span>
           <button
             className="game-btn"
             onClick={() => onSettingsChange?.({ ...settings, mobileLayout: DEFAULT_MOBILE_LAYOUT })}

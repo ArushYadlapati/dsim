@@ -133,8 +133,10 @@ export class TutorialRunner {
         index: this.steps.length,
         count: this.steps.length,
         id: 'done',
-        title: 'Tutorial complete',
-        hint: ['Free drive from here — the field is yours.'],
+        // a next action, not a sign-off (design review 12-16): the card's eyebrow already says
+        // the tutorial is complete, so the title and hint point at the full match.
+        title: 'Try a Solo practice match',
+        hint: ['Open MENU and pick Solo practice for a full scored match.'],
         elapsedS,
         stuck: false,
         finished: true,

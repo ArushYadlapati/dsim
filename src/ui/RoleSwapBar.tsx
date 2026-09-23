@@ -11,7 +11,7 @@ const roleLabel = (r: StartCat | undefined, game?: GameId, alliance?: Alliance) 
   if (game === 'chain') return chainRoleLabel(r);
   const byModule = simModuleFor(game).startRoleLabel;
   if (byModule) return byModule(r, alliance);
-  return r === 'close' ? 'CLOSE' : r === 'far' ? 'FAR' : '-';
+  return r === 'close' ? 'CLOSE' : r === 'far' ? 'FAR' : '—';
 };
 
 /**
@@ -65,7 +65,7 @@ export function RoleSwapBar({
           </>
         ) : (
           <button type="button" className="ds-btn ghost small" onClick={rs.requestSwap}>
-            ⇄ Swap roles
+            Swap roles
           </button>
         )}
       </div>

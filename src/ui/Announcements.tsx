@@ -54,6 +54,22 @@ export function KindBadge({ kind }: { kind: AnnouncementKind }): JSX.Element {
   return <span className={`ds-badge ${kind === 'season' ? 'warn' : 'accent'}`}>{KIND_LABEL[kind]}</span>;
 }
 
+/** one published announcement as the modal and the changelog page both render it — ONE copy,
+ *  because the two were written out verbatim and would have drifted (design review 11-18) */
+export function AnnouncementItem({ a }: { a: Announcement }): JSX.Element {
+  return (
+    <article className={`ann-item ${a.kind}`}>
+      <header className="ann-item-head">
+        <KindBadge kind={a.kind} />
+        <time className="ds-hint">{new Date(a.publishedAt).toLocaleDateString()}</time>
+      </header>
+      <h2 className="ann-item-title">{a.title}</h2>
+      {a.tagline && <p className="ann-item-tag">{a.tagline}</p>}
+      {a.body.trim() && <Markdown text={a.body} className="ann-md" />}
+    </article>
+  );
+}
+
 /** the full-screen cinematic reveal for a new season / act */
 function CinematicReveal({
   ann,
@@ -136,15 +152,7 @@ function WhatsNew({ items, onClose }: { items: Announcement[]; onClose: () => vo
       >
         <div className="ann-scroll">
           {items.map((a) => (
-            <article key={a.id} className={`ann-item ${a.kind}`}>
-              <header className="ann-item-head">
-                <KindBadge kind={a.kind} />
-                <time className="ds-hint">{new Date(a.publishedAt).toLocaleDateString()}</time>
-              </header>
-              <h2 className="ann-item-title">{a.title}</h2>
-              {a.tagline && <p className="ann-item-tag">{a.tagline}</p>}
-              {a.body.trim() && <Markdown text={a.body} className="ann-md" />}
-            </article>
+            <AnnouncementItem key={a.id} a={a} />
           ))}
         </div>
         <div className="ann-actions">

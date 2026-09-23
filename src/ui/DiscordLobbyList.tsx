@@ -88,7 +88,7 @@ export function DiscordLobbyList({
         </div>
         <div className="ds-title">
           <h1>
-            Discord <span className="accent">lobbies</span>
+            Discord lobbies
           </h1>
         </div>
         {/* bare `.ds-sub`, as every other page pairs it under a `.ds-title` (Download, Donate,
@@ -101,7 +101,7 @@ export function DiscordLobbyList({
 
         <section className="ds-sec">
           <button className="ds-cta" disabled={mainFull} onClick={() => onEnter(mainCode, mainGame)}>
-            {mainFull ? 'MAIN LOBBY FULL' : `JOIN MAIN LOBBY · ${seasonFor(mainGame).name.toUpperCase()} ▶`}
+            {mainFull ? 'MAIN LOBBY FULL' : `JOIN MAIN LOBBY · ${seasonFor(mainGame).name.toUpperCase()}`}
           </button>
           <p className="ds-hint">
             {main
@@ -145,7 +145,7 @@ export function DiscordLobbyList({
 
         <section className="ds-sec">
           <button className="ds-btn" onClick={() => onEnter(generateRoomCode(), game)}>
-            + Create a separate {seasonFor(game).name} lobby
+            Create a separate {seasonFor(game).name} lobby
           </button>
           <p className="ds-hint">To run a different season, pick it on the home page first.</p>
         </section>

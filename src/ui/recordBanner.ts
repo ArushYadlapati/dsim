@@ -48,6 +48,7 @@ export function recordBanner(info: RecordRankInfo | null, practice: boolean): Re
   // no glyph: the podium-gold fill is already the loudest treatment on the stage and an emoji beside
   // it says the same thing twice, in a face that is not the UI's.
   if (info.isWR) return { text: 'WORLD RECORD', tone: 'gold' };
-  if (info.isPB) return { text: '★ PERSONAL BEST' };
+  // and no ★ on a PB either: ★ is the OWNER mark (docs/area/accounts.md), design review 06-18
+  if (info.isPB) return { text: 'PERSONAL BEST' };
   return { text: `#${info.rank} OF ${info.total}`, tone: 'quiet' };
 }

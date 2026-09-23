@@ -446,9 +446,7 @@ export function LanPanel({
             </span>
           </div>
           <div className="ds-title">
-            <h1>
-              LAN <span className="accent">Play</span>
-            </h1>
+            <h1>LAN play</h1>
           </div>
 
           {active && (
@@ -516,7 +514,7 @@ export function LanPanel({
                     {tabErr && <p className="ds-form-err">⚠ {tabErr}</p>}
                     <div className="ds-actions">
                       <button className="ds-cta" onClick={startTabHost} disabled={!mayTabHost || tabBusy}>
-                        {tabBusy ? 'STARTING…' : 'HOST ROOM ▶'}
+                        {tabBusy ? 'STARTING…' : 'HOST ROOM'}
                       </button>
                     </div>
                   </>
@@ -541,7 +539,7 @@ export function LanPanel({
                     )}
                     <div className="ds-actions">
                       <button className="ds-cta" onClick={playTabHost}>
-                        GO TO THE ROOM ▶
+                        GO TO THE ROOM
                       </button>
                       <button className="ds-btn" onClick={() => tabHost.stop()}>
                         Stop hosting
@@ -573,7 +571,7 @@ export function LanPanel({
                 {joinCodeErr && <p className="ds-form-err">⚠ {joinCodeErr}</p>}
                 <div className="ds-actions">
                   <button className="ds-cta" onClick={joinByCode} disabled={joinCode.length < 6 || joinCodeBusy}>
-                    {joinCodeBusy ? 'CONNECTING…' : 'JOIN ▶'}
+                    {joinCodeBusy ? 'CONNECTING…' : 'JOIN'}
                   </button>
                 </div>
 
@@ -607,7 +605,7 @@ export function LanPanel({
                     )}
                     <div className="ds-actions">
                       <button className="ds-cta" onClick={join}>
-                        CONNECT ▶
+                        CONNECT
                       </button>
                       {openInstead && (
                         <button className="ds-btn" onClick={() => copy(openInstead)}>
@@ -679,7 +677,7 @@ export function LanPanel({
                       {hostErr && <p className="ds-form-err">⚠ {hostErr}</p>}
                       <div className="ds-actions">
                         <button className="ds-cta" disabled={hostBusy || !signedIn} onClick={startHost}>
-                          {hostBusy ? 'STARTING…' : 'HOST ROOM ▶'}
+                          {hostBusy ? 'STARTING…' : 'HOST ROOM'}
                         </button>
                       </div>
                     </>
@@ -736,7 +734,7 @@ export function LanPanel({
                               onConnected(undefined, undefined, name);
                             }}
                           >
-                            PLAY ON MY SERVER ▶
+                            PLAY ON MY SERVER
                           </button>
                         )}
                         <button className="ds-btn" disabled={hostBusy} onClick={stopHost}>

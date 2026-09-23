@@ -377,7 +377,7 @@ export function coreChecks(check: Check): void {
     // a world record is ALWAYS also a personal best, so the order of those two tests is
     // itself the behaviour — read the other way round, a WR would announce itself as a PB.
     check('a world record outranks the personal best it also is', wr.text !== pb.text, `${wr.text} vs ${pb.text}`);
-    check('PERSONAL BEST keeps the ordinary banner', pb.text === '★ PERSONAL BEST' && pb.tone === undefined, `${pb.text} / ${pb.tone}`);
+    check('PERSONAL BEST keeps the ordinary banner', pb.text === 'PERSONAL BEST' && pb.tone === undefined, `${pb.text} / ${pb.tone}`);
     check('a plain placing IS its own banner', plain.text === '#9 OF 128' && plain.tone === 'quiet', `${plain.text} / ${plain.tone}`);
     // blank is RESERVED, not absent: the slot holds its height or the driver row under it
     // jumps when the rank lands. Signed out, alpha and still-computing are all this one.

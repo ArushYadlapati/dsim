@@ -68,15 +68,14 @@ function StorageInventory() {
   return (
     <section className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Stored on this device</span>
+        <h3 className="ds-panel-title">Stored on this device</h3>
         <span className="ds-count">{STORAGE_KEYS.length}</span>
       </div>
       <div className="ds-panel-body stack">
         <p className="ds-hint">
-          DSIM sets no cookies. These are the keys it writes to your browser’s own storage, and
-          this table is generated from the list the app actually uses. Clearing your browser
-          data for this site removes all of them; nothing here is transmitted unless the row
-          says so.
+          DSIM sets no cookies. These are the keys it writes to your browser’s own storage.
+          Clearing your browser data for this site removes all of them; nothing here is
+          transmitted unless the row says so.
         </p>
       </div>
       {STORAGE_CATEGORY_ORDER.map((cat) => (
@@ -151,7 +150,7 @@ function AnalyticsRow() {
   return (
     <section className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Analytics</span>
+        <h3 className="ds-panel-title">Analytics</h3>
       </div>
       <div className="ds-panel-body stack start">
         <label className="ds-checkline">
@@ -167,19 +166,25 @@ function AnalyticsRow() {
           <span>Send anonymous usage counts</span>
         </label>
         <p className="ds-hint">
-          On by default, because the measurement is cookieless and carries no identifiers: no
-          user id, no username, no email, no ad id, nothing that could link two visits. It counts
-          pages reached, downloads taken and whether an ad rendered, and it is what the
-          presenting sponsor’s monthly numbers are read off. Turning it off stops every beacon
-          from this browser immediately.
+          On by default, because it is cookieless and carries no identifiers: no user id,
+          username, email or ad id, nothing that could link two visits. It counts pages reached,
+          downloads taken and whether an ad rendered, which is what the presenting sponsor’s
+          monthly numbers are read off. Your browser’s Do Not Track or Global Privacy Control
+          signal switches it off on its own.
         </p>
-        <p className="ds-hint">
-          A visit is counted without your browser being given anything to remember: our server
-          mixes your address and browser with a secret that is regenerated every day, keeps a
-          short one-way fingerprint, and destroys the secret two days later. The same person on
-          two days is two visitors, and nothing we hold can join them. Your browser’s Do Not
-          Track or Global Privacy Control signal switches this off on its own.
-        </p>
+        {/* the mechanism, folded (design review 08-20): true and worth publishing, but it is
+            the answer to a second question, not what the switch does */}
+        <details className="ds-fold inset">
+          <summary>How a visit is counted</summary>
+          <div className="ds-fold-body">
+            <p className="ds-hint">
+              Your browser is given nothing to remember: our server mixes your address and browser
+              with a secret that is regenerated every day, keeps a short one-way fingerprint, and
+              destroys the secret two days later. The same person on two days is two visitors,
+              and nothing we hold can join them.
+            </p>
+          </div>
+        </details>
         {!built && (
           <p className="ds-hint">
             This build sends no analytics at all, so the switch above does nothing here. The
@@ -226,7 +231,7 @@ function AdsRow() {
   return (
     <section className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Ads and cookies</span>
+        <h3 className="ds-panel-title">Ads and cookies</h3>
       </div>
       <div className="ds-panel-body stack start">
         <p className="ds-hint">
@@ -312,11 +317,15 @@ function ExportRow() {
       a.click();
       setMsg({ text: 'Downloaded.', err: false });
     } catch (e) {
+      // Only the rate limit's own sentence is written for a person; anything else is logged
+      // and answered with the mailbox.
+      const raw = e instanceof Error ? e.message : '';
+      if (!(e instanceof ExportUnavailableError)) console.warn('[export] failed:', raw);
       const text =
         e instanceof ExportUnavailableError
           ? `This server can’t build an export yet. Email ${LEGAL_CONTACT} and you will be sent one.`
-          : e instanceof Error && e.message
-            ? e.message
+          : /^One export a minute/.test(raw)
+            ? raw
             : `Couldn’t build the export. Email ${LEGAL_CONTACT} and you will be sent one.`;
       setMsg({ text, err: true });
     } finally {
@@ -328,19 +337,12 @@ function ExportRow() {
   return (
     <section className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Export my data</span>
+        <h3 className="ds-panel-title">Export my data</h3>
       </div>
       <div className="ds-panel-body stack start">
         <p className="ds-hint">
-          One JSON file with everything the servers hold for your account: profile, synced
-          settings, robot presets, records, practice runs, self-hosted matches, ranked rating and
-          history, a summary of every match you played, your standing and playtime, friends,
-          blocks, invites, and the payment rows behind your membership. Replays are listed by id
-          and metadata. The input log itself is downloadable one match at a time.
-        </p>
-        <p className="ds-hint">
-          Other players are deliberately left out. A match you played is in there as your own
-          result and the final score, not as the people you played against.
+          Everything the servers hold for your account, as one JSON file. Other players are left
+          out: a match you played is in there as your own result and the final score.
         </p>
         {signedIn ? (
           <>
@@ -355,9 +357,8 @@ function ExportRow() {
           </>
         ) : (
           <p className="ds-hint">
-            Sign in to export. There is nothing on a server to export until you do. Signed out,
-            everything DSIM has is the browser storage listed above, which your browser can show
-            you and clear.
+            Sign in to export. Signed out, everything DSIM has is the browser storage listed
+            above.
           </p>
         )}
       </div>
@@ -386,7 +387,7 @@ function DeleteUnavailable() {
   return (
     <section className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Delete account</span>
+        <h3 className="ds-panel-title">Delete account</h3>
       </div>
       <div className="ds-panel-body stack start">
         <p className="ds-hint">

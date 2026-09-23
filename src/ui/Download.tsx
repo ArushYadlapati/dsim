@@ -64,7 +64,7 @@ export function Download() {
         // no inline margin: `.ds-main > .ds-panel` owns the panel stack now.
         <div className="ds-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Runs in your browser</span>
+            <h2 className="ds-panel-title">Runs in your browser</h2>
           </div>
           <div className="ds-panel-body">
             {/* one sentence — the one the reader can act on. "No download needed.
@@ -79,7 +79,7 @@ export function Download() {
           </div>
         </div>
       ) : (
-        <p className="ds-sub">The full offline sim in a native window.</p>
+        <p className="ds-sub">DSIM in its own window. Plays offline when you have no connection.</p>
       )}
 
       {/* `.ds-dl` owns the gaps: these cards cast hard offset shadows, and headings are

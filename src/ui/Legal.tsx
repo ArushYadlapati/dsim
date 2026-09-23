@@ -26,7 +26,7 @@ function LegalPage({ title, sub, body }: { title: string; sub?: string; body: st
         {sub ? `${sub} ` : ''}Updated {LEGAL_UPDATED}.
       </p>
 
-      <section className="ds-panel">
+      <section className="ds-panel ds-legal-card">
         {/* `.ds-panel-body`, not the one-off `.ds-legal` — the two were the same
             16px, written twice. `.legal-md` still owns the DOCUMENT's own rhythm
             inside it; only the container padding is shared. */}

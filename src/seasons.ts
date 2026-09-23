@@ -101,7 +101,7 @@ export const SEASONS: readonly Season[] = [
     presenter: 'RTX',
     program: 'FIRST Tech Challenge',
     years: '2026–27',
-    blurb: 'Tip the HIVE, fill the FLOWERS and park, with a turret, a double turret or a dumper.',
+    blurb: 'Tip the hive, fill the flowers and park, with a turret, a double turret or a dumper.',
     playable: true,
   },
 ] as const;

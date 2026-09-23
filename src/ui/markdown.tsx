@@ -41,11 +41,19 @@ function inline(text: string, key: string): ReactNode[] {
     { re: /(?<![_\w])_([^_\n]+)_(?![_\w])/, el: (m, k) => <em key={k}>{inline(m[1], k)}</em> },
     {
       re: /\[([^\]]+)\]\(([^)\s]+)\)/,
-      el: (m, k) => (
-        <a key={k} className="md-link" href={safeHref(m[2])} target="_blank" rel="noopener noreferrer">
-          {m[1]}
-        </a>
-      ),
+      // only an http(s) link opens a new tab; mailto and same-origin links stay in place
+      el: (m, k) => {
+        const href = safeHref(m[2]);
+        return /^https?:\/\//i.test(href) ? (
+          <a key={k} className="md-link" href={href} target="_blank" rel="noopener noreferrer">
+            {m[1]}
+          </a>
+        ) : (
+          <a key={k} className="md-link" href={href}>
+            {m[1]}
+          </a>
+        );
+      },
     },
   ];
   while (rest.length > 0) {

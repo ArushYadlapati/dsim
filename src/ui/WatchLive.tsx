@@ -29,7 +29,7 @@ export function WatchLive({
   onBack: () => void;
 }) {
   const [rooms, setRooms] = useState<LiveRoom[] | null>(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(false);
   const configured = gameServerConfigured();
 
   useEffect(() => {
@@ -40,11 +40,14 @@ export function WatchLive({
         .then((r) => {
           if (!alive) return;
           setRooms(r.rooms);
-          setError('');
+          setError(false);
         })
         .catch((e: unknown) => {
           if (!alive) return;
-          setError(e instanceof Error ? e.message : String(e));
+          // the raw reason goes to the console, not the page: a player can do nothing with
+          // "Server returned 502", and the poll below is already the retry
+          console.warn('[watch-live] /api/live failed', e);
+          setError(true);
         });
     };
     load();
@@ -60,7 +63,7 @@ export function WatchLive({
       <button className="ds-back" onClick={onBack}>
         ← Back
       </button>
-      <h1 className="ds-h1">Watch Live</h1>
+      <h1 className="ds-h1">Watch live</h1>
 
       {/* ONE panel, four bodies. The populated grid used to render with NO panel at
           all, so the page swapped a ~90px bordered card for a bare full-width grid of
@@ -68,21 +71,25 @@ export function WatchLive({
           room list emptying popped the card straight back in. The container is not
           allowed to appear and disappear; only its contents change. */}
       <div className="ds-panel">
+        <div className="ds-panel-h">
+          <h2 className="ds-panel-title">Live now</h2>
+        </div>
         {!configured ? (
           <div className="ds-empty">
-            <div className="big">Spectating needs the game server</div>
-            Set <code>VITE_GAME_SERVER_URL</code>. Live matches run on the match server.
+            <div className="big">Spectating is unavailable</div>
+            This build has no game server, and live matches run on it.
           </div>
         ) : error ? (
           <div className="ds-empty">
             <div className="big">Couldn’t reach the game server</div>
-            {error}
+            Trying again every few seconds.
           </div>
         ) : rooms === null ? (
           <div className="ds-loading">Loading live matches…</div>
         ) : rooms.length === 0 ? (
           <div className="ds-empty">
             <div className="big">Nothing live right now</div>
+            Ranked matches and record runs show up here while they are being played.
           </div>
         ) : (
           // `.ds-panel-body` supplies the padding `.ds-empty`/`.ds-loading` carry
@@ -117,7 +124,7 @@ export function WatchLive({
 }
 
 /**
- * Spectate a CUSTOM game by its room code.
+ * Spectate a CUSTOM room by its code.
  *
  * Resolves the code before opening a socket, for two reasons. It tells the player
  * WHY nothing happened when the match has already finished (the alternative is a
@@ -145,8 +152,10 @@ function WatchByCode({ onWatch }: { onWatch: (roomCode: string, region?: string)
 
   return (
     <div className="ds-panel">
+      <div className="ds-panel-h">
+        <h2 className="ds-panel-title">Watch a custom room</h2>
+      </div>
       <div className="ds-panel-body stack">
-        <h2 className="ds-h2">Watch a custom game</h2>
         {/* "Enter the room code to watch one" was the heading, the input's placeholder
             and its aria-label said a third time. The sentence that stays answers a real
             question — why isn't my friend's room in the list above? */}
@@ -222,7 +231,7 @@ function phaseLabel(phase: string): string {
     case 'teleop': return 'Driver-Controlled';
     case 'post': return 'Final';
     case 'pre': return 'Pre-match';
-    case 'freeplay': return 'Free Drive';
+    case 'freeplay': return 'Free drive';
     default: return phase;
   }
 }

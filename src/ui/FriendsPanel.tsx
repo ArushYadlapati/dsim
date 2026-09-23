@@ -195,7 +195,7 @@ export function FriendsPanel({
         {/* the heading the section h3s below nest under */}
         <h2 className="fr-title">Friends</h2>
         <button className="fr-collapse" onClick={toggle} aria-expanded aria-label="Hide friends">
-          ✕
+          <CloseGlyph />
         </button>
       </div>
 
@@ -664,7 +664,7 @@ function InviteButton({
       disabled={!!status}
       onClick={onInvite}
     >
-      {status === 'sending' ? 'Inviting…' : status === 'sent' ? 'Invited ✓' : 'Invite'}
+      {status === 'sending' ? 'Inviting…' : status === 'sent' ? 'Invited' : 'Invite'}
     </button>
   );
 }
@@ -722,10 +722,45 @@ function StatusPicker({
 }
 
 /**
- * Username search + send request. Debounced ~250ms and sequence-guarded: every
- * keystroke would otherwise fire a request at a machine that may be cold-starting,
- * and a slow early response could overwrite the results for a longer query.
+ * THE PLAYER SEARCH both boxes run — `AddFriend` below and `UserSearchBar`. Debounced ~250ms
+ * and sequence-guarded: every keystroke would otherwise fire a request at a machine that may be
+ * cold-starting, and a slow early response could overwrite the results for a longer query.
+ *
+ * `searching` runs from the keystroke until THIS query's answer lands. Without it an empty list
+ * read "No players found." for the whole debounce and round trip (seconds, on a cold machine),
+ * a false negative that then flipped to results (design review 08-08).
+ * ponytail: no error state — `searchUsers` answers [] on a failure by design (api.ts), so an
+ * outage still reads as no matches; give it a distinct rejection if that ever matters.
  */
+export function useUserSearch(query: string): { results: PublicProfile[]; searching: boolean } {
+  const [results, setResults] = useState<PublicProfile[]>([]);
+  const [searching, setSearching] = useState(false);
+  const seq = useRef(0);
+
+  useEffect(() => {
+    const q = query.trim();
+    // bumped for a short query too, so an answer still in flight cannot land after a clear
+    const mine = ++seq.current;
+    if (q.length < 2) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const t = window.setTimeout(() => {
+      void searchUsers(q).then((users) => {
+        if (seq.current !== mine) return;
+        setResults(users);
+        setSearching(false);
+      });
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [query]);
+
+  return { results, searching };
+}
+
+/** Username search + send request, over `useUserSearch`. */
 function AddFriend({
   onAdd,
   known,
@@ -734,25 +769,8 @@ function AddFriend({
   known: { friends: FriendRow[]; outgoing: PublicProfile[] };
 }) {
   const [query, setQuery] = useState('');
-  const [results, setResults] = useState<PublicProfile[]>([]);
+  const { results, searching } = useUserSearch(query);
   const [note, setNote] = useState<string | null>(null);
-  const seq = useRef(0);
-
-  useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setResults([]);
-      return;
-    }
-    const mine = ++seq.current;
-    const t = window.setTimeout(() => {
-      void searchUsers(q).then((users) => {
-        // a stale response from a shorter query must not clobber a newer one
-        if (seq.current === mine) setResults(users);
-      });
-    }, 250);
-    return () => window.clearTimeout(t);
-  }, [query]);
 
   const already = (u: string | null): boolean =>
     !!u && (known.friends.some((f) => f.username === u) || known.outgoing.some((p) => p.username === u));
@@ -796,9 +814,19 @@ function AddFriend({
         </PersonRow>
       ))}
       {query.trim().length >= 2 && results.length === 0 && (
-        <p className="fr-empty">No players found.</p>
+        <p className="fr-empty">{searching ? 'Searching…' : 'No players found.'}</p>
       )}
     </Section>
+  );
+}
+
+/** THE ONE DISMISS GLYPH, `currentColor`. A `✕` character renders in whatever the UI font
+ * makes of it, at a different optical size on every OS (design review 08-22). */
+export function CloseGlyph({ size = 14 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true" style={{ verticalAlign: 'middle' }}>
+      <path d="M6 6l12 12M18 6L6 18" />
+    </svg>
   );
 }
 

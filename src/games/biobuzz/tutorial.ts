@@ -281,7 +281,7 @@ const steps: TutorialStep[] = [
   {
     id: 'drive',
     title: 'Drive to your garden',
-    hint: (c) => say`${driveHint(c)}. Your GARDEN is the taped strip in the far corner.`,
+    hint: (c) => say`${driveHint(c)}. Your garden is the taped strip in the far corner.`,
     stage: (w, id) => place(w, id, 40, -10, Math.PI / 2),
     done: (w, id) => {
       const r = me(w, id);
@@ -297,7 +297,7 @@ const steps: TutorialStep[] = [
     id: 'capture',
     title: 'Pick up a pollen',
     hint: (c) =>
-      say`Drive onto a POLLEN with ${control(c, 'intake', 'intake')} held. The hopper pips fill as it goes in.`,
+      say`Drive onto a pollen with ${control(c, 'intake', 'intake')} held.`,
     stage: (w, id) => {
       place(w, id, 58, 50, Math.PI / 2);
       const r = me(w, id);
@@ -321,7 +321,7 @@ const steps: TutorialStep[] = [
     id: 'shoot',
     title: 'Shoot into your hive',
     hint: (c) =>
-      say`Line up on the open side of the up CELL and hold ${control(c, 'fire', 'fire')}. The turret aims for you.`,
+      say`Line up on the open side of the up cell and hold ${control(c, 'fire', 'fire')}. The turret aims for you.`,
     stage: (w, id) => place(w, id, BB_HIVE_X + 6, BB_HIVE_CELL_DY + 38, Math.PI / 2),
     done: (w, id) => {
       const r = me(w, id);
@@ -339,7 +339,7 @@ const steps: TutorialStep[] = [
     id: 'tip',
     title: 'Tip the hive',
     hint: (c) =>
-      say`One more POLLEN tips it. Hold ${control(c, 'fire', 'fire')} and the CELL swings over and drops its load.`,
+      say`One more pollen tips it. Hold ${control(c, 'fire', 'fire')}.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (r) loadCell(w, r.alliance, 2);
@@ -361,7 +361,7 @@ const steps: TutorialStep[] = [
     title: 'Place a nectar in a flower',
     applies: canPlaceNectar,
     hint: (c) =>
-      say`Drive up to the FLOWER and press ${control(c, 'bbPlaceNectar', 'bbPlaceNectar')}. Your NECTAR on top makes the FLOWER yours.`,
+      say`Drive up to the flower and press ${control(c, 'bbPlaceNectar', 'bbPlaceNectar')}.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (!r) return;
@@ -388,7 +388,7 @@ const steps: TutorialStep[] = [
     // ≤ 25 WORDS, like every hint (design review 12-05): this one was 55, and on a phone the
     // bottom-anchored card grew up across the joysticks. The smoke lane holds the cap.
     hint: (c) =>
-      say`This lesson lends you side rollers. Line one END of the intake up on the FLOWER’s opening and drive in with ${control(c, 'intake', 'intake')} held.`,
+      say`This lesson lends you side rollers. Line one end of the intake up on the flower’s opening and drive in with ${control(c, 'intake', 'intake')} held.`,
     stage: (w, id) => {
       const r = me(w, id);
       if (!r) return;

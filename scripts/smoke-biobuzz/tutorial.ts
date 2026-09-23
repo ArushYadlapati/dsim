@@ -249,6 +249,10 @@ export function tutorialChecks(check: Check): void {
     check('runner: advance() walks every step and then reports finished', advances === n - 1 && runner.isFinished, `${advances} advances of ${n}`);
     const vEnd = runner.view(ctx);
     check('runner: the finished view says so and holds a sign-off line', vEnd.finished && vEnd.hint.length > 0, vEnd.title);
+    // 12-16: the card's eyebrow says "Tutorial complete", so the title is the NEXT ACTION, not a
+    // second way of saying it, and the hint carries no dash appositive or reassurance.
+    check('runner: the finished title points at Solo Practice rather than repeating "complete"', /Solo practice/i.test(vEnd.title) && !/complete/i.test(vEnd.title), vEnd.title);
+    check('runner: the finished hint has no dash', !/[—–]/.test(hintText(vEnd.hint)), hintText(vEnd.hint));
     check('runner: advance() past the end stays finished rather than throwing', runner.advance() === false);
     // STAGING IS A NO-OP ONCE FINISHED — this is what makes the last rebuild an ordinary free
     // drive rather than a seventh staged step.
@@ -362,15 +366,26 @@ export function tutorialChecks(check: Check): void {
     const ctxs: TutorialHintCtx[] = [kb, pad, touch, { bindings: rightStick, gamepad: true, touch: false }];
     const lower: string[] = [];
     const long: string[] = [];
+    const caps: string[] = [];
     for (const s of [...BIOBUZZ_TUTORIAL.steps, ...DECODE_TUTORIAL.steps]) {
       for (const c of ctxs) {
         const t = hintText(s.hint(c));
         if (/^[a-z]/.test(t)) lower.push(`${s.id}: ${t}`);
         if (t.split(/\s+/).length > 25) long.push(`${s.id} (${t.split(/\s+/).length} words)`);
+        // the PROSE only: a keycap part (SPACE, SHOOT) is a control name and keeps its caps
+        const prose = s.hint(c).filter((p): p is string => typeof p === 'string').join(' ');
+        const shout = prose.match(/[A-Z]{3,}/g);
+        if (shout) caps.push(`${s.id}: ${shout.join(',')}`);
       }
     }
     check('hint: every hint opens with a capital, on every device (12-08)', lower.length === 0, lower.join(' | '));
     check('hint: every hint is 25 words or fewer, on every device (12-05)', long.length === 0, long.join(', '));
+    // 19-24: game nouns are lowercase in prose (the step title beside the hint already is); the
+    // caps belong to the HUD chips only.
+    check('hint: no all-caps game noun in hint prose, on every device (19-24)', caps.length === 0, caps.join(' | '));
+    // 12-17: aim assist is ONE idea, so it is one sentence in both games
+    const aim = [...BIOBUZZ_TUTORIAL.steps, ...DECODE_TUTORIAL.steps].filter((s) => /turret/i.test(hintText(s.hint(kb))));
+    check('hint: both games word aim assist the same way (12-17)', aim.length === 2 && aim.every((s) => hintText(s.hint(kb)).endsWith('The turret aims for you.')), aim.map((s) => s.id).join(','));
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

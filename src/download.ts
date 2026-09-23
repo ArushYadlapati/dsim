@@ -38,13 +38,13 @@ export const DESKTOP_BUILDS: DesktopBuild[] = [
   {
     os: 'windows',
     label: 'Windows · Installer',
-    note: '.exe · one-click NSIS setup',
+    note: '.exe · installs with a Start-menu shortcut',
     url: (env.VITE_DOWNLOAD_INSTALLER_URL as string | undefined) ?? `${DL}/DSIM-Setup.exe`,
   },
   {
     os: 'windows',
     label: 'Windows · Portable',
-    note: '.exe · no install, run anywhere',
+    note: '.exe · no install, runs from a folder or USB stick',
     url: (env.VITE_DOWNLOAD_PORTABLE_URL as string | undefined) ?? `${DL}/DSIM-Portable.exe`,
   },
   {

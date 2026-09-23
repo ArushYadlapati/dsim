@@ -252,13 +252,12 @@ export function RecordRun({
      */
     const stuckInAnother = errorCode === 'active_game';
     const canRejoin = stuckInAnother && !!onRejoinActive && !!loadActiveGame();
+    // plain ink, no accent word and no ⚠: a failure is not a place for decoration (06-22)
     return page(
-      <>
-        Couldn’t <span className="accent">start</span>
-      </>,
+      <>Couldn’t start</>,
       kind,
       <>
-        <p className="ds-form-err">⚠ {error}</p>
+        <p className="ds-form-err">{error}</p>
         {stuckInAnother && !canRejoin && (
           <p className="ds-hint">
             Open that game from wherever you left it, or wait a minute for it to end on its own.
@@ -284,19 +283,18 @@ export function RecordRun({
     );
   }
 
+  // the status is said ONCE, in the body; the sub is the kind only (06-22 — "Loading 3D
+  // physics…" used to print in both)
   return page(
-    <>
-      Record <span className="accent">Run</span>
-    </>,
-    `${kind} · ${status}`,
+    <>Record run</>,
+    kind,
     <>
       {/* TWO WAITS, TWO SENTENCES. The 3D chunk is this machine downloading ~1.1 MB and the
           run cannot be requested until it lands (a record run never falls back to 2D); the
           cold boot is the server waking. Saying "the server is waking" while the hold-up is
           local sends somebody to check a connection that is fine. */}
-      {loading3d ? (
-        <p className="ds-loading">Loading 3D physics…</p>
-      ) : (
+      <p className="ds-loading">{status}</p>
+      {!loading3d && (
         <p className="ds-hint">
           First run after a quiet spell waits a few seconds for the server to wake.
         </p>

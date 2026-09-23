@@ -559,7 +559,7 @@ export function Menu({ settings, onChange }: Props) {
     ['Top speed', dp.maxSpeed.toFixed(0), 'in/s'],
     ['Accel', dp.accel.toFixed(0), 'in/s²'],
     ['Turn', dp.maxTurn.toFixed(1), 'rad/s'],
-    ['Turn accel', dp.turnAccel.toFixed(1), 'rad/s²'],
+    ['Turn accel', dp.turnAccel.toFixed(0), 'rad/s²'],
     ['Mass', String(spec.massLb), 'lb'],
     ['W × L', `${spec.width} × ${spec.length}`, 'in'],
   ];
@@ -1028,7 +1028,7 @@ export function Menu({ settings, onChange }: Props) {
                                 catalystMount: axis ? swingHomeFor(m, axis) : m === 'center' ? 'front' : m,
                               });
                             }}
-                            // FIXED needs no tooltip — the label is the whole story. The two
+                            // Fixed needs no tooltip — the label is the whole story. The two
                             // swings each keep the one fact the arrow glyph cannot show.
                             title={
                               axis === null
@@ -1038,7 +1038,7 @@ export function Menu({ settings, onChange }: Props) {
                                   : 'Reaches from either flank'
                             }
                           >
-                            <span className="ot">{axis === null ? 'FIXED' : axis === 'fb' ? 'SWING ↕' : 'SWING ↔'}</span>
+                            <span className="ot">{axis === null ? 'Fixed' : axis === 'fb' ? 'Swing ↕' : 'Swing ↔'}</span>
                           </button>
                         ))}
                       </div>

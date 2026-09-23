@@ -91,7 +91,12 @@ export function UsernameGate({ suspended = false, children }: { suspended?: bool
         setNeeds(false);
       })
       .catch((e2: unknown) => {
-        setErr(e2 instanceof Error ? e2.message : String(e2));
+        // Only the server's own username verdicts ("That username is taken.") are written for a
+        // person; anything else (a dropped connection, no server) gets the app's sentence.
+        const msg = e2 instanceof Error ? e2.message : String(e2);
+        const verdict = /^That username/.test(msg);
+        if (!verdict) console.warn('[username] save failed:', msg);
+        setErr(verdict ? msg : 'Couldn’t save that username. Check your connection and try again.');
         setBusy(false);
       });
   };
@@ -101,6 +106,10 @@ export function UsernameGate({ suspended = false, children }: { suspended?: bool
       <div className="ds-modal-h">
         <h2 className="ds-dialog-title" id="ds-uname-gate-title">Choose your username</h2>
       </div>
+      <p className="ds-hint">
+        This is your profile address, /profile/{value || 'username'}, and the name other players
+        find you by. We suggested one from your sign-in; change it if you like.
+      </p>
       <form className="ds-form" onSubmit={submit}>
         <label>
           <span>Username</span>
@@ -121,9 +130,16 @@ export function UsernameGate({ suspended = false, children }: { suspended?: bool
         >
           {err || check.message}
         </div>
-        <button className="ds-btn primary" type="submit" disabled={!check.ok || busy}>
-          {busy ? 'Saving…' : 'Save username'}
-        </button>
+        {/* the same way out TermsGate offers, primary rightmost (ui-standard §6): somebody signed
+            in with the wrong Google account is otherwise stuck naming it */}
+        <div className="ds-dialog-actions">
+          <button type="button" className="ds-btn ghost" onClick={() => void authClient!.signOut()}>
+            Sign out
+          </button>
+          <button className="ds-btn primary" type="submit" disabled={!check.ok || busy}>
+            {busy ? 'Saving…' : 'Save username'}
+          </button>
+        </div>
       </form>
     </GateDialog>
   );

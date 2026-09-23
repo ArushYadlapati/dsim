@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { authClient } from '../lib/authClient';
 import { requestEmailVerification } from '../lib/authFlows';
+import { CloseGlyph } from './FriendsPanel';
 
 /**
  * PER-SESSION dismissal, in `sessionStorage` rather than `localStorage`.
@@ -96,7 +97,7 @@ export function VerifyEmailBanner() {
         }}
         aria-label="Hide until next visit"
       >
-        ✕
+        <CloseGlyph />
       </button>
     </div>
   );

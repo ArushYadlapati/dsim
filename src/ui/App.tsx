@@ -1794,7 +1794,8 @@ export function App() {
   // avatar's popover (one control, not two) — switching server is still one
   // click away, just behind the avatar instead of permanently taking up bar
   // width. Without auth there's no avatar to hang it on, so it stays a bar-level
-  // control next to the plain Settings button, as before.
+  // control on its own. No bar "Profile" button beside it: the home keycaps and the
+  // rail both already go there, and a third copy was the bar repeating nav (review 01-06).
   const right = authEnabled ? (
     <ProfileMenu
       handle={handle}
@@ -1804,15 +1805,10 @@ export function App() {
       onAppearance={() => navigate('account', { sub: 'appearance' })}
     />
   ) : (
-    <>
-      <ServerMenu
-        value={settings.preferredServerId ?? selectedServerId()}
-        onChange={(id) => update({ ...settings, preferredServerId: id })}
-      />
-      <button className="ds-btn" onClick={() => navigate('account')}>
-        Profile
-      </button>
-    </>
+    <ServerMenu
+      value={settings.preferredServerId ?? selectedServerId()}
+      onChange={(id) => update({ ...settings, preferredServerId: id })}
+    />
   );
 
   const configureSection: ConfigureSection = isConfigureSection(route.sub) ? route.sub : 'robot';
@@ -1933,12 +1929,11 @@ export function App() {
       )}
       {/* one-time "this sim isn't realistic" disclaimer for Chain Reaction */}
       {showChainDisclaimer && (
-        <OverlayDialog title="About this simulation" onClose={dismissChainDisclaimer}>
+        <OverlayDialog title="Chain Reaction in DSIM" onClose={dismissChainDisclaimer}>
           <p className="ds-sub overlay-sub">
-            Chain Reaction is a game for the <b>Unofficial FTC Discord’s CAD Competition</b>.
-            This simulator is a rough, for-fun approximation of it. <b>The simulation is
-            not realistic</b>, so how robots drive, shoot, and score here shouldn’t drive your
-            CAD-competition design decisions. Build for the real game, not for this sim.
+            Chain Reaction is the <b>Unofficial FTC Discord’s CAD Competition</b> game.
+            DSIM’s version is a rough, for-fun approximation: <b>robots here don’t drive,
+            shoot or score like the real ones will</b>, so don’t base CAD decisions on it.
           </p>
           {/* SENTENCE CASE, and `.ds-dialog-actions` to drop the all-caps
               tracking with it. These five are SHELL dialogs — the same surface
@@ -1994,15 +1989,15 @@ export function App() {
             It finished, or it was held open too long for you to get back into.
           </p>
           <div className="overlay-buttons ds-dialog-actions">
-            <button onClick={() => setRejoinGone(false)}>Got it</button>
+            <button onClick={() => setRejoinGone(false)}>Back to menu</button>
           </div>
         </OverlayDialog>
       )}
       {badStart && (
-        <OverlayDialog title="Start position invalid" onClose={() => setBadStart(false)}>
+        <OverlayDialog title="Start position doesn’t fit this robot" onClose={() => setBadStart(false)}>
           <p className="ds-sub overlay-sub">
-            Your saved start position isn’t legal for the selected chassis. Fix it (or pick a
-            preset) before starting.
+            Your saved start position isn’t legal for this build. Move it, or pick a preset
+            position.
           </p>
           <div className="overlay-buttons ds-dialog-actions">
             <button className="secondary" onClick={() => setBadStart(false)}>
@@ -2032,7 +2027,7 @@ export function App() {
               : 'Server is restarting shortly. New games are paused for a moment.'}
           </p>
           <div className="overlay-buttons ds-dialog-actions">
-            <button onClick={() => setStartBlocked(false)}>OK</button>
+            <button onClick={() => setStartBlocked(false)}>Back to menu</button>
           </div>
         </OverlayDialog>
       )}
@@ -2046,7 +2041,7 @@ export function App() {
               Not now
             </button>
             <button autoFocus onClick={() => window.location.reload()}>
-              Refresh &amp; update
+              Refresh and update
             </button>
           </div>
         </OverlayDialog>

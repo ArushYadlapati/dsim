@@ -64,7 +64,7 @@ export function TutorialCard({
     return (
       <div className="ds-tut" data-hud-band role="status">
         <div className="ds-tut-body">
-          <p className="ds-tut-step">Done</p>
+          <p className="ds-tut-step">Tutorial complete</p>
           <p className="ds-tut-title">{view.title}</p>
           <HintLine hint={view.hint} />
         </div>

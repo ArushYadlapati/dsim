@@ -185,8 +185,11 @@ export function HomeMenu({
             <span className="sl">Games played</span>
           </div>
           <span className="ds-homestats-break">
-            solo {stats.byCategory.solo} · duo {stats.byCategory.duo} · 1v1{' '}
-            {stats.byCategory['1v1']} · 2v2 {stats.byCategory['2v2']}
+            {/* sentence case, digits in the mono utility (01-21) */}
+            Solo <span className="ds-num">{stats.byCategory.solo}</span> · Duo{' '}
+            <span className="ds-num">{stats.byCategory.duo}</span> · 1v1{' '}
+            <span className="ds-num">{stats.byCategory['1v1']}</span> · 2v2{' '}
+            <span className="ds-num">{stats.byCategory['2v2']}</span>
           </span>
         </div>
       )}

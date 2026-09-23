@@ -8122,7 +8122,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
        build's tab-hosted path — the desktop bridge's own button reuses the same label further
        down, after the guard, which is fine: it sliding ABOVE the guard would be the bug. */
     const hostTab = lan.indexOf('<span className="ot">Host room</span>');
-    const hostCta = lan.indexOf('HOST ROOM ▶');
+    const hostCta = lan.indexOf("'HOST ROOM'");
     const bridgeGuard = lan.indexOf('{bridge?.lan && (');
     check(
       'lan guide: the Host tab renders without the desktop bridge',

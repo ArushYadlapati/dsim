@@ -150,7 +150,7 @@ export const LEGAL_IDENTIFIED =
 export const PRIVACY_MD = `
 DSIM is a free FTC driver-practice simulator. This policy explains what the app
 collects, why, and what you can do about it. It is written to be read, not to be
-skimmed past - it is short because the app genuinely collects very little.
+skimmed past — it is short because the app genuinely collects very little.
 
 ## The short version
 
@@ -164,14 +164,14 @@ DSIM sets no cookies. What it uses instead is your browser’s own storage, and 
 it is transmitted unless you sign in and your settings sync to your account. There are
 three kinds:
 
-- **Needed to play** - the match you are in, so a reload rejoins it instead of
+- **Needed to play**: the match you are in, so a reload rejoins it instead of
   abandoning your alliance; your settings, robot builds and control bindings; the
   practice runs and self-hosted matches waiting to reach your account, with the input
   logs that reproduce them.
-- **Your preferences** - theme, 2D or 3D, graphics quality, prediction, which
+- **Your preferences**: theme, 2D or 3D, graphics quality, prediction, which
   announcements you have read, whether a panel is open. None of these is needed to
   play.
-- **Analytics** - nothing at all. The measurement described below is cookieless: it
+- **Analytics**: nothing at all. The measurement described below is cookieless: it
   sets no identifier, writes nothing to this device, and there is nothing here for it
   to read on your next visit.
 
@@ -186,29 +186,29 @@ copy unless you were signed in.
 
 Only if you create an account:
 
-- **Identity** - your email address and display name, handled by our authentication
+- **Identity**: your email address and display name, handled by our authentication
   provider. If you sign in with Google, we receive your email and name from Google;
   we never see your Google password.
-- **Profile** - your chosen username and public handle.
-- **Settings** - the same settings blob described above, so your setup follows you
+- **Profile**: your chosen username and public handle.
+- **Settings**: the same settings blob described above, so your setup follows you
   between devices.
-- **Gameplay records** - scores, game mode, drivetrain, and timestamps for record
+- **Gameplay records**: scores, game mode, drivetrain, and timestamps for record
   runs and ranked matches.
-- **Replays** - the random seed, robot configurations, and per-tick inputs needed to
+- **Replays**: the random seed, robot configurations, and per-tick inputs needed to
   reconstruct a match. A replay contains no personal information beyond the robot
   setups and the account it belongs to.
-- **Ranking** - your Glicko-2 rating, deviation, and match history.
-- **Social** - friend requests, friendships, blocks, room invites, and an online or
+- **Ranking**: your Glicko-2 rating, deviation, and match history.
+- **Social**: friend requests, friendships, blocks, room invites, and an online or
   last-seen status if you use those features.
-- **Robot presets** - the names and specifications you save.
+- **Robot presets**: the names and specifications you save.
 
 Our game servers also process your IP address to route your connection, as any
 network service must. It is not stored in the database or used to build a profile.
 
 ## Usage measurement, and why it cannot identify you
 
-We count how DSIM is used - which pages are reached, roughly where from, on what kind
-of device - because otherwise we are tuning a free tool by guesswork. This is measured
+We count how DSIM is used — which pages are reached, roughly where from, on what kind
+of device — because otherwise we are tuning a free tool by guesswork. This is measured
 by our own servers, not by an advertising network, and it is built so that it is unable
 to identify or follow you rather than merely promising not to.
 
@@ -236,10 +236,10 @@ across days, across devices, or from one site to another, and a visitor count ov
 week is a sum of daily counts rather than a count of people.
 
 **How long it is kept.** The individual page-view records are deleted after 30 days.
-What outlives them is totals - how many views a page had on a given day, how many
-visitors came from a given country - with nothing in them that refers to a visit.
+What outlives them is totals — how many views a page had on a given day, how many
+visitors came from a given country — with nothing in them that refers to a visit.
 
-**Turning it off.** A switch under "Your data" below stops every beacon from this
+**Turning it off.** A switch under “Your data” below stops every beacon from this
 browser the moment you set it. We also honour your browser's own **Do Not Track** and
 **Global Privacy Control** signals without your having to find that switch, and the
 desktop app and self-hosted servers send nothing at any time.
@@ -257,7 +257,7 @@ state, not history:
   identified by a **connection id**. That id is the one our server generates to
   route messages on your socket: it is **not** your IP address, **not** a device
   fingerprint, it is stored nowhere else, and it **ceases to exist when you
-  disconnect** - reconnecting gives you a completely unrelated one. It can tell two
+  disconnect** — reconnecting gives you a completely unrelated one. It can tell two
   sessions that are live at the same moment apart. It cannot link you to anything
   you did before, or to any other session.
 - **For nobody** do we record which screen or menu you are looking at, what you
@@ -269,14 +269,14 @@ timeline, so it cannot be used to reconstruct what anyone was doing earlier.
 
 Separately, matches in progress are **listed publicly** so anyone can spectate
 them, including the display names and team numbers of the players in them. That
-list is what the "Watch Live" screen shows.
+list is what the “Watch Live” screen shows.
 
 ## Site administrators
 
 Administrators of DSIM can see the live snapshot described above, for moderation
 (investigating cheating or abuse) and for keeping the servers running. Concretely,
-an administrator can see every connected session - signed-in accounts by name, and
-sessions without an account by the temporary connection id described above - along
+an administrator can see every connected session — signed-in accounts by name, and
+sessions without an account by the temporary connection id described above — along
 with the coarse activity, the room, and the ranked queue state for each. They
 **cannot** see which screen you are on, your inputs, your messages, or any history
 of your activity, and the connection id gives them no way to recognise a returning
@@ -297,7 +297,7 @@ publicly spectatable by anyone, so this changes who is *visible*, not what is.
 DSIM itself sets **no cookies**. Your settings live in your browser’s own storage
 (every key is listed under “Your data” below), and signing in uses a token held by our
 authentication provider. Neither is used to track you between sites. The usage
-measurement described above is cookieless and stores nothing on your device either - no
+measurement described above is cookieless and stores nothing on your device either — no
 identifier is set, so there is nothing for a later visit to read back; there is a switch
 for it under “Your data”.
 
@@ -311,14 +311,14 @@ The web version of DSIM shows advertising served by **Google AdSense**.
 
 **Ads are non-personalised by default.** DSIM is a simulator for a school
 robotics competition, so a real share of players are young teenagers and most are
-not signed in at all - we therefore do not let advertising be targeted using
+not signed in at all — we therefore do not let advertising be targeted using
 browsing history unless we have a reason to believe otherwise. Ad requests are
 also tagged as being for users below the age of consent for advertising purposes.
 
 If you are in the UK, the EEA, or Switzerland you will be asked for your
 advertising choices through a Google-certified consent tool before any ads are
-personalised, and you can reopen that choice at any time from the "Privacy &
-cookie settings" link in the site footer or from “Your data” below. Outside those
+personalised, and you can reopen that choice at any time from the “Privacy &
+cookie settings” link in the site footer or from “Your data” below. Outside those
 regions the tool has no consent to withdraw, so it does not open; the page says so
 rather than leaving you clicking at nothing.
 
@@ -333,7 +333,7 @@ and **not** shown to supporters.
 ## Payments
 
 Supporter memberships and donations are processed by **Ko-fi**, which in turn uses
-**PayPal**. Your payment details go to those services, never to us - we never see
+**PayPal**. Your payment details go to those services, never to us — we never see
 or store a card number.
 
 What we do receive and store for each payment is the email address you paid with,
@@ -348,16 +348,16 @@ financial record.
 
 We use a small number of infrastructure providers, each acting on our behalf:
 
-- **Neon** - database and authentication.
-- **Fly.io** - the multiplayer game servers, which is also where the usage measurement
+- **Neon**: database and authentication.
+- **Fly.io**: the multiplayer game servers, which is also where the usage measurement
   above is counted. It is our own software on our own servers; no analytics company
   receives it.
-- **Vercel** - hosting for the website, and a second, cookieless usage count of the
+- **Vercel**: hosting for the website, and a second, cookieless usage count of the
   same kind, used for the presenting sponsor’s monthly figures.
-- **Google AdSense**, and **Google Funding Choices** as the consent tool - advertising
+- **Google AdSense**, and **Google Funding Choices** as the consent tool: advertising
   on the web version.
-- **Ko-fi** and **PayPal** - payments.
-- **Poly Haven** - the content network that serves the optional 3D lighting
+- **Ko-fi** and **PayPal**: payments.
+- **Poly Haven**: the content network that serves the optional 3D lighting
   environments. One is fetched only if you choose it in the graphics settings, and that
   request reveals your IP address to their network, as a request to any server does. The
   procedural default fetches nothing.
@@ -370,8 +370,8 @@ beyond the Google AdSense use described above. Ads are non-personalised by defau
 which is the setting that decides that, and where the consent tool applies you can
 change it yourself from “Your data” below. We do not offer financial incentives in
 exchange for personal information. You have the same rights of access, deletion and
-portability set out below, exercised the same way - the buttons on this page, or the
-mailbox at the bottom of it - and we will not treat you differently for using them.
+portability set out below, exercised the same way — the buttons on this page, or the
+mailbox at the bottom of it — and we will not treat you differently for using them.
 
 ## How long it is kept
 
@@ -387,29 +387,29 @@ to export or delete after you disconnect.
 **Usage measurement** keeps individual page-view records for 30 days and daily totals
 after that; the daily secret that makes a visit countable is destroyed after two days.
 None of it is tied to an account, so there is nothing in it to export or delete on
-request - by then there is nothing left that refers to you.
+request — by then there is nothing left that refers to you.
 
 ## Your choices
 
-- **See or correct your data** - most of it is visible on your profile and settings
+- **See or correct your data**: most of it is visible on your profile and settings
   pages.
-- **Take a copy** - there is an **Export my data** button under “Your data” below. It
+- **Take a copy**: there is an **Export my data** button under “Your data” below. It
   downloads one file holding everything the servers have for your account: profile,
   synced settings, robot presets, records, practice runs, self-hosted matches, rating
   and rating history, a summary of every match you played, your standing and playtime,
   friends, blocks, invites, and the payment rows behind your membership. Replays are
   listed by id, because an input log is tens of kilobytes and each one is already
   downloadable on its own. Other players are left out of it deliberately.
-- **Delete everything** - there is a **Delete account** button on your Profile page, and
+- **Delete everything**: there is a **Delete account** button on your Profile page, and
   the same one under “Your data” below. It removes your profile, username, settings,
   robot presets, records and their replays, rating and rating history, and all
   friendships, blocks, and invites, immediately and permanently. If that button is
   unavailable for any reason, email us and we will do exactly the same thing by hand.
-- **Turn analytics off** - a switch under “Your data” below. It stops every beacon from
+- **Turn analytics off**: a switch under “Your data” below. It stops every beacon from
   this browser as soon as you set it, and your browser’s Do Not Track or Global Privacy
   Control signal does the same thing without your having to come here.
-- **Advertising choices** - see the Advertising section above.
-- **Play anonymously** - do not sign in.
+- **Advertising choices**: see the Advertising section above.
+- **Play anonymously**: do not sign in.
 
 Two things deliberately survive an account deletion, and it is fairer to say so
 than to promise otherwise: matches you played remain in the other players’ match
@@ -435,17 +435,17 @@ update is noted in the app's announcements.
 
 ## Contact
 
-Questions, corrections, and deletion requests: **${LEGAL_CONTACT}**
+Questions, corrections, and deletion requests: [${LEGAL_CONTACT}](mailto:${LEGAL_CONTACT})
 `;
 
 export const TERMS_MD = `
-These terms cover your use of DSIM - the website, the multiplayer service, and the
+These terms cover your use of DSIM — the website, the multiplayer service, and the
 desktop application. Using any of them means you accept what follows.
 
 ## Who you are agreeing with
 
 DSIM is operated by **${LEGAL_OPERATOR}**, and you can reach a human at
-**${LEGAL_CONTACT}**. It is an independent project, not a company product.
+[${LEGAL_CONTACT}](mailto:${LEGAL_CONTACT}). It is an independent project, not a company product.
 
 ## Who can use DSIM
 
@@ -469,7 +469,7 @@ may lose their rating, their records, or their access.
 ## Supporter memberships
 
 Supporter benefits are cosmetic or convenience features. **They do not confer any
-competitive advantage**, and they never will - that is a deliberate design rule, not
+competitive advantage**, and they never will — that is a deliberate design rule, not
 a current limitation.
 
 Memberships are billed monthly through Ko-fi and you can cancel at any time from
@@ -477,11 +477,11 @@ your Ko-fi account; cancelling stops future charges and you keep the benefit unt
 the paid period ends.
 
 **Refunds.** Email us within **14 days** of a payment and we will refund it in
-full, no reason needed - that is a promise, not a discretion, and it is the same
+full, no reason needed — that is a promise, not a discretion, and it is the same
 14-day cancellation right UK and EU consumers have by law. After 14 days a
 payment for a period already served is not normally refunded, but if something has
-gone wrong - a double charge, a membership that never activated, a payment made by
-a child without a parent’s permission - email us and we will fix it rather than
+gone wrong — a double charge, a membership that never activated, a payment made by
+a child without a parent’s permission — email us and we will fix it rather than
 argue about it.
 
 A one-off tip is a tip, not a purchase. If you tipped at or above the monthly
@@ -516,7 +516,7 @@ names and rules are referenced for the purpose of simulating the competition.
 
 ## Ending things
 
-You can stop using DSIM and delete your account at any time - there is a **Delete
+You can stop using DSIM and delete your account at any time — there is a **Delete
 account** button on your Profile page, and it takes effect immediately. We may
 suspend an account that breaks these terms, and will say why where we reasonably
 can. If we suspend a supporter's account for a reason that is not their fault, we
@@ -526,7 +526,7 @@ refund the unused part of their membership.
 
 These terms are governed by the law of **${LEGAL_JURISDICTION}**, and its courts
 have jurisdiction over any dispute. If you are a consumer, this does not take away
-the protections of the law where you live - you can always bring a claim there.
+the protections of the law where you live — you can always bring a claim there.
 
 ## Changes
 
@@ -538,5 +538,5 @@ renews.
 
 ## Contact
 
-**${LEGAL_CONTACT}**
+[${LEGAL_CONTACT}](mailto:${LEGAL_CONTACT})
 `;

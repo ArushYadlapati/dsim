@@ -55,7 +55,7 @@ export function ProfileFriendActions({
             destructive ones, which is the one place a badge cannot go: the eye
             groups by distance, so it read as a third button in the middle of a
             strip of buttons rather than as the state they act on. */}
-        <span className="ds-chip on">✓ Friends</span>
+        <span className="ds-chip on">Friends</span>
         {challengeable && (
           <button
             className="ds-btn primary"

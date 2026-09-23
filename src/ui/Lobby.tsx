@@ -378,7 +378,7 @@ export function Lobby({
      */
     const adopted = takePendingLanRoom();
     if (!adopted && !roomServerUrl()) {
-      setError('Multiplayer needs the game server.');
+      setError('Couldn’t open a custom room: this build has no game server.');
       setPhase('error');
       return;
     }
@@ -739,11 +739,7 @@ export function Lobby({
           </div>
           <div className="ds-title">
             <h1>
-              {isRecord ? (
-                <>Duo <span className="accent">Record</span></>
-              ) : (
-                <>Multi<span className="accent">player</span></>
-              )}
+              {isRecord ? 'Duo record run' : 'Custom room'}
             </h1>
           </div>
           <div className="ds-panel ds-panel-body stack">
@@ -791,14 +787,14 @@ export function Lobby({
                 aria-pressed={entryMode === 'create'}
                 onClick={() => setEntryMode('create')}
               >
-                <span className="ot">Create room</span>
+                <span className="ot">New room</span>
               </button>
               <button
                 className={`ds-opt ${entryMode === 'join' ? 'on' : ''}`}
                 aria-pressed={entryMode === 'join'}
                 onClick={() => setEntryMode('join')}
               >
-                <span className="ot">Join room</span>
+                <span className="ot">Have a code</span>
               </button>
             </div>
             {/* WHAT IS LEFT OF THE PICKER: a statement, not a control. Every room runs the 3D
@@ -843,7 +839,7 @@ export function Lobby({
             <div className="ds-actions">
               {entryMode === 'create' ? (
                 <button className="ds-cta" disabled={phase === 'connecting'} onClick={createRoom}>
-                  {phase === 'connecting' ? 'CREATING…' : 'CREATE ROOM ▶'}
+                  {phase === 'connecting' ? 'CREATING…' : 'CREATE ROOM'}
                 </button>
               ) : (
                 <button
@@ -851,12 +847,16 @@ export function Lobby({
                   disabled={phase === 'connecting' || code.length !== ROOM_CODE_LENGTH}
                   onClick={joinWithCode}
                 >
-                  {phase === 'connecting' ? 'JOINING…' : 'JOIN ▶'}
+                  {phase === 'connecting' ? 'JOINING…' : 'JOIN ROOM'}
                 </button>
               )}
             </div>
             {multiServer() && !regionLocked && (
-              <p className="ds-hint">Both players must pick the same region.</p>
+              <p className="ds-hint">
+                {isRecord
+                  ? 'Your partner must pick the same region.'
+                  : 'Everyone in the room must pick the same region.'}
+              </p>
             )}
           </div>
         </div>
@@ -893,7 +893,7 @@ export function Lobby({
           <Menu settings={settings} onChange={onBuilderChange} />
           <div className="ds-actions">
             <button className="ds-cta" onClick={() => setBuilding(false)}>
-              DONE ▶
+              DONE
             </button>
           </div>
         </div>
@@ -924,7 +924,7 @@ export function Lobby({
         </div>
         <div className="ds-title">
           <h1>
-            {isRecord ? 'Duo' : 'Room'} <span className="accent">{code}</span>
+            {isRecord ? 'Duo' : 'Room'} {code}
           </h1>
         </div>
         {/* NOT centred: `.ds-console` is left-aligned throughout — the title, every
@@ -952,7 +952,7 @@ export function Lobby({
               })
             }
           >
-            {copied ? '✓ Copied' : '⧉ Copy code'}
+            {copied ? '✓ Copied' : 'Copy code'}
           </button>
         </p>
 
@@ -974,25 +974,25 @@ export function Lobby({
                     <TitleMark title={p.title} badges={p.badges} />
                   </span>
                   <span className="ptm">
-                    {p.spec.name} · {p.teamNumber || '-'}
+                    {p.spec.name} · {p.teamNumber || '—'}
                   </span>
                   {/* A BOT SEAT IS NAMED AS ONE, beside the name and not inside it — the same
                       rule the supporter badge follows. Without it a roster row reading
                       "Medium bot · READY" is indistinguishable from a driver who picked that
                       name, and the difference is whether the match rates. */}
-                  {p.bot && <span className="ds-chip">🤖 BOT</span>}
+                  {p.bot && <span className="ds-chip">BOT</span>}
                   {p.clientId === hostId && (
-                    <span className="ds-chip on">★ HOST</span>
+                    <span className="ds-chip on">HOST</span>
                   )}
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
                   <span className="ds-chip">
                     {p.startPose
                       ? 'CUSTOM'
                       : settings.game === 'chain'
-                        ? (CHAIN_START_POSES[p.startIndex]?.name ?? '-')
+                        ? (CHAIN_START_POSES[p.startIndex]?.name ?? '—')
                         : (moduleFor(settings.game).startAnchorName?.(p.startIndex, p.alliance) ??
                           START_POSES[p.startIndex]?.label ??
-                          '-')}
+                          '—')}
                   </span>
                   <span className={`ds-chip ${p.ready ? 'on' : 'off'}`}>
                     {p.ready ? 'READY' : 'NOT READY'}
@@ -1022,7 +1022,7 @@ export function Lobby({
                   disabled={players.length >= capacity}
                   onClick={() => lobbyRef.current?.addBot(botTier)}
                 >
-                  <span className="ot">＋ Add a bot</span>
+                  <span className="ot">Add a bot</span>
                 </button>
                 {players.some((p) => p.bot) && (
                   <button
@@ -1034,7 +1034,7 @@ export function Lobby({
                       if (last) lobbyRef.current?.removeBot(last.clientId);
                     }}
                   >
-                    <span className="ot">－ Remove a bot</span>
+                    <span className="ot">Remove a bot</span>
                   </button>
                 )}
               </div>
@@ -1214,7 +1214,7 @@ export function Lobby({
           </button>
           {isHost && (
             <button className="ds-cta" disabled={!canStart} onClick={() => lobbyRef.current?.start()}>
-              {isRecord ? 'START RUN ▶' : 'START MATCH ▶'}
+              {isRecord ? 'START RUN' : 'START MATCH'}
             </button>
           )}
         </div>
@@ -1231,7 +1231,7 @@ export function Lobby({
           <p className="ds-hint">START unlocks when everyone is ready.</p>
         )}
         {isHost && restartPending && (
-          <p className="ds-hint">Server is restarting shortly - starting is paused for a moment.</p>
+          <p className="ds-hint">Server is restarting shortly. Starting is paused for a moment.</p>
         )}
       </div>
     </div>

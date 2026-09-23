@@ -17,6 +17,7 @@ import { periodLabel } from '../seasons';
 import { moduleFor } from '../games';
 import { serverPhysics } from '../games/types';
 import { PeriodPicker } from './PeriodPicker';
+import { DRIVETRAIN_LABELS } from './labelData';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
 import { TitleMark } from './TitleChip';
 import { PLACEMENT_GAMES } from '../config';
@@ -38,23 +39,15 @@ import type { DrivetrainType, GameId, IntakeStyle, RobotSpec } from '../types';
 type Kind = 'records' | 'ranked';
 
 // RECORD boards are split by drivetrain (+ a cross-drivetrain Overall); the
-// picker shows for records only — ranked (ELO) is a single board per mode.
+// picker shows for records only — ranked (rating) is a single board per mode.
+// ONE label map (design review 07-21): the pill said "X-Drive" and the Robot chip under it
+// "X-drive". Both read the shared builder labels now.
+const DT_LABEL: Record<DrivetrainType, string> = DRIVETRAIN_LABELS;
+const BOARD_ORDER: DrivetrainType[] = ['mecanum', 'tank', 'swerve', 'xdrive', 'butterfly'];
 const BOARDS: { id: Board; label: string }[] = [
   { id: 'overall', label: 'Overall' },
-  { id: 'mecanum', label: 'Mecanum' },
-  { id: 'tank', label: 'Tank' },
-  { id: 'swerve', label: 'Swerve' },
-  { id: 'xdrive', label: 'X-Drive' },
-  { id: 'butterfly', label: 'Butterfly' },
+  ...BOARD_ORDER.map((id) => ({ id, label: DT_LABEL[id] })),
 ];
-
-const DT_LABEL: Record<DrivetrainType, string> = {
-  mecanum: 'Mecanum',
-  tank: 'Tank',
-  swerve: 'Swerve',
-  xdrive: 'X-drive',
-  butterfly: 'Butterfly',
-};
 const INTAKE_LABEL: Record<IntakeStyle, string> = {
   sloped: 'Sloped',
   vector: 'Vector',
@@ -207,7 +200,7 @@ function MyStanding({ me }: { me: EloStanding }) {
       <div className="lb-standing placed">
         <span className="lb-standing-rank">#{me.rank}</span>
         <span className="lb-standing-text">
-          Your rank · <strong>{me.rating}</strong> ELO
+          Your rating · <strong>{me.rating}</strong>
         </span>
       </div>
     );
@@ -273,7 +266,8 @@ export function Leaderboard({
   const [rows, setRows] = useState<(RecordRow | EloRow)[]>([]);
   const [me, setMe] = useState<EloStanding | null>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
-  const [error, setError] = useState('');
+  /** bumped by Try again: re-runs the fetch effect */
+  const [retry, setRetry] = useState(0);
   const [openRow, setOpenRow] = useState<string | null>(null);
 
   // seasons: null selection = the live season (server default)
@@ -308,7 +302,9 @@ export function Leaderboard({
   useEffect(() => {
     if (!configured) {
       setStatus('error');
-      setError('Leaderboards need the game server (set VITE_GAME_SERVER_URL).');
+      // an unconfigured build (dev, self-host): the env-var name is a developer's next step,
+      // never a player's (design review 07-04 / 19-03)
+      if (import.meta.env.DEV) console.warn('[leaderboard] VITE_GAME_SERVER_URL is not set');
       return;
     }
     let alive = true;
@@ -339,20 +335,21 @@ export function Leaderboard({
       })
       .catch((e: unknown) => {
         if (!alive) return;
-        setError(e instanceof Error ? e.message : String(e));
+        // the raw text ("Failed to fetch", "HTTP 502") is for the console, not the board
+        console.warn('[leaderboard] load failed:', e);
         setStatus('error');
       });
     return () => {
       alive = false;
     };
-  }, [kind, recMode, eloMode, board, threeD, season, configured, myUserId, game]);
+  }, [kind, recMode, eloMode, board, threeD, season, configured, myUserId, game, retry]);
 
   const isRecords = kind === 'records';
   /* A FILTER CHANGE KEEPS THE TABLE UP (design review 07-16). Blanking it for a 30px
      "Loading…" collapsed the panel on every seg click and page turn; the old rows stay,
      faded and `aria-busy`, and `.ds-loading` is the FIRST load's only. */
   const refetching = status === 'loading' && rows.length > 0;
-  const valueLabel = isRecords ? 'Score' : 'ELO';
+  const valueLabel = isRecords ? 'Score' : 'Rating';
   const viewing = season ?? current;
   const viewingSeason = seasons.find((s) => s.season === viewing);
   const seasonLabel = viewingSeason ? periodLabel(viewingSeason) : 'Current period';
@@ -373,7 +370,7 @@ export function Leaderboard({
         <div className="ds-panel-h">
           <div className="ds-segs">
             <button className={`ds-seg ${isRecords ? 'on' : ''}`} aria-pressed={isRecords} onClick={() => setKind('records')}>
-              Records
+              High scores
             </button>
             <button className={`ds-seg ${!isRecords ? 'on' : ''}`} aria-pressed={!isRecords} onClick={() => setKind('ranked')}>
               Ranked
@@ -421,12 +418,26 @@ export function Leaderboard({
         {!isRecords && status === 'ok' && me && <MyStanding me={me} />}
 
         {status === 'loading' && !refetching && <div className="ds-loading">Loading…</div>}
-        {status === 'error' && (
-          <div className="ds-empty">
-            <div className="big">Couldn’t load the board</div>
-            {error}
-          </div>
-        )}
+        {status === 'error' &&
+          (configured ? (
+            <>
+              <div className="ds-empty">
+                <div className="big">Couldn’t load the board</div>
+                Check your connection and try again.
+              </div>
+              <div className="ds-panel-body row">
+                <span className="ds-head-spacer" />
+                <button className="ds-btn" onClick={() => setRetry((n) => n + 1)}>
+                  Try again
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="ds-empty">
+              <div className="big">Leaderboards are online-only</div>
+              This build isn’t connected to a game server. Solo practice and free drive still work.
+            </div>
+          ))}
         {status === 'ok' && rows.length === 0 && (
           <div className="ds-empty">
             <div className="big">{isRecords ? 'No entries yet' : 'No placed players yet'}</div>
@@ -516,7 +527,7 @@ export function Leaderboard({
                               <span className="tw" aria-hidden="true">{isOpen ? '▴' : '▾'}</span>
                             </button>
                           ) : (
-                            <span className="ds-muted">-</span>
+                            <span className="ds-muted">—</span>
                           )}
                         </td>
                       )}
@@ -536,7 +547,7 @@ export function Leaderboard({
                                 onWatch!(rec.replayId!);
                               }}
                             >
-                              Watch ▶
+                              Watch
                             </button>
                           </>
                         )}

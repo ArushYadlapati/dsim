@@ -97,9 +97,10 @@ export function MatchStrategy({
     [players, myAlliance],
   );
 
-  const eloOf = (p: LobbyPlayer): string => {
+  // the chip's whole label: "Rating", never "ELO", in anything a player reads (the system is Glicko-2)
+  const ratingChip = (p: LobbyPlayer): string => {
     const e = p.slot !== undefined ? intros.find((i) => i.id === p.slot)?.elo : null;
-    return e === null || e === undefined ? 'Unranked' : String(Math.round(e));
+    return e === null || e === undefined ? 'Unranked' : `Rating ${Math.round(e)}`;
   };
 
   const secsLeft = Math.max(0, Math.ceil((deadline - now) / 1000));
@@ -210,7 +211,7 @@ export function MatchStrategy({
           <Menu settings={settings} onChange={onBuilderChange} />
           <div className="ds-actions">
             <button className="ds-cta" onClick={() => setBuilding(false)}>
-              DONE ▶
+              DONE
             </button>
           </div>
         </div>
@@ -239,15 +240,7 @@ export function MatchStrategy({
         </div>
         <div className="ds-title">
           <h1>
-            {ranked ? (
-              <>
-                Match <span className="accent">Strategy</span>
-              </>
-            ) : (
-              <>
-                Starting the <span className="accent">match</span>
-              </>
-            )}
+            {ranked ? 'Match strategy' : 'Starting the match'}
           </h1>
         </div>
         {/* the negative margin cancelling `.ds-console-in`'s gap is gone: two spacing
@@ -286,7 +279,7 @@ export function MatchStrategy({
                   </span>
                   <span className="ptm">Team {p.teamNumber || '-'}</span>
                   <span className={`ds-chip ${p.alliance}`}>{p.alliance.toUpperCase()}</span>
-                  {ranked && <span className="ds-chip">ELO {eloOf(p)}</span>}
+                  {ranked && <span className="ds-chip">{ratingChip(p)}</span>}
                   {p.ready3d === false && <span className="ds-chip off">LOADING 3D</span>}
                   <span className={`ds-chip ${p.ready ? 'on' : 'off'}`}>
                     {p.ready ? 'READY' : '…'}
@@ -339,7 +332,7 @@ export function MatchStrategy({
                               START_POSES[pl.startIndex]?.label ??
                               '-')}
                       </span>
-                      {ranked && <span className="ds-chip">ELO {eloOf(pl)}</span>}
+                      {ranked && <span className="ds-chip">{ratingChip(pl)}</span>}
                       <span className={`ds-chip ${pl.ready ? 'on' : 'off'}`}>
                         {pl.ready ? 'READY' : 'NOT READY'}
                       </span>

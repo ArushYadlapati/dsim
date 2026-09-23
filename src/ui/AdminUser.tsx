@@ -441,11 +441,7 @@ export function AdminUser({
           Delete account
         </button>
       </div>
-      <p className="ds-hint">
-        A suspension blocks every online room and the ranked queue, on every region, and ends by
-        itself on the day it names. Free drive and practice keep working. The reason is shown to
-        the player; anything private belongs in a note below.
-      </p>
+      <p className="ds-hint">The reason is shown to the player; anything private belongs in a note below.</p>
       {status && <p className="ds-hint">{status}</p>}
 
       <div id="adm-standing-editor">

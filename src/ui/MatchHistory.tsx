@@ -132,7 +132,7 @@ function ScoreCell({ r }: { r: MatchHistoryEntry }) {
  * Paginated, filterable match history for a player — the core of the Career page
  * and public profiles. Shows every persisted game (ranked + custom versus AND
  * solo/duo record runs) with a timestamp, who played (clickable @usernames),
- * result (WIN green / LOSS red), the final scores of BOTH teams, ELO Δ, and a
+ * result (WIN green / LOSS red), the final scores of BOTH teams, rating Δ, and a
  * Watch-replay link. Filter by type/result and page through with a "show N"
  * selector — nothing dumps the whole history at once. The SEASON is controlled by
  * the parent Career view (one Act/Season picker drives both the stats panel and
@@ -160,7 +160,8 @@ export function MatchHistory({
 
   const [page, setPage] = useState<MatchHistoryPage | null>(null);
   const [status, setStatus] = useState<'loading' | 'ok' | 'error'>('loading');
-  const [error, setError] = useState('');
+  /** bumped by Try again: re-runs the fetch effect */
+  const [retry, setRetry] = useState(0);
 
   // a period switch resets to the first page (the old offset may exceed the count)
   useEffect(() => {
@@ -178,13 +179,14 @@ export function MatchHistory({
       })
       .catch((e: unknown) => {
         if (!alive) return;
-        setError(e instanceof Error ? e.message : String(e));
+        // the raw text ("Failed to fetch", "HTTP 502") is for the console, not the panel (07-04)
+        console.warn('[match history] load failed:', e);
         setStatus('error');
       });
     return () => {
       alive = false;
     };
-  }, [fetchPage, season, offset, pageSize, type, result]);
+  }, [fetchPage, season, offset, pageSize, type, result, retry]);
 
   // any filter change resets to the first page
   const changeType = (t: TypeFilter) => {
@@ -247,7 +249,15 @@ export function MatchHistory({
       {status === 'error' && (
         <div className="ds-empty">
           <div className="big">Couldn’t load match history</div>
-          {error}
+          Check your connection and try again.
+        </div>
+      )}
+      {status === 'error' && (
+        <div className="ds-panel-body row">
+          <span className="ds-head-spacer" />
+          <button className="ds-btn" onClick={() => setRetry((n) => n + 1)}>
+            Try again
+          </button>
         </div>
       )}
       {(status === 'ok' || refetching) && total === 0 && (
@@ -268,7 +278,7 @@ export function MatchHistory({
                   <th>Players</th>
                   <th>Result</th>
                   <th className="r">Score</th>
-                  <th className="r">ELO Δ</th>
+                  <th className="r">Rating Δ</th>
                   <th className="r" />
                 </tr>
               </thead>
@@ -300,7 +310,7 @@ export function MatchHistory({
                         {r.kind === 'record' ? (
                           <span className="mh-run">run</span>
                         ) : r.won == null ? (
-                          <span className="ds-muted">-</span>
+                          <span className="ds-muted">—</span>
                         ) : (
                           <span className={`mh-result ${r.won ? 'win' : 'loss'}`}>
                             {r.won ? 'WIN' : 'LOSS'}
@@ -315,15 +325,15 @@ export function MatchHistory({
                         <ScoreCell r={r} />
                       </td>
                       <td className={`sc ${delta == null ? 'none' : delta >= 0 ? 'pos' : 'neg'}`}>
-                        {delta == null ? '-' : delta >= 0 ? `+${delta}` : delta}
+                        {delta == null ? '—' : delta >= 0 ? `+${delta}` : `−${-delta}`}
                       </td>
                       <td className="r">
                         {watchable ? (
                           <button className="ds-btn ghost mh-watch" onClick={() => onWatch!(r.replayId!)}>
-                            Watch ▶
+                            Watch
                           </button>
                         ) : (
-                          <span className="ds-muted">-</span>
+                          <span className="ds-muted">—</span>
                         )}
                       </td>
                     </tr>

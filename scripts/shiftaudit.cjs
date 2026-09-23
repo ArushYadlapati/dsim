@@ -276,7 +276,7 @@ app.whenReady().then(async () => {
     })()`);
     if (await clickText('Play') === 'MISS') log('  (could not reach Play)');
     await sleep(900);
-    if (await clickText('Free Drive') === 'MISS') log('  (could not reach Free Drive)');
+    if (await clickText('Free drive') === 'MISS') log('  (could not reach Free drive)');
     await sleep(3500);
     await js(FREEZE);
     await sleep(150);

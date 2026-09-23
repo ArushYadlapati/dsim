@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import type { GameId } from '../types';
 import type { Replay } from '../sim/replay';
 import { fetchUserStats, fetchUserMatches, type MatchHistoryOpts } from '../net/api';
@@ -7,6 +7,7 @@ import { authEnabled, authClient } from '../lib/authClient';
 import { CareerView } from './CareerView';
 import { ShareButton } from './ShareButton';
 import { StandingCard } from './StandingCard';
+import { AuthPanel } from './AuthPanel';
 import { PracticeReplays } from './PracticeReplays';
 import { LanReplays } from './LanReplays';
 
@@ -34,7 +35,7 @@ export function Stats(nav: CareerNav = {}) {
         <div className="ds-panel">
           <div className="ds-empty">
             <div className="big">Accounts are off in this build</div>
-            Set <code>VITE_NEON_AUTH_URL</code> to sign in and track ELO, records, and match history.
+            This build has no sign-in, so your rating, records and match history aren’t saved. Solo practice and free drive still work.
           </div>
         </div>
         <PracticeReplays signedIn={false} game={nav.game} onWatchLocal={nav.onWatchLocal} />
@@ -50,6 +51,7 @@ function StatsSignedIn({ nav }: { nav: CareerNav }) {
   const user = session.data?.user;
   const userId = user?.id;
   const configured = gameServerConfigured();
+  const [authOpen, setAuthOpen] = useState(false);
 
   const game = nav.game;
   const loadStats = useCallback(
@@ -74,7 +76,7 @@ function StatsSignedIn({ nav }: { nav: CareerNav }) {
    *
    * Solo practice is the primary OFFLINE mode and keeps its runs on the device whether or not
    * anyone is signed in — so a Career page that showed nothing but a sign-in prompt would be
-   * holding runs the player has no way to open. ELO and records genuinely need an account;
+   * holding runs the player has no way to open. Rating and records genuinely need an account;
    * these do not.
    */
   if (!user) {
@@ -82,9 +84,18 @@ function StatsSignedIn({ nav }: { nav: CareerNav }) {
       <>
         <div className="ds-panel">
           <div className="ds-empty">
-            <div className="big">Sign in to see your stats</div>
-            Sign in from the top bar to track your ELO and records.
+            <div className="big">Sign in to see your career</div>
+            Track your rating, records and match history.
           </div>
+          {/* the action ON the empty state (design review 19-13): "from the top bar" pointed at
+              an unlabelled avatar. Same anatomy as Appearance's signed-out panel. */}
+          <div className="ds-panel-body row">
+            <span className="ds-head-spacer" />
+            <button className="ds-btn primary" onClick={() => setAuthOpen(true)}>
+              Sign in
+            </button>
+          </div>
+          {authOpen && <AuthPanel onClose={() => setAuthOpen(false)} />}
         </div>
         <PracticeReplays signedIn={false} game={nav.game} onWatchLocal={nav.onWatchLocal} />
         <LanReplays signedIn={false} game={nav.game} onWatchLocal={nav.onWatchLocal} />
@@ -97,8 +108,8 @@ function StatsSignedIn({ nav }: { nav: CareerNav }) {
       <>
         <div className="ds-panel">
           <div className="ds-empty">
-            <div className="big">Stats need the game server</div>
-            Set <code>VITE_GAME_SERVER_URL</code>.
+            <div className="big">Career is online-only</div>
+            This build isn’t connected to a game server. Solo practice and free drive still work.
           </div>
         </div>
         {/* the local half needs no server either */}

@@ -11,6 +11,7 @@ import type { Replay, ReplayResult } from '../sim/replay';
 import type { RobotSetup } from '../sim/spawn';
 import { moduleFor } from '../games';
 import { recordBanner } from './recordBanner';
+import { DRIVETRAIN_LABELS } from './labelData';
 import type { ResultBanner } from './recordBanner';
 import { seasonFor } from '../seasons';
 import { SupporterBadge } from './SupporterBadge';
@@ -43,12 +44,9 @@ import type { Alliance, ScoreBreakdown } from '../types';
  * with the on-field mint, rightmost; everything else is a secondary outline in on-field ink.
  */
 
+// the shared builder labels ("X-drive", 07-21), plus the duo board's mixed sentinel
 const DRIVETRAIN_LABEL: Record<string, string> = {
-  mecanum: 'Mecanum',
-  xdrive: 'X-Drive',
-  butterfly: 'Butterfly',
-  tank: 'Tank',
-  swerve: 'Swerve',
+  ...DRIVETRAIN_LABELS,
   // sentinel for a mixed-drivetrain duo run (overall board only, no dt-specific)
   overall: 'Mixed',
 };
@@ -266,8 +264,8 @@ function rosterFor(
     });
 }
 
-/** the small "Updating ELO…" line for a ranked match whose per-driver deltas have not
- * landed yet. Same 9s give-up as the old dedicated ELO block. */
+/** the small "Updating rating…" line for a ranked match whose per-driver deltas have not
+ * landed yet. Same 9s give-up as the old dedicated rating block. */
 function useEloPending(ranked: boolean, eloResults: EloResultRow[] | null): string | null {
   const [timedOut, setTimedOut] = useState(false);
   useEffect(() => {
@@ -277,9 +275,9 @@ function useEloPending(ranked: boolean, eloResults: EloResultRow[] | null): stri
   }, [ranked, eloResults]);
   if (!ranked || eloResults !== null) return null;
   // alpha builds never persist — the server sends no eloResult, so say so up front
-  // instead of spinning on "Updating ELO…"
+  // instead of spinning on "Updating rating…"
   if (appChannel() === 'alpha') return 'Not rated on this test build.';
-  return timedOut ? 'No rating change this match.' : 'Updating ELO…';
+  return timedOut ? 'No rating change this match.' : 'Updating rating…';
 }
 
 /**
@@ -382,7 +380,7 @@ function RosterList({
               {order(
                 p.teamNumber ? p.teamNumber : '-',
                 showElo && p.elo ? (
-                  <span className="resx-elo" title={`ELO ${p.elo.before} → ${p.elo.after}`}>
+                  <span className="resx-elo" title={`Rating ${p.elo.before} → ${p.elo.after}`}>
                     {p.elo.after >= p.elo.before ? '▲' : '▼'}
                     {Math.abs(p.elo.after - p.elo.before)}
                   </span>
@@ -619,7 +617,7 @@ function RematchVote({
       aria-pressed={vote.mine}
       onClick={onToggle}
     >
-      {waiting ? 'WAITING…' : '⟲ REMATCH'} {vote.votes}/{vote.need}
+      {waiting ? 'WAITING…' : 'REMATCH'} {vote.votes}/{vote.need}
     </button>
   );
 }
@@ -1030,8 +1028,12 @@ export function Results({
                 the reason is stated. Say it plainly. */}
             {(red.voided || blue.voided) && (
               <p className="resx-void">
-                RED CARD — {red.voided && blue.voided ? 'both alliances have' : `${red.voided ? 'RED' : 'BLUE'} has`}{' '}
-                forfeited the match. Points earned are shown above but do not count.
+                {/* full stops, not a dash, and "the red alliance" rather than a bare RED straight
+                    after "Red card", which is the penalty (06-21) */}
+                {red.voided && blue.voided
+                  ? 'Red cards. Both alliances forfeit the match.'
+                  : `Red card. The ${red.voided ? 'red' : 'blue'} alliance forfeits the match.`}{' '}
+                Points are shown but do not count.
               </p>
             )}
             {eloNote && <p className="resx-note">{eloNote}</p>}
@@ -1070,7 +1072,7 @@ export function Results({
               </button>
               {(matchResult ?? practiceRun) && onWatchReplay && (
                 <button className="secondary" onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
-                  ▶ WATCH REPLAY
+                  WATCH REPLAY
                 </button>
               )}
               {rematchVote && (
@@ -1216,10 +1218,10 @@ function RecordStanding({
           onSignIn();
         }}
       >
-        Sign in to save this run &amp; see your rank →
+        Sign in to save this run and see your rank →
       </button>
     ) : (
-      <p className="resx-standing signin">Sign in to save this run to the leaderboard.</p>
+      <p className="resx-standing signin">Sign in next time to save a run to the leaderboard.</p>
     );
   }
   const cat = `${info.mode === 'duo' ? 'Duo' : 'Solo'} · ${prettyDrivetrain(info.drivetrain)}`;
@@ -1384,7 +1386,7 @@ function RecordResults({
               roster={roster}
               showElo={false}
               total={netCount}
-              totalLabel={cr ? 'TOTAL' : 'NET SCORE'}
+              totalLabel={cr ? 'Total' : 'Net score'}
             />
             <SoloTable sections={sections} rowsActive={rowsActive} />
           </>
@@ -1397,7 +1399,7 @@ function RecordResults({
               </button>
               {(matchResult ?? practiceRun) && onWatchReplay && (
                 <button className="secondary" onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
-                  ▶ WATCH REPLAY
+                  WATCH REPLAY
                 </button>
               )}
               {/* CO-OP: the run belongs to both drivers, so restarting is a vote —

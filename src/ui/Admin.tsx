@@ -388,10 +388,6 @@ export function Admin({
           ) : (
             <>
               <h2 className="ds-h2">Find an account</h2>
-              <p className="ds-sub adm-sub">
-                Search by display name, @username, or an exact account id. Open one for its
-                standing, reports, matches, records, membership and moderation history.
-              </p>
               <div className="adm-toolbar">
                 <input
                   type="search"
@@ -512,10 +508,6 @@ export function Admin({
       {tab === 'server' && (
         <>
       <h2 className="ds-h2">Server restart</h2>
-      <p className="ds-sub adm-sub">
-        Announce a restart to every connected player with a live countdown, then deploy the
-        server when it hits zero. Players see a banner; anyone already playing gets warned.
-      </p>
 
       <div className="admin-card">
         <label className="admin-field">
@@ -570,11 +562,6 @@ export function Admin({
       {tab === 'content' && (
         <>
       <h2 className="ds-h2">Announcements</h2>
-      <p className="ds-sub adm-sub">
-        Publish patch notes, bug-fix summaries, or a new season / act. Each player sees it once,
-        the first time they open the app after you publish. A new season or act plays a full-screen
-        cinematic reveal; patch notes show in a “What’s new” panel.
-      </p>
       <div className="admin-card">
         <label className="admin-field col">
           <span>Type</span>
@@ -655,14 +642,9 @@ export function Admin({
         )}
       </div>
 
-      <h2 className="ds-h2 adm-sec">Acts &amp; Seasons</h2>
-      <p className="ds-sub adm-sub">
-        Competitive periods are grouped Act → Season (both 1-indexed; Act 0 is the beta).
-        A <b>new season</b> resets the boards within the current act; a <b>new act</b> also
-        rolls the act and restarts the season count at 1, firing the “A NEW ACT” cinematic.
-        Past periods stay fully viewable in the leaderboard’s picker; only new runs score onto
-        the live one. Leave the name blank to auto-label “Act X · Season Y”.
-      </p>
+      {/* the season/act difference lives on the two buttons' titles, and the confirm names the
+          period each one creates (design review 10-15) */}
+      <h2 className="ds-h2 adm-sec">Acts and seasons</h2>
       <div className="admin-card">
         <label className="admin-field col">
           <span>Custom title (optional)</span>
@@ -676,10 +658,20 @@ export function Admin({
           />
         </label>
         <div className="admin-buttons">
-          <button className="ds-btn" disabled={seasonBusy} onClick={() => startSeason(false)}>
+          <button
+            className="ds-btn"
+            disabled={seasonBusy}
+            title="Resets the boards within the current act. Past periods stay viewable in the leaderboard’s picker."
+            onClick={() => startSeason(false)}
+          >
             START NEW SEASON
           </button>
-          <button className="ds-btn" disabled={seasonBusy} onClick={() => startSeason(true)}>
+          <button
+            className="ds-btn"
+            disabled={seasonBusy}
+            title="Rolls the act, restarts the season count at 1 and plays the “A NEW ACT” cinematic."
+            onClick={() => startSeason(true)}
+          >
             START NEW ACT
           </button>
           {/* irreversible, unlike the two beside it: a new period archives the old one, a

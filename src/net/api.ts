@@ -126,7 +126,7 @@ export type Board = 'mecanum' | 'tank' | 'swerve' | 'xdrive' | 'butterfly' | 'ov
 
 async function getJson<T>(path: string): Promise<T> {
   const base = gameServerHttpUrl();
-  if (!base) throw new Error('Leaderboards need the game server (VITE_GAME_SERVER_URL).');
+  if (!base) throw new Error('Leaderboards need the game server, and this build has none.');
   const res = await fetch(base + path);
   if (!res.ok) throw new Error(`Server returned ${res.status}`);
   return (await res.json()) as T;
@@ -159,7 +159,7 @@ export class ReplayPrivateError extends Error {
  */
 async function maybeAuthedJson<T>(path: string): Promise<T> {
   const base = gameServerHttpUrl();
-  if (!base) throw new Error('Leaderboards need the game server (VITE_GAME_SERVER_URL).');
+  if (!base) throw new Error('Leaderboards need the game server, and this build has none.');
   const token = await getAuthToken().catch(() => null);
   const res = await fetch(base + path, {
     headers: token ? { authorization: `Bearer ${token}` } : {},
@@ -531,7 +531,7 @@ export async function checkUsername(
  * Throws with the server's message (e.g. "That username is taken.") on failure. */
 export async function updateUsername(username: string): Promise<{ username: string }> {
   const base = gameServerHttpUrl();
-  if (!base) throw new Error('Setting a username needs the game server (VITE_GAME_SERVER_URL).');
+  if (!base) throw new Error('Setting a username needs the game server, and this build has none.');
   const token = await getAuthToken();
   if (!token) throw new Error('Please sign in again.');
   const res = await fetch(base + '/api/user/username', {
@@ -574,7 +574,7 @@ export async function saveAccountSettings(settings: unknown): Promise<void> {
 /** set the signed-in user's OWN display name (server verifies the Neon Auth JWT) */
 export async function updateHandle(handle: string): Promise<{ userId: string; handle: string }> {
   const base = gameServerHttpUrl();
-  if (!base) throw new Error('Changing your name needs the game server (VITE_GAME_SERVER_URL).');
+  if (!base) throw new Error('Changing your name needs the game server, and this build has none.');
   const token = await getAuthToken();
   if (!token) throw new Error('Please sign in again.');
   const res = await fetch(base + '/api/user/handle', {

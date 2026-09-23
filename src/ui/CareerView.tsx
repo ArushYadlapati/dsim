@@ -78,6 +78,7 @@ export function CareerView({
         if (/404/.test(msg) && notFound) {
           setStatus('notfound');
         } else {
+          console.warn('career: load failed', e);
           setError(msg);
           setStatus('error');
         }

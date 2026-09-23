@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   adminFetchPresence,
   adminFetchMaintenance,
@@ -68,10 +68,6 @@ export function AdminLive({
   const players = machines.flatMap((m) => m.players.map((p) => ({ ...p, region: m.region })));
   const guests = machines.flatMap((m) => (m.guests ?? []).map((g) => ({ ...g, region: m.region })));
   const sockets = machines.reduce((n, m) => n + m.online, 0);
-  // sockets held by ACCOUNTS. Stated explicitly because "online" counts sockets and
-  // "accounts" counts people: one player with two tabs makes those two disagree, and
-  // without this the tiles look broken rather than merely subtle.
-  const accountSessions = players.reduce((n, p) => n + (p.sessions ?? 1), 0);
 
   const q = filter.trim().toLowerCase();
   const match = (s: string | undefined | null): boolean => !!s && s.toLowerCase().includes(q);
@@ -80,12 +76,16 @@ export function AdminLive({
     : players;
   const shownGuests = q ? guests.filter((g) => match(g.id) || match(g.room) || match(g.region)) : guests;
 
+  // ONE FRAME PER SECTION, as Analytics does (design review 10-15): the tab was ten stacked
+  // blocks with nothing to scan by. `.ds-sec` owns the gap between them.
   return (
-    <>
+    <div className="ds-sec">
       <MaintenancePanel />
 
       <div className="adm-stats">
-        <Stat label="Sessions" value={sockets} hint="open sockets across every region" />
+        {/* the tiles' `title`s carry what each one counts; the arithmetic sentence that sat under
+            them is gone (design review 10-15). One player with two tabs is two sessions. */}
+        <Stat label="Sessions" value={sockets} hint="open sockets across every region; one player with two tabs is two" />
         <Stat label="Accounts" value={players.length} hint="distinct signed-in players" />
         <Stat label="Guests" value={guests.length} hint="sessions with no account" />
         <Stat
@@ -95,15 +95,8 @@ export function AdminLive({
         <Stat label="Queued" value={players.filter((p) => p.queue).length} hint="waiting for a ranked match" />
         <Stat label="Live matches" value={data.rooms.length} />
       </div>
-      <p className="ds-hint">
-        {accountSessions} session{accountSessions === 1 ? '' : 's'} belong to {players.length} account
-        {players.length === 1 ? '' : 's'} + {guests.length} guest{guests.length === 1 ? '' : 's'} ={' '}
-        {accountSessions + guests.length} of {sockets}
-        {accountSessions + guests.length !== sockets && ' (the rest are sockets that have not identified themselves yet, still connecting)'}
-        . One player with two tabs is two sessions and one account.
-      </p>
 
-      <h3 className="adm-h3">Regions</h3>
+      <LivePanel title="Regions">
       <div className="adm-regions">
         {machines.length === 0 && <p className="ds-hint">No machine is reporting.</p>}
         {machines.map((m) => (
@@ -118,21 +111,23 @@ export function AdminLive({
           </div>
         ))}
       </div>
+      </LivePanel>
 
       <input
         type="search"
-        className="ds-input adm-filter adm-gap"
+        className="ds-input adm-filter"
         aria-label="Filter sessions"
         placeholder="Filter every session by name, id, room or region…"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
       />
 
-      <h3 className="adm-h3">
-        Signed in <span className="ds-muted">({shownPlayers.length})</span>
-        {shownPlayers.length > 0 && (
+      <LivePanel
+        title="Signed in"
+        count={shownPlayers.length}
+        action={shownPlayers.length > 0 && (
           <button
-            className="ds-btn ghost small adm-h3-act"
+            className="ds-btn ghost small"
             onClick={() =>
               downloadCsv(
                 'sessions.csv',
@@ -147,7 +142,7 @@ export function AdminLive({
             Export CSV
           </button>
         )}
-      </h3>
+      >
       <SessionTable
         rows={shownPlayers.map((p) => ({
           key: p.userId + p.region,
@@ -176,10 +171,9 @@ export function AdminLive({
         empty={players.length === 0 ? 'Nobody signed in is connected' : 'No match for that filter'}
         onWatch={onWatch}
       />
+      </LivePanel>
 
-      <h3 className="adm-h3">
-        Guests <span className="ds-muted">({shownGuests.length})</span>
-      </h3>
+      <LivePanel title="Guests" count={shownGuests.length}>
       <SessionTable
         rows={shownGuests.map((g) => ({
           key: g.id + g.region,
@@ -193,16 +187,9 @@ export function AdminLive({
         empty={guests.length === 0 ? 'No guest sessions' : 'No match for that filter'}
         onWatch={onWatch}
       />
-      <p className="ds-hint">
-        A guest row is keyed by its <b>connection id</b>, the server’s own per-socket routing id.
-        It isn’t an IP or a fingerprint, it’s stored nowhere else, and it dies with the socket:
-        the same person reconnecting gets an unrelated id. It tells two live sessions apart; it
-        can’t link either to a past one.
-      </p>
+      </LivePanel>
 
-      <h3 className="adm-h3">
-        Live matches <span className="ds-muted">({data.rooms.length})</span>
-      </h3>
+      <LivePanel title="Live matches" count={data.rooms.length}>
       {data.rooms.length === 0 ? (
         <ListState empty="No live matches">Nothing is being played anywhere right now.</ListState>
       ) : (
@@ -215,7 +202,7 @@ export function AdminLive({
                   {' '}
                   · {gameName(r.game)} · {roomKind(r)} {r.mode} · {r.phase} · {r.score.red}–
                   {r.score.blue}
-                  {r.spectators > 0 ? ` · 👁 ${r.spectators}` : ''}
+                  {r.spectators > 0 ? ` · ${r.spectators} watching` : ''}
                   {r.region ? ` · ${r.region}` : ''} · <code>{r.room}</code>
                 </span>
               </div>
@@ -228,10 +215,7 @@ export function AdminLive({
           ))}
         </div>
       )}
-      <p className="ds-hint">
-        Every region and every kind: ranked, custom and record runs alike. Players only see ranked
-        matches on Watch Live; custom rooms stay reachable by their code.
-      </p>
+      </LivePanel>
 
       <RecentGames onWatchReplay={onWatchReplay} />
 
@@ -241,9 +225,37 @@ export function AdminLive({
         cannot answer “what was X doing an hour ago”; <b>Recent games</b> is the only backward-looking
         section, and it shows finished match results, each of which already appears in its own
         players’ public match history. Watching a live match from here does <b>not</b> appear in the
-        spectator count players see. All of this is stated in the privacy policy.
+        spectator count players see. A guest row is keyed by the server’s per-socket connection
+        id, which is not an IP or a fingerprint and dies with the socket. All of this is stated
+        in the privacy policy.
       </p>
-    </>
+    </div>
+  );
+}
+
+/** one Live section in the `.ds-panel` frame, title (+ count) left and its one action right */
+function LivePanel({
+  title,
+  count,
+  action,
+  children,
+}: {
+  title: string;
+  count?: number;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="ds-panel">
+      <div className="ds-panel-h">
+        <h3 className="ds-panel-title">
+          {title}
+          {count != null && <span className="ds-count"> ({count})</span>}
+        </h3>
+        {action}
+      </div>
+      <div className="ds-panel-body">{children}</div>
+    </section>
   );
 }
 
@@ -259,11 +271,13 @@ export function AdminLive({
 function RecentGames({ onWatchReplay }: { onWatchReplay?: (replayId: string) => void }) {
   const { data: rows, err } = usePolled(() => adminFetchMatches(40), 30_000);
 
+  // FOLDED by default (10-15): the one backward-looking list, and 40 rows long, so on an
+  // incident view it stays out of the way until somebody asks for it
   return (
-    <>
-      <h3 className="adm-h3">
-        Recent games {rows && <span className="ds-muted">({rows.length})</span>}
-      </h3>
+    <LivePanel title="Recent games" count={rows?.length}>
+      <details className="ds-fold">
+      <summary>Show finished games</summary>
+      <div className="ds-fold-body">
       {err && !rows ? (
         <ListState error="read match history" />
       ) : !rows ? (
@@ -297,7 +311,9 @@ function RecentGames({ onWatchReplay }: { onWatchReplay?: (replayId: string) => 
           ))}
         </div>
       )}
-    </>
+      </div>
+      </details>
+    </LivePanel>
   );
 }
 
@@ -484,11 +500,7 @@ function MaintenancePanel() {
           LIFT LOCKDOWN
         </button>
       </div>
-      <p className="ds-hint">
-        Blocks new matches, ranked queueing and custom rooms for everyone except admins. It is
-        enforced on the server, not hidden in the UI. Matches already running are left alone to finish.
-        Set “starts in” above 0 so players get told before it bites.
-      </p>
+      <p className="ds-hint">Admins are exempt, and matches already running are left to finish.</p>
       {status && <p className="ds-hint">{status}</p>}
     </div>
   );
