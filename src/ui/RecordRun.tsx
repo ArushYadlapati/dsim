@@ -276,7 +276,7 @@ export function RecordRun({
               </button>
             )
           )}
-          <button className="ds-cta ghost" onClick={onCancel}>
+          <button className="ds-cta secondary" onClick={onCancel}>
             BACK TO HOME
           </button>
         </div>
@@ -302,7 +302,7 @@ export function RecordRun({
         </p>
       )}
       <div className="ds-actions">
-        <button className="ds-cta ghost" onClick={onCancel}>
+        <button className="ds-cta secondary" onClick={onCancel}>
           BACK TO HOME
         </button>
       </div>

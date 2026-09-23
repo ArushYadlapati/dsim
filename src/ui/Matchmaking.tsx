@@ -1078,7 +1078,7 @@ export function Matchmaking({
           {dodgeNote()}
           {lockNote()}
           <div className="ds-actions">
-            <button className="ds-cta ghost" onClick={cancel}>
+            <button className="ds-cta secondary" onClick={cancel}>
               CANCEL
             </button>
           </div>
@@ -1107,11 +1107,11 @@ export function Matchmaking({
             // the label stays a VERB. `expandLabel` turned it into "EXPANDED ×2" past
             // the first press — a past-tense status that no longer says what pressing
             // it does, and a second statement of a count `widenHint` already carries.
-            <button className="ds-cta ghost" onClick={expand}>
+            <button className="ds-cta secondary" onClick={expand}>
               EXPAND SEARCH
             </button>
           )}
-          <button className="ds-cta ghost" onClick={cancel}>
+          <button className="ds-cta secondary" onClick={cancel}>
             CANCEL
           </button>
         </div>

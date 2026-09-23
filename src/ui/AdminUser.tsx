@@ -20,7 +20,7 @@ import { SEASONS } from '../seasons';
 import { STANDING_MAX, tierOf, lockRemaining } from '../standing';
 import { adminFail } from './adminCopy';
 import { StandingEditor } from './AdminStanding';
-import { AccountName, CopyId, When, confirmed, downloadCsv } from './adminBits';
+import { AccountName, CopyId, ListState, When, confirmed, downloadCsv } from './adminBits';
 import type { WatchReplay } from './AdminReports';
 
 /**
@@ -85,14 +85,11 @@ export function AdminUser({
   if (err && !u) {
     return (
       <div className="adm-user">
-        <div className="ds-empty">
-          <div className="big">Couldn’t load the account</div>
-          The game server is unreachable, or this account isn’t an admin on it.
-        </div>
+        <ListState error="load the account" />
       </div>
     );
   }
-  if (!u) return <div className="ds-loading">Loading account…</div>;
+  if (!u) return <ListState loading="Loading account…" />;
 
   const name = u.handle?.trim() || u.username || userId;
   // `suspension` is absent on an older server (one Fly app serves every client version), which
@@ -360,6 +357,7 @@ export function AdminUser({
         <span>Reason (recorded; a suspended player is shown it)</span>
         <input
           type="text"
+          className="ds-input"
           required
           maxLength={200}
           value={reason}
@@ -370,7 +368,7 @@ export function AdminUser({
       <div className="adm-actions">
         <label className="admin-field">
           <span>Display name</span>
-          <input type="text" maxLength={24} value={rename} onChange={(e) => setRename(e.target.value)} />
+          <input type="text" className="ds-input" maxLength={24} value={rename} onChange={(e) => setRename(e.target.value)} />
         </label>
         <button className="ds-btn ghost small" disabled={busy || rename.trim() === (u.handle ?? '')} onClick={doRename}>
           Rename
@@ -381,7 +379,7 @@ export function AdminUser({
             type="number"
             min={1}
             max={60}
-            className="admin-months"
+            className="ds-input admin-months"
             aria-label={`Months to grant ${name}`}
             value={months}
             onChange={(e) => setMonths(e.target.value)}
@@ -390,7 +388,7 @@ export function AdminUser({
         <button className="ds-btn ghost small" disabled={busy || !why} onClick={doGrant}>
           Grant
         </button>
-        <button className="ds-btn ghost small" disabled={busy || !why || !u.supporter} onClick={doRevoke}>
+        <button className="ds-btn danger small" disabled={busy || !why || !u.supporter} onClick={doRevoke}>
           Revoke
         </button>
         {/* a DISCLOSURE, not an action: it opens the editor below. It flipped to a green
@@ -403,16 +401,16 @@ export function AdminUser({
         >
           Standing <span aria-hidden>{showStanding ? '▴' : '▾'}</span>
         </button>
-        <button className="ds-btn danger small" disabled={busy || u.records.length === 0} onClick={doClearRecords}>
-          Clear all records
-        </button>
       </div>
 
       {/* NAME POLICY AND ENFORCEMENT, one row below the everyday actions. Rename and Grant are
-          things a moderator does most days; these three end with somebody not being able to
-          play, so they are not mixed in with them. */}
+          things a moderator does most days; these take something away from somebody for good
+          or stop them playing, so they are not mixed in with them. */}
       <div className="adm-actions">
-        <button className="ds-btn ghost small" disabled={busy || !u.username} onClick={doClearUsername}>
+        <button className="ds-btn danger small" disabled={busy || u.records.length === 0} onClick={doClearRecords}>
+          Clear all records
+        </button>
+        <button className="ds-btn danger small" disabled={busy || !u.username} onClick={doClearUsername}>
           {u.username ? `Clear @${u.username}` : 'No username to clear'}
         </button>
         {suspendedUntil === null ? (
@@ -423,7 +421,7 @@ export function AdminUser({
                 type="number"
                 min={1}
                 max={3650}
-                className="admin-months"
+                className="ds-input admin-months"
                 aria-label={`Days to suspend ${name}`}
                 value={susDays}
                 onChange={(e) => setSusDays(e.target.value)}
@@ -464,6 +462,8 @@ export function AdminUser({
       <div className="adm-noteadd">
         <input
           type="text"
+          className="ds-input"
+          aria-label="New note"
           maxLength={1000}
           value={note}
           placeholder="What the next moderator needs to know"
@@ -475,7 +475,7 @@ export function AdminUser({
         </button>
       </div>
       {u.notes.length === 0 ? (
-        <p className="ds-hint">No notes on this account.</p>
+        <ListState empty="No notes on this account" />
       ) : (
         <ul className="adm-notes">
           {u.notes.map((n) => (
@@ -485,7 +485,7 @@ export function AdminUser({
                 {n.adminId.slice(0, 8)} · <When at={n.at} />
               </span>
               <button
-                className="ds-btn ghost small"
+                className="ds-btn danger small"
                 disabled={busy}
                 onClick={() => {
                   if (!confirmed('Delete this note on', name, 'The deletion itself is audited.')) return;
@@ -588,7 +588,7 @@ export function AdminUser({
         )}
       </h3>
       {u.recentMatches.length === 0 ? (
-        <p className="ds-hint">No matches on record.</p>
+        <ListState empty="No matches on record" />
       ) : (
         <div className="adm-report-list">
           {u.recentMatches.map((m) => (
@@ -613,7 +613,7 @@ export function AdminUser({
 
       <h3 className="adm-h3">Record runs</h3>
       {u.records.length === 0 ? (
-        <p className="ds-hint">No leaderboard runs.</p>
+        <ListState empty="No leaderboard runs" />
       ) : (
         <div className="adm-report-list">
           {u.records.map((r) => (
@@ -704,7 +704,7 @@ export function AdminUser({
                 </span>
                 {p.transactionId && !p.refundedAt && (
                   <button
-                    className="ds-btn ghost small"
+                    className="ds-btn danger small"
                     disabled={busy}
                     onClick={() => {
                       if (
@@ -736,7 +736,7 @@ export function AdminUser({
           the one an appeal arrives as. */}
       <h3 className="adm-h3">Moderation history</h3>
       {u.audit.length === 0 ? (
-        <p className="ds-hint">Nothing has been done to this account.</p>
+        <ListState empty="Nothing has been done to this account" />
       ) : (
         <ul className="adm-notes">
           {u.audit.map((a) => (

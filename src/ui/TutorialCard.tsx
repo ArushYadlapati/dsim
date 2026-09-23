@@ -40,7 +40,7 @@ export function TutorialCard({
           <p className="ds-tut-hint">{view.hint}</p>
         </div>
         <div className="ds-tut-acts">
-          <button className="ds-tut-btn primary" onClick={onExit}>
+          <button className="game-btn primary" onClick={onExit}>
             Keep driving
           </button>
         </div>
@@ -71,13 +71,13 @@ export function TutorialCard({
         )}
       </div>
       <div className="ds-tut-acts">
-        <button className="ds-tut-btn" onClick={onReplay} title="Put this step back the way it started">
+        <button className="game-btn" onClick={onReplay} title="Put this step back the way it started">
           Replay
         </button>
-        <button className="ds-tut-btn" onClick={onSkip} title="Move on to the next step">
+        <button className="game-btn" onClick={onSkip} title="Move on to the next step">
           Skip
         </button>
-        <button className="ds-tut-btn" onClick={onExit} title="Leave the tutorial and keep driving">
+        <button className="game-btn" onClick={onExit} title="Leave the tutorial and keep driving">
           Exit
         </button>
       </div>

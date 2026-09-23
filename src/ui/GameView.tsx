@@ -710,11 +710,14 @@ export function GameView({
       {editingLayout && (
         <div className="mobile-edit-bar">
           <span className="meb-hint">Drag the sticks &amp; buttons to reposition</span>
-          <button onClick={() => onSettingsChange?.({ ...settings, mobileLayout: DEFAULT_MOBILE_LAYOUT })}>
-            Reset
+          <button
+            className="game-btn"
+            onClick={() => onSettingsChange?.({ ...settings, mobileLayout: DEFAULT_MOBILE_LAYOUT })}
+          >
+            RESET
           </button>
-          <button className="primary" onClick={() => setEditingLayout(false)}>
-            Done
+          <button className="game-btn primary" onClick={() => setEditingLayout(false)}>
+            DONE
           </button>
         </div>
       )}
@@ -726,7 +729,7 @@ export function GameView({
               <p>The server may have restarted. Refresh the page to reconnect.</p>
               <div className="overlay-buttons">
                 <button onClick={() => window.location.reload()}>REFRESH</button>
-                <button className="ghost" onClick={onExit}>
+                <button className="secondary" onClick={onExit}>
                   MENU
                 </button>
               </div>
@@ -785,6 +788,7 @@ export function GameView({
         {session && hud?.rematch && hud.rematch.need > 1 && (
           <button
             className={`game-btn${hud.rematch.mine ? ' on' : ''}`}
+            aria-pressed={hud.rematch.mine}
             onClick={() => controllerRef.current?.toggleRematch()}
             title={
               hud.rematch.mine
@@ -840,12 +844,12 @@ export function GameView({
           )}
           {/* `.overlay-buttons`, not `.ds-cta`: every other button in every
               `.overlay-panel` — including the net overlay's REFRESH/MENU a few
-              lines up — is that one, and `.ds-cta.ghost` grounds on `--ds-line`,
+              lines up — is that one, and `.ds-cta.secondary` grounds on `--ds-line`,
               which is the wrong edge for a card floating on a dark scrim. */}
           {coarsePointer && (
             <div className="overlay-buttons stack">
               <button onClick={() => controllerRef.current?.startMatch()}>START MATCH</button>
-              <button className="ghost" onClick={onExit}>
+              <button className="secondary" onClick={onExit}>
                 BACK TO MENU
               </button>
             </div>

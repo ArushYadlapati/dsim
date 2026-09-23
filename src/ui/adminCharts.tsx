@@ -181,7 +181,7 @@ export function TimeSeries({ data, grain }: { data: SeriesPoint[]; grain: 'hour'
       : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   };
 
-  if (!data.length) return <p className="ds-empty an-empty"><span className="big">No traffic yet</span>Nothing was recorded in this range.</p>;
+  if (!data.length) return <div className="ds-empty an-empty"><div className="big">No traffic yet</div>Nothing was recorded in this range.</div>;
 
   const active = hover != null ? data[hover] : null;
 
@@ -290,7 +290,7 @@ export function BarList({
   empty: string;
   labelOf?: (val: string) => string;
 }) {
-  if (!rows.length) return <p className="ds-empty an-empty"><span className="big">Nothing here</span>{empty}</p>;
+  if (!rows.length) return <div className="ds-empty an-empty"><div className="big">Nothing here</div>{empty}</div>;
   const top = Math.max(1, ...rows.map((r) => r.views));
   return (
     <ul className="an-bars">
@@ -354,7 +354,7 @@ export function Columns({
   height?: number;
   format?: (n: number) => string;
 }) {
-  if (!cols.length) return <p className="ds-empty an-empty"><span className="big">No data</span>Nothing was recorded in this range.</p>;
+  if (!cols.length) return <div className="ds-empty an-empty"><div className="big">No data</div>Nothing was recorded in this range.</div>;
   const totals = cols.map((c) => c.parts.reduce((s, p) => s + p.value, 0));
   const top = Math.max(1, ...totals);
   const grand = totals.reduce((s, v) => s + v, 0);

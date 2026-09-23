@@ -335,8 +335,7 @@ button {
   font-size: 34px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: inherit;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+  color: inherit; /* the chip ink is AA on the flat alliance fill; it needs no shadow */
 }
 
 .you-tag {
@@ -497,13 +496,13 @@ button {
 .chip.alliance-red {
   background: var(--ds-red-chip);
   border-color: transparent;
-  color: #fff;
+  color: var(--ds-red-chip-ink);
 }
 
 .chip.alliance-blue {
   background: var(--ds-blue-chip);
   border-color: transparent;
-  color: #fff;
+  color: var(--ds-blue-chip-ink);
 }
 
 .chip.on {
@@ -546,7 +545,7 @@ button {
 /* an ACTION prompt (Chain Reaction ring pick-up / place is available NOW) — a filled,
    attention-grabbing call-to-action so it's unmistakable the player can act. */
 .chip.prompt {
-  color: #1a1206;
+  color: var(--ds-gold-ink);
   background: var(--ds-gold);
   border-color: var(--ds-gold);
   font-weight: 700;
@@ -1364,34 +1363,58 @@ button {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 1.5px;
-  box-shadow: var(--ds-edge-soft);
-  transition: transform 0.06s ease, box-shadow 0.06s ease, color 0.15s, border-color 0.15s;
+  /* the keycap mechanics are shell.css's shared KEYCAP block. `--ds-hud-line`, not `--ds-line`:
+     this cap floats on the field, and `--ds-line` is tuned against the shell panel (CLAUDE.md
+     THEMING) */
+  --cap-edge: var(--ds-hud-line);
 }
 
-.game-btn:hover {
-  color: var(--ds-ink);
+@media (hover: hover) {
+  .game-btn:where(:not(:disabled)):hover {
+    color: var(--ds-ink);
+    border-color: var(--ds-accent);
+  }
+}
+
+
+/* the ring sits OUTSIDE the cap, on the FIELD — a fixed-dark canvas in both themes — so it is
+   the on-field mint (category 3), not the themed `--ds-accent`, which is a dark green in the
+   light theme and would vanish there. Outline only: never moves the box (`shiftaudit`). */
+.game-btn:focus-visible {
+  outline: 2px solid var(--ds-on-field-accent);
+  outline-offset: 2px;
+}
+
+/* the ONE filled cap in a `.game-btn` group (the layout editor's DONE). The fill is the accent,
+   so the ink is its `-ink` sibling in every state — `:hover`'s `--ds-ink` would fail on it. */
+.game-btn.primary,
+.game-btn.primary:hover {
+  background: var(--ds-accent);
   border-color: var(--ds-accent);
-  transform: translateY(1px);
-  box-shadow: 0 2px 0 var(--ds-line);
+  color: var(--ds-accent-ink);
+}
+.game-btn.primary {
+  --cap-edge: var(--ds-accent-edge);
 }
 
-.game-btn:active {
+/* A TOGGLE THAT IS ON (the co-op REMATCH vote; `aria-pressed` carries it for AT): filled like
+   the primary and held FLUSH, as a cap that stayed down. Transform + fill only, so the label
+   and the box keep their size — the vote tally beside it does not shift. `:hover` is listed so
+   the hover sink cannot lift a held cap back up. */
+.game-btn.on,
+.game-btn.on:hover {
+  --cap-edge: var(--ds-accent-edge);
+  background: var(--ds-accent);
+  border-color: var(--ds-accent);
+  color: var(--ds-accent-ink);
   transform: translateY(3px);
-  box-shadow: 0 0 0 var(--ds-line);
+  box-shadow: 0 0 0 var(--cap-edge);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .game-btn:hover,
-  .game-btn:active,
-  .sponsor-chip:hover,
-  .sponsor-chip:active,
-  .overlay-buttons button:hover,
-  .overlay-buttons button:active {
-    transform: none;
-  }
-  /* capping the DURATION of an infinite animation just makes it loop faster — the
-     count has to be capped too. Same omission the .ann-* block at the end of this
-     file was amended for. */
+  /* the pressables hold flush through shell.css's one list. Capping the DURATION of an
+     infinite animation just makes it loop faster — the count has to be capped too. Same
+     omission the .ann-* block at the end of this file was amended for. */
   .timer-panel.urgent .timer-time,
   .net-spinner,
   .rec-dot,
@@ -1415,6 +1438,9 @@ button {
   font-weight: 800;
   letter-spacing: 6px;
   color: var(--ds-on-field);
+  /* EXEMPT from the No-Blur Rule (with .countdown-num and the touch pad): chrome-less type
+     straight over the live 3D field, lit anywhere under it. The soft shadow is its only
+     ground; the rule governs surfaces, and this is not one. */
   text-shadow: 0 6px 30px rgba(0, 0, 0, 0.6);
   pointer-events: none;
   z-index: 30; /* over the ranked intro overlay */
@@ -1525,11 +1551,15 @@ button {
 }
 
 /* a card on the dark scrim. The scrim is dark in BOTH themes (it dims the field), so
-   the panel edge is a HUD edge, not a shell one. */
+   the panel edge is a HUD edge, not a shell one. THE SAME SURFACE AS `.ds-modal`
+   (shell.css; design review 06-04/16-07): fill, edge, `--ds-round-md` and the block
+   shadow. It was 16px and flat, so a shell dialog looked like a different component
+   depending on which of the two it happened to be built on. Change one, change both. */
 .overlay-panel {
   background: var(--ds-panel);
   border: 1px solid var(--ds-hud-line);
-  border-radius: var(--ds-round-lg);
+  border-radius: var(--ds-round-md);
+  box-shadow: var(--ds-block);
   /* padding scales down on a narrow screen: 40px a side is a quarter of a 320px phone,
      and it was pushing the score table's three columns into each other */
   padding: clamp(18px, 5vw, 30px) clamp(14px, 6vw, 40px);
@@ -1622,23 +1652,14 @@ button {
   font-weight: 700;
   letter-spacing: 1.5px;
   border-color: transparent;
-  box-shadow: var(--ds-edge);
-  transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.15s;
+  --cap-edge: var(--ds-accent-edge); /* the press itself is shell.css's shared KEYCAP block */
 }
 
-.overlay-buttons button:hover {
-  transform: translateY(1px);
-  box-shadow: 0 2px 0 var(--ds-accent-edge);
-}
 
-.overlay-buttons button:active {
-  transform: translateY(3px);
-  box-shadow: 0 0 0 var(--ds-accent-edge);
-}
 
-/* the results screen autofocuses the first action on reveal — the app suppresses the
-   UA ring app-wide, so this is the only thing that makes that focus visible. An
-   `outline` never moves the box (`shiftaudit`-safe). */
+/* the results screen autofocuses the first action on reveal. The house ring (shell.css) is
+   `--ds-accent`, which IS this button's fill, so the ring changes colour here. An `outline`
+   never moves the box (`shiftaudit`-safe). */
 .overlay-buttons button:focus-visible {
   /* `--ds-ink`, not the button's own accent fill — the ring sits OUTSIDE the button
      (via offset), against the panel, so it needs to read there, not against itself. */
@@ -1647,25 +1668,17 @@ button {
 }
 
 /* secondary action in an overlay (e.g. "NOT NOW") — a neutral cap */
-.overlay-buttons button.ghost {
+/* secondary action in an overlay (e.g. "NOT NOW") — a neutral cap. `.secondary`, not
+   `.ghost`: ghost is the flat text action (shell.css KEYCAP block), and this has a cap. */
+.overlay-buttons button.secondary {
+  --cap-edge: var(--ds-line);
   background: var(--ds-tile);
   color: var(--ds-ink);
   border-color: var(--ds-line);
-  box-shadow: var(--ds-edge-soft);
 }
 
-.overlay-buttons button.ghost:hover {
-  box-shadow: 0 2px 0 var(--ds-line);
-}
 
-.overlay-buttons button.ghost:active {
-  box-shadow: 0 0 0 var(--ds-line);
-}
 
-.overlay-buttons button.ghost:focus-visible {
-  outline: 2px solid var(--ds-ink);
-  outline-offset: 2px;
-}
 
 /* ============================================================ results screen ====
    A FULL-SCREEN broadcast takeover, built against the official FTC scoring software's
@@ -1707,6 +1720,10 @@ button {
   background: var(--ds-stage-bg);
   color: var(--ds-on-field);
   overflow-y: auto;
+}
+/* the pointer is a PROMISE that a click skips the sequence, so it is worn only while there is
+   a sequence to skip (`skippable` in Results.tsx) — at `done` a click does nothing. */
+.resx-stage.skippable {
   cursor: pointer;
 }
 /* the primary action + hint text ARE clickable/selectable; the stage-level click-to-
@@ -1725,8 +1742,7 @@ button {
    focus this screen AUTOFOCUSES was invisible. `--ds-on-field` is the canvas-ground ink
    (CLAUDE.md's third token category), which is what reads on a dark ground in both themes.
    Colour only — the outline still never moves the box (`shiftaudit`). */
-.resx-stage .overlay-buttons button:focus-visible,
-.resx-stage .overlay-buttons button.ghost:focus-visible {
+.resx-stage .overlay-buttons button:focus-visible {
   outline-color: var(--ds-on-field);
 }
 
@@ -1744,6 +1760,36 @@ button {
   line-height: var(--ds-lh-heading);
   padding: 0.5em 1.2em;
   letter-spacing: 0.08em;
+}
+
+/* ⚠️ THE ROW IS RE-TOKENED HERE, NOT THEMED (design review 06-06 / 06-11). The shared caps are
+   themed — they expect a themed panel under them — but this ground is `--ds-stage-bg`, fixed
+   dark. On it the themed ghost was a near-white slab in light mode (the loudest thing in the
+   row) and ~1.1:1 in dark (gone), so the row's hierarchy flipped with the theme. Here both
+   ranks are category 3: the ONE `.primary` (Results.tsx `primaryAction`) is the on-field mint
+   with its fixed ink (6.6:1); every other button is a `.secondary` outline in on-field ink.
+   `--cap-edge` is each rank's keycap edge, mixed toward the stage so it stays fixed too; the
+   sink and press that read it are shell.css's shared KEYCAP block. */
+.resx-stage .overlay-buttons button.primary {
+  --cap-edge: color-mix(in srgb, var(--ds-on-field-accent) 50%, var(--ds-stage-bg));
+  background: var(--ds-on-field-accent);
+  color: var(--ds-on-field-accent-ink);
+  border-color: transparent;
+}
+.resx-stage .overlay-buttons button.secondary {
+  --cap-edge: color-mix(in srgb, var(--ds-on-field-dim) 35%, var(--ds-stage-bg));
+  background: transparent;
+  color: var(--ds-on-field);
+  border-color: var(--ds-on-field-dim);
+}
+/* THE VOTED REMATCH (`.on`, with `aria-pressed`): held flush, as a cap that stayed down, and
+   ringed INSIDE in on-field ink so it reads on the mint and on the outline alike. An inset
+   shadow and a transform, so the box keeps its size and the row does not reflow; the label
+   switching to WAITING… is the words for the same state. */
+.resx-stage .overlay-buttons button.on,
+.resx-stage .overlay-buttons button.on:hover {
+  transform: translateY(3px);
+  box-shadow: inset 0 0 0 2px var(--ds-on-field);
 }
 
 .resx-sting {
@@ -2059,9 +2105,8 @@ button {
    never play an entrance for a banner nobody can see. */
 .resx-winbanner.on {
   visibility: visible;
-  /* ease-out-quint, NOT an overshooting curve: the overshoot is already in the keyframes
-     (scale 1.08 at 60 %, settling to 1). A timing function that also overshoots is applied
-     to EACH segment, so the banner rubber-bands twice on the way in. */
+  /* ease-out-quint into a scale that stops AT 1 — no overshoot in the curve or the keyframes
+     (design review 06-14: bounce easing is a tell). */
   animation: resx-winbanner-in 450ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 /* QUIET: a tie, a plain placing, a practice run — present and readable, but not a result
@@ -2173,7 +2218,13 @@ button {
 }
 .resx-name-clip.scroll .resx-name-text {
   flex: none;
-  animation: resx-marquee 14s linear infinite;
+  /* TWO passes, not `infinite` (design review 17-18): a roster that scrolls for as long as the
+     screen is up is motion nobody can switch off. It rests on the name's start afterwards, and
+     a pointer over it holds it mid-pass (WCAG 2.2.2). */
+  animation: resx-marquee 14s linear 2;
+}
+.resx-name-clip.scroll:hover .resx-name-text {
+  animation-play-state: paused;
 }
 /* `-100%` is the copy's own width and the gap is the space behind it, so the second copy
    lands exactly where the first began — no snap. */
@@ -2319,13 +2370,6 @@ button {
   animation: resx-row-in 400ms ease-out both;
 }
 
-/* one breakdown VALUE. It needs to be an element at all so that it has something to flash;
-   the row's `<td>` cannot do it, because the flash has to wait for THIS value's own
-   count-up to land and the cell does not know when that is. */
-.resx-cell.landed {
-  animation: resx-cell-land 320ms ease-out both;
-}
-
 /* ---- the lower band: VERSUS pins just the total to the half's bottom edge (`margin-
    top: auto`); SOLO turns into a row so the breakdown sits BESIDE the total. ---- */
 .resx-half-lower {
@@ -2360,24 +2404,10 @@ button {
   font-variant-numeric: tabular-nums;
   line-height: var(--ds-lh-tight);
 }
-/* a breakdown value flashes as its own count-up lands, drawing the eye down the cascade.
-   `filter` ALONE — no transform, no display change: a transform does not apply to a
-   non-replaced inline element anyway, and anything that resizes the box would move the
-   table while it reveals. Same technique as `.resx-total-num.landed` below, quieter. */
-@keyframes resx-cell-land {
-  from {
-    filter: brightness(1.9);
-  }
-  to {
-    filter: brightness(1);
-  }
-}
-
-/* the totals LAND with a punch + a brief brightness flash once the totals beat hits —
-   `filter`, not a layout property, so it stays GPU-friendly. */
+/* the totals LAND once the totals beat hits: a scale-up that SETTLES at 1 on an ease-out,
+   never past it. It was a game-show punch (1.15 overshoot + a `brightness(1.5)` flash), which
+   the design guide rules out as bounce easing (design review 06-14). */
 .resx-total-num.landed {
-  /* ease-out-quint — see `.resx-winbanner`. `resx-total-punch` already peaks at scale 1.15
-     and settles; the curve only has to decelerate into it. */
   animation: resx-total-punch 550ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
@@ -2446,7 +2476,7 @@ button {
 
 @keyframes resx-sting-in {
   0% {
-    transform: scale(2.6);
+    transform: scale(0.9);
     opacity: 0;
   }
   35% {
@@ -2499,31 +2529,22 @@ button {
 }
 @keyframes resx-winbanner-in {
   from {
-    transform: scale(0.6);
+    transform: scale(0.85);
     opacity: 0;
   }
-  60% {
-    transform: scale(1.08);
-    opacity: 1;
-  }
-  100% {
+  to {
     transform: scale(1);
+    opacity: 1;
   }
 }
 @keyframes resx-total-punch {
-  0% {
-    transform: scale(0.7);
+  from {
+    transform: scale(0.85);
     opacity: 0;
-    filter: brightness(1);
   }
-  55% {
-    transform: scale(1.15);
-    opacity: 1;
-    filter: brightness(1.5);
-  }
-  100% {
+  to {
     transform: scale(1);
-    filter: brightness(1);
+    opacity: 1;
   }
 }
 @keyframes resx-fade-up {
@@ -2548,7 +2569,6 @@ button {
   .resx-half,
   .resx-roster-row,
   .resx-row,
-  .resx-cell.landed,
   .resx-winbanner,
   .resx-total-num.landed,
   .resx-secondary {
@@ -2559,8 +2579,8 @@ button {
   .resx-sting {
     display: none;
   }
-  /* the marquee is INFINITE, so capping its duration would only make it loop faster. It is
-     switched off outright and the clip falls back to the ellipsis it already declares. */
+  /* the marquee is switched off outright (capping a 14s pass's duration would only make it
+     race), and the clip falls back to the ellipsis it already declares. */
   .resx-name-clip.scroll {
     display: inline-block;
   }
@@ -2799,7 +2819,7 @@ button {
   align-items: center;
   justify-content: center;
   touch-action: none;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background var(--ds-dur-fade), border-color var(--ds-dur-fade);
 }
 .mobile-joystick-base.active {
   background: rgba(28, 32, 39, 0.55);
@@ -2826,6 +2846,8 @@ button {
 .mobile-joystick-handle {
   background: var(--ds-on-field);
   border-radius: 50%;
+  /* EXEMPT from the No-Blur Rule, with .mobile-btn: a thumb control floating over the live
+     field, lifted off whatever the scene puts under it — not a surface */
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
   pointer-events: none;
   opacity: 0.5;
@@ -2855,7 +2877,7 @@ button {
   justify-content: center;
   gap: 1px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
-  transition: background 0.1s;
+  transition: background var(--ds-dur-fade);
   font-size: var(--ds-t-xs);
 }
 .mobile-btn .mb-ico {
@@ -2914,44 +2936,29 @@ button {
   opacity: 0.55;
 }
 
-/* edit-layout bar (mobile control customization) */
+/* edit-layout bar (mobile control customization) — a HUD CARD like every other over the field
+   (`--ds-hud` + `--ds-hud-line`, themed inks), and its RESET / DONE are `.game-btn` caps, so it
+   has no button language of its own (design review 05-15). It had a literal dark fill, a pill
+   shape and two stateless pill buttons. */
 .mobile-edit-bar {
   position: absolute;
-  top: max(10px, env(safe-area-inset-top));
+  top: max(var(--ds-s-2), env(safe-area-inset-top));
   left: 50%;
   transform: translateX(-50%);
   z-index: 22;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: var(--ds-round-full);
-  background: rgba(20, 24, 30, 0.92);
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-hud);
   border: 1px solid var(--ds-hud-line);
-  color: var(--ds-on-field);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  color: var(--ds-ink);
 }
 .mobile-edit-bar .meb-hint {
-  font-size: 12px;
-  color: var(--ds-on-field-dim);
+  font-size: var(--ds-t-xs);
+  color: var(--ds-mut);
   max-width: 40vw;
-}
-.mobile-edit-bar button {
-  font: inherit;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.4px;
-  padding: 8px 14px;
-  border-radius: var(--ds-round-full);
-  border: 1px solid var(--ds-hud-line);
-  background: transparent;
-  color: var(--ds-on-field);
-  cursor: pointer;
-}
-.mobile-edit-bar button.primary {
-  background: var(--ds-on-field-accent);
-  color: var(--ds-on-field-accent-ink);
-  border-color: transparent;
 }
 
 /* TOUCH devices: the scoreboard is deliberately compact so the field gets the room,
@@ -3198,51 +3205,10 @@ button {
 
 /* admin console form */
 /* ---------------------------------------------------------------------------
-   ADMIN + .ds-btn.danger are the ONLY rules in this file that are NOT in-match.
+   ADMIN is the ONLY family in this file that is NOT in-match.
    They render on the SHELL (the /admin page) and follow the theme through --ds-*
    tokens, like everything else in this file now that the legacy bridge is gone.
    --------------------------------------------------------------------------- */
-/* A standing tip on the queue screens. Bordered rather than another muted line:
-   it tells you the screen is safe to LEAVE, which is the opposite of what a
-   "searching…" screen normally implies, so it has to read as its own object
-   instead of blending into the status text above it. */
-.ds-tip {
-  margin: 0;
-  border: 1px solid var(--ds-line);
-  border-radius: var(--ds-round);
-  padding: var(--ds-s-3);
-  background: var(--ds-tile);
-  font-size: 12px;
-  line-height: var(--ds-lh-prose);
-  color: var(--ds-mut);
-  text-align: left;
-}
-.ds-tip b { color: var(--ds-ink); }
-
-/* MAINTENANCE: the scheduled state informs, the biting state interrupts. Both use
-   an edge + ink rather than a saturated fill, so a banner that sits on every menu
-   screen for half an hour doesn't become something people stop seeing. */
-/* the shell insets `.ds-bar`, `.ds-main` and `.ds-foot` at 22px; this strip was at
-   14, so its left edge sat 8px outboard of everything above and below it. 22px is the
-   shell inset, not a spacing step. */
-.ds-maint-wrap {
-  padding: 12px 22px 0;
-}
-.ds-maint {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0;
-  padding: 10px 14px;
-  border: 1px solid var(--ds-warn);
-  border-radius: var(--ds-round-md);
-  background: var(--ds-tile);
-  color: var(--ds-ink);
-  font-size: 13px;
-  font-weight: 600;
-}
-.ds-maint.biting { border-color: var(--ds-danger); }
-
 .adm-maint { border-color: var(--ds-line-strong); }
 .adm-maint.biting { border-color: var(--ds-danger); }
 .adm-maint-h { display: flex; align-items: center; gap: var(--ds-s-3); justify-content: space-between; }
@@ -3309,15 +3275,9 @@ button {
 }
 .adm-region b { text-transform: uppercase; letter-spacing: var(--ds-track-caps); color: var(--ds-ink); }
 
+/* layout only — the control is `.ds-input` (DESIGN.md "Input Fields"), like every admin field */
 .adm-filter {
   width: 100%;
-  background: var(--ds-tile);
-  border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round);
-  padding: 8px 12px;
-  font: inherit;
-  font-size: var(--ds-t-md);
-  color: var(--ds-ink);
   margin-top: var(--ds-s-5);
   margin-bottom: var(--ds-s-3);
 }
@@ -3411,32 +3371,12 @@ p.adm-privacy {
 .admin-card + .ds-h2 { margin-top: var(--ds-s-6); }
 .admin-field { display: flex; align-items: center; gap: var(--ds-s-2); font-size: var(--ds-t-md); font-weight: 600; }
 .admin-field.col { flex-direction: column; align-items: stretch; gap: var(--ds-s-1); }
-.admin-field input {
-  background: var(--ds-tile);
-  border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round);
-  color: var(--ds-ink);
-  padding: 8px 10px;
-  font: inherit;
-}
+/* `.admin-field` is LAYOUT: its controls are `.ds-input`/`.ds-select`, which own the recess
+   and the focus ring. Five bespoke copies of the field used to live here, none with either. */
 .admin-field input[type="number"] { width: 72px; }
 .admin-field.col input { width: 100%; }
 .admin-buttons { display: flex; gap: var(--ds-s-3); margin-top: var(--ds-s-1); }
-.admin-field select {
-  background: var(--ds-tile);
-  border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round);
-  color: var(--ds-ink);
-  padding: 8px 10px;
-  font: inherit;
-}
 .admin-textarea {
-  background: var(--ds-tile);
-  border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round);
-  color: var(--ds-ink);
-  padding: 8px 10px;
-  font: inherit;
   width: 100%;
   resize: vertical;
   line-height: var(--ds-lh-prose);
@@ -3455,40 +3395,7 @@ p.adm-privacy {
 /* the rank NUMBER is content, not chrome — `opacity:.5` put it at 3.19:1 */
 .admin-row .admin-rank { color: var(--ds-mut); min-width: 20px; text-align: right; font-variant-numeric: tabular-nums; }
 .admin-row .admin-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.admin-row input.admin-grow {
-  background: var(--ds-panel);
-  border: 1px solid var(--ds-line-strong);
-  border-radius: 6px;
-  color: var(--ds-ink);
-  padding: 4px 8px;
-  font: inherit;
-}
-/* ---- cosmetics: chassis colour / accent / decal / plate swatches ------- */
-/* The swatch IS the preview (RobotPreview keeps the themed panel fill — see the
-   comment there), so the background is the literal CHASSIS_COLORS hex and the
-   selected state has to be carried by the RING, not by the fill. `--ds-ink` for
-   the ring: it is a readable-against-surface token, so it inverts with the theme
-   and stays visible against every one of these deliberately-dark swatches. */
-.chassis-swatches { display: flex; gap: 6px; flex-wrap: wrap; }
-.chassis-sw {
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  border: 1px solid var(--ds-line-strong);
-  cursor: pointer;
-  padding: 0;
-  /* transform/shadow only — a border or margin that appears on hover moves every
-     swatch after it, which `npm run shiftaudit` fails the build over */
-  transition: transform 0.12s ease, box-shadow 0.12s ease;
-}
-.chassis-sw:hover:not(:disabled) { transform: translateY(-1px); }
-.chassis-sw.on { box-shadow: 0 0 0 2px var(--ds-ink); }
-.chassis-sw:disabled { opacity: 0.4; cursor: not-allowed; }
-/* a decal/plate swatch draws an inline SVG preview instead of a flat fill —
-   clip it to the same rounded square and centre it, rather than a second
-   button skeleton next to `.chassis-sw`. */
-.cosmetic-sw { overflow: hidden; display: flex; align-items: center; justify-content: center; }
-.cosmetic-sw svg { width: 100%; height: 100%; display: block; }
+/* ---- cosmetics swatches (`.chassis-sw`) live in shell.css, with the builder they sit in ---- */
 
 /* ---- name badges: supporter / admin / owner ----------------------------- */
 /* A FILL with fixed ink, not coloured text. shell.css's rule — "a colour that is
@@ -3628,15 +3535,10 @@ p.adm-privacy {
   flex-wrap: wrap;
 }
 .admin-row.admin-sub .ds-hint { font-size: 12px; margin: 0; }
+/* a compact `.ds-input` for a count inside an action row */
 input.admin-months {
-  width: 56px;
-  background: var(--ds-panel);
-  border: 1px solid var(--ds-line-strong);
-  border-radius: 6px;
-  color: var(--ds-ink);
-  padding: 4px 6px;
-  font: inherit;
-  font-size: 12px;
+  width: 64px;
+  padding: var(--ds-s-1) var(--ds-s-2);
 }
 .admin-history {
   padding: 4px 10px 8px;
@@ -3644,19 +3546,12 @@ input.admin-months {
   margin-left: 10px;
 }
 .admin-history .ds-hint { font-size: 12px; margin: 0 0 2px; }
-/* was a hardcoded #ff6b6b — a DARK-mode red, stranded here since before the light
-   retheme, and only ~2.6:1 on a light panel. --ds-danger is 6.17 light / 6.14 dark. */
-.ds-btn.danger {
-  color: var(--ds-danger);
-  border-color: color-mix(in srgb, var(--ds-danger) 40%, transparent);
-}
-
 /* ================================================================= *
  *  ADMIN CONSOLE — the Users / Audit surfaces and the shared bits
  *  (src/ui/adminBits.tsx, AdminUser.tsx, AdminAudit.tsx).
  *
  *  Every value here is a token. The rules above it are the console's
- *  older debt (10px gaps, a 6px radius) and §10 of docs/ui-standard.md
+ *  older debt (10px gaps) and §10 of docs/ui-standard.md
  *  records them as debt rather than precedent — new code does not get
  *  to match them, which is what the uiaudit ratchet enforces.
  * ================================================================= */
@@ -3684,21 +3579,7 @@ input.admin-months {
   margin: 0 0 var(--ds-s-3);
 }
 .adm-toolbar input,
-.adm-toolbar select {
-  background: var(--ds-tile);
-  border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round);
-  padding: var(--ds-s-2) var(--ds-s-3);
-  font: inherit;
-  font-size: var(--ds-t-md);
-  color: var(--ds-ink);
-  min-width: 0;
-}
-.adm-toolbar input:focus-visible,
-.adm-toolbar select:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 1px;
-}
+.adm-toolbar select { min-width: 0; }
 .adm-toolbar .adm-grow { flex: 1 1 160px; }
 .adm-more { margin-top: var(--ds-s-3); }
 
@@ -3714,11 +3595,11 @@ input.admin-months {
   font-size: var(--ds-t-xs);
   color: var(--ds-mut);
   cursor: pointer;
-  transition: color 120ms ease, border-color 120ms ease;
+  transition: color var(--ds-dur-fade), border-color var(--ds-dur-fade);
 }
 .adm-copy:hover { color: var(--ds-ink); border-color: var(--ds-line-strong); }
-.adm-copy:active { transform: translateY(1px); }
-.adm-copy:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 1px; }
+/* flat: a press is ink, not a 1px sink with no edge under it; the ring is the house one */
+.adm-copy:active { color: var(--ds-ink); border-color: var(--ds-ink-dim); }
 
 /* one account, as it appears in a table cell */
 .adm-who {
@@ -3834,15 +3715,7 @@ input.admin-months {
 .adm-noteadd input {
   flex: 1 1 auto;
   min-width: 0;
-  background: var(--ds-tile);
-  border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round);
-  padding: var(--ds-s-2) var(--ds-s-3);
-  font: inherit;
-  font-size: var(--ds-t-md);
-  color: var(--ds-ink);
 }
-.adm-noteadd input:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 1px; }
 
 .adm-notes {
   list-style: none;
@@ -3921,7 +3794,7 @@ input.admin-months {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--ds-block);
   animation: ann-pop 0.28s cubic-bezier(0.2, 1, 0.3, 1);
 }
 .ann-scroll {
@@ -4044,8 +3917,13 @@ input.admin-months {
 }
 
 /* ---- full-screen cinematic reveal (new season / new act) ---------------- */
+/* NO BLUR, NO GLOW (DESIGN.md "The No-Blur Rule", design review 01-05/13-04/20-01). The reveal
+   was a blurred radial glow breathing forever behind a text-shadowed title, a light sweep
+   looping down the rule and a glowing button. It is a flat fixed-dark stage now, the results
+   screen's own ground, and every loop is gone: what moves is the ONE entrance, and it ends. */
 .ann-cinema {
   --cin: var(--ds-gold); /* season accent; act overrides to mint below */
+  --cin-ink: var(--ds-gold-ink);
   position: fixed;
   inset: 0;
   z-index: 65;
@@ -4053,23 +3931,14 @@ input.admin-months {
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  /* the scrim is intentionally near-black in BOTH themes (it's a canvas ground),
-     so the reveal uses the --ds-on-field family, never themed text tokens. */
-  background:
-    radial-gradient(120% 80% at 50% 42%, color-mix(in srgb, var(--cin) 22%, #05070b) 0%, #05070b 62%),
-    #05070b;
+  /* the stage is fixed-dark in BOTH themes (a canvas ground), so the reveal uses the
+     --ds-on-field family, never themed text tokens. */
+  background: var(--ds-stage-bg);
   animation: ann-cin-scrim 0.6s ease-out;
 }
-.ann-cinema.act { --cin: var(--ds-on-field-accent); }
-.ann-cinema-glow {
-  position: absolute;
-  width: 90vmax;
-  height: 90vmax;
-  border-radius: 50%;
-  background: radial-gradient(circle, color-mix(in srgb, var(--cin) 30%, transparent) 0%, transparent 60%);
-  filter: blur(20px);
-  opacity: 0;
-  animation: ann-cin-glow 3.4s ease-in-out infinite alternate, ann-cin-glow-in 0.9s ease-out forwards;
+.ann-cinema.act {
+  --cin: var(--ds-on-field-accent);
+  --cin-ink: var(--ds-on-field-accent-ink);
 }
 .ann-cinema-inner {
   position: relative;
@@ -4084,7 +3953,7 @@ input.admin-months {
   color: var(--cin);
   margin: 0 0 14px;
   opacity: 0;
-  animation: ann-cin-eyebrow 0.7s ease-out 0.2s both;
+  animation: ann-cin-fade 0.7s ease-out 0.2s both;
 }
 .ann-cinema-title {
   font-size: clamp(34px, 8vw, 82px);
@@ -4093,9 +3962,8 @@ input.admin-months {
   letter-spacing: 1px;
   color: var(--ds-on-field);
   margin: 0;
-  text-shadow: 0 0 40px color-mix(in srgb, var(--cin) 55%, transparent);
   opacity: 0;
-  animation: ann-cin-title 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.32s both;
+  animation: ann-cin-title 0.9s var(--ds-ease) 0.32s both;
 }
 .ann-cinema-tag {
   font-size: clamp(12px, 2.6vw, 18px);
@@ -4119,166 +3987,46 @@ input.admin-months {
 }
 .ann-cinema-rule span {
   position: absolute;
-  inset: 0;
-  width: 40%;
-  background: linear-gradient(90deg, transparent, var(--cin), transparent);
-  animation: ann-cin-sweep 2.4s ease-in-out 1.1s infinite;
+  inset: 0 30%;
+  background: var(--cin);
 }
+/* a KEYCAP (shell.css's shared block): the season's colour with its own ink and a darker edge.
+   It fades in on OPACITY alone — an entrance that animates `transform` with `both` fill would
+   hold `transform: none` over the cap's sink and press for as long as the screen is up. */
 .ann-cinema-btn {
+  --cap-edge: color-mix(in srgb, var(--cin) 50%, var(--ds-stage-bg));
   font-family: var(--ds-font-mono);
   font-size: 13px;
   font-weight: 800;
   letter-spacing: 3px;
-  color: #05070b;
+  color: var(--cin-ink);
   background: var(--cin);
   border: none;
   border-radius: var(--ds-round-full);
   padding: 12px 34px;
   cursor: pointer;
   opacity: 0;
-  animation: ann-cin-fade 0.8s ease-out 1.15s both;
-  box-shadow: 0 0 30px color-mix(in srgb, var(--cin) 45%, transparent);
-  transition: transform 0.08s ease, box-shadow 0.15s ease;
+  animation: ann-fade 0.8s ease-out 1.15s both;
 }
-.ann-cinema-btn:hover { transform: translateY(-1px); box-shadow: 0 0 44px color-mix(in srgb, var(--cin) 65%, transparent); }
-.ann-cinema-btn:active { transform: translateY(1px); }
+/* the ring sits on the fixed-dark stage, where the themed accent can be a dark green */
+.ann-cinema-btn:focus-visible {
+  outline-color: var(--ds-on-field);
+}
 
 @keyframes ann-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes ann-pop { from { opacity: 0; transform: translateY(14px) scale(0.98); } to { opacity: 1; transform: none; } }
 @keyframes ann-cin-scrim { from { opacity: 0; } to { opacity: 1; } }
-@keyframes ann-cin-glow-in { to { opacity: 1; } }
-@keyframes ann-cin-glow { from { transform: scale(0.92); } to { transform: scale(1.06); } }
-@keyframes ann-cin-eyebrow { from { opacity: 0; letter-spacing: 2px; transform: translateY(8px); } to { opacity: 0.95; letter-spacing: 8px; transform: none; } }
-@keyframes ann-cin-title { from { opacity: 0; transform: translateY(26px) scale(0.94); filter: blur(10px); } to { opacity: 1; transform: none; filter: blur(0); } }
+@keyframes ann-cin-title { from { opacity: 0; transform: translateY(26px); } to { opacity: 1; transform: none; } }
 @keyframes ann-cin-fade { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
-@keyframes ann-cin-sweep { 0% { transform: translateX(-120%); } 60%, 100% { transform: translateX(320%); } }
 
 /* respect reduced-motion: keep the reveal, drop the movement */
 @media (prefers-reduced-motion: reduce) {
-  .ann-cinema, .ann-cinema-glow, .ann-cinema-eyebrow, .ann-cinema-title,
-  .ann-cinema-tag, .ann-cinema-rule, .ann-cinema-rule span, .ann-cinema-btn,
+  .ann-cinema, .ann-cinema-eyebrow, .ann-cinema-title,
+  .ann-cinema-tag, .ann-cinema-rule, .ann-cinema-btn,
   .ann-panel, .ann-overlay {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
-}
-
-/* ---- LAN play (src/ui/LanPanel.tsx, src/ui/LanBanner.tsx) ------------------
-   Reuses the console/panelbox anatomy; only three things here have no existing
-   equivalent. See docs/lan-selfhost.md. */
-
-/* the one-line "what is happening right now" statement at the top of a panel */
-.ds-lan-state {
-  margin: 0;
-  font-size: var(--ds-t-lg);
-  color: var(--ds-ink);
-}
-
-.ds-lan-urls {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-2);
-}
-/* THE JOIN URL IS READ OUT LOUD ACROSS A ROOM, so it is the largest type on the
-   screen and it is monospace: someone is copying it character by character off a
-   laptop propped on a table, and 1/l and 0/O have to be distinguishable. The whole
-   row is the copy button — a separate icon beside a long string is a smaller target
-   for the same action. */
-.ds-lan-url {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--ds-s-3);
-  width: 100%;
-  padding: 12px;
-  border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round);
-  background: var(--ds-tile);
-  color: var(--ds-ink);
-  cursor: pointer;
-  text-align: left;
-}
-.ds-lan-url.primary {
-  border-color: var(--ds-accent);
-}
-.ds-lan-url:hover {
-  background: var(--ds-panel);
-}
-.ds-lan-url:active {
-  transform: translateY(1px);
-}
-.ds-lan-url:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
-}
-.ds-lan-url > .u {
-  font-family: var(--ds-font-mono);
-  font-size: var(--ds-t-xl);
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-.ds-lan-url > .c {
-  flex: none;
-  font-size: var(--ds-t-sm);
-  color: var(--ds-mut);
-}
-
-/* THE HOST COMMANDS. Numbered, because they are typed in order and a host who pastes the
-   fourth one first gets an error about a directory rather than about DSIM. The rows reuse
-   `.ds-lan-url` — same affordance, the whole row copies — with `.compact` dropping the type
-   from projector size to reading size: a join URL is read across a room, a command is read
-   off the screen in front of you. */
-.ds-lan-steps {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-3);
-  margin: 0;
-  padding: 0 0 0 var(--ds-s-5);
-}
-.ds-lan-steps > li > .s {
-  display: block;
-  margin-bottom: var(--ds-s-1);
-  font-size: var(--ds-t-sm);
-  color: var(--ds-mut);
-}
-.ds-lan-url.compact {
-  padding: var(--ds-s-2);
-}
-.ds-lan-url.compact > .u {
-  font-size: var(--ds-t-md);
-  font-weight: 500;
-}
-/* The persistent unofficial-match strip. Same anatomy as `.ds-maint` and it reuses
-   that wrapper's inset, but its own block: this is a STATE of the app, not a warning
-   about one, and folding it into the maintenance selector would make one of them
-   wrong the next time the other is restyled. */
-.ds-lan-banner {
-  display: flex;
-  align-items: center;
-  gap: var(--ds-s-2);
-  margin: 0;
-  padding: 8px 12px;
-  border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round-md);
-  background: var(--ds-tile);
-  color: var(--ds-ink);
-  font-size: var(--ds-t-md);
-  font-weight: 600;
-}
-.ds-lan-leave {
-  margin-left: auto;
-  flex: none;
-  padding: 4px 8px;
-  border: 1px solid var(--ds-line-strong);
-  border-radius: var(--ds-round-sm);
-  background: var(--ds-panel);
-  color: var(--ds-ink);
-  font-size: var(--ds-t-sm);
-  font-weight: 600;
-  cursor: pointer;
-}
-.ds-lan-leave:hover {
-  border-color: var(--ds-ink);
 }
 
 /* ------------------------------------------ the in-gameplay sponsor chip ---- */
@@ -4307,21 +4055,12 @@ input.admin-months {
   background: var(--ds-hud);
   border: 1px solid var(--ds-hud-line);
   pointer-events: auto;
-  box-shadow: var(--ds-edge-soft);
-  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.15s;
+  --cap-edge: var(--ds-hud-line); /* a HUD cap: see `.game-btn` */
 }
-.sponsor-chip:hover {
-  border-color: var(--ds-accent);
-  transform: translateY(1px);
-  box-shadow: 0 2px 0 var(--ds-line);
-}
-.sponsor-chip:active {
-  transform: translateY(3px);
-  box-shadow: 0 0 0 var(--ds-line);
-}
-.sponsor-chip:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
+@media (hover: hover) {
+  .sponsor-chip:hover {
+    border-color: var(--ds-accent);
+  }
 }
 /* THE OFFSET THE STATUS CHIPS DROP BY, derived rather than typed twice. The chip
    is the logo (16px — the `h` prop in `SponsorGameChip`; keep the two in step)

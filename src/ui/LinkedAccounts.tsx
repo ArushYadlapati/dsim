@@ -74,21 +74,37 @@ export function LinkedAccounts() {
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Linked accounts</span>
+        <h2 className="ds-panel-title">Linked accounts</h2>
       </div>
-      <div className="ds-panel-body stack start">
+      <div className="ds-panel-body stack">
         <p className="ds-hint">
           Linking stores the account’s id. No email, no password, no access token.
         </p>
+        {/* ONE ROW PER PROVIDER (ui-standard §6 Row): name and hint left, then the state
+            as a chip — "Connected" used to be implied only by the button reading Disconnect —
+            then the action on the right. */}
         {state.available.map((p) => {
           const on = state.linked.includes(p);
           return (
-            <div className="ds-field" key={p}>
-              <span className="cap">{LABEL[p]}</span>
-              <span className="ds-hint">{WHY[p]}</span>
+            <div className="ds-linked" key={p}>
+              <div className="ds-linked-text">
+                <span className="ds-linked-name">{LABEL[p]}</span>
+                {/* ⚠️ Disconnecting GitHub takes BOTH ids the star granted — otherwise the
+                    reward outlives the proof, and unlink-keep-relink is a farm. Said in the
+                    row, beside the button it qualifies, and only while that button would do
+                    it; it names both because a person who reads "the title" will not expect
+                    to lose the decal. */}
+                <span className="ds-hint">
+                  {on && p === 'github'
+                    ? 'Disconnecting GitHub also removes the title and the decal you earned for starring.'
+                    : WHY[p]}
+                </span>
+              </div>
+              {on && <span className="ds-chip on">Connected</span>}
               <button
-                className={`ds-btn ${on ? 'ghost' : ''} small`}
+                className={`ds-btn ${on ? 'ghost' : ''} small${busy === p ? ' busy' : ''}`}
                 disabled={busy === p}
+                aria-busy={busy === p}
                 onClick={() => (on ? disconnect(p) : connect(p))}
               >
                 {on ? 'Disconnect' : `Connect ${LABEL[p]}`}
@@ -96,15 +112,6 @@ export function LinkedAccounts() {
             </div>
           );
         })}
-        {/* ⚠️ Disconnecting GitHub takes BOTH ids the star granted — otherwise the reward
-            outlives the proof, and unlink-keep-relink is a farm. Said here because it is a
-            consequence of a button, not a setting somebody would go looking for, and it names
-            both because a person who reads "the title" will not expect to lose the decal. */}
-        {state.linked.includes('github') && (
-          <p className="ds-hint">
-            Disconnecting GitHub also removes the title and the decal you earned for starring.
-          </p>
-        )}
         {error && <p className="ds-hint warn">{error}</p>}
       </div>
     </div>

@@ -81,13 +81,18 @@ export function DisplayName({
             }}
             placeholder="Shown on leaderboards"
           />
-          <button className="ds-btn primary" disabled={!dirty || !valid || status === 'saving'} onClick={save}>
-            {status === 'saving' ? 'Saving…' : 'Save'}
+          <button
+            className={`ds-btn primary${status === 'saving' ? ' busy' : ''}`}
+            disabled={!dirty || !valid || status === 'saving'}
+            aria-busy={status === 'saving'}
+            onClick={save}
+          >
+            Save
           </button>
         </div>
       </label>
       <p className="ds-hint">
-        {!configured && 'Editing needs the game server.'}
+        {!configured && 'Editing needs the game server. '}
         {status === 'ok' && !dirty && <span className="ok">Saved.</span>}
         {status === 'error' && <span className="err">{error}</span>}
       </p>
@@ -146,8 +151,13 @@ export function Username({ userId }: { userId: string }) {
           <div className="grow">
             <UsernameInput value={value} onChange={setValue} hintId="ds-profile-uname-hint" status={check.status} />
           </div>
-          <button className="ds-btn primary" disabled={!canSave} onClick={save}>
-            {status === 'saving' ? 'Saving…' : 'Save'}
+          <button
+            className={`ds-btn primary${status === 'saving' ? ' busy' : ''}`}
+            disabled={!canSave}
+            aria-busy={status === 'saving'}
+            onClick={save}
+          >
+            Save
           </button>
         </div>
       </label>

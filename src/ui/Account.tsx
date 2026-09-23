@@ -356,11 +356,12 @@ export function DeleteAccount() {
             aria-label="Type DELETE to confirm account deletion"
           />
           <button
-            className="ds-btn danger"
+            className={`ds-btn danger${busy ? ' busy' : ''}`}
             disabled={busy || confirm !== 'DELETE'}
+            aria-busy={busy}
             onClick={() => void doDelete()}
           >
-            {busy ? 'Deleting…' : 'Delete my account'}
+            Delete my account
           </button>
         </div>
         {err && (
@@ -468,8 +469,13 @@ function PasswordRow({ email }: { email: string }) {
           {state === 'sent' ? `A link to set a new password is on its way to ${email}.` : 'Password'}
         </span>
         <span className="ds-head-spacer" />
-        <button className="ds-btn ghost small" disabled={state === 'sending' || state === 'sent'} onClick={() => void send()}>
-          {state === 'sending' ? 'Sending…' : 'Change password'}
+        <button
+          className={`ds-btn ghost small${state === 'sending' ? ' busy' : ''}`}
+          disabled={state === 'sending' || state === 'sent'}
+          aria-busy={state === 'sending'}
+          onClick={() => void send()}
+        >
+          Change password
         </button>
       </div>
       {state === 'error' && <p className="ds-hint warn">{msg}</p>}

@@ -203,6 +203,14 @@ function CosmeticSwatch({
       onClick={onClick}
     >
       {children}
+      {/* LOCKED READS AS A LOCK, not a fade: the fill stays the colour you would get, and the
+          dashed edge + this badge say it is not yours yet (the chassis map's rule) */}
+      {locked && (
+        <svg className="chassis-sw-lock" viewBox="0 0 10 10" aria-hidden="true">
+          <path d="M3 4.5V3.2a2 2 0 0 1 4 0v1.3" fill="none" stroke="currentColor" strokeWidth="1.2" />
+          <rect x="2" y="4.5" width="6" height="4.5" rx="1" fill="currentColor" />
+        </svg>
+      )}
     </button>
   );
 }
@@ -574,8 +582,14 @@ export function Menu({ settings, onChange }: Props) {
     a.teamName === b.teamName &&
     a.teamNumber === b.teamNumber;
   const alreadySaved = savedRobots.some((r) => sameRobot(spec, r));
+  /** why Save is off, or undefined when it is on */
+  const saveBlocked = alreadySaved
+    ? 'This robot is already saved'
+    : savedRobots.length >= MAX_SAVED_ROBOTS
+      ? `You have ${MAX_SAVED_ROBOTS} saved robots. Delete one first`
+      : undefined;
   const saveCurrentRobot = (): void => {
-    if (savedRobots.length >= MAX_SAVED_ROBOTS || alreadySaved) return;
+    if (saveBlocked) return;
     set({ savedRobots: [...savedRobots, { ...spec }] });
   };
   const deleteSavedRobot = (i: number): void =>
@@ -788,7 +802,9 @@ export function Menu({ settings, onChange }: Props) {
             )}
 
             <div className="ds-field">
-              <span className="cap">Presets</span>
+              {/* only as a divider from "Your robots": alone, "Presets" under "Start from" names
+                  nothing the panel title has not */}
+              {savedRobots.length > 0 && <span className="cap">Presets</span>}
               <div className="ds-opts">
             {presets.map((p, i) => (
               <button
@@ -868,20 +884,23 @@ export function Menu({ settings, onChange }: Props) {
         <section className="ds-panel">
           <div className="ds-panel-h">
             <h2 className="ds-panel-title">Build</h2>
+            {/* THE DISABLED REASON IS SPOKEN, not only hovered: a `title` never reaches a
+                keyboard or a phone. Screen-reader text rather than a visible line, because the
+                reason flips on and off with every edit and a line appearing would move the panel. */}
             <button
               className="ds-btn small"
-              disabled={alreadySaved || savedRobots.length >= MAX_SAVED_ROBOTS}
-              title={
-                alreadySaved
-                  ? 'This robot is already saved'
-                  : savedRobots.length >= MAX_SAVED_ROBOTS
-                    ? `You have ${MAX_SAVED_ROBOTS} saved robots. Delete one first`
-                    : undefined
-              }
+              disabled={!!saveBlocked}
+              title={saveBlocked}
+              aria-describedby={saveBlocked ? 'ds-save-why' : undefined}
               onClick={saveCurrentRobot}
             >
               Save this robot
             </button>
+            {saveBlocked && (
+              <span id="ds-save-why" className="ds-sr">
+                {saveBlocked}
+              </span>
+            )}
           </div>
           <div className="ds-panel-body stack">
             <div className="ds-fields">

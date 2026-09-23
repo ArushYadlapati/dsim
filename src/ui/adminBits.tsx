@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { ADMIN_FAIL_WHY } from './adminCopy';
 
 /**
  * The small pieces every admin panel needs, written once.
@@ -255,6 +256,39 @@ export function downloadCsv(filename: string, headers: string[], rows: (string |
   a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ------------------------------------------------------------ list states ----
+
+/**
+ * The three non-populated states of a list (§6), ONE way.
+ *
+ * The presence error was a full `ds-empty` block and the Recent-games error a screen lower was
+ * a one-line hint in different words; every "no rows" was a bare `ds-hint`. All three states
+ * here share `.ds-empty`/`.ds-loading`'s padding, so a panel does not jump when data lands.
+ *
+ *  - `loading` — the line to show while the first read is in flight.
+ *  - `error`   — the action that failed (`load the audit log`); the wording is `adminFail`'s.
+ *  - `empty`   — the headline, no period; `children` is the one sentence under it.
+ */
+export function ListState({
+  loading,
+  error,
+  empty,
+  children,
+}: {
+  loading?: string;
+  error?: string;
+  empty?: string;
+  children?: ReactNode;
+}) {
+  if (loading) return <div className="ds-loading">{loading}</div>;
+  return (
+    <div className="ds-empty">
+      <div className="big">{error ? `Couldn’t ${error}` : empty}</div>
+      {error ? ADMIN_FAIL_WHY : children}
+    </div>
+  );
 }
 
 // --------------------------------------------------------------- dialogs ----

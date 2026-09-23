@@ -333,6 +333,13 @@ const hudPairs = (t) => {
     // the WINNER/TIE banner flips the relationship (fixed light fill, dark ink) rather
     // than reusing the app's inverting --ds-panel/--ds-ink pair
     ['Results .resx-winbanner ink', t('--ds-stage-bg'), t('--ds-on-field'), AA],
+    // the season/act REVEAL (.ann-cinema) stands on the same stage; its keycap is the season's
+    // own fill with that fill's ink, and it must read against the stage it sits on (1.4.11)
+    ['.ann-cinema-btn (season) ink', t('--ds-gold-ink'), t('--ds-gold'), AA],
+    ['.ann-cinema-btn (act) ink', t('--ds-on-field-accent-ink'), t('--ds-on-field-accent'), AA],
+    ['.ann-cinema-btn (season) fill on the stage (1.4.11)', t('--ds-gold'), t('--ds-stage-bg'), NON_TEXT],
+    ['.ann-cinema-btn (act) fill on the stage (1.4.11)', t('--ds-on-field-accent'), t('--ds-stage-bg'), NON_TEXT],
+    ['.ann-cinema eyebrow (season)', t('--ds-gold'), t('--ds-stage-bg'), AA],
   ];
 };
 
@@ -536,7 +543,7 @@ const reviewW3HudPairs = (t) => {
     ['3D scrim .ds-tut-step counter', s('--ds-accent'), card, AA],
     ['3D scrim .ds-tut-nudge', s('--ds-warn'), card, AA],
     ['3D scrim tutorial focus ring (1.4.11)', s('--ds-accent'), card, NON_TEXT],
-    ['3D scrim .ds-tut-btn.primary', s('--ds-accent-ink'), s('--ds-accent'), AA],
+    ['3D scrim .game-btn.primary (tutorial card, layout editor)', s('--ds-accent-ink'), s('--ds-accent'), AA],
     ['3D scrim over a light backdrop: accent', s('--ds-accent'), cardLit, AA],
     ['3D scrim over a light backdrop: warn', s('--ds-warn'), cardLit, AA],
     ['3D scrim over a light backdrop: ok-ink', s('--ds-ok-ink'), cardLit, AA],
@@ -563,7 +570,8 @@ const reviewW3HudPairs = (t) => {
     ['.mobile-btn.shoot.auto label', t('--ds-on-field-accent'), padAuto, AA],
     ['.mobile-btn.park.auto label', t('--ds-on-field-dim'), padAuto, AA],
     ['.mobile-btn ring on the 3D mat (1.4.11)', t('--ds-on-field-dim'), TILE3D, NON_TEXT],
-    ['.mobile-edit-bar primary', t('--ds-on-field-accent-ink'), t('--ds-on-field-accent'), AA],
+    // DONE is a .game-btn.primary on the themed HUD card (it was a fixed mint pill once)
+    ['.mobile-edit-bar primary (.game-btn.primary)', t('--ds-accent-ink'), t('--ds-accent'), AA],
 
     // the live score bar: flat chip fills, children inherit the chip ink at full strength
     ['.score-panel.red .bb-tip / .you-tag', t('--ds-red-chip-ink'), t('--ds-red-chip'), AA],

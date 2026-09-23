@@ -17,5 +17,8 @@
  * owner.
  */
 export function adminFail(action: string): string {
-  return `Couldn’t ${action}. The server or database is unreachable, or this account is no longer an admin.`;
+  return `Couldn’t ${action}. ${ADMIN_FAIL_WHY}`;
 }
+
+/** the second sentence alone, for `ListState`, whose error headline is the first */
+export const ADMIN_FAIL_WHY = 'The server or database is unreachable, or this account is no longer an admin.';

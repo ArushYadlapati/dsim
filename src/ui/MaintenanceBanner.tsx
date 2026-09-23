@@ -65,7 +65,6 @@ export function MaintenanceBanner({ presence }: { presence: Presence | null }) {
   return (
     <div className="ds-maint-wrap">
       <div className={`ds-maint${biting ? ' biting' : ''}`} role="status">
-        <span aria-hidden>{biting ? '⛔' : '🛠'}</span>
         <span>{line}</span>
       </div>
     </div>

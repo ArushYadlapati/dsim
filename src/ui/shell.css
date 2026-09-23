@@ -117,6 +117,17 @@
   --ds-edge: 0 3px 0 var(--ds-accent-edge);
   --ds-edge-soft: 0 3px 0 var(--ds-line);
 
+  /* ---- motion: ONE press speed, ONE fade speed, ONE curve (design review 21-09/16) ----
+     press = a cap's transform + edge; fade = a fill or edge tint. Colour-only states (rail,
+     subnav, tab, seg) all fade at --ds-dur-fade so a row of them cannot disagree. Text colour
+     is not transitioned: it snaps, so a label never passes through a sub-contrast mid-tone. */
+  --ds-dur-press: 60ms;
+  --ds-dur-fade: 150ms;
+  --ds-ease: ease-out;
+  /* the ONE disabled look for a pressable (DESIGN.md Buttons). The dashed lock on `.bb-cell` /
+     `.chassis-sw` is the documented exception: "someone else's" is not "unavailable". */
+  --ds-disabled-opacity: 0.5;
+
   /* fixed scoring semantics (never the interface accent). These break the pastel
      harmony ON PURPOSE — alliance + artifact identity must command attention.
 
@@ -477,8 +488,7 @@
   width: var(--ds-s-2);
   height: var(--ds-s-2);
   border-radius: var(--ds-round-full);
-  background: var(--ds-ok);
-  box-shadow: 0 0 var(--ds-s-2) var(--ds-ok);
+  background: var(--ds-ok); /* flat: the No-Blur Rule has no exception for a status dot (01-05) */
   flex: none;
 }
 .ds-presence-sub {
@@ -511,8 +521,8 @@
   display: inline-flex;
   align-items: center;
 }
+/* the dim is the shared .ds-seg:disabled one; only the cursor differs (it is a state, not a refusal) */
 .ds-server-menu .ds-seg:disabled {
-  opacity: 0.6;
   cursor: default;
 }
 /* a phone bar has no room for a PERMANENT region control — hide only the
@@ -562,10 +572,6 @@
 }
 .ds-avatar-btn:hover .ds-avatar {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-accent) 35%, transparent);
-}
-.ds-avatar-btn:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
 }
 .ds-profile-pop {
   position: absolute;
@@ -677,23 +683,6 @@
   flex-direction: column;
   gap: var(--ds-s-4);
 }
-.ds-rail-home {
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  text-align: left;
-  padding: 8px 10px;
-  border-radius: var(--ds-round);
-  border: 1px solid transparent;
-  background: none;
-  color: var(--ds-mut);
-  cursor: pointer;
-}
-.ds-rail-home:hover {
-  color: var(--ds-ink);
-  border-color: var(--ds-line);
-  background: var(--ds-panel);
-}
 .ds-rail-items {
   display: flex;
   flex-direction: column;
@@ -711,7 +700,7 @@
   background: none;
   color: var(--ds-ink-dim);
   cursor: pointer;
-  transition: background 0.14s, border-color 0.14s, color 0.14s;
+  transition: background var(--ds-dur-fade), border-color var(--ds-dur-fade);
 }
 .ds-rail-btn .rl {
   font-size: 15px;
@@ -729,9 +718,13 @@
      columns read as two different components.
    - OPTION CARD — a pick in a grid of cards (`.ds-opt.on`, OptRow): the same soft fill +
      edge, plus the keycap's accent-edge shadow because the card is a pressable.
-   - SEGMENTED — one of N inline (`.ds-seg.on`, `.ds-dl-seg button.on`,
-     `.ds-startpos-tab.on`): solid accent fill, accent-ink.
+   - SEGMENTED — one of N inline (`.ds-seg.on`, which the export menu and the start-position
+     Close/Far pick now use too): solid accent fill, accent-ink.
    - TAB STRIP — `.ds-tab.on`: accent ink + underline.
+   - TOGGLE KEY — a cap that is ON (`.game-btn.on`, the keyboard's CAPS `.ds-osk-key.on`):
+     solid accent fill, accent-ink, held FLUSH on its edge — a cap that stayed down.
+   Latched nav, segmented and tabs are COLOUR-ONLY controls: they never move, and all four
+   fade at `--ds-dur-fade` (one duration, so a rail beside a tab strip cannot disagree).
    "Recommended" (`.ds-tile.primary`) is NOT a selection and so takes none of these: an
    accent edge and kicker on the ordinary tile fill. */
 .ds-rail-btn.on {
@@ -853,7 +846,7 @@
   background: none;
   color: var(--ds-ink-dim);
   cursor: pointer;
-  transition: background 0.14s, color 0.14s;
+  transition: background var(--ds-dur-fade), color var(--ds-dur-fade);
 }
 /* the badge anchors to the GLYPH, not to the taller button */
 .fr-toggle-icon {
@@ -965,7 +958,7 @@
   width: 12px;
   /* rotates in place: a marker that reflowed the header would move every row
      below it on open (see `npm run shiftaudit`) */
-  transition: transform 120ms ease;
+  transition: transform var(--ds-dur-fade) var(--ds-ease);
 }
 .fr-fold[open] > summary::before {
   transform: rotate(90deg);
@@ -999,7 +992,7 @@
   background: none;
   color: inherit;
   cursor: pointer;
-  transition: background 0.14s;
+  transition: background var(--ds-dur-fade);
 }
 .fr-who.static,
 .fr-who:disabled {
@@ -1132,8 +1125,8 @@
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
+  /* the card's identity is its block shadow, not a coloured stripe down one side (20-05) */
   border: 1px solid var(--ds-line);
-  border-left: 3px solid var(--ds-accent);
   border-radius: var(--ds-round);
   background: var(--ds-panel);
   box-shadow: var(--ds-block);
@@ -1243,19 +1236,9 @@
   font-weight: 700;
   letter-spacing: 0.01em;
   cursor: pointer;
-  box-shadow: var(--ds-edge-soft);
-  transition: transform 0.06s ease, box-shadow 0.06s ease;
 }
 .ds-discord-join svg {
   flex: none;
-}
-.ds-discord-join:hover {
-  transform: translateY(1px);
-  box-shadow: 0 2px 0 var(--ds-line);
-}
-.ds-discord-join:active {
-  transform: translateY(3px);
-  box-shadow: 0 0 0 var(--ds-line);
 }
 .dj-avs {
   display: inline-flex;
@@ -1291,24 +1274,16 @@
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  border-radius: var(--ds-round-lg, 12px);
+  border-radius: var(--ds-round);
   border: 1px solid var(--ds-line);
   background: var(--ds-panel);
   color: var(--ds-ink);
   font: inherit;
   cursor: pointer;
   text-align: left;
-  transition: transform 0.06s ease, border-color 0.15s;
-}
-.ds-lobby-row:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
-  transform: translateY(1px);
-}
-.ds-lobby-row:active:not(:disabled) {
-  transform: translateY(2px);
 }
 .ds-lobby-row:disabled {
-  opacity: 0.55;
+  opacity: var(--ds-disabled-opacity);
   cursor: not-allowed;
 }
 .ds-lobby-row .ll-code {
@@ -1359,21 +1334,14 @@
   font-weight: 700;
   letter-spacing: 0.01em;
   text-decoration: none;
-  box-shadow: var(--ds-edge-soft);
-  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.15s, color 0.15s;
 }
 .ds-home-link svg {
   flex: none;
 }
-.ds-home-link:hover {
-  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
-  color: var(--ds-accent);
-  transform: translateY(1px);
-  box-shadow: 0 2px 0 var(--ds-line);
-}
-.ds-home-link:active {
-  transform: translateY(3px);
-  box-shadow: 0 0 0 var(--ds-line);
+@media (hover: hover) {
+  .ds-home-link:hover {
+    color: var(--ds-accent);
+  }
 }
 .ds-menu {
   width: 100%;
@@ -1394,8 +1362,6 @@
   background: var(--ds-panel);
   color: var(--ds-ink);
   cursor: pointer;
-  box-shadow: var(--ds-edge-soft);
-  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.15s, background 0.15s;
 }
 .ds-menu-btn .ml {
   font-size: 19px;
@@ -1408,33 +1374,17 @@
   letter-spacing: var(--ds-track-caps);
   color: var(--ds-mut);
 }
-.ds-menu-btn:hover {
-  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
-  transform: translateY(1px);
-  box-shadow: 0 2px 0 var(--ds-line);
-}
-.ds-menu-btn:active {
-  transform: translateY(3px);
-  box-shadow: 0 0 0 var(--ds-line);
-}
 .ds-menu-btn.primary {
+  --cap-edge: var(--ds-accent-edge);
   background: var(--ds-accent);
   color: var(--ds-accent-ink);
   border-color: transparent;
-  box-shadow: var(--ds-edge);
 }
 /* SOLID ink, not an alpha mix: 74% accent-ink over the light accent blended to 4.40:1, under
    AA, and contrast.mjs cannot see an alpha-mixed colour. The size and the mono face already
    make it the sub-line. */
 .ds-menu-btn.primary .mh {
   color: var(--ds-accent-ink);
-}
-.ds-menu-btn.primary:hover {
-  background: color-mix(in srgb, var(--ds-accent) 88%, white);
-  box-shadow: 0 2px 0 var(--ds-accent-edge);
-}
-.ds-menu-btn.primary:active {
-  box-shadow: 0 0 0 var(--ds-accent-edge);
 }
 /* ---- section sub-nav (Configure) + tab strip (Records) ---------------- */
 .ds-subnav-layout {
@@ -1464,6 +1414,7 @@
   color: var(--ds-ink-dim);
   text-decoration: none; /* an <a> since 04-16 (a real route); it must not read as body link */
   cursor: pointer;
+  transition: background var(--ds-dur-fade), border-color var(--ds-dur-fade);
 }
 .ds-subnav-btn .sl {
   font-size: var(--ds-t-control);
@@ -1507,6 +1458,7 @@
   cursor: pointer;
   border-bottom: 3px solid transparent;
   margin-bottom: -1px;
+  transition: border-color var(--ds-dur-fade);
 }
 .ds-tab:hover {
   color: var(--ds-ink);
@@ -1583,15 +1535,8 @@ button.ds-chip {
   font-variant-numeric: tabular-nums;
 }
 
-/* Static status label (e.g. "✓ Friends") meant to sit INLINE with real `.ds-btn`
-   actions (Share/Unfriend/Block) — DESIGN.md reserves pill corners for chips and
-   high-action buttons; a status badge is neither, and a pill dropped into a row of
-   rectangular action buttons reads as a mismatched shape, not a deliberate accent.
-   Same footprint as `.ds-btn.small` so it sits flush with its row-mates. */
-
-/* KEYCAP: a solid cap sitting 3px above its own darker edge. Hover sinks 1px,
-   press sinks the full 3px so the cap meets the edge — a physical click. The
-   cap moves with `transform`, never `margin`, so nothing around it reflows. */
+/* THE LOOK of the neutral button. How it presses (the 3px edge, the 1px hover sink, the full
+   press) is the shared KEYCAP block after `.ds-btn.small`, which every cap family joins. */
 /* `display` is SET, not inherited from the UA. A <button> is inline-block for free, but
    `.ds-btn` is also worn by an <a> (Download), and an inline box ignores vertical padding
    for layout while still PAINTING it — the cap bled over the card above and the panel
@@ -1609,45 +1554,32 @@ button.ds-chip {
   background: var(--ds-panel);
   color: var(--ds-ink);
   cursor: pointer;
-  box-shadow: var(--ds-edge-soft);
-  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.15s, background 0.15s;
-}
-.ds-btn:hover {
-  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
-  transform: translateY(1px);
-  box-shadow: 0 2px 0 var(--ds-line);
-}
-.ds-btn:active {
-  transform: translateY(3px);
-  box-shadow: 0 0 0 var(--ds-line);
 }
 .ds-btn.primary {
+  --cap-edge: var(--ds-accent-edge);
   background: var(--ds-accent);
   color: var(--ds-accent-ink);
   border-color: transparent;
-  box-shadow: var(--ds-edge);
-}
-.ds-btn.primary:hover {
-  background: color-mix(in srgb, var(--ds-accent) 88%, white);
-  box-shadow: 0 2px 0 var(--ds-accent-edge);
-}
-.ds-btn.primary:active {
-  box-shadow: 0 0 0 var(--ds-accent-edge);
-}
-/* ghost is a flat text button — it has no cap, so it must not press */
-.ds-btn.ghost {
-  background: none;
-  box-shadow: none;
-}
-.ds-btn.ghost:hover,
-.ds-btn.ghost:active {
-  transform: none;
-  box-shadow: none;
 }
 .ds-btn:disabled {
-  opacity: 0.5;
+  opacity: var(--ds-disabled-opacity);
   cursor: not-allowed;
-  transform: none;
+}
+/* PENDING (design review 21-14): the button keeps its IDLE label, so its box does not
+   change, and paints "…" over it. Pair it with `aria-busy` and `disabled`. The label is
+   hidden with the text FILL rather than `color`, so the overlay still inherits the
+   variant's ink (primary, danger, ghost) through `currentColor`. */
+.ds-btn.busy {
+  position: relative;
+  -webkit-text-fill-color: transparent;
+}
+.ds-btn.busy::after {
+  content: '…';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  -webkit-text-fill-color: currentColor;
 }
 /* compact keycap — used by the role-swap bar + start-position tools */
 .ds-btn.small {
@@ -1655,45 +1587,123 @@ button.ds-chip {
   padding: 4px 12px;
   border-radius: var(--ds-round-sm);
 }
+/* ---- THE KEYCAP, once (design review 16-03/05, 21-02..06) ----------------------------
+   Every pressable cap in the app shares these mechanics; each component above and below
+   declares only its LOOK (fill, border, ink, padding, radius) plus `--cap-edge` when its edge
+   is not the neutral `--ds-line`: `--ds-accent-edge` under an accent fill, `--ds-hud-line` on a
+   cap that floats over the field. Nothing here SETS `--cap-edge`, so a component's own value
+   (in either stylesheet) always survives.
+   - rest: 3px edge. hover: SINK 1px (never lift). press: sink 3px, flush with the edge.
+   - HOVER IS GATED on `(hover: hover)`: a touch tap fires a sticky :hover that left caps
+     half-sunk after the finger lifted (18-11). Press is not gated; it is the tap's feedback.
+   - `:where(:not(:disabled))` keeps a disabled cap still WITHOUT raising the specificity of
+     the hover and press rules above a component's `.x.primary:hover`-style overrides.
+   - `.ds-btn.ghost` opts OUT (below): ghost means a flat text action with no cap, everywhere.
+     A neutral cap beside a filled one is `.secondary`, never `.ghost`.
+   The card family (`.ds-tile`, `.ds-opt`, `button.bb-cell`) is the other model: it LIFTS on
+   hover and presses INTO its offset block, edge colour in `--card-edge`. */
+.ds-btn,
+.ds-menu-btn,
+.ds-home-link,
+.ds-discord-join,
+.ds-cta,
+.ds-back,
+button.ds-key,
+.ds-dl-opt,
+.ds-osk-key,
+.ds-lobby-row,
+.game-btn,
+.overlay-buttons button,
+.sponsor-chip,
+.pred-opt,
+.ann-cinema-btn {
+  box-shadow: 0 3px 0 var(--cap-edge, var(--ds-line));
+  transition:
+    transform var(--ds-dur-press) var(--ds-ease),
+    box-shadow var(--ds-dur-press) var(--ds-ease),
+    background var(--ds-dur-fade),
+    border-color var(--ds-dur-fade);
+}
+@media (hover: hover) {
+  .ds-btn:where(:not(:disabled)):hover,
+  .ds-menu-btn:where(:not(:disabled)):hover,
+  .ds-home-link:hover,
+  .ds-discord-join:where(:not(:disabled)):hover,
+  .ds-cta:where(:not(:disabled)):hover,
+  .ds-back:where(:not(:disabled)):hover,
+  button.ds-key:where(:not(:disabled)):hover,
+  .ds-dl-opt:where(:not(:disabled)):hover,
+  .ds-osk-key:where(:not(:disabled)):hover,
+  .ds-lobby-row:where(:not(:disabled)):hover,
+  .game-btn:where(:not(:disabled)):hover,
+  .overlay-buttons button:where(:not(:disabled)):hover,
+  .sponsor-chip:hover,
+  .pred-opt:where(:not(:disabled)):hover,
+  .ann-cinema-btn:where(:not(:disabled)):hover {
+    transform: translateY(1px);
+    box-shadow: 0 2px 0 var(--cap-edge, var(--ds-line));
+  }
+}
+.ds-btn:where(:not(:disabled)):active,
+.ds-menu-btn:where(:not(:disabled)):active,
+.ds-home-link:active,
+.ds-discord-join:where(:not(:disabled)):active,
+.ds-cta:where(:not(:disabled)):active,
+.ds-back:where(:not(:disabled)):active,
+button.ds-key:where(:not(:disabled)):active,
+.ds-dl-opt:where(:not(:disabled)):active,
+.ds-osk-key:where(:not(:disabled)):active,
+.ds-lobby-row:where(:not(:disabled)):active,
+.game-btn:where(:not(:disabled)):active,
+.overlay-buttons button:where(:not(:disabled)):active,
+.sponsor-chip:active,
+.pred-opt:where(:not(:disabled)):active,
+.ann-cinema-btn:where(:not(:disabled)):active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--cap-edge, var(--ds-line));
+}
+/* the neutral caps' hover tint, the same one on each; primaries keep their own */
+@media (hover: hover) {
+  .ds-btn:where(:not(:disabled)):hover,
+  .ds-menu-btn:where(:not(:disabled)):hover,
+  .ds-home-link:hover,
+  .ds-back:where(:not(:disabled)):hover,
+  button.ds-key:where(:not(:disabled)):hover,
+  .ds-dl-opt:where(:not(:disabled)):hover,
+  .ds-lobby-row:where(:not(:disabled)):hover {
+    border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
+  }
+  .ds-btn.primary:where(:not(:disabled)):hover,
+  .ds-menu-btn.primary:where(:not(:disabled)):hover,
+  .ds-cta:where(:not(:disabled)):hover {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--ds-accent) 88%, white);
+  }
+  .ds-cta.secondary:where(:not(:disabled)):hover {
+    border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
+    background: var(--ds-panel);
+  }
+}
+/* GHOST, the one meaning: a flat TEXT action — no fill, no cap, no press. */
+.ds-btn.ghost,
+.ds-btn.ghost:hover,
+.ds-btn.ghost:active {
+  background: none;
+  box-shadow: none;
+  transform: none;
+}
 /* a dialog card focused BY SCRIPT (useDialog's fallback when it holds no control) is not a
    target the user moved to — the ring would frame the whole card mid-match */
 [role='dialog'][tabindex='-1']:focus {
   outline: none;
 }
-.ds-btn:focus-visible,
-.ds-back:focus-visible,
-.ds-tile:focus-visible,
-.ds-seg:focus-visible,
-.ds-mark:focus-visible,
-.ds-menu-btn:focus-visible,
-.ds-rail-btn:focus-visible,
-.ds-rail-home:focus-visible,
-.ds-subnav-btn:focus-visible,
-.ds-tab:focus-visible,
-.ds-cta:focus-visible,
-.ds-opt:focus-visible,
-.ds-fold > summary:focus-visible,
-.ds-foot-link:focus-visible,
-.ds-home-link:focus-visible,
-.ds-discord-join:focus-visible,
-.lb-name:focus-visible,
-.lb-robot:focus-visible,
-.mh-player.link:focus-visible,
-button.ds-key:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
-}
-/* the same house ring for controls that were written after the list above and fell back
-   to the UA ring: the friends panel (the `⋯` menu is the only way to Unfriend/Block), the
-   lobby browser rows and a chip that is a button (the room code's copy). `.ds-lan-url`
-   takes it in styles.css. */
-.fr-toggle:focus-visible,
-.fr-collapse:focus-visible,
-.fr-fold > summary:focus-visible,
-.fr-who:focus-visible,
-.fr-menu > summary:focus-visible,
-.ds-lobby-row:focus-visible,
-button.ds-chip:focus-visible {
+/* THE HOUSE FOCUS RING, once (design review 21-15). The browser's own ring is NOT suppressed
+   anywhere; this replaces it on everything a keyboard can reach, so a control written tomorrow
+   is ringed without joining a list. `:where()` keeps it at (0,1,0), so any component that needs
+   a different ring — on the field (`.game-btn`: the on-field mint), on its own accent fill
+   (`.overlay-buttons button`), inset in a tight list (`.ds-dl-opt`) — overrides it by just
+   saying so. `tabindex="-1"` is excluded: a container focused BY SCRIPT is not a target. */
+:where(button, a, summary, [tabindex]:not([tabindex='-1'])):focus-visible {
   outline: 2px solid var(--ds-accent);
   outline-offset: 2px;
 }
@@ -1708,6 +1718,9 @@ button.ds-chip:focus-visible {
    420 case carried the LONGEST copy */
 .overlay-sub {
   max-width: 42ch;
+  /* prose reads from a straight left edge; the title and actions stay centred. The Chain
+     Reaction note is four lines on a desktop and nine on a phone (design review 01-19). */
+  text-align: start;
 }
 .overlay-panel .ds-sub {
   margin-inline: auto;
@@ -1855,21 +1868,27 @@ button.ds-chip:focus-visible {
   font: inherit;
   /* Level-1 card: flat fill, 1px stroke, hard offset block toward the bottom-right
      (the sun sits top-left). It lifts on hover and presses INTO its shadow. */
-  box-shadow: var(--ds-block);
-  transition: transform 0.08s ease, box-shadow 0.08s ease, border-color 0.15s;
+  box-shadow: 4px 4px 0 var(--card-edge, var(--ds-line-soft));
+  transition:
+    transform var(--ds-dur-press) var(--ds-ease),
+    box-shadow var(--ds-dur-press) var(--ds-ease),
+    border-color var(--ds-dur-fade);
 }
-.ds-tile:hover {
-  border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));
-  transform: translate(-1px, -1px);
-  box-shadow: 5px 5px 0 var(--ds-line-soft);
+@media (hover: hover) {
+  .ds-tile:where(:not(:disabled)):hover {
+    border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));
+    transform: translate(-1px, -1px);
+    box-shadow: 5px 5px 0 var(--card-edge, var(--ds-line-soft));
+  }
 }
-.ds-tile:active {
-  transform: translate(2px, 2px);
-  box-shadow: 1px 1px 0 var(--ds-line-soft);
+/* PRESSED FLUSH: the travel equals the 4px block, so the card lands on its own shadow's base
+   (offset + shadow stays 4 in every state, the `.ds-btn` rule) instead of a base 1px higher */
+.ds-tile:where(:not(:disabled)):active {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--card-edge, var(--ds-line-soft));
 }
 .ds-tile:disabled {
-  transform: none;
-  box-shadow: var(--ds-block-sm);
+  opacity: var(--ds-disabled-opacity);
   cursor: not-allowed;
 }
 .ds-tile .k {
@@ -1895,15 +1914,11 @@ button.ds-chip:focus-visible {
    plain tiles (the same fill IS "selected" on a segmented control). The recommendation is an
    accent edge + accent-edge block and an accent kicker, on the ordinary tile fill. */
 .ds-tile.primary {
+  --card-edge: var(--ds-accent-edge);
   border-color: var(--ds-accent);
-  box-shadow: 4px 4px 0 var(--ds-accent-edge);
 }
 .ds-tile.primary:hover {
   border-color: var(--ds-accent);
-  box-shadow: 5px 5px 0 var(--ds-accent-edge);
-}
-.ds-tile.primary:active {
-  box-shadow: 1px 1px 0 var(--ds-accent-edge);
 }
 .ds-tile.primary .k {
   color: var(--ds-accent);
@@ -2026,6 +2041,23 @@ button.ds-chip:focus-visible {
   flex: 1 1 240px;
   min-width: 0;
 }
+/* a linked-accounts row (LinkedAccounts.tsx): name + hint left, status chip, action right */
+.ds-linked {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2) var(--ds-s-3);
+}
+.ds-linked-text {
+  flex: 1 1 240px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+}
+.ds-linked-name {
+  font-weight: 700;
+}
 /* a panel FOOTER band, same anatomy as `.mh-pager`. `.ds-hint` is `margin: 0` and
    `.ds-panel` has no padding, so a trailing sentence landed flush in the panel's
    rounded bottom-left corner while the cell above it was inset 16. */
@@ -2083,11 +2115,6 @@ button.ds-chip:focus-visible {
 }
 .ds-hint .err {
   color: var(--ds-danger);
-}
-.ds-hint .ok::before,
-.ds-hint .err::before {
-  content: ' · ';
-  color: var(--ds-mut);
 }
 .ds-field > .cap .val.over {
   color: var(--ds-danger);
@@ -2240,7 +2267,7 @@ button.ds-chip:focus-visible {
 }
 .ds-seg {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ds-t-sm);
   /* Weight is CONSTANT across states. `.on` used to bump this to 700, which made
      the label wider and shoved every sibling segment sideways on click. Selection
      is carried by colour + fill only — nothing here may affect layout. */
@@ -2251,6 +2278,7 @@ button.ds-chip:focus-visible {
   background: none;
   border: 1px solid transparent;
   cursor: pointer;
+  transition: background var(--ds-dur-fade), border-color var(--ds-dur-fade);
 }
 .ds-seg:hover {
   color: var(--ds-ink);
@@ -2258,6 +2286,14 @@ button.ds-chip:focus-visible {
 .ds-seg.on {
   background: var(--ds-accent);
   color: var(--ds-accent-ink);
+}
+/* the export menu's 3D pick is disabled (not hidden) where this browser or season has no 3D */
+.ds-seg:disabled:not(.on) {
+  color: var(--ds-mut);
+}
+.ds-seg:disabled {
+  opacity: var(--ds-disabled-opacity);
+  cursor: not-allowed;
 }
 
 /* RECESSED: a darker-than-surface well with an inner top shadow, as if carved in */
@@ -2557,6 +2593,12 @@ button.ds-chip:focus-visible {
 .mh-scroll,
 .lb-scroll {
   overflow-x: auto;
+  transition: opacity var(--ds-dur-fade);
+}
+/* a refetch: the previous rows stay mounted and fade, so the panel holds its height */
+.mh-scroll[aria-busy='true'],
+.lb-scroll[aria-busy='true'] {
+  opacity: 0.5;
 }
 .mh-table {
   min-width: 640px;
@@ -2607,12 +2649,15 @@ button.ds-chip:focus-visible {
 .mh-player.al-blue {
   color: var(--ds-blue-ink);
 }
+/* a TEXT decoration, not a border: the 1px border made a linked name 1px taller than the
+   plain <span> beside it, so the two sat on different baselines (design review 07-20) */
 .mh-player.link {
   cursor: pointer;
-  border-bottom: 1px dotted transparent;
+  text-decoration: underline dotted transparent;
+  text-underline-offset: 3px;
 }
 .mh-player.link:hover {
-  border-bottom-color: currentColor;
+  text-decoration-color: currentColor;
 }
 .mh-sep {
   color: var(--ds-mut);
@@ -2724,11 +2769,12 @@ button.ds-chip:focus-visible {
   color: var(--ds-ink);
 }
 .lb-name .lb-name-h {
-  border-bottom: 1px dotted transparent;
+  text-decoration: underline dotted transparent;
+  text-underline-offset: 3px;
 }
 .lb-name:hover .lb-name-h {
   color: var(--ds-accent);
-  border-bottom-color: color-mix(in srgb, var(--ds-accent) 60%, transparent);
+  text-decoration-color: color-mix(in srgb, var(--ds-accent) 60%, transparent);
 }
 /* ⚠️ A NAME CLAMPS; IT DOES NOT BREAK THE ROW.
    `.lb-drivers` wraps on purpose — that is how a DUO row puts its partner on a second line
@@ -2896,9 +2942,11 @@ tr.lb-detail td {
   color: var(--ds-mut);
   font-size: var(--ds-t-control);
 }
+/* a HEADLINE: at 400 in --ds-ink-dim it read as slightly larger body text */
 .ds-empty .big {
   font-size: var(--ds-t-lg);
-  color: var(--ds-ink-dim);
+  font-weight: 600;
+  color: var(--ds-ink);
   margin-bottom: var(--ds-s-2);
 }
 /* the SAME padding as .ds-empty (ui-standard §6: the panel must not jump when data lands) */
@@ -3038,6 +3086,18 @@ tr.lb-detail td {
   width: 44px;
   text-align: right;
 }
+/* Pause and Play share ONE grid cell, the idle label `visibility: hidden` (so it still takes
+   space and leaves the accessible name), which keeps the button at the wider label's width in
+   every state — the seek beside it is `flex: 1` and resized under the pointer on each toggle. */
+.ds-replay-play {
+  display: inline-grid;
+}
+.ds-replay-play > span {
+  grid-area: 1 / 1;
+}
+.ds-replay-play > .off {
+  visibility: hidden;
+}
 
 /* ---- admin: account standing ------------------------------------------
    The one panel in the console that UNDOES something the server decided, so it leads with
@@ -3109,6 +3169,7 @@ tr.lb-detail td {
   font-size: var(--ds-t-sm);
   color: var(--ds-mut);
 }
+/* the inputs inside are `.ds-input` and look like every other field; this only lays them out */
 .as-field {
   display: flex;
   flex-direction: column;
@@ -3121,14 +3182,6 @@ tr.lb-detail td {
   letter-spacing: var(--ds-track-caps);
   text-transform: uppercase;
   color: var(--ds-mut);
-}
-.as-field input {
-  padding: 8px;
-  border: 1px solid var(--ds-line);
-  border-radius: var(--ds-round-sm);
-  background: var(--ds-panel);
-  color: var(--ds-ink);
-  font: 400 var(--ds-t-md) / 1.4 var(--ds-font-ui);
 }
 .as-actions {
   display: flex;
@@ -3561,30 +3614,14 @@ tr.lb-detail td {
   color: var(--ds-ink);
   text-align: left;
   cursor: pointer;
-  box-shadow: var(--ds-edge-soft);
-  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.15s, background 0.15s;
 }
 .ds-dl-opt:focus-visible {
   outline: 2px solid var(--ds-accent);
   outline-offset: -2px;
 }
-.ds-dl-opt:hover {
-  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
-  transform: translateY(1px);
-  box-shadow: 0 2px 0 var(--ds-line);
-}
-.ds-dl-opt:active {
-  transform: translateY(3px);
-  box-shadow: 0 0 0 var(--ds-line);
-}
 .ds-dl-opt:disabled {
-  opacity: 0.55;
+  opacity: var(--ds-disabled-opacity);
   cursor: not-allowed;
-  transform: none;
-}
-.ds-dl-opt:disabled:hover {
-  border-color: var(--ds-line);
-  box-shadow: var(--ds-edge-soft);
 }
 .ds-dl-opt .dl-h {
   display: flex;
@@ -3627,43 +3664,10 @@ tr.lb-detail td {
   letter-spacing: var(--ds-track-caps);
   color: var(--ds-mut);
 }
-.ds-dl-seg {
-  display: flex;
-  flex: 1 1 auto;
-  gap: var(--ds-s-1);
-  justify-content: flex-end;
-}
-.ds-dl-seg button {
-  font: inherit;
-  font-size: var(--ds-t-sm);
-  font-weight: 600;
-  padding: var(--ds-s-1) var(--ds-s-2);
-  border: 1px solid var(--ds-line);
-  border-radius: var(--ds-round-sm);
-  background: var(--ds-panel);
-  color: var(--ds-mut);
-  cursor: pointer;
-  transition: transform 0.06s ease, color 0.15s, border-color 0.15s, background 0.15s;
-}
-.ds-dl-seg button:hover {
-  color: var(--ds-ink);
-  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
-}
-.ds-dl-seg button:active {
-  transform: translateY(1px);
-}
-.ds-dl-seg button:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
-}
-.ds-dl-seg button.on {
-  color: var(--ds-accent-ink);
-  background: var(--ds-accent);
-  border-color: var(--ds-accent);
-}
-.ds-dl-seg button:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
+/* the pickers are the shared `.ds-segs` (there was a bespoke `.ds-dl-seg` twin here, with its
+   own border, radius and focus offset); this only pushes the strip to the row's right edge */
+.ds-dl-row > .ds-segs {
+  margin-left: auto;
 }
 
 .ds-dl-note {
@@ -3720,7 +3724,8 @@ tr.lb-detail td {
 .rec-fill {
   height: 100%;
   background: var(--ds-accent);
-  transition: width 0.1s linear;
+  /* no width transition: `width` re-lays-out every frame (ui-standard §7), and a progress
+     bar that ticks with the export needs no smoothing on top */
 }
 .rec-eta {
   font-family: var(--ds-font-mono);
@@ -3764,20 +3769,23 @@ tr.lb-detail td {
   background: var(--ds-scrim-strong);
   display: grid;
   place-items: center;
-  padding: 20px;
+  padding: var(--ds-s-5);
   overflow-y: auto; /* a dialog taller than a short/keyboard-up viewport must still scroll */
 }
 .ds-modal {
   width: 100%;
   max-width: 380px;
-  /* 40px = the backdrop's padding on both edges; the card scrolls rather than its submit
+  /* 48px = the backdrop's padding on both edges; the card scrolls rather than its submit
      button disappearing behind a phone keyboard. `.ds-modal.rw-card` states the same cap. */
-  max-height: calc(100dvh - 40px);
+  max-height: calc(100dvh - 2 * var(--ds-s-5));
   overflow-y: auto;
+  /* THE DIALOG SURFACE, shared with `.overlay-panel` (design review 06-04/16-07): panel
+     fill, the floating-surface edge (it sits on a scrim, so `--ds-hud-line`, never
+     `--ds-line`), `--ds-round-md` and the block shadow. Change one, change both. */
   background: var(--ds-panel);
-  border: 1px solid var(--ds-line);
+  border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-md);
-  padding: 20px;
+  padding: var(--ds-s-5);
   /* THE block shadow, not a bespoke 6px one: --ds-line-soft inverts with the theme, so it
      stays visible on the dark scrim where an alpha-black block would not. */
   box-shadow: var(--ds-block);
@@ -3786,7 +3794,7 @@ tr.lb-detail td {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 16px;
+  margin-bottom: var(--ds-s-4);
 }
 .ds-form {
   display: flex;
@@ -3798,7 +3806,7 @@ tr.lb-detail td {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: var(--ds-t-sm);
   color: var(--ds-mut);
 }
 /* RECESSED: carved into the surface it sits on (DESIGN.md "Input Fields"). The recess is
@@ -3833,11 +3841,6 @@ tr.lb-detail td {
    --ds-ok-ink, not --ds-ok: the latter is a fill (3.25:1 as 12px type on the panel) */
 .ds-form-hint.ok {
   color: var(--ds-ok-ink);
-}
-/* a verdict inside a `.ds-hint` sentence (ProfileName) takes the colour only, not the
-   `.ds-hint .ok/.err` " · " lead-in, which dangles when it is the first thing on the line */
-.ds-hint .ds-form-hint::before {
-  content: none;
 }
 /* the other way in (Google, or the copy-link fallback): full width, under the form */
 .ds-form-alt {
@@ -4039,17 +4042,6 @@ tr.lb-detail td {
   background: var(--ds-panel);
   color: var(--ds-ink);
   cursor: pointer;
-  box-shadow: var(--ds-edge-soft);
-  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.15s;
-}
-.ds-back:hover {
-  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
-  transform: translateY(1px);
-  box-shadow: 0 2px 0 var(--ds-line);
-}
-.ds-back:active {
-  transform: translateY(3px);
-  box-shadow: 0 0 0 var(--ds-line);
 }
 .ds-head .ds-back {
   margin-bottom: 0;
@@ -4113,7 +4105,7 @@ tr.lb-detail td {
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ds-mut);
-  transition: color 0.14s, border-color 0.14s;
+  transition: color var(--ds-dur-fade), border-color var(--ds-dur-fade);
 }
 .ds-fold > summary::-webkit-details-marker {
   display: none;
@@ -4122,7 +4114,7 @@ tr.lb-detail td {
   content: '▸';
   display: inline-block;
   width: 12px;
-  transition: transform 0.12s ease;
+  transition: transform var(--ds-dur-fade) var(--ds-ease);
 }
 .ds-fold[open] > summary::before {
   transform: rotate(90deg);
@@ -4247,8 +4239,12 @@ tr.lb-detail td {
   gap: 4px;
   cursor: pointer;
   font: inherit;
-  box-shadow: var(--ds-block-sm);
-  transition: transform 0.08s ease, border-color 0.14s, background 0.14s, box-shadow 0.08s ease;
+  box-shadow: 2px 2px 0 var(--card-edge, var(--ds-line-soft));
+  transition:
+    transform var(--ds-dur-press) var(--ds-ease),
+    box-shadow var(--ds-dur-press) var(--ds-ease),
+    background var(--ds-dur-fade),
+    border-color var(--ds-dur-fade);
 }
 /* Label-only option toggles (those whose helper `.od` line was removed) would
    otherwise sit ~20px shorter than their descriptive siblings, leaving a visible
@@ -4269,7 +4265,7 @@ tr.lb-detail td {
    but one. Inset (not `border-left`) so the card's own 1px border stays unbroken and the
    mark cannot be mistaken for a selection state — `.on` owns that. */
 .ds-opt.real {
-  box-shadow: var(--ds-block-sm), inset 3px 0 0 color-mix(in srgb, var(--ds-accent) 55%, transparent);
+  box-shadow: 2px 2px 0 var(--card-edge, var(--ds-line-soft)), inset 3px 0 0 color-mix(in srgb, var(--ds-accent) 55%, transparent);
 }
 /* Drivetrain grid (the only `.ds-opts.four`): now label-only chips — center the
    label so the four read as an even segmented row instead of top-left labels. */
@@ -4309,17 +4305,13 @@ tr.lb-detail td {
   color: var(--ds-mut);
   font-size: 12px;
   cursor: pointer;
-  transition: color 0.14s, background 0.14s, border-color 0.14s;
+  transition: color var(--ds-dur-fade), background var(--ds-dur-fade), border-color var(--ds-dur-fade);
 }
 /* the GLYPH takes --ds-red-ink (it is 12px type); the tint + border may stay the fill */
 .ds-opt-del:hover {
   color: var(--ds-red-ink);
   background: color-mix(in srgb, var(--ds-red) 14%, transparent);
   border-color: color-mix(in srgb, var(--ds-red) 40%, var(--ds-line));
-}
-.ds-opt-del:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
 }
 @media (max-width: 640px) {
   .ds-opt-del {
@@ -4340,39 +4332,44 @@ tr.lb-detail td {
   border-color: var(--ds-accent);
 }
 .ds-opt-add:disabled {
-  opacity: 0.5;
+  opacity: var(--ds-disabled-opacity);
   cursor: not-allowed;
 }
-.ds-opt:hover {
-  border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));
-  background: var(--ds-tile);
-  transform: translate(-1px, -1px);
-  box-shadow: 3px 3px 0 var(--ds-line-soft);
+@media (hover: hover) {
+  .ds-opt:where(:not(:disabled)):hover {
+    border-color: color-mix(in srgb, var(--ds-accent) 45%, var(--ds-line));
+    background: var(--ds-tile);
+    transform: translate(-1px, -1px);
+    box-shadow: 3px 3px 0 var(--card-edge, var(--ds-line-soft));
+  }
 }
-.ds-opt:active {
-  transform: translate(1px, 1px);
-  box-shadow: 0 0 0 var(--ds-line-soft);
+/* flush on its own 2px block (offset + shadow = 2 in every state), for `.on` too */
+.ds-opt:where(:not(:disabled)):active {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--card-edge, var(--ds-line-soft));
 }
 /* SELECTED. These cards carry the ON/OFF toggles (Sorter, Aim assist, …), so the
    chosen state reads as a filled soft-mint chip, not a hairline tint. */
 .ds-opt.on {
+  --card-edge: var(--ds-accent-edge);
   border-color: var(--ds-accent);
   background: var(--ds-accent-soft);
   color: var(--ds-accent-soft-ink);
-  box-shadow: 2px 2px 0 var(--ds-accent-edge);
 }
 .ds-opt.on:hover {
   background: var(--ds-accent-soft);
-  transform: translate(-1px, -1px);
-  box-shadow: 3px 3px 0 var(--ds-accent-edge);
 }
-.ds-opt.on:active {
-  box-shadow: 0 0 0 var(--ds-accent-edge);
+/* ARMED, NOT CHOSEN — a card waiting for input (Graphics' custom mouse buttons). The keycap's
+   `.capturing` language (accent ring + pulse) on the unselected card, so it can never read as
+   the `.on` pick beside it. */
+.ds-opt.capturing {
+  border-color: var(--ds-accent);
+  box-shadow: 2px 2px 0 var(--card-edge, var(--ds-line-soft)), inset 0 0 0 1px var(--ds-accent);
+  animation: ds-key-pulse 1s infinite;
 }
 .ds-opt:disabled {
-  opacity: 0.55;
+  opacity: var(--ds-disabled-opacity);
   cursor: not-allowed;
-  transform: none;
 }
 /* ---- Contributors page --------------------------------------------------
    Cards are the .ds-opt idiom (same --ds-panel fill, --ds-line-strong border,
@@ -4461,19 +4458,15 @@ tr.lb-detail td {
   place-items: center;
   width: 26px;
   height: 26px;
-  border-radius: 7px;
+  border-radius: var(--ds-round);
   border: 1px solid var(--ds-line-strong);
   background: transparent;
   color: var(--ds-mut);
-  transition: transform 0.08s ease, color 0.14s, border-color 0.14s;
+  transition: border-color var(--ds-dur-fade);
 }
 .contrib-icon:hover {
   color: var(--ds-ink);
   border-color: var(--ds-ink-dim);
-  transform: translateY(-1px);
-}
-.contrib-icon:active {
-  transform: translateY(0);
 }
 /* Third-party and Get-involved rows (`.ds-field.credit-row`). Plain `.cap` is a FORM
    FIELD caption — 12px, muted, sized to sit quietly above a loud input. On these two
@@ -4512,9 +4505,11 @@ tr.lb-detail td {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--ds-accent);
-  background: color-mix(in srgb, var(--ds-accent) 14%, transparent);
-  border: 1px solid color-mix(in srgb, var(--ds-accent) 40%, var(--ds-line));
+  /* NEUTRAL: a range is a CATEGORY of the preset, not a state of the control. In accent it read
+     as a second selection mark on every card. */
+  color: var(--ds-ink-dim);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
   border-radius: var(--ds-round-full);
   padding: 2px 8px;
 }
@@ -4532,13 +4527,10 @@ tr.lb-detail td {
   max-height: min(58vh, 460px);
   overflow-y: auto;
 }
-/* a format tile the server can't run: flat, non-interactive — neutralise the
-   .ds-opt hover/active lift so it never looks pressable. */
+/* a format tile the server can't run: flat, non-interactive. Hover and press are gated on
+   `:not(:disabled)`; this holds back the one inherited hover fill as well. */
 .ds-opt:disabled:hover {
-  transform: none;
   background: var(--ds-panel);
-  border-color: var(--ds-line-strong);
-  box-shadow: var(--ds-block-sm);
 }
 /* a one-option "picker" that is a STATEMENT rather than a control — Chain Reaction
    has exactly one intake. Keeps the `.ds-opt.on` card, drops every pointer
@@ -4549,7 +4541,7 @@ tr.lb-detail td {
 .ds-opts .ds-opt.static:hover,
 .ds-opts .ds-opt.static:active {
   transform: none;
-  box-shadow: 2px 2px 0 var(--ds-accent-edge);
+  box-shadow: 2px 2px 0 var(--card-edge, var(--ds-line-soft));
 }
 .ds-opt.mini {
   padding: 10px 12px;
@@ -4580,13 +4572,13 @@ tr.lb-detail td {
   border-color: var(--ds-red);
   background: color-mix(in srgb, var(--ds-red) 12%, var(--ds-panel));
   color: var(--ds-ink);
-  box-shadow: 2px 2px 0 color-mix(in srgb, var(--ds-red) 45%, var(--ds-line-soft));
+  --card-edge: color-mix(in srgb, var(--ds-red) 45%, var(--ds-line-soft));
 }
 .ds-opt.blue.on {
   border-color: var(--ds-blue);
   background: color-mix(in srgb, var(--ds-blue) 12%, var(--ds-panel));
   color: var(--ds-ink);
-  box-shadow: 2px 2px 0 color-mix(in srgb, var(--ds-blue) 45%, var(--ds-line-soft));
+  --card-edge: color-mix(in srgb, var(--ds-blue) 45%, var(--ds-line-soft));
 }
 .ds-opt .go {
   margin-left: auto;
@@ -4724,7 +4716,7 @@ input[type='range']:focus-visible {
 /* a slider that does nothing right now (Controls ▸ Gamepad's combo wait, with no combo bound):
    shown greyed rather than hidden, so the rows under it never move */
 input[type='range'].ds-range:disabled {
-  opacity: 0.5;
+  opacity: var(--ds-disabled-opacity);
   cursor: not-allowed;
 }
 
@@ -4865,9 +4857,10 @@ input[type='range'].ds-range:disabled {
   color: var(--ds-ink-dim);
   cursor: pointer;
   transition:
-    transform 120ms,
-    background 120ms,
-    border-color 120ms;
+    transform var(--ds-dur-press) var(--ds-ease),
+    box-shadow var(--ds-dur-press) var(--ds-ease),
+    background var(--ds-dur-fade),
+    border-color var(--ds-dur-fade);
 }
 .bb-cell-l {
   font-family: var(--ds-font-mono);
@@ -4879,43 +4872,111 @@ input[type='range'].ds-range:disabled {
   height: 16px;
   color: var(--ds-accent);
 }
-button.bb-cell:hover {
-  border-color: var(--ds-line-strong);
-  transform: translateY(-1px);
+/* a pickable cell is an OPTION CARD: the `.ds-opt` block, lift and press, at the cell's size */
+button.bb-cell {
+  box-shadow: 2px 2px 0 var(--card-edge, var(--ds-line-soft));
 }
-button.bb-cell:active {
-  transform: translateY(1px);
+@media (hover: hover) {
+  button.bb-cell:where(:not(:disabled)):hover {
+    border-color: var(--ds-line-strong);
+    transform: translate(-1px, -1px);
+    box-shadow: 3px 3px 0 var(--card-edge, var(--ds-line-soft));
+  }
 }
-button.bb-cell:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
+button.bb-cell:where(:not(:disabled)):active {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--card-edge, var(--ds-line-soft));
 }
+/* SELECTED is the OPTION CARD's look (`.ds-opt.on`: soft fill, accent edge, accent-edge block),
+   not a solid accent fill — solid is the SEGMENTED idiom, and this is a pick among cards. */
 .bb-cell.on {
-  background: var(--ds-accent);
-  border-color: var(--ds-accent-edge);
-  color: var(--ds-accent-ink);
+  background: var(--ds-accent-soft);
+  border-color: var(--ds-accent);
+  color: var(--ds-accent-soft-ink);
+  --card-edge: var(--ds-accent-edge);
+  box-shadow: 2px 2px 0 var(--card-edge);
 }
 .bb-cell.on .bb-cell-g {
-  color: var(--ds-accent-ink);
+  color: var(--ds-accent-soft-ink);
 }
 /* TAKEN and FRAME read the same way, because they are the same fact: something else owns this
-   piece of chassis. A dashed edge and muted ink, NOT an opacity fade — a faded control reads as
-   "loading"; the reason is printed in the status line under the map. */
+   piece of chassis. A dashed edge and muted ink, NOT an opacity fade: a faded cell dims the
+   mechanism glyph it carries, and a fade reads as "not working" rather than "someone else's".
+   The reason is a `.ds-hint` line under the map (a disabled button cannot take focus, so its
+   `title` alone reaches neither a keyboard nor a phone). `.chassis-sw` locks the same way. */
 .bb-cell:disabled,
 .bb-cell.dead {
   cursor: default;
   background: none;
   border-style: dashed;
   color: var(--ds-mut);
-  transform: none;
+  box-shadow: none;
 }
 .bb-cell:disabled .bb-cell-g,
 .bb-cell.dead .bb-cell-g {
   color: var(--ds-mut);
 }
-.bb-cell:disabled:hover {
-  transform: none;
-  border-color: var(--ds-line);
+
+/* ---- cosmetics: chassis colour / accent / decal / plate swatches -------
+   Builder chrome, so it lives here (it sat in the in-match styles.css). The swatch IS the
+   preview — its background is the literal CHASSIS_COLORS hex — so the selected state cannot be
+   the soft fill the option cards use; it is their ACCENT edge, drawn as a ring. `--ds-accent`
+   inverts with the theme, so the ring stays visible against every one of these dark swatches.
+   Transform/shadow only: a border or margin that appears on hover moves every swatch after it. */
+.chassis-swatches {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.chassis-sw {
+  position: relative;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--ds-round);
+  border: 1px solid var(--ds-line-strong);
+  cursor: pointer;
+  padding: 0;
+  transition: box-shadow var(--ds-dur-fade), border-color var(--ds-dur-fade);
+}
+@media (hover: hover) {
+  .chassis-sw:not(.on):not(:disabled):hover {
+    border-color: var(--ds-ink-dim);
+  }
+}
+.chassis-sw.on {
+  border-color: var(--ds-accent);
+  box-shadow: 0 0 0 2px var(--ds-accent);
+}
+/* LOCKED: the `.bb-cell` rule — a dashed edge plus a lock badge, never an opacity fade, and the
+   fill stays the colour the perk would give you */
+.chassis-sw:disabled {
+  cursor: not-allowed;
+  border-style: dashed;
+  border-color: var(--ds-mut);
+}
+.chassis-sw .chassis-sw-lock {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 12px;
+  height: 12px;
+  padding: 1px;
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-panel);
+  color: var(--ds-ink-dim);
+}
+/* a decal/plate swatch draws an inline SVG preview instead of a flat fill — clipped to the same
+   rounded square and centred, rather than a second button skeleton next to `.chassis-sw` */
+.cosmetic-sw {
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cosmetic-sw svg {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 /* the offscreen host the saved-robot thumbnails render through. Off to the side rather than
@@ -4955,8 +5016,9 @@ button.bb-cell:focus-visible {
   font-size: var(--ds-t-xs);
   font-weight: 700;
   letter-spacing: 0.12em;
-  color: var(--ds-accent-ink);
-  background: var(--ds-accent);
+  /* neutral, like the preset range chips: CUSTOM is a fact about the build, not a selection */
+  color: var(--ds-ink-dim);
+  background: var(--ds-tile);
   border-radius: var(--ds-round-full);
   padding: 2px 8px;
   margin-left: 10px;
@@ -5203,9 +5265,6 @@ button.bb-cell:focus-visible {
     flex-direction: row;
     gap: 6px;
   }
-  .ds-rail-home {
-    flex: none;
-  }
   .ds-rail-btn {
     flex: none;
     padding: 8px 12px;
@@ -5313,6 +5372,11 @@ button.bb-cell:focus-visible {
   .ds-hero {
     grid-template-columns: 1fr;
   }
+  /* stacked, the view box was the third of four concentric frames round one robot; its fill
+     alone separates it, and the sprite's own mat is the frame */
+  .ds-hero-view {
+    border: 0;
+  }
   .ds-home-title {
     margin-bottom: 16px;
   }
@@ -5395,9 +5459,6 @@ button.bb-cell:focus-visible {
   .lb-robot {
     min-height: 32px;
   }
-  .ds-startpos-tab {
-    min-height: 32px;
-  }
 }
 
 /* ---- primary CTA + hint --------------------------------------------- */
@@ -5413,8 +5474,7 @@ button.bb-cell:focus-visible {
   background: var(--ds-accent);
   color: var(--ds-accent-ink);
   cursor: pointer;
-  box-shadow: var(--ds-edge);
-  transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.15s, border-color 0.15s;
+  --cap-edge: var(--ds-accent-edge);
 }
 /* Works on an <a> as well as a <button>. An anchor is inline by default, so its
    16px padding collapses into the neighbouring lines and the pill overlaps the
@@ -5423,34 +5483,17 @@ a.ds-cta {
   display: inline-block;
   text-decoration: none;
 }
-.ds-cta:hover {
-  background: color-mix(in srgb, var(--ds-accent) 88%, white);
-  transform: translateY(1px);
-  box-shadow: 0 2px 0 var(--ds-accent-edge);
-}
-.ds-cta:active {
-  transform: translateY(3px);
-  box-shadow: 0 0 0 var(--ds-accent-edge);
-}
 .ds-cta:disabled {
-  opacity: 0.5;
+  opacity: var(--ds-disabled-opacity);
   cursor: not-allowed;
-  transform: none;
 }
-.ds-cta.ghost {
+/* the NEUTRAL cap beside the accent one ("Leave queue", "Cancel") */
+.ds-cta.secondary {
+  --cap-edge: var(--ds-line);
   background: var(--ds-panel);
   color: var(--ds-ink);
   border-color: var(--ds-line);
   letter-spacing: 0.1em;
-  box-shadow: var(--ds-edge-soft);
-}
-.ds-cta.ghost:hover {
-  border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
-  background: var(--ds-panel);
-  box-shadow: 0 2px 0 var(--ds-line);
-}
-.ds-cta.ghost:active {
-  box-shadow: 0 0 0 var(--ds-line);
 }
 /* the third copy of a rule `.ds-tip b` and `.ds-dodge b` already had */
 .ds-hint b {
@@ -5585,16 +5628,6 @@ a.ds-cta {
   text-align: center;
   cursor: pointer;
   box-shadow: var(--ds-edge-soft);
-  transition: transform 0.06s ease, box-shadow 0.06s ease, border-color 0.14s;
-}
-button.ds-key:hover {
-  border-color: color-mix(in srgb, var(--ds-accent) 55%, var(--ds-line));
-  transform: translateY(1px);
-  box-shadow: 0 2px 0 var(--ds-line);
-}
-button.ds-key:active {
-  transform: translateY(3px);
-  box-shadow: 0 0 0 var(--ds-line);
 }
 .ds-key.capturing {
   border-color: var(--ds-accent);
@@ -5627,6 +5660,10 @@ button.ds-key:active {
 .ds-key.add.capturing {
   color: var(--ds-accent);
 }
+/* REMOVE, standing in the `+` slot while a bound slot of the row is armed */
+.ds-key.remove {
+  color: var(--ds-danger);
+}
 /* ---- lobby roster ---------------------------------------------------- */
 .ds-players {
   display: flex;
@@ -5641,16 +5678,11 @@ button.ds-key:active {
   flex-wrap: wrap;
   row-gap: var(--ds-s-1);
   background: var(--ds-panel);
+  /* 1px all round: the filled RED/BLUE chip in the row carries the alliance, so the 3px
+     side stripe was a second marker and a border-width asymmetry (design review 02-13) */
   border: 1px solid var(--ds-line);
-  border-left: 3px solid var(--ds-line);
   border-radius: var(--ds-round);
   padding: var(--ds-s-2) var(--ds-s-3);
-}
-.ds-player.red {
-  border-left-color: var(--ds-red);
-}
-.ds-player.blue {
-  border-left-color: var(--ds-blue);
 }
 .ds-player .pdot {
   width: 9px;
@@ -5694,12 +5726,12 @@ button.ds-key:active {
 .ds-chip.red {
   background: var(--ds-red-chip);
   border-color: transparent;
-  color: #fff;
+  color: var(--ds-red-chip-ink);
 }
 .ds-chip.blue {
   background: var(--ds-blue-chip);
   border-color: transparent;
-  color: #fff;
+  color: var(--ds-blue-chip-ink);
 }
 .ds-chip.on {
   color: var(--ds-ok-ink); /* TEXT — --ds-ok is 3.25:1 here. Border may stay the fill hue. */
@@ -5724,16 +5756,10 @@ button.ds-key:active {
   gap: 12px;
   align-items: center;
   background: var(--ds-panel);
+  /* no side stripe, as `.ds-player`: the alliance chip in the card carries it */
   border: 1px solid var(--ds-line);
-  border-left: 3px solid var(--ds-line);
   border-radius: var(--ds-round);
-  padding: 10px 12px;
-}
-.ds-strat-card.red {
-  border-left-color: var(--ds-red);
-}
-.ds-strat-card.blue {
-  border-left-color: var(--ds-blue);
+  padding: var(--ds-s-2) var(--ds-s-3);
 }
 .ds-strat-prev {
   flex: none;
@@ -5762,6 +5788,15 @@ button.ds-key:active {
 .ds-actions .ds-cta {
   flex: 1 1 200px;
 }
+/* A DIALOG'S ACTION ROW (ui-standard §6): actions last, and the primary RIGHTMOST, which is
+   MARKUP order — list it last. No `justify-content`: the row packs with its dialog's text
+   (start in a `.ds-modal`, centre in an `.overlay-panel`, whose `.overlay-buttons` owns it). */
+.ds-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+  align-items: center;
+}
 
 /* ---- download page --------------------------------------------------- */
 /* NOT `.ds-dl` — that is the replay viewer's export menu, and this rule used to
@@ -5783,7 +5818,7 @@ button.ds-key:active {
   border-radius: var(--ds-round);
   background: var(--ds-panel); /* flat, with the block edge every card carries — see .ds-hero */
   box-shadow: var(--ds-block);
-  padding: 22px;
+  padding: var(--ds-s-5);
 }
 .ds-dl-plat {
   display: flex;
@@ -5814,20 +5849,29 @@ button.ds-key:active {
   }
   /* Zeroing the DURATION alone still snaps the keycap/card down instantly, which
      is the motion these users opted out of. Hold every pressable flush instead —
-     the colour + border feedback carries the state on its own. */
-  .ds-btn:hover,
-  .ds-btn:active,
-  .ds-cta:hover,
-  .ds-cta:active,
-  .ds-tile:hover,
-  .ds-tile:active,
-  .ds-opt:hover,
-  .ds-opt:active,
-  .ds-opt.on:hover,
-  button.ds-key:hover,
-  button.ds-key:active,
-  .ds-menu-btn:hover,
-  .ds-menu-btn:active {
+     the colour + border feedback carries the state on its own. THE ONE LIST, for both
+     stylesheets: the KEYCAP block's members, then the card family. `:is()` takes its
+     heaviest member, so this is (0,2,1) and outranks every hover/press rule it cancels. */
+  :is(
+      .ds-btn,
+      .ds-menu-btn,
+      .ds-home-link,
+      .ds-discord-join,
+      .ds-cta,
+      .ds-back,
+      button.ds-key,
+      .ds-dl-opt,
+      .ds-osk-key,
+      .ds-lobby-row,
+      .game-btn,
+      .overlay-buttons button,
+      .sponsor-chip,
+      .pred-opt,
+      .ann-cinema-btn,
+      .ds-tile,
+      .ds-opt,
+      button.bb-cell
+    ):is(:hover, :active) {
     transform: none;
   }
 }
@@ -5958,32 +6002,10 @@ button.ds-key:active {
   width: 15px;
   height: 15px;
 }
-.ds-startpos-tabs {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 9px;
-  background: var(--ds-bg);
-  border: 1px solid var(--ds-line);
+/* Close/Far is the shared `.ds-segs` strip (it was a third segmented control, a tray with
+   literal 9px/7px radii); in the side column it keeps to its content width */
+.ds-startpos-side > .ds-segs {
   align-self: flex-start;
-}
-.ds-startpos-tab {
-  padding: 4px 16px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--ds-ink-dim);
-  font-family: inherit;
-  font-weight: 700;
-  font-size: 12px;
-  line-height: var(--ds-lh-tight);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-.ds-startpos-tab.on {
-  background: var(--ds-accent);
-  color: var(--ds-accent-ink);
 }
 .ds-startpos-role {
   font-family: inherit;
@@ -6009,7 +6031,7 @@ button.ds-key:active {
   opacity: 0.9;
 }
 .ds-startpos-presets .ds-opt.mini.add:disabled {
-  opacity: 0.4;
+  opacity: var(--ds-disabled-opacity);
   cursor: not-allowed;
 }
 .ds-startpos-del {
@@ -6113,9 +6135,9 @@ button.ds-key:active {
    squashing the input on narrow viewports. */
 .ds-claim-row {
   display: flex;
-  gap: 8px;
+  gap: var(--ds-s-2);
   flex-wrap: wrap;
-  margin-top: 12px;
+  margin-top: var(--ds-s-3);
 }
 .ds-claim-row .ds-input {
   flex: 1 1 220px;
@@ -6287,6 +6309,12 @@ button.ds-key:active {
 .ds-queuechip:hover,
 .ds-queuechip:focus-visible {
   border-color: var(--ds-accent);
+}
+/* pressed INTO its block shadow, the `.ds-tile:active` idiom. The -50% is restated because
+   `transform` replaces the centring whole. */
+.ds-queuechip:active {
+  transform: translate(calc(-50% + 2px), 2px);
+  box-shadow: 1px 1px 0 var(--ds-line-soft);
 }
 .ds-queuechip .qb-dot {
   width: 7px;
@@ -6516,10 +6544,6 @@ button.ds-key:active {
   color: var(--ds-accent);
   text-decoration: underline;
 }
-.ds-linkbtn:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
-}
 
 /* MISSCORE QUEUE — its own rows rather than the player queue's, whose head is a five-column
    grid built to keep report COUNTS aligned down the page. These rows carry a sentence of free
@@ -6711,7 +6735,7 @@ button.ds-key:active {
   text-decoration: none;
   color: var(--ds-mut);
   border-radius: var(--ds-round-sm);
-  transition: color 0.15s, opacity 0.15s;
+  transition: color var(--ds-dur-fade), opacity var(--ds-dur-fade);
 }
 /* the download page stacks the caption over the mark — it is the largest lockup
    in the app and a 28px-tall logo beside 11px type reads as two unrelated things */
@@ -6728,10 +6752,6 @@ button.ds-key:active {
 }
 .sponsor-mark:active {
   opacity: 0.7;
-}
-.sponsor-mark:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
 }
 /* the caption. Mono + tracked so the credit reads as chrome rather than as a
    sentence in the page's prose. */
@@ -6919,17 +6939,18 @@ button.ds-key:active {
   background: var(--ds-tile);
   color: var(--ds-ink);
   cursor: pointer;
-  /* colour and shadow only, never a border width or a margin — ui-standard §1.4 */
-  transition: background 120ms, box-shadow 120ms;
+  /* colour only, never a border width or a margin — ui-standard §1.4. A flat chip: it
+     does not grow a card's shadow under the pointer. */
+  transition: background var(--ds-dur-fade), border-color var(--ds-dur-fade);
 }
-.an-chip:hover,
+@media (hover: hover) {
+  .an-chip:hover {
+    background: var(--ds-panel);
+  }
+}
 .an-chip:active {
   background: var(--ds-panel);
-  box-shadow: var(--ds-block-sm);
-}
-.an-chip:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
+  border-color: var(--ds-ink-dim);
 }
 
 /* ---- the headline tiles ---- */
@@ -6998,10 +7019,6 @@ button.ds-key:active {
   height: auto;
   display: block;
   border-radius: var(--ds-round);
-}
-.an-svg:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
 }
 .an-gridline {
   stroke: var(--ds-line-soft);
@@ -7150,7 +7167,7 @@ button.ds-key:active {
   inset: 0 auto 0 0;
   border-radius: var(--ds-round-sm);
   background: color-mix(in srgb, var(--ds-accent) 16%, transparent);
-  transition: width 150ms;
+  /* no width transition (ui-standard §7): the bars land with the data, once */
 }
 .an-bar-name,
 .an-bar-share,
@@ -7388,27 +7405,27 @@ button.ds-key:active {
 .ds-osk-key.wide {
   flex: 1;
 }
-.ds-osk-key:hover {
-  border-color: var(--ds-accent);
-}
-.ds-osk-key:active {
-  transform: translateY(1px);
-}
-.ds-osk-key:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
+@media (hover: hover) {
+  .ds-osk-key:where(:not(:disabled)):hover {
+    border-color: var(--ds-accent);
+  }
 }
 .ds-osk-key:disabled {
-  opacity: 0.5;
+  opacity: var(--ds-disabled-opacity);
   cursor: not-allowed;
 }
-/* CAPS is a toggle, so it carries the selected fill the rest of the app uses for one */
-.ds-osk-key.on {
-  background: var(--ds-accent-soft);
+/* CAPS is a TOGGLE: on, it is a cap that stayed down (the `.game-btn.on` look — see the
+   SELECTED vocabulary at `.ds-rail-btn.on`) */
+.ds-osk-key.on,
+.ds-osk-key.on:hover {
+  --cap-edge: var(--ds-accent-edge);
+  background: var(--ds-accent);
   border-color: var(--ds-accent);
-  color: var(--ds-accent-soft-ink);
+  color: var(--ds-accent-ink);
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--cap-edge);
 }
-.ds-osk-key.ghost {
+.ds-osk-key.secondary {
   background: var(--ds-panel);
   color: var(--ds-mut);
 }
@@ -7543,6 +7560,9 @@ button.ds-key:active {
   user-select: none;
   align-self: center;
   vertical-align: middle;
+  /* the family's leading gap (`.sup-badge`/`.award-badge`/`.badge-mark` all carry it); it had
+     none, so in a non-gap row it sat hard against the badge before it (design review 06-20) */
+  margin-left: 0.42em;
   padding: 0 6px;
   /* full pill, like every badge (DESIGN.md Shapes) — it was the one square-cornered mark */
   border-radius: var(--ds-round-full);
@@ -7558,10 +7578,11 @@ button.ds-key:active {
   /* the family's --ds-mut rim, as an inset ring so it adds no width */
   box-shadow: inset 0 0 0 1px var(--ds-mut);
 }
-/* ...in a flex name row that already spaces its children with `gap`; the same exception
-   `.award-badge` needs, kept here so the two stay in step. */
-.title-pick > li > .title-chip {
-  margin-right: 2px;
+/* ...except in a flex name row that already spaces its children with `gap` — the same
+   exception `.award-badge` needs (`.appr-preview > .title-chip` sits with the Appearance
+   preview's own list). It targeted `.title-pick`, a class that exists nowhere. */
+.lb-name > .title-chip {
+  margin-left: 0;
 }
 
 /* ── THE STAR REWARD HINT (`ui/StarReward.tsx`) ─────────────────────────────────────────────
@@ -7729,11 +7750,12 @@ button.ds-key:active {
 /* ====================================================================================
    THE CLAIM DIALOG — `src/ui/RewardDialog.tsx`. A `.ds-modal` on the shell's modal
    backdrop, one reward at a time. The TIER class decides how loud it is:
-     gold / silver / bronze   the ranked podium — a glow of the metal, the headline a size up
-     record                   the record board — the award violet, one size down
+     gold / silver / bronze   the ranked podium — the card's edge in the metal, the headline a size up
+     record                   the record board — the edge in the award violet
      plain                    everything else (the GitHub star) — the neutral card
-   The glow is a BACKGROUND, not a shadow: DESIGN.md commits to one depth model, and this is
-   light on the card rather than the card lifting off the page.
+   The tier is carried by the 1px EDGE and the crest, never a glow: there was a radial
+   gradient behind each tier, the only gradient behind a shell card, and DESIGN.md's depth is
+   flat (design review 06-15). The shadow is `.ds-modal`'s `--ds-block`, unchanged.
    ==================================================================================== */
 .ds-modal.rw-card {
   position: relative;
@@ -7749,18 +7771,15 @@ button.ds-key:active {
 }
 .ds-modal.rw-card.tier-gold {
   border-color: color-mix(in srgb, var(--ds-podium-gold) 55%, var(--ds-line));
-  background: radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--ds-podium-gold) 16%, transparent), transparent 70%), var(--ds-panel);
 }
 .ds-modal.rw-card.tier-silver {
   border-color: color-mix(in srgb, var(--ds-podium-silver) 55%, var(--ds-line));
-  background: radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--ds-podium-silver) 16%, transparent), transparent 70%), var(--ds-panel);
 }
 .ds-modal.rw-card.tier-bronze {
   border-color: color-mix(in srgb, var(--ds-podium-bronze) 55%, var(--ds-line));
-  background: radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--ds-podium-bronze) 16%, transparent), transparent 70%), var(--ds-panel);
 }
 .ds-modal.rw-card.tier-record {
-  background: radial-gradient(120% 50% at 50% 0%, color-mix(in srgb, var(--ds-award) 14%, transparent), transparent 70%), var(--ds-panel);
+  border-color: color-mix(in srgb, var(--ds-award) 55%, var(--ds-line));
 }
 .rw-top {
   align-self: stretch;
@@ -7769,8 +7788,8 @@ button.ds-key:active {
   justify-content: space-between;
   gap: var(--ds-s-2);
 }
-/* `--ds-ink-dim`, not `--ds-mut`: these sit on the glow, and the mut ink is tuned against the
-   bare panel (the tinted grounds are pairs in `scripts/contrast.mjs`) */
+/* `--ds-ink-dim`: chosen when these sat on a tinted glow; the glow is gone (06-15) and the
+   bare panel reads it at least as well */
 .rw-eyebrow,
 .rw-queue {
   font-family: var(--ds-font-mono);
@@ -7790,13 +7809,6 @@ button.ds-key:active {
   align-items: center;
   justify-content: center;
   min-height: 96px;
-}
-.rw-kicker {
-  margin: 0;
-  font-size: var(--ds-t-sm);
-  font-weight: 700;
-  line-height: var(--ds-lh-tight);
-  color: var(--ds-ink-dim);
 }
 /* the TYPE is `.ds-dialog-title`'s (styles.css); this owns only the card's own layout, and
    the podium tiers' size step below. It restated the spec at line-height 1, which set a
@@ -7924,9 +7936,9 @@ button.ds-key:active {
   line-height: var(--ds-lh-tight);
   color: var(--ds-ink);
 }
-/* rewards waiting: the award hue as an EDGE, the device the ranked-standing strip uses */
+/* rewards waiting: the award hue as the panel's whole border — a tone, not a one-side stripe (20-05) */
 .ds-panel.appr-unclaimed {
-  border-left: 3px solid var(--ds-award);
+  border-color: var(--ds-award);
 }
 .appr-pending {
   display: flex;
@@ -7983,4 +7995,180 @@ button.ds-key:active {
   gap: var(--ds-s-2);
   font-size: var(--ds-t-md);
   color: var(--ds-ink);
+}
+
+/* ================================================================= *
+ *  SHELL SURFACES that used to live in styles.css (design review 13-12): the queue tip,
+ *  the maintenance + LAN banners, the danger button and the LAN panel. styles.css is the
+ *  in-match sheet; a `.ds-*` rule there was a shell rule in the wrong file, and the
+ *  uiaudit `ds-outside-shell` ratchet keeps new ones out.
+ * ================================================================= */
+/* A standing tip on the queue screens. Bordered rather than another muted line:
+   it tells you the screen is safe to LEAVE, which is the opposite of what a
+   "searching…" screen normally implies, so it has to read as its own object
+   instead of blending into the status text above it. */
+.ds-tip {
+  margin: 0;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  padding: var(--ds-s-3);
+  background: var(--ds-tile);
+  font-size: 12px;
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-mut);
+  text-align: left;
+}
+.ds-tip b { color: var(--ds-ink); }
+
+/* MAINTENANCE: the scheduled state informs, the biting state interrupts. Both use
+   an edge + ink rather than a saturated fill, so a banner that sits on every menu
+   screen for half an hour doesn't become something people stop seeing. */
+/* the shell insets `.ds-bar`, `.ds-main` and `.ds-foot` at 22px; this strip was at
+   14, so its left edge sat 8px outboard of everything above and below it. 22px is the
+   shell inset, not a spacing step. */
+.ds-maint-wrap {
+  padding: 12px 22px 0;
+}
+/* ONE BANNER ANATOMY for the two in-flow strips (maintenance, LAN): same inset, height and
+   type, no icon — the border TONE and the copy carry the meaning. They were 10/14 with emoji
+   and 8/12 with a glyph, so the same slot stepped 4px depending on which one was up. Each
+   keeps its own selector for its tone (see `.ds-lan-banner`). The server notice is NOT one of
+   these: it is a fixed overlay that can appear over a match, so its anatomy is its own. */
+.ds-maint,
+.ds-lan-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-2);
+  margin: 0;
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round-md);
+  background: var(--ds-tile);
+  color: var(--ds-ink);
+  font-size: var(--ds-t-md);
+  font-weight: 600;
+}
+.ds-maint { border-color: var(--ds-warn); }
+.ds-maint.biting { border-color: var(--ds-danger); }
+
+/* was a hardcoded #ff6b6b — a DARK-mode red, stranded here since before the light
+   retheme, and only ~2.6:1 on a light panel. --ds-danger is 6.17 light / 6.14 dark. */
+.ds-btn.danger {
+  color: var(--ds-danger);
+  border-color: color-mix(in srgb, var(--ds-danger) 40%, transparent);
+}
+
+/* ---- LAN play (src/ui/LanPanel.tsx, src/ui/LanBanner.tsx) ------------------
+   Reuses the console/panelbox anatomy; only three things here have no existing
+   equivalent. See docs/lan-selfhost.md. */
+
+/* the one-line "what is happening right now" statement at the top of a panel */
+.ds-lan-state {
+  margin: 0;
+  font-size: var(--ds-t-lg);
+  color: var(--ds-ink);
+}
+
+.ds-lan-urls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+/* THE JOIN URL IS READ OUT LOUD ACROSS A ROOM, so it is the largest type on the
+   screen and it is monospace: someone is copying it character by character off a
+   laptop propped on a table, and 1/l and 0/O have to be distinguishable. The whole
+   row is the copy button — a separate icon beside a long string is a smaller target
+   for the same action. */
+.ds-lan-url {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-3);
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round);
+  background: var(--ds-tile);
+  color: var(--ds-ink);
+  cursor: pointer;
+  text-align: left;
+}
+.ds-lan-url.primary {
+  border-color: var(--ds-accent);
+}
+/* colour-only, like every flat bordered row: it had a 1px press with no edge to sink onto */
+@media (hover: hover) {
+  .ds-lan-url:hover {
+    background: var(--ds-panel);
+  }
+}
+.ds-lan-url:active {
+  background: var(--ds-panel);
+  border-color: var(--ds-ink-dim);
+}
+.ds-lan-url > .u {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xl);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ds-lan-url > .c {
+  flex: none;
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+
+/* THE HOST COMMANDS. Numbered, because they are typed in order and a host who pastes the
+   fourth one first gets an error about a directory rather than about DSIM. The rows reuse
+   `.ds-lan-url` — same affordance, the whole row copies — with `.compact` dropping the type
+   from projector size to reading size: a join URL is read across a room, a command is read
+   off the screen in front of you. */
+.ds-lan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+  margin: 0;
+  padding: 0 0 0 var(--ds-s-5);
+}
+.ds-lan-steps > li > .s {
+  display: block;
+  margin-bottom: var(--ds-s-1);
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
+.ds-lan-url.compact {
+  padding: var(--ds-s-2);
+}
+.ds-lan-url.compact > .u {
+  font-size: var(--ds-t-md);
+  font-weight: 500;
+}
+/* The persistent unofficial-match strip. Its geometry is the shared banner block at
+   `.ds-maint`; its TONE stays neutral (`--ds-line-strong`, the shared default) because this is
+   a STATE of the app, not a warning about one. */
+.ds-lan-leave {
+  margin-left: auto;
+  flex: none;
+  padding: 4px 8px;
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round-sm);
+  background: var(--ds-panel);
+  color: var(--ds-ink);
+  font-size: var(--ds-t-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .ds-lan-leave:hover {
+    border-color: var(--ds-ink);
+  }
+}
+.ds-lan-leave:active {
+  background: var(--ds-tile);
+  border-color: var(--ds-ink);
+}
+@media (max-width: 640px) {
+  .ds-lan-leave {
+    min-height: 32px; /* the same thumb floor as the shell's other phone targets */
+  }
 }

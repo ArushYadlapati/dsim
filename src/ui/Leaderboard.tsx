@@ -298,6 +298,13 @@ export function Leaderboard({
     };
   }, [configured, game]);
 
+  // a different BOARD (records vs ELO, or another game) has other columns: its rows are
+  // not a stale view of this one, so they go rather than fading under the new header
+  useEffect(() => {
+    setRows([]);
+    setMe(null);
+  }, [kind, game]);
+
   useEffect(() => {
     if (!configured) {
       setStatus('error');
@@ -305,8 +312,8 @@ export function Leaderboard({
       return;
     }
     let alive = true;
+    // the previous rows and standing STAY while this is in flight (see `refetching`)
     setStatus('loading');
-    setMe(null);
     const s = season ?? undefined;
     const req =
       kind === 'records'
@@ -341,6 +348,10 @@ export function Leaderboard({
   }, [kind, recMode, eloMode, board, threeD, season, configured, myUserId, game]);
 
   const isRecords = kind === 'records';
+  /* A FILTER CHANGE KEEPS THE TABLE UP (design review 07-16). Blanking it for a 30px
+     "Loading…" collapsed the panel on every seg click and page turn; the old rows stay,
+     faded and `aria-busy`, and `.ds-loading` is the FIRST load's only. */
+  const refetching = status === 'loading' && rows.length > 0;
   const valueLabel = isRecords ? 'Score' : 'ELO';
   const viewing = season ?? current;
   const viewingSeason = seasons.find((s) => s.season === viewing);
@@ -405,9 +416,10 @@ export function Leaderboard({
           </div>
         )}
 
+        {/* not while refetching: the standing sits outside the faded rows and would name the old mode */}
         {!isRecords && status === 'ok' && me && <MyStanding me={me} />}
 
-        {status === 'loading' && <div className="ds-loading">Loading…</div>}
+        {status === 'loading' && !refetching && <div className="ds-loading">Loading…</div>}
         {status === 'error' && (
           <div className="ds-empty">
             <div className="big">Couldn’t load the board</div>
@@ -422,13 +434,13 @@ export function Leaderboard({
               : `Players appear here after ${PLACEMENT_GAMES} ranked matches.`}
           </div>
         )}
-        {status === 'ok' && rows.length > 0 && (
+        {(status === 'ok' || refetching) && rows.length > 0 && (
           /* SCROLL WRAPPER. `.ds-panel` is `overflow: hidden` for its rounded corners,
              which on a phone did not shrink this table — it CUT it, ~200px of it, with
              no way to scroll to the Score column and driver @usernames sliced mid-word.
              Same wrapper Match history already uses (`.mh-scroll`), so the two tables
              now degrade identically. */
-          <div className="lb-scroll">
+          <div className="lb-scroll" aria-busy={refetching}>
           <table className="ds-table">
             <thead>
               <tr>

@@ -156,8 +156,15 @@ function WatchByCode({ onWatch }: { onWatch: (roomCode: string, region?: string)
             autoCapitalize="characters"
             aria-label="Room code"
           />
-          <button className="ds-btn" disabled={!ready || status === 'looking'} onClick={go}>
-            {status === 'looking' ? 'LOOKING…' : 'WATCH'}
+          {/* ONE label: a busy "Looking…" was wider than "Watch" and resized the code field
+              beside it. The lookup shows as disabled + aria-busy instead. */}
+          <button
+            className="ds-btn"
+            disabled={!ready || status === 'looking'}
+            aria-busy={status === 'looking'}
+            onClick={go}
+          >
+            Watch
           </button>
         </div>
         {status === 'missing' && (

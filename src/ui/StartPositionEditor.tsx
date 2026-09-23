@@ -320,12 +320,13 @@ export function StartPositionEditor({
         {lockedCategory ? (
           <div className="ds-startpos-role">{lockedCategory === 'close' ? 'CLOSE' : 'FAR'} robot</div>
         ) : (
-          <div className="ds-startpos-tabs">
+          <div className="ds-segs" role="group" aria-label="Start position">
             {(['close', 'far'] as StartCat[]).map((c) => (
               <button
                 key={c}
                 type="button"
-                className={`ds-startpos-tab ${cat === c ? 'on' : ''}`}
+                className={`ds-seg${cat === c ? ' on' : ''}`}
+                aria-pressed={cat === c}
                 onClick={() => {
                   setDraft(null);
                   onCategory(c);

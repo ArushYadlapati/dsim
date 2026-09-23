@@ -194,6 +194,11 @@ export function ReplayView({
   const player = useRef<ReplayPlayer | null>(null);
   const replay = useRef<Replay | null>(null);
   const playingRef = useRef(true);
+  /** a BACKWARD drag's target, held until the pointer lets go. Going back re-simulates from tick
+   *  0 (`seek`), up to several thousand ticks, and doing that on every input event made the
+   *  thumb lag the pointer; forward drags stay live because they only step onward. */
+  const scrubTo = useRef<number | null>(null);
+  const lastPointer = useRef(-1);
   /** probed ONCE: what this browser can actually encode decides what the menu offers, and this
    *  component re-renders 10 times a second off the progress readout. It is ASYNC because the
    *  real question is not "is there a VideoEncoder" but "will it take this codec at this size",
@@ -445,7 +450,7 @@ export function ReplayView({
       const p = player.current!;
       const dt = Math.min((t - lastT) / 1000, 0.25);
       lastT = t;
-      if (playingRef.current) {
+      if (playingRef.current && scrubTo.current === null) {
         acc += dt;
         let n = 0;
         while (acc >= SIM_DT && n < 8 && !p.done) {
@@ -598,7 +603,7 @@ export function ReplayView({
   const sync = (): void => {
     const p = player.current;
     const w = p?.world;
-    if (!p || !w) return;
+    if (!p || !w || scrubTo.current !== null) return;
     setTick(w.tick);
     setScore({ red: w.match.scores.red.total, blue: w.match.scores.blue.total });
     setPhase(w.match.phase);
@@ -641,6 +646,7 @@ export function ReplayView({
   };
   const rebuild = (): void => {
     if (!replay.current) return;
+    scrubTo.current = null;
     player.current = new ReplayPlayer(replay.current);
     sync();
   };
@@ -653,6 +659,7 @@ export function ReplayView({
     setPlaying(false);
   };
   const seek = (target: number): void => {
+    scrubTo.current = null;
     const r = replay.current;
     if (!r) return;
     let p = player.current!;
@@ -662,6 +669,12 @@ export function ReplayView({
     }
     while (p.world.tick < target && !p.done) p.stepOnce();
     sync();
+  };
+
+  const commitScrub = (): void => {
+    const t = scrubTo.current;
+    scrubTo.current = null;
+    if (t !== null) seek(t);
   };
 
   const pct = Math.round((tick / total) * 100);
@@ -1191,15 +1204,24 @@ export function ReplayView({
                 replay, exactly like the live match's own `t` key. Hidden for DECODE/Chain
                 Reaction, which have no 3D renderer to switch to. */}
             {replay.current && moduleFor(replay.current.game).scene && (
-              <button
-                className={view === '3d' ? 'ds-btn small primary' : 'ds-btn ghost small'}
-                onClick={toggleViewPref}
-                disabled={recording}
-                aria-pressed={view === '3d'}
-                title="Press T to switch"
-              >
-                {view === '3d' ? '3D' : '2D'}
-              </button>
+              // BOTH choices on screen, not one button whose label is the current state: that
+              // said "2D, toggle button, not pressed" to a screen reader while showing 2D.
+              <div className="ds-segs" role="group" aria-label="View">
+                {(['2d', '3d'] as const).map((v) => (
+                  <button
+                    key={v}
+                    className={`ds-seg${view === v ? ' on' : ''}`}
+                    aria-pressed={view === v}
+                    disabled={recording}
+                    title="Press T to switch"
+                    onClick={() => {
+                      if (view !== v) toggleViewPref();
+                    }}
+                  >
+                    {v.toUpperCase()}
+                  </button>
+                ))}
+              </div>
             )}
             <div className="ds-dl" ref={menuRoot}>
               <button
@@ -1226,16 +1248,16 @@ export function ReplayView({
                       person reading it. */}
                   <div className="ds-dl-row">
                     <span className="rl">View</span>
-                    <div className="ds-dl-seg">
+                    <div className="ds-segs" role="group" aria-label="View">
                       <button
-                        className={exportView === '2d' ? 'on' : ''}
+                        className={`ds-seg${exportView === '2d' ? ' on' : ''}`}
                         aria-pressed={exportView === '2d'}
                         onClick={() => setExportView('2d')}
                       >
                         2D
                       </button>
                       <button
-                        className={exportView === '3d' ? 'on' : ''}
+                        className={`ds-seg${exportView === '3d' ? ' on' : ''}`}
                         aria-pressed={exportView === '3d'}
                         disabled={!can3d}
                         title={
@@ -1254,11 +1276,11 @@ export function ReplayView({
                   {exportView === '3d' && (
                     <div className="ds-dl-row">
                       <span className="rl">Camera</span>
-                      <div className="ds-dl-seg">
+                      <div className="ds-segs" role="group" aria-label="Camera">
                         {(['driver', 'chase', 'orbit', 'free'] as const).map((c) => (
                           <button
                             key={c}
-                            className={exportCam === c ? 'on' : ''}
+                            className={`ds-seg${exportCam === c ? ' on' : ''}`}
                             aria-pressed={exportCam === c}
                             onClick={() => setExportCam(c)}
                           >
@@ -1439,9 +1461,17 @@ export function ReplayView({
 
       {status === 'ready' && !recording && (
         <div className="ds-replay-controls">
-          <button className="ds-btn primary" onClick={() => setPlay(!playing)}>
-            <span aria-hidden="true">{playing ? '❚❚' : '▶'}</span>{' '}
-            {playing ? 'Pause' : player.current?.done ? 'Play again' : 'Play'}
+          {/* BOTH labels are always rendered, stacked in one cell with the idle one hidden, so the
+              button is as wide as the wider label in every state — it sits beside the flex seek
+              bar, and a label change used to resize the slider under the pointer. "Play" from
+              the end restarts (`setPlay`), so it needs no "again" of its own. */}
+          <button className="ds-btn primary ds-replay-play" onClick={() => setPlay(!playing)}>
+            <span className={playing ? undefined : 'off'}>
+              <span aria-hidden="true">❚❚</span> Pause
+            </span>
+            <span className={playing ? 'off' : undefined}>
+              <span aria-hidden="true">▶</span> Play
+            </span>
           </button>
           <button className="ds-btn" onClick={rebuild}><span aria-hidden="true">⟲</span> Restart</button>
           <input
@@ -1451,7 +1481,21 @@ export function ReplayView({
             max={total}
             value={tick}
             style={rangeFill(tick, 0, total)}
-            onChange={(e) => seek(Number(e.target.value))}
+            onChange={(e) => {
+              const t = Number(e.target.value);
+              if (e.target.hasPointerCapture(lastPointer.current) && t < player.current!.world.tick) {
+                scrubTo.current = t;
+                setTick(t);
+              } else {
+                scrubTo.current = null;
+                seek(t);
+              }
+            }}
+            onPointerDown={(e) => {
+              lastPointer.current = e.pointerId;
+              e.currentTarget.setPointerCapture(e.pointerId);
+            }}
+            onLostPointerCapture={commitScrub}
             aria-label="Seek"
           />
           <span className="ds-replay-time">{pct}%</span>

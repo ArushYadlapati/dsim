@@ -86,10 +86,9 @@ function CinematicReveal({
       aria-label={`${KIND_LABEL[ann.kind]}: ${ann.title}`}
       tabIndex={-1}
     >
-      <div className="ann-cinema-glow" aria-hidden />
       <div className="ann-cinema-inner">
         <p className="ann-cinema-eyebrow">
-          <span aria-hidden>✦</span> {ann.kind === 'act' ? 'A NEW ACT' : 'A NEW SEASON'} <span aria-hidden>✦</span>
+          {ann.kind === 'act' ? 'A NEW ACT' : 'A NEW SEASON'}
         </p>
         <h1 className="ann-cinema-title">{ann.title}</h1>
         {ann.tagline && <p className="ann-cinema-tag">{ann.tagline}</p>}

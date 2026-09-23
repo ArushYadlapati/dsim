@@ -76,8 +76,13 @@ function Verify({ onAccount }: { onAccount: () => void }) {
             it from there.
           </p>
           {email && resend !== 'sent' && (
-            <button className="ds-btn" onClick={sendAgain} disabled={resend === 'sending'}>
-              {resend === 'sending' ? 'Sending…' : 'Send a new link'}
+            <button
+              className={`ds-btn${resend === 'sending' ? ' busy' : ''}`}
+              onClick={sendAgain}
+              disabled={resend === 'sending'}
+              aria-busy={resend === 'sending'}
+            >
+              Send a new link
             </button>
           )}
           {resend === 'sent' && <p className="ds-hint ok">A new link is on its way to {email}.</p>}
@@ -131,8 +136,13 @@ function Verify({ onAccount }: { onAccount: () => void }) {
           </p>
         )}
         {email && resend !== 'sent' && (
-          <button className="ds-btn" onClick={sendAgain} disabled={resend === 'sending'}>
-            {resend === 'sending' ? 'Sending…' : 'Send a new link'}
+          <button
+            className={`ds-btn${resend === 'sending' ? ' busy' : ''}`}
+            onClick={sendAgain}
+            disabled={resend === 'sending'}
+            aria-busy={resend === 'sending'}
+          >
+            Send a new link
           </button>
         )}
         {resend === 'sent' && <p className="ds-hint ok">A new link is on its way to {email}.</p>}

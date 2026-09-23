@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { desktop } from '../desktop';
+import { ToggleRow } from './OptRow';
 
 /**
  * Desktop-app panel: build version, a manual "Check for updates" button, and an
@@ -33,8 +34,7 @@ export function DesktopUpdate() {
       .finally(() => setChecking(false));
   };
 
-  const toggleAuto = (): void => {
-    const next = !autoCheck;
+  const setAuto = (next: boolean): void => {
     setAutoCheck(next);
     d.setAutoCheck(next)
       .then(setAutoCheck)
@@ -51,11 +51,9 @@ export function DesktopUpdate() {
           inline (padding 16, flex column, gap 12, align flex-start) are the same
           four retyped in half a dozen other panel bodies. */}
       <div className="ds-panel-body stack">
-        <div className="ds-opts">
-          <button className={`ds-opt ${autoCheck ? 'on' : ''}`} onClick={toggleAuto} aria-pressed={autoCheck}>
-            <span className="ot">Auto-check for updates {autoCheck ? 'ON' : 'OFF'}</span>
-          </button>
-        </div>
+        {/* the shared Off/On pick — this was one tile whose label carried the state
+            ("Auto-check for updates ON"), the pattern docs/area/ui.md rules out */}
+        <ToggleRow label="Auto-check for updates" value={autoCheck} onPick={setAuto} />
 
         {/* `.ds-actions` already IS this row (flex, wrap, centred) — no need for a
             fourth hand-written copy of it. */}

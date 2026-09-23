@@ -13,7 +13,7 @@ import {
 import { SEASONS } from '../seasons';
 import { windowLabel } from './MaintenanceBanner';
 import { adminFail } from './adminCopy';
-import { AccountName, When, confirmed, downloadCsv, shortId, usePolled } from './adminBits';
+import { AccountName, ListState, When, confirmed, downloadCsv, shortId, usePolled } from './adminBits';
 
 /**
  * The operator's live view: who is connected, what each of them is doing, which
@@ -58,15 +58,8 @@ export function AdminLive({
   // awake, at a database round trip every five seconds for a screen nobody was looking at.
   const { data, err } = usePolled(adminFetchPresence, REFRESH_MS);
 
-  if (err && !data) {
-    return (
-      <div className="ds-empty">
-        <div className="big">Couldn’t read live status</div>
-        The game server is unreachable, or this account isn’t an admin on it.
-      </div>
-    );
-  }
-  if (!data) return <div className="ds-loading">Reading live status…</div>;
+  if (err && !data) return <ListState error="read live status" />;
+  if (!data) return <ListState loading="Reading live status…" />;
 
   // MERGE the database aggregate with this machine's own numbers: the heartbeat is
   // ~5s behind, so without the local row a session that appeared a moment ago is
@@ -127,7 +120,9 @@ export function AdminLive({
       </div>
 
       <input
-        className="adm-filter adm-gap"
+        type="search"
+        className="ds-input adm-filter adm-gap"
+        aria-label="Filter sessions"
         placeholder="Filter every session by name, id, room or region…"
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
@@ -178,7 +173,7 @@ export function AdminLive({
           room: p.room,
           region: p.region,
         }))}
-        empty={players.length === 0 ? 'Nobody signed in is connected.' : 'No match for that filter.'}
+        empty={players.length === 0 ? 'Nobody signed in is connected' : 'No match for that filter'}
         onWatch={onWatch}
       />
 
@@ -195,7 +190,7 @@ export function AdminLive({
           room: g.room,
           region: g.region,
         }))}
-        empty={guests.length === 0 ? 'No guest sessions.' : 'No match for that filter.'}
+        empty={guests.length === 0 ? 'No guest sessions' : 'No match for that filter'}
         onWatch={onWatch}
       />
       <p className="ds-hint">
@@ -209,7 +204,7 @@ export function AdminLive({
         Live matches <span className="ds-muted">({data.rooms.length})</span>
       </h3>
       {data.rooms.length === 0 ? (
-        <p className="ds-hint">Nothing is being played anywhere right now.</p>
+        <ListState empty="No live matches">Nothing is being played anywhere right now.</ListState>
       ) : (
         <div className="adm-rooms">
           {data.rooms.map((r) => (
@@ -270,11 +265,11 @@ function RecentGames({ onWatchReplay }: { onWatchReplay?: (replayId: string) => 
         Recent games {rows && <span className="ds-muted">({rows.length})</span>}
       </h3>
       {err && !rows ? (
-        <p className="ds-hint">Couldn’t read match history (no database, or not an admin).</p>
+        <ListState error="read match history" />
       ) : !rows ? (
-        <div className="ds-loading">Reading recent games…</div>
+        <ListState loading="Reading recent games…" />
       ) : rows.length === 0 ? (
-        <p className="ds-hint">No games have finished yet.</p>
+        <ListState empty="No games have finished yet" />
       ) : (
         <div className="adm-rooms">
           {rows.map((m) => (
@@ -343,7 +338,7 @@ function SessionTable({
   empty: string;
   onWatch?: (room: string, region?: string) => void;
 }) {
-  if (rows.length === 0) return <p className="ds-hint">{empty}</p>;
+  if (rows.length === 0) return <ListState empty={empty} />;
   return (
     <div className="adm-table-wrap">
       <table className="adm-table">
@@ -472,14 +467,14 @@ function MaintenancePanel() {
       )}
       <label className="admin-field">
         <span>Starts in</span>
-        <input type="number" min={0} max={1440} value={mins} onChange={(e) => setMins(Math.max(0, Number(e.target.value) || 0))} />
+        <input type="number" className="ds-input" min={0} max={1440} value={mins} onChange={(e) => setMins(Math.max(0, Number(e.target.value) || 0))} />
         <span>min, lasting</span>
-        <input type="number" min={1} max={1440} value={dur} onChange={(e) => setDur(Math.max(1, Number(e.target.value) || 1))} />
+        <input type="number" className="ds-input" min={1} max={1440} value={dur} onChange={(e) => setDur(Math.max(1, Number(e.target.value) || 1))} />
         <span>min</span>
       </label>
       <label className="admin-field col">
         <span>Message shown to players</span>
-        <input type="text" maxLength={200} value={msg} onChange={(e) => setMsg(e.target.value)} />
+        <input type="text" className="ds-input" maxLength={200} value={msg} onChange={(e) => setMsg(e.target.value)} />
       </label>
       <div className="admin-buttons">
         <button className={mins > 0 ? 'ds-btn' : 'ds-btn danger'} disabled={busy} onClick={schedule}>

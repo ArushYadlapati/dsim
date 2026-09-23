@@ -202,8 +202,10 @@ function MaxFpsRow({ value, onPick }: { value: MaxFps; onPick: (v: MaxFps) => vo
   const ariaValueText = uncapped ? capWord : `${value} fps`;
   const sliderPos = sliderPosFromFps(value);
 
+  // a FRAGMENT: the slider, the typed rate and the notes are sibling rows of the panel stack.
+  // A `.ds-field` around them nested a second `label.ds-field` flex column inside the first.
   return (
-    <div className="ds-field">
+    <>
       <label className="ds-field">
         <span className="cap">
           Max frame rate <span className="val">{ariaValueText}</span>
@@ -309,7 +311,7 @@ function MaxFpsRow({ value, onPick }: { value: MaxFps; onPick: (v: MaxFps) => vo
           </div>
         </>
       )}
-    </div>
+    </>
   );
 }
 
@@ -371,14 +373,16 @@ function DriverHeightRow({ value, onChange }: { value: number | null; onChange: 
       <span className="cap">
         Your height <span className="val">{value != null ? `${value.toFixed(1)} in eye level` : 'Not set'}</span>
       </span>
-      <div className="ds-opts two">
-        <button className={`ds-opt ${unit === 'ftin' ? 'on' : ''}`} aria-pressed={unit === 'ftin'} onClick={() => setUnit('ftin')}>
-          <span className="ot">ft / in</span>
-        </button>
-        <button className={`ds-opt ${unit === 'cm' ? 'on' : ''}`} aria-pressed={unit === 'cm'} onClick={() => setUnit('cm')}>
-          <span className="ot">cm</span>
-        </button>
-      </div>
+      <OptRow<'ftin' | 'cm'>
+        value={unit}
+        cols="two"
+        mini
+        onPick={setUnit}
+        options={[
+          { v: 'ftin', t: 'ft / in' },
+          { v: 'cm', t: 'cm' },
+        ]}
+      />
       {unit === 'ftin' ? (
         <div className="ds-field-row">
           <input
@@ -585,10 +589,11 @@ function FreeCamCustomRows({ nav }: { nav: FreeCamNav }) {
       <span className="cap">Custom buttons</span>
       <div className="ds-opts three">
         {CUSTOM_GESTURES.map(({ g, label }) => (
+          // ARMED IS NOT CHOSEN: `.on` + `aria-pressed` made a tile waiting for a mouse button look
+          // and announce exactly like a picked option. `.capturing` is the keycap's armed language.
           <button
             key={g}
-            className={`ds-opt${capture === g ? ' on' : ''}`}
-            aria-pressed={capture === g}
+            className={`ds-opt${capture === g ? ' capturing' : ''}`}
             onClick={() => setCapture(capture === g ? null : g)}
           >
             <span className="ot">{label}</span>

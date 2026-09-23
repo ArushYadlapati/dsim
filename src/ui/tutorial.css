@@ -102,44 +102,12 @@
   flex: 0 0 auto;
 }
 
-.ds-tut-btn {
-  border: 1px solid var(--ds-hud-line);
-  border-radius: var(--ds-round-sm);
-  background: transparent;
-  color: var(--ds-mut);
-  font-family: var(--ds-font-ui);
-  font-size: var(--ds-t-xs);
-  font-weight: 700;
-  padding: var(--ds-s-1) var(--ds-s-2);
-  cursor: pointer;
-  /* a PRESSABLE moves by transform / box-shadow, never by a border or a margin that appears on
-     hover — see the layout-shift note at the top of this file. */
-  transition:
-    transform 0.08s ease,
-    box-shadow 0.08s ease,
-    color 0.08s ease;
-}
-
-.ds-tut-btn:hover {
-  color: var(--ds-ink);
-  transform: translateY(-1px);
-  box-shadow: 0 2px 0 var(--ds-hud-line);
-}
-
-.ds-tut-btn:active {
-  transform: translateY(0);
-  box-shadow: none;
-}
-
-.ds-tut-btn.primary {
-  border-color: var(--ds-accent);
-  background: var(--ds-accent);
-  color: var(--ds-accent-ink);
-}
-
-.ds-tut-btn:focus-visible {
-  outline: 2px solid var(--ds-accent);
-  outline-offset: 2px;
+/* the buttons are the HUD's own `.game-btn` keycap (styles.css), which the button a few hundred
+   px away on this screen already wears — a second tutorial-only cap drifted from it twice
+   (design review 12-04, 16-05). Only the ring differs: `.game-btn` rings in the ON-FIELD mint
+   because it sits on the field; these sit on this themed card, where the themed accent reads. */
+.ds-tut .game-btn:focus-visible {
+  outline-color: var(--ds-accent);
 }
 
 /*

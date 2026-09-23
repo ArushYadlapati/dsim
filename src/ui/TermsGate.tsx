@@ -163,13 +163,13 @@ export function TermsGate({
       </div>
       {/* PRIMARY IS RIGHTMOST (ui-standard §6). Sign out is the way out rather than a
           destructive action on anything, so it is `ghost`, not `danger`. */}
-      <div className="ds-actions">
+      <div className="ds-dialog-actions">
         <button className="ds-btn ghost" onClick={() => void authClient!.signOut()}>
           Sign out
         </button>
         {/* autoFocus: the answer the dialog is asking for, so `useDialog` leaves it focused */}
-        <button className="ds-btn primary" onClick={accept} disabled={busy} autoFocus>
-          {busy ? 'Saving…' : 'Accept'}
+        <button className={`ds-btn primary${busy ? ' busy' : ''}`} onClick={accept} disabled={busy} aria-busy={busy} autoFocus>
+          Accept
         </button>
       </div>
     </GateDialog>

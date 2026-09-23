@@ -36,8 +36,10 @@ uses most and drops the near-duplicates around it.
    allowed only for borders (`1px`), and for geometry that is genuinely one-off and
    documented in a comment saying why.
 3. **Every interactive element has `:hover`, `:active`, `:focus-visible` and `:disabled`.**
-   `:focus-visible` is not optional — the app suppresses the UA ring, so omitting it makes
-   the control invisible to a keyboard.
+   The focus ring is ONE base rule in `shell.css` (`:where(button, a, summary, [tabindex]):focus-visible`,
+   2px `--ds-accent`, offset 2px), so a new control is ringed without writing one. Write a
+   `:focus-visible` only when the ring must differ: on the field (on-field tokens), on its own
+   accent fill, or inset in a tight list. Never `outline: none` without a replacement.
 4. **No state change may move layout.** Pressed, hovered, selected, loading, error and empty
    states must not change an element's box. Use `transform`, `box-shadow` and colour.
    `npm run shiftaudit` enforces this; it is not advisory.

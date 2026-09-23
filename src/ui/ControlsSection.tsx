@@ -80,8 +80,6 @@ interface Props {
   onTutorial?: () => void;
 }
 
-const REMOVE_HINT = 'Backspace while a bind is waiting removes it.';
-
 /** "A", "A and B", "A, B and C" */
 const joinAnd = (xs: readonly string[]): string =>
   xs.length <= 1 ? (xs[0] ?? '') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
@@ -167,11 +165,12 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
   const [scope, setScope] = useState<Scope>('all');
   const [capture, setCapture] = useState<Capture | null>(null);
   /** the one status line under the scope switch: a refused bind, or what a main edit took from
-   *  a row this scope does not show. `null` shows the Backspace hint, so the line is always there
-   *  and a message never pushes the panels down. */
+   *  a row this scope does not show. `null` holds the line EMPTY but present, so a message never
+   *  pushes the panels down. */
   const [notice, setNotice] = useState<string | null>(null);
   /** the buttons held so far while a PAD slot is capturing, in the order they went down —
-   *  shown live on the keycap so a driver sees the combo build (`RT + …`) */
+   *  shown live on the status line so a driver sees the combo build (`RT + …`). NOT on the
+   *  keycap: a cap that grew to fit it moved every cap to its left (§1.4). */
   const [chordSoFar, setChordSoFar] = useState<PadChord>([]);
   /**
    * THE CAPTURE EFFECTS DEPEND ON `capture` ALONE. `onChange` arrives as a fresh arrow from
@@ -255,9 +254,28 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     };
   }, [menuCapture]);
 
+  /** REMOVE the armed slot — the only way to shrink a list that `+` can grow. Reached by Backspace
+   *  or Delete during a capture (below) and by the `×` cap that stands in for `+` while a bound
+   *  slot is armed, so a pointer or touch player is not left with a keyboard-only chord. */
+  const removeSlot = (c: Capture): void => {
+    const b = bindingsRef.current;
+    const g = c.game;
+    onChangeRef.current(
+      c.kind === 'key'
+        ? g
+          ? removeKeyInGame(b, g, c.action, c.slot)
+          : removeKey(b, c.action, c.slot)
+        : g
+          ? removePadBindInGame(b, g, c.action, c.slot)
+          : removePadBind(b, c.action, c.slot),
+    );
+    setNotice(`${ACTION_LABELS[c.action]}: bind removed`);
+    setCapture(null);
+  };
+
   // keyboard capture: next keydown becomes the binding; Escape cancels. Backspace and Delete
-  // REMOVE the slot instead, for either device: it is the only way to shrink a list that `+`
-  // can grow, and neither key is anywhere a driving hand goes, so nothing bindable is lost.
+  // REMOVE the slot instead, for either device: neither key is anywhere a driving hand goes, so
+  // nothing bindable is lost.
   useEffect(() => {
     if (!capture) return;
     const onKey = (e: KeyboardEvent) => {
@@ -270,17 +288,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
       const b = bindingsRef.current;
       const g = capture.game;
       if (e.key === 'Backspace' || e.key === 'Delete') {
-        onChangeRef.current(
-          capture.kind === 'key'
-            ? g
-              ? removeKeyInGame(b, g, capture.action, capture.slot)
-              : removeKey(b, capture.action, capture.slot)
-            : g
-              ? removePadBindInGame(b, g, capture.action, capture.slot)
-              : removePadBind(b, capture.action, capture.slot),
-        );
-        setNotice(`${ACTION_LABELS[capture.action]}: bind removed`);
-        setCapture(null);
+        removeSlot(capture);
         return;
       }
       if (capture.kind !== 'key') return;
@@ -390,13 +398,18 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     setCapture(c);
   };
 
+  /**
+   * ⚠️ AN ARMED CAP KEEPS ITS LABEL. It used to read `PRESS…` (or `RT + …`), ~70px against a 34px
+   * cap, and `.ds-keys` is `justify-content: flex-end` — so every cap to its left slid over and a
+   * long row wrapped mid-capture. The pulse and the accent ring say "armed"; the status line says
+   * what to press and shows a pad combo as it builds.
+   */
   const keycap = (
     label: string,
     active: boolean,
     unbound: boolean,
     onClick: () => void,
     key?: number,
-    activeLabel = 'PRESS…',
     spoken = label,
   ) => (
     <button
@@ -406,12 +419,12 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
       aria-label={active ? undefined : unbound ? 'Unbound, press to bind' : `${spoken}, press to rebind`}
       onClick={onClick}
     >
-      {active ? activeLabel : label}
+      {label}
     </button>
   );
   /** the ADD slot: one past the end of a list that has something in it (an empty list shows
    *  UNBOUND instead, which already captures into slot 0) */
-  const addcap = (active: boolean, onClick: () => void, what: string, activeLabel = 'PRESS…') => (
+  const addcap = (active: boolean, onClick: () => void, what: string) => (
     <button
       key="add"
       className={`ds-key add ${active ? 'capturing' : ''}`}
@@ -419,7 +432,22 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
       title={`Add another ${what}`}
       onClick={onClick}
     >
-      {active ? activeLabel : '+'}
+      +
+    </button>
+  );
+  /** REMOVE, in the `+` cap's place while a BOUND slot of this row is armed: the same one-glyph
+   *  box, so nothing moves when it swaps in. */
+  // ponytail: a row already at BIND_SLOTS_MAX has no `+` to stand in for, so there the `×` is
+  // appended and the row shifts once; eight binds on one action is not a row anyone builds.
+  const removecap = (c: Capture, what: string) => (
+    <button
+      key="remove"
+      className="ds-key remove"
+      aria-label={`Remove ${what}`}
+      title={`Remove ${what}`}
+      onClick={() => removeSlot(c)}
+    >
+      ×
     </button>
   );
   /**
@@ -447,8 +475,6 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
       Object.values(bindings.perGame).some((ov) =>
         Object.values(ov?.padCombos ?? {}).some((list) => (list as PadChord[]).length > 0),
       ));
-  // what a capturing PAD slot reads while the combo builds
-  const padLive = chordSoFar.length === 0 ? 'PRESS…' : `${padBindLabel([...chordSoFar].sort((a, b) => a - b))} + …`;
 
   const game: GameId | null = scope === 'all' ? null : scope;
   /** THE MAP ON SCREEN: main itself, or the season's effective map (its overrides applied and
@@ -480,11 +506,13 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
             keyDesynced(bindings, game, a) &&
             syncBtn(ACTION_LABELS[a], () => onChange(syncKeyInGame(bindings, game, a)))}
           {list.map((k, i) =>
-            keycap(keyLabel(k), armed?.slot === i, false, () => begin({ kind: 'key', action: a, slot: i, game }), i, undefined, keyName(k)),
+            keycap(keyLabel(k), armed?.slot === i, false, () => begin({ kind: 'key', action: a, slot: i, game }), i, keyName(k)),
           )}
           {list.length === 0
             ? keycap('UNBOUND', !!armed, true, () => begin({ kind: 'key', action: a, slot: 0, game }))
-            : list.length < BIND_SLOTS_MAX &&
+            : armed && armed.slot < list.length
+              ? removecap(armed, `${keyName(list[armed.slot])} from ${ACTION_LABELS[a]}`)
+              : list.length < BIND_SLOTS_MAX &&
               addcap(!!armed && armed.slot >= list.length, () => begin({ kind: 'key', action: a, slot: list.length, game }), 'key')}
         </span>
       </div>
@@ -502,17 +530,18 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
             padDesynced(bindings, game, a) &&
             syncBtn(ACTION_LABELS[a], () => onChange(syncPadInGame(bindings, game, a)))}
           {binds.map((c, i) =>
-            keycap(padBindLabel(c), armed?.slot === i, false, () => begin({ kind: 'pad', action: a, slot: i, game }), i, padLive),
+            keycap(padBindLabel(c), armed?.slot === i, false, () => begin({ kind: 'pad', action: a, slot: i, game }), i),
           )}
           {binds.length === 0
-            ? keycap('UNBOUND', !!armed, true, () => begin({ kind: 'pad', action: a, slot: 0, game }), undefined, padLive)
-            : binds.length < BIND_SLOTS_MAX &&
-              addcap(
-                !!armed && armed.slot >= binds.length,
-                () => begin({ kind: 'pad', action: a, slot: binds.length, game }),
-                'button or combo',
-                padLive,
-              )}
+            ? keycap('UNBOUND', !!armed, true, () => begin({ kind: 'pad', action: a, slot: 0, game }))
+            : armed && armed.slot < binds.length
+              ? removecap(armed, `${padBindLabel(binds[armed.slot])} from ${ACTION_LABELS[a]}`)
+              : binds.length < BIND_SLOTS_MAX &&
+                addcap(
+                  !!armed && armed.slot >= binds.length,
+                  () => begin({ kind: 'pad', action: a, slot: binds.length, game }),
+                  'button or combo',
+                )}
         </span>
       </div>
     );
@@ -591,7 +620,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
                       setMenuCapture(true);
                     }}
                   >
-                    {menuCapture ? 'PRESS…' : padButtonLabel(bindings.pad.menuButton)}
+                    {padButtonLabel(bindings.pad.menuButton)}
                   </button>
                 </span>
               </div>
@@ -632,15 +661,23 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
             );
           })}
         </div>
-        {/* THE ONE LIVE LINE: it prompts while a slot is armed ("Press a key for Forward…") and
-            confirms after ("Forward: W"), so capture is not announced by a keycap's text alone */}
+        {/* THE ONE LIVE LINE: it prompts while a slot is armed ("Press a key for Forward…"), shows
+            a pad combo as it builds ("Intake: RT + …") and confirms after ("Forward: W"), so
+            capture is not announced by a keycap's text alone. At rest it is an empty line that
+            holds its height; the standing "Backspace removes" hint went when the `×` cap came. */}
         <p className="ds-hint" role="status">
           {notice ??
             (capture
-              ? `Press ${capture.kind === 'key' ? 'a key' : 'a button or combo'} for ${ACTION_LABELS[capture.action]}. Esc cancels, Backspace removes.`
+              ? capture.kind === 'pad' && chordSoFar.length > 0
+                ? `${ACTION_LABELS[capture.action]}: ${padBindLabel([...chordSoFar].sort((x, y) => x - y))} + …`
+                : `Press ${capture.kind === 'key' ? 'a key' : 'a button or combo'} for ${ACTION_LABELS[capture.action]}. Esc cancels${
+                    capture.slot < (capture.kind === 'key' ? view.keys[capture.action].length : padBinds(view.pad, capture.action).length)
+                      ? ', Backspace removes'
+                      : ''
+                  }.`
               : menuCapture
                 ? 'Press a gamepad button for Menu. Esc cancels.'
-                : REMOVE_HINT)}
+                : '\u00a0')}
         </p>
       </div>
 

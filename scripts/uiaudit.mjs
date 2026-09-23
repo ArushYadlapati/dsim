@@ -87,7 +87,9 @@ const BASELINE = {
   // 143 → 133, 2026-09-22: design review wave 3. 141 on arrival (two went elsewhere in the
   // wave); the typography pass took eight more — `.ds-empty`/`.ds-loading`'s shared 30px 20px,
   // the replay export menu's 10px pads, `.legal-warn`, `.ann-item-head`, `.ds-replay-saving`.
-  'off-grid-gap': 133,
+  // 133 → 122, 2026-09-22: design review wave 4 (the keycap/card consolidation, the LAN move and
+  // `.ds-dl-hero`'s 22px pad, which is --ds-s-5 now).
+  'off-grid-gap': 122,
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
   // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
   // not the 31 first measured. The other two start where they stand: paying them down needs a
@@ -105,17 +107,35 @@ const BASELINE = {
   // approximating — it sat beside `.overlay-panel`, which already used the token.
   // 12 → 9, 2026-09-22: `.rec-track`'s 3px and `.md-code`'s 5px are `--ds-round-sm` (and one
   // went elsewhere in the wave).
-  'literal-radius': 9,
-  'shadow-sprawl': 14,
+  // 9 → 3, 2026-09-22: design review wave 4 — the tutorial's private button went, and the keycap
+  // families that had spelled their radius out now share the one block.
+  'literal-radius': 3,
+  // 14 → 12, 2026-09-22: design review wave 4. The cinema button's glow and the presence dot's
+  // halo are gone (No-Blur Rule); every keycap edge is one `--cap-edge` declaration.
+  'shadow-sprawl': 12,
   // measured 2026-09-22 (design review 13-11), when the rule was written. The scrims among them
   // (styles.css .overlay/.net-overlay and friends) have --ds-scrim / --ds-scrim-strong waiting.
   // 29 → 26, 2026-09-22: design review wave 3.
-  'raw-colour': 26,
+  // 26 → 14, 2026-09-22: design review wave 4. The cinema's #05070b stage is --ds-stage-bg, the
+  // alliance chips take their -chip-ink tokens and the prompt chip --ds-gold-ink.
+  'raw-colour': 14,
   // measured 2026-09-22 (design review 14-12), when the rule and the --ds-lh-* tokens landed.
   // 78 on the day; the value-identical ones (1, 1.2, 1.45) and the off-standard 1.5 became
   // tokens in the same commit, leaving the odd values (1.02, 1.3, 1.35, 16px …) and the `/n`
   // inside `font:` shorthands.
-  'literal-line-height': 33,
+  // 33 → 32, 2026-09-22: `.as-field input` restated .ds-input with its own `/ 1.4`; it is gone.
+  'literal-line-height': 32,
+  // measured 2026-09-22 (design review 13-12), when the tip, the banners, the danger button and
+  // the LAN panel moved to shell.css. The four left are deliberate: `.ds-dialog-title` is the one
+  // title contract the match overlays share with the shell dialogs, `.ds-key.capturing` sits in
+  // styles.css's reduced-motion list, and two are admin-page compounds (`.adm-sub` / `.adm-sec`).
+  'ds-outside-shell': 4,
+  // measured 2026-09-22 (design review 21-09/21-16), when --ds-dur-press / --ds-dur-fade landed
+  // and every colour fade moved onto them. What is left animates DATA, not state — gauge fills,
+  // progress widths, a ring's dashoffset, a gate icon's swing — plus one joystick fade.
+  // 7 → 4 the same day: the fill bars dropped their width transitions (§7) and the disclosure
+  // carets rotate at --ds-dur-fade.
+  'literal-duration': 4,
   'stale-component-index': 0,
 };
 
@@ -349,6 +369,25 @@ for (const f of css) {
   });
 }
 
+// ── 6b. shell rules live in shell.css ────────────────────────────────────────
+// styles.css is the in-match sheet (predict/tutorial.css own their surfaces). A `.ds-*` rule
+// anywhere else is a shell rule in the wrong file, where a grep of shell.css never finds it.
+for (const f of css.filter((x) => !/shell\.css$/.test(x))) {
+  read(f).forEach((l, i) => {
+    if (/^\s*\.ds-(?!tut)/.test(l)) hit('ds-outside-shell', f, i + 1, l);
+  });
+}
+
+// ── 6c. motion timing comes from the tokens ──────────────────────────────────
+// --ds-dur-press (a keycap's sink) and --ds-dur-fade (every colour-only state change). A literal
+// duration on a transition is one more speed; the reduced-motion kill-switch is exempt.
+for (const f of css) {
+  read(f).forEach((l, i) => {
+    const code = l.replace(/\/\*.*?\*\//g, '');
+    if (/^\s*transition(-duration)?:.*\b[0-9.]+m?s\b/.test(code) && !/0\.001ms/.test(code)) hit('literal-duration', f, i + 1, l);
+  });
+}
+
 // ── 7. the component index is current ────────────────────────────────────────
 // `docs/ui-components.md` is generated from the CSS by `scripts/uiindex.mjs`, and its whole
 // value is answering "does a class for this already exist?". A STALE index answers that with
@@ -395,6 +434,8 @@ const DESC = {
   'shadow-sprawl': 'distinct box-shadow declarations; DESIGN.md commits to ONE depth model',
   'raw-colour': 'hex/rgb/hsl literal outside a --token definition; it neither themes nor is contrast-checked',
   'literal-line-height': 'literal line-height; use a --ds-lh-* token (§3)',
+  'ds-outside-shell': 'a .ds-* shell rule outside shell.css',
+  'literal-duration': 'literal transition duration; use --ds-dur-press / --ds-dur-fade',
   'stale-component-index': 'docs/ui-components.md is out of date with the CSS',
 };
 

@@ -69,11 +69,14 @@ const SELECTORS = [
 ];
 // SHELL chrome — the rail, wordmark and footer are the SAME markup on all ten routes, so
 // probing them per page was nine redundant passes. Probed once per theme instead.
-const CHROME = ['.ds-rail-btn', '.ds-rail-home', '.ds-mark', '.ds-foot-link'];
+// (`.ds-rail-home` is gone: the wordmark IS the home link now, and `.ds-mark` probes it)
+const CHROME = ['.ds-rail-btn', '.ds-mark', '.ds-foot-link'];
 const TOGGLE_CLASSES = [
   ['.ds-seg', 'on'], ['.ds-tab', 'on'], ['.ds-opt', 'on'], ['.ds-rail-btn', 'on'],
   ['.ds-subnav-btn', 'on'], ['.ds-key', 'on'], ['.ds-key', 'selected'],
   ['.ds-tile', 'primary'], ['.ds-btn', 'primary'], ['.ds-menu-btn', 'primary'],
+  // the two held states the keycap/card block added: a key waiting for input, a button mid-request
+  ['.ds-opt', 'capturing'], ['.ds-btn', 'busy'],
 ];
 // Regions whose CONTENT arrives from the server while the audit runs — the top bar's live
 // queue/player counts. Their text width changes on its own schedule, and because the bar is

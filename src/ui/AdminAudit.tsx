@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { adminFetchAudit, adminFetchAuditActions, type AuditRow } from '../net/api';
-import { AccountName, CopyId, When, downloadCsv } from './adminBits';
+import { AccountName, CopyId, ListState, When, downloadCsv } from './adminBits';
 
 /**
  * THE AUDIT LOG — every admin action, newest first (migration 0041).
@@ -72,6 +72,7 @@ export function AdminAudit({ onOpenUser }: { onOpenUser?: (userId: string) => vo
 
       <div className="adm-toolbar">
         <select
+          className="ds-select"
           value={action}
           aria-label="Filter by action"
           onChange={(e) => refilter(e.target.value, applied)}
@@ -85,7 +86,8 @@ export function AdminAudit({ onOpenUser }: { onOpenUser?: (userId: string) => vo
         </select>
         <input
           type="search"
-          className="adm-grow"
+          className="ds-input adm-grow"
+          aria-label="Search the audit log"
           value={query}
           placeholder="Search a name, a reason, an id…"
           onChange={(e) => setQuery(e.target.value)}
@@ -131,19 +133,15 @@ export function AdminAudit({ onOpenUser }: { onOpenUser?: (userId: string) => vo
       </div>
 
       {err && !rows ? (
-        <div className="ds-empty">
-          <div className="big">Couldn’t load the audit log</div>
-          The game server is unreachable, or this account isn’t an admin on it.
-        </div>
+        <ListState error="load the audit log" />
       ) : !rows ? (
-        <div className="ds-loading">Reading the audit log…</div>
+        <ListState loading="Reading the audit log…" />
       ) : rows.length === 0 ? (
-        <div className="ds-empty">
-          <div className="big">Nothing here</div>
+        <ListState empty="Nothing here">
           {applied || action
             ? 'No action matches that filter. Clear it to see everything.'
             : 'No admin action has been recorded yet.'}
-        </div>
+        </ListState>
       ) : (
         <div className="adm-table-wrap">
           <table className="adm-table">
@@ -209,11 +207,12 @@ export function AdminAudit({ onOpenUser }: { onOpenUser?: (userId: string) => vo
       {more && (
         <div className="adm-more">
           <button
-            className="ds-btn ghost small"
+            className={`ds-btn ghost small${busy ? ' busy' : ''}`}
+            aria-busy={busy}
             disabled={busy}
             onClick={() => void load(offset + PAGE, applied, action, true)}
           >
-            {busy ? 'Loading…' : 'Load more'}
+            Load more
           </button>
         </div>
       )}

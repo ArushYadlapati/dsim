@@ -193,7 +193,7 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
       >
         <div className="ds-modal-h">
           <h2 className="ds-dialog-title" id={TITLE_ID}>{TITLES[mode]}</h2>
-          <button className="ds-btn ghost" onClick={onClose} aria-label="Close">✕</button>
+          <button className="ds-btn ghost small" onClick={onClose} aria-label="Close">✕</button>
         </div>
         {mode === 'forgot' ? (
           <>

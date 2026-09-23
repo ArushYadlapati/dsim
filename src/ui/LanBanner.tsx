@@ -18,7 +18,6 @@ export function LanBanner({ onLeave }: { onLeave?: () => void }) {
   return (
     <div className="ds-maint-wrap">
       <div className="ds-lan-banner" role="status">
-        <span aria-hidden>⇄</span>
         <span>
           <b>LAN game</b> · {lanServerUrl().replace(/^wss?:\/\//, '')} · not ranked
         </span>

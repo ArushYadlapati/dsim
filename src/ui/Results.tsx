@@ -36,9 +36,11 @@ import type { Alliance, ScoreBreakdown } from '../types';
  * CANVAS-GROUND family: fixed, never re-valued in the dark block, exactly like the game field
  * itself. The two alliance halves stay the existing fixed-ink chip pair
  * (`--ds-{red,blue}-chip` / `-chip-ink`) — already non-inverting, so nothing here clashes.
- * The actions row keeps the ordinary THEMED `.overlay-buttons` (it is its own opaque surface
- * floating on top, the same relationship the in-match HUD already has with the fixed-dark
- * field behind it).
+ * The actions row is `.overlay-buttons`, but RE-TOKENED on this stage (styles.css,
+ * `.resx-stage .overlay-buttons button`): the themed keycap sat straight on the fixed-dark
+ * ground, so the hierarchy flipped with the theme — a light MENU cap shouted in light mode and
+ * vanished in dark (design review 06-11). ONE primary per context (`primaryAction`), filled
+ * with the on-field mint, rightmost; everything else is a secondary outline in on-field ink.
  */
 
 const DRIVETRAIN_LABEL: Record<string, string> = {
@@ -90,8 +92,7 @@ function useCountUp(target: number, active: boolean, duration = 900, from = 0): 
   return active ? val : from;
 }
 
-/** the count-up's own length. Shared by the tween and the flash timer below so the two
- * cannot drift apart. */
+/** the count-up's own length for one breakdown value (`RowVal`). */
 const ROWVAL_MS = 350;
 
 /**
@@ -108,42 +109,30 @@ const ROWVAL_MS = 350;
 const headDelay = (section: number): number => section * 140;
 const rowDelay = (section: number, row: number): number => section * 140 + (row + 1) * 55;
 
-/** a single breakdown VALUE, counting up on its own short beat once `run` flips true and
- * flashing as it lands — the "rows cascade in, each pair of values counting up" beat. The
- * delay is `rowDelay`'s, so the value moves with the row it sits in. */
+/** a single breakdown VALUE, counting up on its own short beat once `run` flips true — the
+ * "rows cascade in, each pair of values counting up" beat. The delay is `rowDelay`'s, so the
+ * value moves with the row it sits in. It used to FLASH (`brightness(1.9)`) as it landed; that
+ * went with the rest of the game-show punch (design review 06-14) — the count-up already says
+ * the value arrived. */
 function RowVal({ value, run, delay }: { value: number; run: boolean; delay: number }) {
   const [go, setGo] = useState(false);
-  const [land, setLand] = useState(false);
   useEffect(() => {
     if (!run) {
       setGo(false);
-      setLand(false);
       return;
     }
-    // a reduced-motion viewer gets the value AND its landed state at once. The stagger is
-    // motion too, and waiting out half a second of zeros is the same animation played slower
-    // — the trap the `prefersReducedMotion` branch in `useCountUp` already documents.
+    // a reduced-motion viewer gets the value at once. The stagger is motion too, and waiting
+    // out half a second of zeros is the same animation played slower — the trap the
+    // `prefersReducedMotion` branch in `useCountUp` already documents.
     if (prefersReducedMotion()) {
       setGo(true);
-      setLand(true);
       return;
     }
     const start = window.setTimeout(() => setGo(true), delay);
-    // ⚠️ THE FLASH IS A SECOND TIMER, NOT A SECOND ANIMATION OF THE NUMBER. `useCountUp` has
-    // no completion event, and both obvious substitutes are the bug documented at the totals
-    // call site below: a `[shown]` dependency fires on every frame of the tween and restarts
-    // the flash forever, and `shown === value` is already true at MOUNT for every
-    // permanently-zero row (BIOBUZZ has several by design — `cellPts` and `gardenPts` read 0
-    // until the buzzer). `land` is in no dependency of the count-up's own effect, so setting
-    // it cannot restart the tween.
-    const flash = window.setTimeout(() => setLand(true), delay + ROWVAL_MS);
-    return () => {
-      window.clearTimeout(start);
-      window.clearTimeout(flash);
-    };
+    return () => window.clearTimeout(start);
   }, [run, delay]);
   const shown = useCountUp(value, go, ROWVAL_MS);
-  return <span className={`resx-cell${land ? ' landed' : ''}`}>{shown}</span>;
+  return <>{shown}</>;
 }
 
 /**
@@ -170,6 +159,9 @@ const PHASE_MS: Record<'wipe' | 'split' | 'rows' | 'totals', number> = {
   totals: 950,
 };
 const PHASE_ORDER: readonly Phase[] = ['wipe', 'split', 'rows', 'totals', 'done'];
+/** a stage click only does something while the sequence is RUNNING (`skip` is a no-op at
+ * `wait` and `done`), so only then does the stage wear `cursor: pointer` (design review 06-23). */
+const skippable = (p: Phase): boolean => p !== 'wait' && p !== 'done';
 
 function usePhase(revealed: boolean): { phase: Phase; skip: () => void } {
   const [phase, setPhase] = useState<Phase>('wait');
@@ -612,27 +604,48 @@ function AllianceHalf({
 function RematchVote({
   vote,
   onToggle,
+  primary,
 }: {
   vote: { votes: number; need: number; mine: boolean };
   onToggle: () => void;
+  primary: boolean;
 }) {
   const waiting = vote.mine && vote.votes < vote.need;
+  // PRESSED is `.on` + `aria-pressed`, separate from the row's primary/secondary rank: a vote is a
+  // toggle, and the flush keycap with its ring (styles.css) is what says it counted.
   return (
-    <button className={vote.mine ? 'primary' : ''} onClick={onToggle}>
+    <button
+      className={`${rank(primary)}${vote.mine ? ' on' : ''}`}
+      aria-pressed={vote.mine}
+      onClick={onToggle}
+    >
       {waiting ? 'WAITING…' : '⟲ REMATCH'} {vote.votes}/{vote.need}
     </button>
   );
 }
 
-/** focuses the first button in the actions row the moment it appears (phase `done`), so a
- * keyboard/switch user lands on the primary action without hunting for it. */
+/** focuses the row's `.primary` action the moment it appears (phase `done`), so a
+ * keyboard/switch user lands on it without hunting. It was the FIRST button, which was WATCH
+ * REPLAY — not what the screen expects next. */
 function useFocusPrimaryAction(show: boolean): React.RefObject<HTMLDivElement> {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (show) ref.current?.querySelector('button')?.focus({ preventScroll: true });
+    if (!show) return;
+    const row = ref.current;
+    const target = row?.querySelector<HTMLButtonElement>('button.primary') ?? row?.querySelector('button');
+    target?.focus({ preventScroll: true });
   }, [show]);
   return ref;
 }
+
+/** THE ONE PRIMARY in a results action row (design review 06-06): the next step this context
+ * expects. Ranked → find new opponents; a custom host → back to the room; solo → play again;
+ * otherwise the rematch vote. WATCH REPLAY and MENU are never it. */
+type ResultsAction = 'queue' | 'lobby' | 'rematch' | 'vote' | null;
+function primaryAction(o: { queue: boolean; lobby: boolean; rematch: boolean; vote: boolean }): ResultsAction {
+  return o.queue ? 'queue' : o.lobby ? 'lobby' : o.rematch ? 'rematch' : o.vote ? 'vote' : null;
+}
+const rank = (on: boolean): string => (on ? 'primary' : 'secondary');
 
 /** final match results — a full-screen RED | BLUE broadcast board, like the FTC audience
  * display. Foul rows show the fouls each alliance COMMITTED (its own count) — the POINTS
@@ -771,6 +784,12 @@ export function Results({
   // RAW `netScore` goes down; the single animation belongs to the component that prints it.
   const eloNote = useEloPending(ranked, eloResults);
   const actionsRef = useFocusPrimaryAction(doneVisible);
+  const primary = primaryAction({
+    queue: !!onQueueAgain,
+    lobby: !!onBackToLobby,
+    rematch: canRematch,
+    vote: !!rematchVote,
+  });
 
   // THE ROSTER, for both branches below: who actually played, pulled from the match's own
   // recorded setups rather than a second roster the server would have to send separately.
@@ -907,7 +926,7 @@ export function Results({
 
   return (
     <div
-      className="resx-stage"
+      className={`resx-stage${skippable(phase) ? ' skippable' : ''}`}
       onClick={skip}
       ref={stageRef}
       tabIndex={-1}
@@ -1029,28 +1048,41 @@ export function Results({
                   : '✓ Saved on this device. Sign in to keep it on your account.'}
               </p>
             )}
+            {/* EXIT FIRST, PRIMARY LAST (ui-standard §6: primary is rightmost). Everything but
+                `primary` is a secondary, so the row says which one the screen expects. */}
             <div className="overlay-buttons" ref={actionsRef} onClick={(e) => e.stopPropagation()}>
+              <button className="secondary" onClick={onExit}>
+                MENU
+              </button>
               {(matchResult ?? practiceRun) && onWatchReplay && (
-                <button onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
+                <button className="secondary" onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
                   ▶ WATCH REPLAY
                 </button>
               )}
-              {canRematch && <button onClick={onRematch}>REMATCH</button>}
-              {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} />}
-              {/* the OTHER thing you want after a ranked match. REMATCH beside it plays
-                  the same people again; this finds new ones without going out to the
-                  menu and back in through Play ▸ Ranked. */}
-              {onQueueAgain && <button onClick={onQueueAgain}>QUEUE AGAIN</button>}
+              {rematchVote && (
+                <RematchVote vote={rematchVote} onToggle={onRematchVote} primary={primary === 'vote'} />
+              )}
               {/* REMATCH plays these same people on these same sides. This re-opens the room,
                   so the next game is built from whoever is in it then — which is what you want
                   when somebody left, or when the sides want swapping. */}
-              {onBackToLobby && <button onClick={onBackToLobby}>BACK TO LOBBY</button>}
-              {/* the EXIT, not a fourth primary: `.overlay-buttons button` is accent-filled
-                  unless `.ghost`, so an unmarked MENU sat beside REMATCH and WATCH REPLAY
-                  with nothing saying which one the screen expects. */}
-              <button className="ghost" onClick={onExit}>
-                MENU
-              </button>
+              {onBackToLobby && (
+                <button className={rank(primary === 'lobby')} onClick={onBackToLobby}>
+                  BACK TO LOBBY
+                </button>
+              )}
+              {canRematch && (
+                <button className={rank(primary === 'rematch')} onClick={onRematch}>
+                  REMATCH
+                </button>
+              )}
+              {/* the OTHER thing you want after a ranked match. REMATCH beside it plays
+                  the same people again; this finds new ones without going out to the
+                  menu and back in through Play ▸ Ranked. */}
+              {onQueueAgain && (
+                <button className={rank(primary === 'queue')} onClick={onQueueAgain}>
+                  QUEUE AGAIN
+                </button>
+              )}
             </div>
             {/* REPORT is deliberately not in the button row. It is a rare, deliberate action and
                 the row is where REMATCH and MENU live — the two things every player reaches for
@@ -1289,7 +1321,7 @@ function RecordResults({
 
   return (
     <div
-      className="resx-stage"
+      className={`resx-stage${skippable(phase) ? ' skippable' : ''}`}
       onClick={skip}
       ref={stageRef}
       tabIndex={-1}
@@ -1346,18 +1378,22 @@ function RecordResults({
         {doneVisible && (
           <div className="resx-secondary">
             <div className="overlay-buttons" ref={actionsRef} onClick={(e) => e.stopPropagation()}>
+              <button className="secondary" onClick={onExit}>
+                MENU
+              </button>
               {(matchResult ?? practiceRun) && onWatchReplay && (
-                <button onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
+                <button className="secondary" onClick={() => onWatchReplay((matchResult ?? practiceRun)!.replay)}>
                   ▶ WATCH REPLAY
                 </button>
               )}
-              {canRematch && <button onClick={onRematch}>RUN AGAIN</button>}
               {/* CO-OP: the run belongs to both drivers, so restarting is a vote —
                   the same control (and the same R binding) as mid-match. */}
-              {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} />}
-              <button className="ghost" onClick={onExit}>
-                MENU
-              </button>
+              {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} primary={!canRematch} />}
+              {canRematch && (
+                <button className="primary" onClick={onRematch}>
+                  RUN AGAIN
+                </button>
+              )}
             </div>
           </div>
         )}

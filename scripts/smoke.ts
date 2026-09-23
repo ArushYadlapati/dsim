@@ -8100,7 +8100,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
       bin?: Record<string, string>;
     };
     const launcher = readFileSync('scripts/lan.mjs', 'utf8');
-    const css = readFileSync('src/ui/styles.css', 'utf8');
+    const css = readFileSync('src/ui/styles.css', 'utf8') + readFileSync('src/ui/shell.css', 'utf8');
 
     /* The whole page as ONE LINE, so a sentence this block pins is matched as a sentence and
        not as whatever fragment happened to survive the last time the JSX was re-wrapped. Three

@@ -1961,8 +1961,14 @@ export function App() {
                 ? 'Your record run is still running. Leaving it ends the run.'
                 : 'Your custom room match is still running.'}
           </p>
+          {/* PRIMARY RIGHTMOST (ui-standard §6), in every dialog below, and `autoFocus` on it:
+              `useDialog` otherwise focuses the FIRST control, which is now the forfeit */}
           <div className="overlay-buttons ds-dialog-actions">
+            <button className="secondary" onClick={abandonActiveGame}>
+              {blockedKind === 'ranked' ? 'Forfeit match' : blockedKind === 'record' ? 'Leave run' : 'Leave match'}
+            </button>
             <button
+              autoFocus
               onClick={() => {
                 const ref = loadActiveGame();
                 setBlockedByActive(false);
@@ -1971,9 +1977,6 @@ export function App() {
               }}
             >
               Rejoin match
-            </button>
-            <button className="ghost" onClick={abandonActiveGame}>
-              {blockedKind === 'ranked' ? 'Forfeit match' : blockedKind === 'record' ? 'Leave run' : 'Leave match'}
             </button>
           </div>
         </OverlayDialog>
@@ -1998,16 +2001,17 @@ export function App() {
             preset) before starting.
           </p>
           <div className="overlay-buttons ds-dialog-actions">
+            <button className="secondary" onClick={() => setBadStart(false)}>
+              Cancel
+            </button>
             <button
+              autoFocus
               onClick={() => {
                 setBadStart(false);
                 navigate('configure', { sub: 'match' });
               }}
             >
               Fix start position
-            </button>
-            <button className="ghost" onClick={() => setBadStart(false)}>
-              Cancel
             </button>
           </div>
         </OverlayDialog>
@@ -2034,9 +2038,11 @@ export function App() {
             A newer version has shipped. Refresh to update before starting.
           </p>
           <div className="overlay-buttons ds-dialog-actions">
-            <button onClick={() => window.location.reload()}>Refresh &amp; update</button>
-            <button className="ghost" onClick={() => setPendingStart(null)}>
+            <button className="secondary" onClick={() => setPendingStart(null)}>
               Not now
+            </button>
+            <button autoFocus onClick={() => window.location.reload()}>
+              Refresh &amp; update
             </button>
           </div>
         </OverlayDialog>
@@ -2073,6 +2079,7 @@ export function App() {
 
       {screen === 'profile' && route.username && (
         <Profile
+          key={route.username}
           username={route.username}
           signedIn={signedIn}
           viewerUsername={viewerUsername}

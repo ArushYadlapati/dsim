@@ -474,8 +474,14 @@ function Toolbar(props: {
         <input type="checkbox" checked={props.auto} onChange={(e) => props.setAuto(e.target.checked)} />
         <span>Auto-refresh</span>
       </label>
-      <button type="button" className="ds-btn small" disabled={props.busy} onClick={props.onRefresh}>
-        {props.busy ? 'Loading…' : 'Refresh'}
+      <button
+        type="button"
+        className={`ds-btn small${props.busy ? ' busy' : ''}`}
+        aria-busy={props.busy}
+        disabled={props.busy}
+        onClick={props.onRefresh}
+      >
+        Refresh
       </button>
     </div>
   );
@@ -514,10 +520,10 @@ function EventsPanel({
       </div>
       {events.length === 0 ? (
         <div className="ds-panel-body">
-          <p className="ds-empty an-empty">
-            <span className="big">No events yet</span>
+          <div className="ds-empty an-empty">
+            <div className="big">No events yet</div>
             Nothing named was fired in this range.
-          </p>
+          </div>
         </div>
       ) : (
         <div className="an-scroll">
@@ -764,11 +770,11 @@ function ProductSection({ data }: { data: ProductReport }) {
         </div>
         {data.concurrency.length === 0 ? (
           <div className="ds-panel-body">
-            <p className="ds-empty an-empty">
-              <span className="big">Nothing sampled</span>
+            <div className="ds-empty an-empty">
+              <div className="big">Nothing sampled</div>
               Concurrency is sampled every five minutes while the service is busy, and an idle one
               writes nothing at all.
-            </p>
+            </div>
           </div>
         ) : (
           <div className="ds-panel-body">
@@ -800,10 +806,10 @@ function ProductSection({ data }: { data: ProductReport }) {
         </div>
         {data.retention.length === 0 ? (
           <div className="ds-panel-body">
-            <p className="ds-empty an-empty">
-              <span className="big">No cohorts</span>
+            <div className="ds-empty an-empty">
+              <div className="big">No cohorts</div>
               Nobody signed up in this range.
-            </p>
+            </div>
           </div>
         ) : (
           <div className="an-scroll">

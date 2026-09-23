@@ -75,7 +75,7 @@ export function DiscordLobbyList({
 
   return (
     <div className="ds-console">
-      <div className="ds-console-in" style={{ maxWidth: 520 }}>
+      <div className="ds-console-in narrow">
         <div className="ds-head">
           <button className="ds-back" onClick={onBack}>
             ← Back
@@ -112,10 +112,13 @@ export function DiscordLobbyList({
 
         <section className="ds-sec">
           <h2>Open lobbies</h2>
+          {/* the house list states, one padding, so the section does not jump when rows land */}
           {lobbies === null ? (
-            <p className="ds-hint">Loading…</p>
+            <div className="ds-loading">Loading…</div>
           ) : others.length === 0 ? (
-            <p className="ds-hint">No other lobbies open.</p>
+            <div className="ds-empty">
+              <div className="big">No other lobbies open</div>
+            </div>
           ) : (
             <div className="ds-lobbies">
               {others.map((l) => {

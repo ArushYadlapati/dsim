@@ -279,13 +279,14 @@ export function BiobuzzStartEditor({
         {lockedCategory ? (
           <div className="ds-startpos-role">{bbRoleLabel(lockedCategory, alliance)} robot</div>
         ) : (
-          <div className="ds-startpos-tabs">
+          <div className="ds-segs" role="group" aria-label="Start position">
             {/* TOP first for either alliance — which slot that is flips on this point-symmetric field */}
             {((bbRoleLabel('close', alliance) === 'TOP' ? ['close', 'far'] : ['far', 'close']) as StartCat[]).map((c) => (
               <button
                 key={c}
                 type="button"
-                className={`ds-startpos-tab ${cat === c ? 'on' : ''}`}
+                className={`ds-seg${cat === c ? ' on' : ''}`}
+                aria-pressed={cat === c}
                 onClick={() => {
                   setDraft(null);
                   onCategory(c);

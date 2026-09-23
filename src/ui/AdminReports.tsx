@@ -11,7 +11,7 @@ import { REPORT_LABELS, type ReportedUser, type ReportReason } from '../report';
 import { STANDING_COST, STANDING_MAX, tierOf } from '../standing';
 import { StandingEditor } from './AdminStanding';
 import { SEASONS } from '../seasons';
-import { AccountName, When, ago, confirmed, downloadCsv } from './adminBits';
+import { AccountName, ListState, When, ago, confirmed, downloadCsv } from './adminBits';
 
 /**
  * The REPORT QUEUE — who has been reported, how often, for what, by how many people, and
@@ -130,19 +130,15 @@ export function AdminReports({
       </div>
 
       {err && !users ? (
-        <div className="ds-empty">
-          <div className="big">Couldn’t load reports</div>
-          The game server is unreachable, or this account isn’t an admin on it.
-        </div>
+        <ListState error="load reports" />
       ) : !users ? (
-        <div className="ds-loading">Loading reports…</div>
+        <ListState loading="Loading reports…" />
       ) : shown.length === 0 ? (
-        <div className="ds-empty">
-          <div className="big">{onlyOpen ? 'Queue is clear' : 'No reports'}</div>
+        <ListState empty={onlyOpen ? 'Queue is clear' : 'No reports'}>
           {onlyOpen && users.length > 0
             ? 'Nothing is waiting on a decision. Switch to Everything for the history.'
             : 'Nobody has been reported yet.'}
-        </div>
+        </ListState>
       ) : (
         <div className="adm-reports">
           {shown.map((u) => (
@@ -235,7 +231,7 @@ function ReportedRow({
       {expanded && (
         <div className="adm-report-body">
           {!detail ? (
-            <div className="ds-loading">Loading…</div>
+            <ListState loading="Loading…" />
           ) : (
             <>
               <h3 className="adm-h3">Reports</h3>
@@ -276,7 +272,7 @@ function ReportedRow({
 
               <h3 className="adm-h3">Their recent matches</h3>
               {detail.matches.length === 0 ? (
-                <p className="ds-hint">No matches on record for this player.</p>
+                <ListState empty="No matches on record" />
               ) : (
                 <div className="adm-report-list">
                   {detail.matches.map((m) => (
@@ -402,7 +398,7 @@ function ScoreReportQueue({
                   genuinely has nothing to open, and says so instead of offering a dead button. */}
               {onWatchReplay &&
                 (r.replayId ? (
-                  <button className="ds-btn ghost" onClick={() => onWatchReplay(r.replayId!, r.matchId ?? undefined)}>
+                  <button className="ds-btn ghost small" onClick={() => onWatchReplay(r.replayId!, r.matchId ?? undefined)}>
                     WATCH
                   </button>
                 ) : (
@@ -411,14 +407,14 @@ function ScoreReportQueue({
                   </span>
                 ))}
               <button
-                className="ds-btn ghost"
+                className="ds-btn ghost small"
                 disabled={busy === r.id}
                 onClick={() => resolve(r.id, 'upheld', 0)}
               >
                 UPHELD
               </button>
               <button
-                className="ds-btn ghost"
+                className="ds-btn ghost small"
                 disabled={busy === r.id}
                 onClick={() => resolve(r.id, 'rejected', 0)}
               >
@@ -431,7 +427,7 @@ function ScoreReportQueue({
               {[25, 50, 100].map((n) => (
                 <button
                   key={n}
-                  className="ds-btn danger"
+                  className="ds-btn danger small"
                   disabled={busy === r.id}
                   onClick={() => resolve(r.id, 'rejected', n)}
                   title={`Reject and take ${n} standing points off ${r.reporterUsername ?? r.reporterHandle}`}

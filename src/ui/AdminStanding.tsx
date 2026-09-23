@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { adminEditStanding, adminFetchStanding, type AdminStanding as AdminStandingData } from '../net/api';
 import { adminFail } from './adminCopy';
-import { confirmed } from './adminBits';
+import { ListState, confirmed } from './adminBits';
 import {
   STANDING_MAX,
   lockRemaining,
@@ -74,15 +74,8 @@ export function StandingEditor({
     load();
   };
 
-  if (err && !data) {
-    return (
-      <div className="ds-empty">
-        <div className="big">Couldn’t load the standing</div>
-        The game server is unreachable, or this account isn’t an admin on it.
-      </div>
-    );
-  }
-  if (!data) return <div className="ds-loading">Loading standing…</div>;
+  if (err && !data) return <ListState error="load the standing" />;
+  if (!data) return <ListState loading="Loading standing…" />;
 
   const current = data.standing?.score ?? STANDING_MAX;
   const tier = tierOf(current);
@@ -115,6 +108,7 @@ export function StandingEditor({
         <span className="as-cap">Reason (recorded, and shown to the player)</span>
         <input
           type="text"
+          className="ds-input"
           value={note}
           maxLength={120}
           placeholder="Why this is being changed"
@@ -123,8 +117,10 @@ export function StandingEditor({
       </label>
 
       <div className="as-actions">
+        {/* DANGER, not primary: it is the most sweeping reset in the editor and there is no
+            un-pardon, so it takes the irreversible style rather than the most inviting one */}
         <button
-          className="ds-btn primary"
+          className="ds-btn danger small"
           disabled={busy}
           onClick={() => {
             if (
@@ -143,7 +139,7 @@ export function StandingEditor({
           Clear all infractions
         </button>
         <button
-          className="ds-btn ghost"
+          className="ds-btn ghost small"
           disabled={busy || !locked}
           onClick={() => void run({ lock: false }, () => 'Ranked lock lifted.')}
         >
@@ -156,6 +152,7 @@ export function StandingEditor({
           <span className="as-cap">Set score</span>
           <input
             type="number"
+            className="ds-input"
             min={0}
             max={STANDING_MAX}
             inputMode="numeric"
@@ -164,7 +161,7 @@ export function StandingEditor({
           />
         </label>
         <button
-          className="ds-btn"
+          className="ds-btn small"
           disabled={busy || !scoreChanged}
           onClick={() =>
             void run({ score: target }, (o) => `Standing ${o.scoreBefore} → ${o.scoreAfter}.`)
@@ -188,7 +185,7 @@ export function StandingEditor({
         {live.length > 0 && <span className="ds-muted"> · {live.length} still counting</span>}
       </h4>
       {data.events.length === 0 ? (
-        <p className="as-hint">Nothing on the record.</p>
+        <ListState empty="Nothing on the record" />
       ) : (
         <ul className="as-log">
           {data.events.map((e) => (

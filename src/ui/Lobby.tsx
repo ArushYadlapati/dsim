@@ -1199,7 +1199,7 @@ export function Lobby({
 
         <div className="ds-actions">
           <button
-            className={`ds-cta ${me?.ready ? 'ghost' : ''}`}
+            className={`ds-cta ${me?.ready ? 'secondary' : ''}`}
             disabled={!startLegal && !me?.ready}
             onClick={toggleReady}
           >

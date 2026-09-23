@@ -301,7 +301,7 @@ export function PadNavLayer(): JSX.Element | null {
       const traps = document.querySelectorAll<HTMLElement>(TRAP);
       const trap = traps.length ? traps[traps.length - 1] : null;
       if (trap) {
-        const b = trap.querySelector<HTMLElement>('[data-padnav-back]') ?? trap.querySelector<HTMLElement>('.ghost, .ds-btn.ghost');
+        const b = trap.querySelector<HTMLElement>('[data-padnav-back]') ?? trap.querySelector<HTMLElement>('.secondary, .ds-btn.ghost');
         if (b) {
           b.click();
           return;
@@ -539,7 +539,7 @@ function PadKeyboard({
         <button className="ds-osk-key wide" onClick={() => onAction({ t: 'back' })}>
           Delete
         </button>
-        <button className="ds-osk-key wide ghost" data-padnav-back onClick={onDone}>
+        <button className="ds-osk-key wide secondary" data-padnav-back onClick={onDone}>
           Done
         </button>
       </div>

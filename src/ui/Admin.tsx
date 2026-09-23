@@ -394,7 +394,8 @@ export function Admin({
               <div className="adm-toolbar">
                 <input
                   type="search"
-                  className="adm-grow"
+                  className="ds-input adm-grow"
+                  aria-label="Search accounts"
                   value={userQuery}
                   placeholder="Name, @username or account id"
                   onChange={(e) => setUserQuery(e.target.value)}
@@ -479,8 +480,13 @@ export function Admin({
               )}
               {userMore && (
                 <div className="adm-more">
-                  <button className="ds-btn ghost small" disabled={userBusy} onClick={() => void searchUsers(users.length)}>
-                    {userBusy ? 'Loading…' : 'Load more'}
+                  <button
+                    className={`ds-btn ghost small${userBusy ? ' busy' : ''}`}
+                    aria-busy={userBusy}
+                    disabled={userBusy}
+                    onClick={() => void searchUsers(users.length)}
+                  >
+                    Load more
                   </button>
                 </div>
               )}
@@ -515,6 +521,7 @@ export function Admin({
           <span>Restart in</span>
           <input
             type="number"
+            className="ds-input"
             min={0}
             max={60}
             value={minutes}
@@ -524,7 +531,7 @@ export function Admin({
         </label>
         <label className="admin-field col">
           <span>Message</span>
-          <input type="text" value={message} maxLength={90} onChange={(e) => setMessage(e.target.value)} />
+          <input type="text" className="ds-input" value={message} maxLength={90} onChange={(e) => setMessage(e.target.value)} />
         </label>
         <div className="admin-buttons">
           <button
@@ -570,7 +577,7 @@ export function Admin({
       <div className="admin-card">
         <label className="admin-field col">
           <span>Type</span>
-          <select value={annKind} onChange={(e) => setAnnKind(e.target.value as AnnouncementKind)}>
+          <select className="ds-select" value={annKind} onChange={(e) => setAnnKind(e.target.value as AnnouncementKind)}>
             {ANN_KINDS.map((k) => (
               <option key={k.value} value={k.value}>{k.label}</option>
             ))}
@@ -580,6 +587,7 @@ export function Admin({
           <span>{isCinematic ? 'Title (the big reveal headline)' : 'Title'}</span>
           <input
             type="text"
+            className="ds-input"
             value={annTitle}
             maxLength={80}
             placeholder={isCinematic ? 'e.g. Act II - The Rising Tide' : 'e.g. Build 42 - gate + intake fixes'}
@@ -591,6 +599,7 @@ export function Admin({
             <span>Tagline (optional subtitle under the reveal)</span>
             <input
               type="text"
+              className="ds-input"
               value={annTagline}
               maxLength={80}
               placeholder="e.g. A NEW SEASON BEGINS"
@@ -601,7 +610,7 @@ export function Admin({
         <label className="admin-field col">
           <span>{isCinematic ? 'Details (shown in “What’s new”) · Markdown' : 'Notes · Markdown'}</span>
           <textarea
-            className="admin-textarea"
+            className="ds-input admin-textarea"
             value={annBody}
             maxLength={8000}
             rows={8}
@@ -636,7 +645,7 @@ export function Admin({
                   <strong>{a.title}</strong>
                   <span className="ds-hint"> · {new Date(a.publishedAt).toLocaleDateString()}</span>
                 </span>
-                <button className="ds-btn ghost small danger" disabled={annBusy} onClick={() => retireAnnouncement(a)}>
+                <button className="ds-btn danger small" disabled={annBusy} onClick={() => retireAnnouncement(a)}>
                   RETIRE
                 </button>
               </div>
@@ -658,6 +667,7 @@ export function Admin({
           <span>Custom title (optional)</span>
           <input
             type="text"
+            className="ds-input"
             value={seasonName}
             maxLength={40}
             placeholder="e.g. Spring Showdown · blank ⇒ Act X · Season Y"
@@ -671,7 +681,9 @@ export function Admin({
           <button className="ds-btn" disabled={seasonBusy} onClick={() => startSeason(true)}>
             START NEW ACT
           </button>
-          <button className="ds-btn ghost" disabled={seasonBusy} onClick={purgeReplays}>
+          {/* irreversible, unlike the two beside it: a new period archives the old one, a
+              purge deletes its replays for good */}
+          <button className="ds-btn danger" disabled={seasonBusy} onClick={purgeReplays}>
             PURGE ARCHIVED REPLAYS
           </button>
         </div>
@@ -696,21 +708,21 @@ export function Admin({
       <div className="admin-card">
         <div className="admin-field">
           <span>Board</span>
-          <select aria-label="Game" value={recGame} onChange={(e) => setRecGame(e.target.value as GameId)}>
+          <select className="ds-select" aria-label="Game" value={recGame} onChange={(e) => setRecGame(e.target.value as GameId)}>
             {SEASONS.map((g) => (
               <option key={g.key} value={g.key}>{g.name}</option>
             ))}
           </select>
-          <select value={recMode} onChange={(e) => setRecMode(e.target.value as RecMode)}>
+          <select className="ds-select" aria-label="Mode" value={recMode} onChange={(e) => setRecMode(e.target.value as RecMode)}>
             <option value="solo">Solo</option>
             <option value="duo">Duo</option>
           </select>
-          <select value={recDt} onChange={(e) => setRecDt(e.target.value)}>
+          <select className="ds-select" aria-label="Drivetrain" value={recDt} onChange={(e) => setRecDt(e.target.value)}>
             {DRIVETRAINS.map((d) => (
               <option key={d} value={d}>{d}</option>
             ))}
           </select>
-          <button className="ds-btn" disabled={recBusy} onClick={loadRecords}>
+          <button className="ds-btn small" disabled={recBusy} onClick={loadRecords}>
             LOAD
           </button>
           {records.length > 0 && (
@@ -747,10 +759,10 @@ export function Admin({
                     WATCH
                   </button>
                 )}
-                <button className="ds-btn ghost small" disabled={recBusy} onClick={() => deleteRecord(r)}>
+                <button className="ds-btn danger small" disabled={recBusy} onClick={() => deleteRecord(r)}>
                   DELETE
                 </button>
-                <button className="ds-btn ghost small danger" disabled={recBusy} onClick={() => clearUser(r)}>
+                <button className="ds-btn danger small" disabled={recBusy} onClick={() => clearUser(r)}>
                   CLEAR ALL
                 </button>
               </div>

@@ -112,13 +112,16 @@ export function ChallengePicker({
         </div>
 
         <div className="ds-chal-list">
-          {TILES.map((t) => {
+          {TILES.map((t, i) => {
             const pendingCaps = !!t.needs && caps === null;
             const unsupported = !!t.needs && caps !== null && !caps.includes(t.needs);
             return (
               <button
                 key={t.format}
                 className="ds-opt"
+                // first focus on the first real option, not the ✕ `useDialog` would pick;
+                // tile 0 needs no capability, so it is enabled on mount
+                autoFocus={i === 0}
                 disabled={!!busy || pendingCaps || unsupported}
                 onClick={() => pick(t.format)}
               >

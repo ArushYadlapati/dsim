@@ -204,6 +204,10 @@ export function MatchHistory({
   const from = total === 0 ? 0 : offset + 1;
   const to = Math.min(offset + pageSize, total);
   const seasonName = seasonLabel;
+  /* A FILTER CHANGE OR PAGE TURN KEEPS THE TABLE UP (design review 07-16). Blanking it
+     collapsed the panel and moved Prev/Next out from under the pointer; the old page stays,
+     faded and `aria-busy`, and `.ds-loading` is the FIRST load's only. */
+  const refetching = status === 'loading' && page != null;
 
   return (
     <div className="ds-panel">
@@ -239,23 +243,23 @@ export function MatchHistory({
           </select>
       </div>
 
-      {status === 'loading' && <div className="ds-loading">Loading…</div>}
+      {status === 'loading' && !refetching && <div className="ds-loading">Loading…</div>}
       {status === 'error' && (
         <div className="ds-empty">
           <div className="big">Couldn’t load match history</div>
           {error}
         </div>
       )}
-      {status === 'ok' && total === 0 && (
+      {(status === 'ok' || refetching) && total === 0 && (
         <div className="ds-empty">
           <div className="big">No matches</div>
           Nothing here for {seasonName}
           {type !== 'all' || result !== 'all' ? ' with these filters' : ''}.
         </div>
       )}
-      {status === 'ok' && total > 0 && page && (
+      {(status === 'ok' || refetching) && total > 0 && page && (
         <>
-          <div className="mh-scroll">
+          <div className="mh-scroll" aria-busy={refetching}>
             <table className="ds-table mh-table">
               <thead>
                 <tr>

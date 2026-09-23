@@ -41,8 +41,8 @@ import { claimPending, loadRewards, postponeRewards, reopenRewards, useRewards }
  * third "dismiss" button because there is nothing to dismiss: claiming costs nothing.
  *
  * ⚠️ THE RANKED PODIUM IS THE SPECIAL ONE, AND IT LOOKS IT (owner: "the most prestigious
- * reward … make it look special"). Its card takes the metal of the placement — a glow behind a
- * large crest, the headline a size up — while a record award is the plainer violet card, and
+ * reward … make it look special"). Its card takes the metal of the placement — the card's edge
+ * in the metal, a large crest, the headline a size up (no glow: design review 06-15) — while a record award is the plainer violet card, and
  * anything else is the neutral one. The difference is in the TIER class and nothing else, so
  * the three cannot drift apart structurally.
  */
@@ -135,6 +135,17 @@ export function RewardCard({
   const tier = lead ? BADGE_TIER[lead] : grant.reason.kind === 'stargazer' ? 'plain' : 'record';
   const headId = `rw-h-${grant.id}`;
   const firstAward = titles.map(parseAwardTitleId).find(Boolean) ?? null;
+  const hero = lead ? (
+    <BadgeArt id={lead} n={(counts[lead] ?? 0) + 1} size="xl" />
+  ) : firstAward ? (
+    <AwardBadge award={firstAward} size="lg" />
+  ) : cosmetics.includes('decal:star') ? (
+    <DecalPreview id="decal:star" size="xl" />
+  ) : null;
+  // THE LIST ONLY WHEN IT ADDS SOMETHING (design review 06-15): a one-item grant is already
+  // drawn by the hero and said by the headline, and listing it repeated the hero at small size.
+  // It stays when there is no hero (a lone ledger title has no large form) so nothing goes undrawn.
+  const showItems = titles.length + badges.length + cosmetics.length > 1 || !hero;
 
   return (
     <div className="ds-modal-backdrop rw-backdrop" role="presentation">
@@ -157,16 +168,10 @@ export function RewardCard({
 
         {/* THE HERO — the one thing this card is about, drawn large */}
         <div className="rw-hero" aria-hidden="true">
-          {lead ? (
-            <BadgeArt id={lead} n={(counts[lead] ?? 0) + 1} size="xl" />
-          ) : firstAward ? (
-            <AwardBadge award={firstAward} size="lg" />
-          ) : cosmetics.includes('decal:star') ? (
-            <DecalPreview id="decal:star" size="xl" />
-          ) : null}
+          {hero}
         </div>
 
-        <p className="rw-kicker">Reward earned</p>
+        {/* no "Reward earned" kicker: the eyebrow and the headline already say it (06-15) */}
         <h2 className="ds-dialog-title rw-h" id={headId}>
           {rewardHeadline(grant)}
         </h2>
@@ -177,39 +182,41 @@ export function RewardCard({
         </ul>
 
         {/* WHAT IS IN IT — every item, as it will actually appear */}
-        <ul className="rw-items" aria-label="What you get">
-          {titles.map((id) => {
-            const award = parseAwardTitleId(id);
-            return (
+        {showItems && (
+          <ul className="rw-items" aria-label="What you get">
+            {titles.map((id) => {
+              const award = parseAwardTitleId(id);
+              return (
+                <li key={id}>
+                  <span className="rw-item-mark">{award ? <AwardBadge award={award} /> : <TitleChip id={id} />}</span>
+                  <span className="rw-item-k">Title</span>
+                  <span className="rw-item-v">{rewardTitleText(id, grant.reason)}</span>
+                </li>
+              );
+            })}
+            {badges.map((id: BadgeId) => (
               <li key={id}>
-                <span className="rw-item-mark">{award ? <AwardBadge award={award} /> : <TitleChip id={id} />}</span>
-                <span className="rw-item-k">Title</span>
-                <span className="rw-item-v">{rewardTitleText(id, grant.reason)}</span>
+                <span className="rw-item-mark">
+                  <BadgeArt id={id} n={(counts[id] ?? 0) + 1} />
+                </span>
+                <span className="rw-item-k">Badge</span>
+                <span className="rw-item-v">
+                  {rewardBadgeText(id, (counts[id] ?? 0) + 1)}
+                  <span className="rw-item-sub">{BADGE_EARN[id]}</span>
+                </span>
               </li>
-            );
-          })}
-          {badges.map((id: BadgeId) => (
-            <li key={id}>
-              <span className="rw-item-mark">
-                <BadgeArt id={id} n={(counts[id] ?? 0) + 1} />
-              </span>
-              <span className="rw-item-k">Badge</span>
-              <span className="rw-item-v">
-                {rewardBadgeText(id, (counts[id] ?? 0) + 1)}
-                <span className="rw-item-sub">{BADGE_EARN[id]}</span>
-              </span>
-            </li>
-          ))}
-          {cosmetics.map((id) => (
-            <li key={id}>
-              <span className="rw-item-mark">
-                <DecalPreview id={id} size="sm" />
-              </span>
-              <span className="rw-item-k">Decal</span>
-              <span className="rw-item-v">{cosmeticWords(id)}</span>
-            </li>
-          ))}
-        </ul>
+            ))}
+            {cosmetics.map((id) => (
+              <li key={id}>
+                <span className="rw-item-mark">
+                  <DecalPreview id={id} size="sm" />
+                </span>
+                <span className="rw-item-k">Decal</span>
+                <span className="rw-item-v">{cosmeticWords(id)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
 
         {error && <p className="ds-hint warn rw-err">Couldn’t claim that. Check your connection and try again.</p>}
 

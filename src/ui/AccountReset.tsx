@@ -97,8 +97,8 @@ function RequestLink() {
             <div id="ds-reset-email-err" className={`ds-form-hint${error ? ' err' : ''}`} role="alert">
               {error}
             </div>
-            <button className="ds-btn primary" type="submit" disabled={busy}>
-              {busy ? 'Sending…' : 'Send reset link'}
+            <button className={`ds-btn primary${busy ? ' busy' : ''}`} type="submit" disabled={busy} aria-busy={busy}>
+              Send reset link
             </button>
           </form>
         )}
@@ -195,8 +195,8 @@ function SetNewPassword({ token, onAccount }: { token: string; onAccount: () => 
           <div id="ds-reset-pw-msg" className={`ds-form-hint${message ? ' err' : ''}`} aria-live="polite">
             {message}
           </div>
-          <button className="ds-btn primary" type="submit" disabled={!canSubmit}>
-            {busy ? 'Saving…' : 'Set password'}
+          <button className={`ds-btn primary${busy ? ' busy' : ''}`} type="submit" disabled={!canSubmit} aria-busy={busy}>
+            Set password
           </button>
         </form>
         {failed?.reason === 'invalid-token' && (
