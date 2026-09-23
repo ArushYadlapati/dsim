@@ -1875,13 +1875,13 @@ button.ds-key:where(:not(:disabled)):active,
   background: color-mix(in srgb, var(--ds-accent) 12%, transparent);
 }
 /* ---- play tiles ------------------------------------------------------ */
-/* auto-FILL, not auto-fit (the `.ds-opts.fill` reasoning): /modes stacks three of these,
-   and auto-fit stretched each to its OWN item count — 455px tiles, then 298, then 455 — so
-   no column edge lined up with the row above it (design review 02-11). Kept empty tracks
-   give every section the same column rhythm. */
+/* auto-FIT, main's sizing (owner, 2026-09-23): the tiles in a set stretch to fill the row.
+   Design review 02-11 had made it auto-fill so column edges lined up across sets, which
+   left each two-tile set as two narrow tiles and an empty track; the owner wants main's
+   size back. */
 .ds-tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   gap: 14px;
 }
 .ds-tile {
@@ -1893,16 +1893,14 @@ button.ds-key:where(:not(:disabled)):active,
   background: var(--ds-tile);
   color: var(--ds-ink);
   padding: 16px 18px;
-  /* Top-aligned, NOT space-between: a tile is its title (+ an optional disabled-reason).
-     space-between bottom-pinned the title, so a tile with a reason (taller) and one without
-     landed their titles at DIFFERENT heights across a row. Stacking from the top keeps every
-     title on the same line; the grid stretches a row-mate to the one carrying a reason.
-     NO KICKER. Each tile used to open with a mono eyebrow — SOLO over "Solo Practice",
-     RECORDS over "Solo Record", LIVE over "Watch Live" — which said the title again, or said
-     the set's own label ("Compete · online") again, in smaller type. */
+  /* MAIN'S HEIGHT (owner, 2026-09-23): 78px is what a kicker + title measured on main.
+     NO KICKER, for good (owner): the mono eyebrow — SOLO over "Solo Practice", LIVE over
+     "Watch Live" — said the title again. So the title (+ an optional disabled-reason) is
+     CENTRED in the 78px rather than hugging its top edge. */
+  min-height: 78px;
   display: flex;
   flex-direction: column;
-  justify-content: flex-start;
+  justify-content: center;
   cursor: pointer;
   font: inherit;
   /* Level-1 card: flat fill, 1px stroke, hard offset block toward the bottom-right
