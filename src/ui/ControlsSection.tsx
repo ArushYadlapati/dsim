@@ -92,7 +92,7 @@ const joinAnd = (xs: readonly string[]): string =>
  * WHAT A MAIN EDIT TOOK FROM A ROW THE ALL GAMES SCOPE DOES NOT SHOW. Putting Shoot on C takes C
  * off Catalyst and off Place POLLEN, and neither is on this screen — they are in their seasons'
  * scopes. The steal is right (they would fire together otherwise); doing it silently is not, so
- * the line under the scope switch names every row that lost the bind, and the season buttons
+ * the edited row's card title names every row that lost the bind, and the season buttons
  * carry a mark while a row of theirs has none.
  */
 function lossNotice(
@@ -122,6 +122,24 @@ function lossNotice(
 /** a season scope may not take a bind from a shared control — the one line that says so */
 const refusal = (label: string, holder: KeyAction, device: 'key' | 'pad'): string =>
   `Couldn’t bind ${label}: every season uses it for ${ACTION_LABELS[holder]}. Pick another ${device === 'key' ? 'key' : 'button'}.`;
+
+/** a message and the card whose TITLE it stands in for — the card holding the row it is about */
+interface Notice {
+  text: string;
+  panel: BindPanel['id'];
+}
+
+/** how long a confirmation holds a card title before the title comes back. A PROMPT (a slot is
+ *  armed) is not a notice and holds for as long as the slot does. */
+const NOTICE_MS = 4000;
+
+/** the card that lists `action` in this scope. A season scope is one card; in All games each
+ *  action is in exactly one (`controlsLayout.ts`). */
+const panelFor = (action: KeyAction, game: GameId | null): BindPanel['id'] =>
+  game
+    ? seasonPanel(game).id
+    : (ALL_GAMES_PANELS.find((p) => p.keys.includes(action) || (p.pads as readonly KeyAction[]).includes(action))?.id ??
+      'mechanisms');
 
 /** one pad slider row, the `.ds-field` shape Audio and Graphics use */
 function PadSlider({
@@ -169,10 +187,17 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
   const [scope, setScope] = useState<Scope>('all');
   const coarse = useCoarsePointer();
   const [capture, setCapture] = useState<Capture | null>(null);
-  /** the one status line under the scope switch: a refused bind, or what a main edit took from
-   *  a row this scope does not show. `null` holds the line EMPTY but present, so a message never
-   *  pushes the panels down. */
-  const [notice, setNotice] = useState<string | null>(null);
+  /** a confirmation, a refused bind, or what a main edit took from a row this scope does not
+   *  show — shown IN PLACE OF the title of the card the edit was made in, so it costs no line of
+   *  its own and moves nothing (owner, 2026-09-23: the empty line it used to hold under the scope
+   *  switch was most of the gap between the switch and the first card). Clears after
+   *  `NOTICE_MS`. */
+  const [notice, setNotice] = useState<Notice | null>(null);
+  useEffect(() => {
+    if (!notice) return;
+    const t = window.setTimeout(() => setNotice(null), NOTICE_MS);
+    return () => window.clearTimeout(t);
+  }, [notice]);
   /** the buttons held so far while a PAD slot is capturing, in the order they went down —
    *  shown live on the status line so a driver sees the combo build (`RT + …`). NOT on the
    *  keycap: a cap that grew to fit it moved every cap to its left (§1.4). */
@@ -241,7 +266,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         }
         const b0 = cloneBindings(bindingsRef.current);
         onChangeRef.current({ ...b0, pad: { ...b0.pad, menuButton: i } });
-        setNotice(`Menu: ${padButtonLabel(i)}`);
+        setNotice({ text: `Menu: ${padButtonLabel(i)}`, panel: 'match' });
         setMenuCapture(false);
         return;
       }
@@ -274,7 +299,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
           ? removePadBindInGame(b, g, c.action, c.slot)
           : removePadBind(b, c.action, c.slot),
     );
-    setNotice(`${ACTION_LABELS[c.action]}: bind removed`);
+    setNotice({ text: `${ACTION_LABELS[c.action]}: bind removed`, panel: panelFor(c.action, g) });
     setCapture(null);
   };
 
@@ -298,21 +323,24 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
       }
       if (capture.kind !== 'key') return;
       const k = e.key.toLowerCase();
+      const panel = panelFor(capture.action, g);
       if (g) {
         // REFUSED, AND STILL ARMED: the next key the player tries lands on the same slot
         const holder = sharedKeyHolder(b, k);
         if (holder) {
-          setNotice(refusal(keyName(k), holder, 'key'));
+          setNotice({ text: refusal(keyName(k), holder, 'key'), panel });
           return;
         }
         onChangeRef.current(assignKeyInGame(b, g, capture.action, capture.slot, k));
-        setNotice(`${ACTION_LABELS[capture.action]}: ${keyName(k)}`);
+        setNotice({ text: `${ACTION_LABELS[capture.action]}: ${keyName(k)}`, panel });
       } else {
         const next = assignKey(b, capture.action, capture.slot, k);
         // what it took from a hidden row if anything, else the confirmation "<action>: W"
-        setNotice(
-          lossNotice(b, next, 'key', keyName(k), seasonsRef.current) ?? `${ACTION_LABELS[capture.action]}: ${keyName(k)}`,
-        );
+        setNotice({
+          text:
+            lossNotice(b, next, 'key', keyName(k), seasonsRef.current) ?? `${ACTION_LABELS[capture.action]}: ${keyName(k)}`,
+          panel,
+        });
         onChangeRef.current(next);
       }
       setCapture(null);
@@ -335,13 +363,14 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     let raf = 0;
     let chord: number[] = [];
     /** true when the capture is over; false when it was refused and stays armed */
+    const panel = panelFor(action, game);
     const commit = (): boolean => {
       const b = bindingsRef.current;
       const sorted = [...chord].sort((x, y) => x - y);
       if (game) {
         const holder = sharedPadHolder(b, sorted);
         if (holder) {
-          setNotice(refusal(padBindLabel(sorted), holder, 'pad'));
+          setNotice({ text: refusal(padBindLabel(sorted), holder, 'pad'), panel });
           // re-arm: whatever is still held is swept into `alreadyDown` on the next frame, so
           // only a fresh press can start the next attempt
           chord = [];
@@ -350,13 +379,15 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
           return false;
         }
         onChangeRef.current(assignPadBindInGame(b, game, action, slot, chord));
-        setNotice(`${ACTION_LABELS[action]}: ${padBindLabel(sorted)}`);
+        setNotice({ text: `${ACTION_LABELS[action]}: ${padBindLabel(sorted)}`, panel });
       } else {
         const next = assignPadBind(b, action, slot, chord);
-        setNotice(
-          lossNotice(b, next, 'pad', padBindLabel(sorted), seasonsRef.current) ??
+        setNotice({
+          text:
+            lossNotice(b, next, 'pad', padBindLabel(sorted), seasonsRef.current) ??
             `${ACTION_LABELS[action]}: ${padBindLabel(sorted)}`,
-        );
+          panel,
+        });
         onChangeRef.current(next);
       }
       done = true;
@@ -486,8 +517,30 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
    *  the actions it does not use already gone). Editing routes by `game`, not by this. */
   const view = game ? effectiveBindings(bindings, game) : bindings;
 
+  /**
+   * THE LIVE LINE, and the card it belongs to: it prompts while a slot is armed ("Press a key for
+   * Forward…"), shows a pad combo as it builds ("Intake: RT + …"), and otherwise shows the last
+   * notice. It takes the place of that card's TITLE, so capture is not announced by a keycap's
+   * text alone and nothing on the page moves to make room for it.
+   */
+  const live: Notice | null = capture
+    ? {
+        panel: panelFor(capture.action, game),
+        text:
+          capture.kind === 'pad' && chordSoFar.length > 0
+            ? `${ACTION_LABELS[capture.action]}: ${padBindLabel([...chordSoFar].sort((x, y) => x - y))} + …`
+            : `Press ${capture.kind === 'key' ? 'a key' : 'a button or combo'} for ${ACTION_LABELS[capture.action]}. Esc cancels${
+                capture.slot < (capture.kind === 'key' ? view.keys[capture.action].length : padBinds(view.pad, capture.action).length)
+                  ? ', Backspace removes'
+                  : ''
+              }.`,
+      }
+    : menuCapture
+      ? { panel: 'match', text: 'Press a gamepad button for Menu. Esc cancels.' }
+      : notice;
+
   const pad = bindings.pad;
-  const setPad = (patch: Partial<PadBindings>): void => {
+  const setPad =(patch: Partial<PadBindings>): void => {
     const b = cloneBindings(bindings);
     onChange({ ...b, pad: { ...b.pad, ...patch } });
   };
@@ -554,10 +607,18 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
 
   /** a bind panel: the keyboard and the gamepad side by side, one column each (stacked on a
    *  phone, where `.ds-binds` drops to one track) */
-  const bindPanel = (p: BindPanel) => (
+  const bindPanel = (p: BindPanel) => {
+    const msg = live?.panel === p.id ? live.text : null;
+    return (
     <section className="ds-panel" key={`${p.id}-${game ?? 'all'}`}>
       <div className="ds-panel-h">
-        <h2 className="ds-panel-title">{p.title}</h2>
+        {/* THE TITLE SLOT CARRIES THE LIVE LINE (see `live`). The heading keeps its name for a
+            screen reader in `.ds-sr`; the status region is always present, so a message that
+            arrives is announced rather than only drawn. */}
+        <h2 className={`ds-panel-title${msg ? ' notice' : ''}`} title={msg ?? undefined}>
+          <span className={msg ? 'ds-sr' : undefined}>{p.title}</span>
+          <span role="status">{msg}</span>
+        </h2>
       </div>
       <div className="ds-panel-body">
         <div className="ds-binds">
@@ -634,7 +695,8 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         </div>
       </div>
     </section>
-  );
+    );
+  };
 
   /* TOUCH CONTROLS + TUTORIAL: ONE PANEL, TWO ROWS (design review 04-09). They were two
      head-only cards a section gap apart, one button each. TOUCH CONTROLS AT THE TOP (owner,
@@ -668,49 +730,29 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
       {/* THE SCOPE SWITCH, first, because it decides what everything under it is. A season's
           button carries a mark while one of its own rows has no bind — see `lossNotice` for how
           that happens without the player ever opening that season. */}
-      <div className="ds-bind-scope">
-        <div className="ds-segs" role="group" aria-label="Which games these binds are for">
-          <button
-            className={`ds-seg ${scope === 'all' ? 'on' : ''}`}
-            aria-pressed={scope === 'all'}
-            onClick={() => switchScope('all')}
-          >
-            All games
-          </button>
-          {seasons.map((s) => {
-            const unbound = seasonUnbound(bindings, s.key).length;
-            return (
-              <button
-                key={s.key}
-                className={`ds-seg ${scope === s.key ? 'on' : ''}`}
-                aria-pressed={scope === s.key}
-                aria-label={unbound ? `${s.name}, ${unbound} without a bind` : undefined}
-                onClick={() => switchScope(s.key)}
-              >
-                {s.name}
-                <span className={`ds-seg-dot${unbound ? ' lit' : ''}`} aria-hidden="true" />
-              </button>
-            );
-          })}
-        </div>
-        {/* THE ONE LIVE LINE: it prompts while a slot is armed ("Press a key for Forward…"), shows
-            a pad combo as it builds ("Intake: RT + …") and confirms after ("Forward: W"), so
-            capture is not announced by a keycap's text alone. At rest it is an empty line that
-            holds its height; the standing "Backspace removes" hint went when the `×` cap came. */}
-        <p className="ds-hint" role="status">
-          {notice ??
-            (capture
-              ? capture.kind === 'pad' && chordSoFar.length > 0
-                ? `${ACTION_LABELS[capture.action]}: ${padBindLabel([...chordSoFar].sort((x, y) => x - y))} + …`
-                : `Press ${capture.kind === 'key' ? 'a key' : 'a button or combo'} for ${ACTION_LABELS[capture.action]}. Esc cancels${
-                    capture.slot < (capture.kind === 'key' ? view.keys[capture.action].length : padBinds(view.pad, capture.action).length)
-                      ? ', Backspace removes'
-                      : ''
-                  }.`
-              : menuCapture
-                ? 'Press a gamepad button for Menu. Esc cancels.'
-                : '\u00a0')}
-        </p>
+      <div className="ds-bind-scope ds-segs" role="group" aria-label="Which games these binds are for">
+        <button
+          className={`ds-seg ${scope === 'all' ? 'on' : ''}`}
+          aria-pressed={scope === 'all'}
+          onClick={() => switchScope('all')}
+        >
+          All games
+        </button>
+        {seasons.map((s) => {
+          const unbound = seasonUnbound(bindings, s.key).length;
+          return (
+            <button
+              key={s.key}
+              className={`ds-seg ${scope === s.key ? 'on' : ''}`}
+              aria-pressed={scope === s.key}
+              aria-label={unbound ? `${s.name}, ${unbound} without a bind` : undefined}
+              onClick={() => switchScope(s.key)}
+            >
+              {s.name}
+              <span className={`ds-seg-dot${unbound ? ' lit' : ''}`} aria-hidden="true" />
+            </button>
+          );
+        })}
       </div>
     </>
   );

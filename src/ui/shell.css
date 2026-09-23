@@ -2276,6 +2276,21 @@ button.ds-key:where(:not(:disabled)):active,
   text-transform: uppercase;
   color: var(--ds-mut);
 }
+/* THE TITLE STANDING IN FOR A STATUS LINE (Controls: "Press a key for Park mode…" where DRIVING
+   was). Sentence-case UI type in the accent, so it reads as a message and not a heading. The
+   font SIZE is the title's and the line-height is left inherited, the same as the title's, so
+   the head does not change height when it swaps. One line: a long notice ellipsises and its
+   full text is the `title` attribute and the status region. */
+.ds-panel-title.notice {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--ds-font-ui);
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ds-accent);
+}
 /* A PANEL THAT IS ONLY ITS HEAD — a title and its one action (Controls ▸ Touch controls and
    Tutorial). The head's own bottom rule would otherwise sit on the card's bottom border. */
 .ds-panel > .ds-panel-h:last-child {
@@ -5701,14 +5716,6 @@ a.ds-cta {
 }
 
 /* ---- rebindable controls (keycaps) ---------------------------------- */
-/* THE SCOPE SWITCH and the one status line under it — a refused bind, or what a main edit took
-   from a row the current scope does not show. The line is ALWAYS there (an empty line when there
-   is nothing to say), so a message never pushes the panels down. */
-.ds-bind-scope {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-2);
-}
 /* Controls ▸ the Touch controls / Tutorial panel: label · button rows (04-09). The rule
    between rows is the second row's, so one row alone has none. */
 .ds-ctl-row {
@@ -5765,11 +5772,11 @@ a.ds-cta {
    an afterthought. Two by two instead, the `.ds-segs.even` argument with a wider floor so that
    "Chain Reaction" keeps to one line. */
 @media (max-width: 640px) {
-  .ds-bind-scope > .ds-segs {
+  .ds-bind-scope.ds-segs {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   }
-  .ds-bind-scope > .ds-segs > .ds-seg {
+  .ds-bind-scope.ds-segs > .ds-seg {
     text-align: center;
   }
 }
