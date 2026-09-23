@@ -1,3 +1,43 @@
+# HANDOFF — 2026-09-23 (design review 2026-09-22 resolved, waves 1–8)
+
+**State: green, committed on `alpha`, NOT pushed.** `build`, `npm test` (known perf flakes only: `PREDICT_FULL_BUDGET`, BIOBUZZ `step3d` median/p95, the Auto probe and ROOM tick under load; rerun once), `uiaudit`, `contrast` (393 checks), `docaudit` and `server:check` pass. `shiftaudit` 0 shifts over 646 states; `audit.cjs` 0 FAIL · 25 WARN per theme (was 31).
+
+`docs/design-review-2026-09-22.md` is committed, with **§7 Resolution**: all 471 IDs are fixed (file:line) or closed (with a reason). Commits: W1 `5f814ea` correctness · W2 `916c726` a11y semantics · W3 `293a019` contrast/tokens · W4 `318237a` interaction/components · W5 `9b9a0fc` mobile/layout · merge `4469a55` · W6 `28543e8` HUD/game parity/tutorial · W7 `8104901` copy · W7x+W8 `17d8149` replay, builder polish, contract docs.
+
+**The merge.** While the W6 agents were rate-limited, a pull of origin/alpha (the owner's builder-hero rebuild, 06f8971/83a6aec/dfe1084) was left mid-merge, with conflicts in shell.css, Menu, Lobby, tutorial.css and uiaudit. It was resolved as `4469a55`, keeping upstream's structure. RobotCard's nested delete button was re-done as a sibling slot (C09), and the hero was kept flat.
+
+New shared pieces worth knowing (docs/area/ui.md has the rules):
+- the shared dialog hook
+- `resolveHint` (the tutorial hint collapses an unbound key once, in `runner.view` and in `hintText`)
+- `timerPanel.ts`
+- the `.ds-badge` family
+- `.ds-sr` (one definition)
+- `.ds-danger` error ink
+- the `font-inherit-mix` uiaudit rule
+- the replay speed strip and Space/←/→ keys (new functionality, 09-03)
+
+## Open, owner calls (not done)
+- **19-18:** `bbLiftKindLabel` says OFFSET™. This is sponsor-terms naming, and smoke `core.ts:633` pins it.
+- **C44:** `.lb-standing` radius. The owner's own 4a1d7ee edit was kept.
+- **07-09:** the Records information architecture.
+- **`settings.ts:134,174`:** every game's loadout is seeded from DECODE's `DEFAULT_SPEC`. A fresh BIOBUZZ loadout should probably use `BB_DEFAULT_SPEC`.
+- **Chain disclaimer:** it now shows only on the first Play via the modes screen. Other routes to a first Chain match skip it.
+- **AuthPanel:** the Display name field is gone, so display name = username (08-10).
+- **Builder preset tag:** says "Real robot", not "Real team". StarterBot is a kit.
+- **Pad-only bind removal:** a gamepad-only user cannot remove a binding.
+- **WatchLive badges:** need a server field. The phaseLabel keeps "Autonomous/Final", left as is.
+- **`api.ts searchUsers`:** swallows errors by design, so older servers read as "no results".
+
+## Gotchas / device checks
+- **`--ds-gold`** is still used for non-reward type at a few sites. The code comments mark them for `--ds-warn`.
+- **`.fr-toggle-label`** is a visually-hidden rule local to Friends. Fold it into `.ds-sr` when next there.
+- **Phone HUD, portrait 2D:** the status card overlaps the field's top corner by ~26–58px (accepted: it floats over the corner).
+- **Phone HUD, landscape:** a DESYNC chip can push the cluster into the breakdown chips (transient).
+- **Landscape phone `.eventlog`:** at top 52 / left 14 it overlaps the stacked MENU/RESET column. This predates the review and is now ~7px taller. It needs a phone position.
+- **Optional follow-up:** extract a ConsoleHead for RecordRun/MatchStrategy/Lobby/Matchmaking (02-01).
+
+---
+
 # HANDOFF — 2026-09-22f (logos out, HUD, box tube, bots, controls, rewards, robot cards)
 
 **State: green, all on `origin/alpha` (tip `83a6aec`).** `npm test`, `build`, `server:check`,
