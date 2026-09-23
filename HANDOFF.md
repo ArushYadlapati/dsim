@@ -1,3 +1,30 @@
+# HANDOFF — 2026-09-23b (owner polish: home, hints, play tiles, privacy, queue spacing)
+
+**State: green, committed on `alpha`, NOT pushed.** `build`, `uiaudit`, `contrast` and `docaudit` pass. `npm test`: 5019 checks, and the only failures are the known perf flakes under load (`PREDICT_FULL_BUDGET` ×3, the Auto probe, and BIOBUZZ `step3d` median/p95). Two LAN source-grep checks were updated for `ConsoleHead`. Electron screenshots (desk light, phone dark) of home, /modes, /configure, /privacy and Custom room look right.
+
+What changed, all by owner request:
+- **Home:** the season lines are gone: "BIOBUZZ presented by RTX · FIRST Tech Challenge 2026–27" under the switcher (`.ds-home-season`) and "… · 2026–27" in the footer (`.ds-foot-season`). The social pills now sit between the game switcher and the menu. `docs/area/sponsor.md` is updated.
+- **Hint lines are back.** They show on the home keycaps (`.mh`), the left rail (`.rh`, which hides when the rail turns horizontal, and Home/Admin have hints too) and the Configure sub-nav (`.sh`, all six sections). This reverses b7009c4's cut.
+- **Play tiles** are main's size again: `auto-fit` grid and `min-height: 78px`, with the title centred. The kickers (SOLO / PRACTICE …) stay removed **for good** (owner).
+- **"Privacy & cookie settings" → "Data".** The footer link, the policy text that names it (`legalText.ts`) and the doc comments are updated.
+- **/privacy:**
+  - The policy card and "Your data" share one column (`.ds-legal-col` is `fit-content` to the policy card, and the rest takes `contain: inline-size`). Before this the page had two right edges.
+  - `#your-data` now scrolls on a fresh load.
+  - `<Announcements>` stands down on the legal pages, like the gates.
+  - Stale copy is fixed ("mailbox at the bottom of it", and the markdown header note).
+- **Queue/join pages** (Ranked, Record run, Custom room entry/room/builder, Match strategy, LAN, Discord lobbies) share the new `src/ui/ConsoleHead.tsx`. This is design review 02-01. There is one owner per gap:
+  - The `.ds-console-in` gap is `--ds-s-5` and nothing in the column adds a margin: `.ds-sub` and the `.ds-panel + .ds-panel` pair are zeroed.
+  - The title and its sub are one `.ds-title` group, 8px apart.
+  - `.ds-sub-tight` is gone.
+  - Head, actions, strategy cards and players are on tokens.
+  - RecordRun's in-panel loading line is a `.ds-hint`.
+  - `off-grid-gap` baseline is 117 → 112.
+- WatchLive was NOT converted: it is a shell page (inside `.ds-main`), not a console page.
+
+Open: the policy says ad requests are ALWAYS tagged for users under the age of consent (`legalText.ts` ~316), but `YourData` says so only when `AD_TFUAC` is set. That is an owner/legal call. Note also that `node_modules` was re-synced with `npm ci` (three, rapier3d and the discord SDK were missing).
+
+---
+
 # HANDOFF — 2026-09-23 (design review 2026-09-22 resolved, waves 1–8)
 
 **State: green, committed on `alpha`, NOT pushed.** `build`, `npm test` (known perf flakes only: `PREDICT_FULL_BUDGET`, BIOBUZZ `step3d` median/p95, the Auto probe and ROOM tick under load; rerun once), `uiaudit`, `contrast` (393 checks), `docaudit` and `server:check` pass. `shiftaudit` 0 shifts over 646 states; `audit.cjs` 0 FAIL · 25 WARN per theme (was 31).
