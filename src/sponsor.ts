@@ -10,11 +10,10 @@
  *     DSIM                                               (the app)
  *     …presented by Offset Robotics                      (this module)
  *     [ DECODE | Chain Reaction | BIOBUZZ ]              (the game switcher)
- *     BIOBUZZ presented by RTX · FIRST Tech Challenge 2026–27   (the season, muted)
  *
- * and both stay true at once. The footer keeps the same split: `DSIM` + the sponsor
- * mark are one brand run, and the season is its own item (`.ds-foot-season`), so the
- * line never reads as Offset presenting the game.
+ * The season's own presenter (RTX, goBILDA) is no longer printed on the shell (owner,
+ * 2026-09-23). The footer's brand run is `DSIM` + the sponsor mark; never append the
+ * season to it, or the line reads as Offset presenting the game.
  *
  * DOM-FREE ON PURPOSE. The artwork is imported through Vite in
  * `src/ui/sponsorAssets.ts`, because the Electron build runs from `file://` with

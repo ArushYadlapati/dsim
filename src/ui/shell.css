@@ -1202,7 +1202,7 @@
 .ds-home-games {
   justify-content: center;
   gap: var(--ds-s-2);
-  margin: 0 0 var(--ds-s-2);
+  margin: 0 0 var(--ds-s-4);
 }
 .ds-home-games .ds-seg {
   font-size: var(--ds-t-lg);
@@ -1212,21 +1212,14 @@
 .ds-home-games .ds-seg.on {
   border-color: var(--ds-accent);
 }
-/* one muted line of the loaded season's identity under the switcher (22-05). Mixed case on
-   purpose: `fullNameOf` carries goBILDA, which an uppercase transform would flatten. */
-.ds-home-season {
-  margin: 0 0 var(--ds-s-5);
-  font-size: var(--ds-t-md);
-  color: var(--ds-mut);
-}
-/* Discord / Instagram / GitHub — outbound, so AFTER the menu (01-02). They WRAP: three pills
-   no longer fit side by side on the narrowest phones. */
+/* Discord / Instagram / GitHub — between the game switcher and the menu (owner, 2026-09-23,
+   reversing 01-02). They WRAP: three pills no longer fit side by side on the narrowest phones. */
 .ds-home-links {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   gap: 10px;
-  margin: var(--ds-s-5) 0 0;
+  margin: 0 0 var(--ds-s-5);
 }
 /* "Join Discord Lobby" — only rendered inside a Discord Activity, as the FIRST
    item in the home content flow. It was `position: fixed` top-left, but on the
@@ -1516,9 +1509,6 @@
   align-items: center;
   gap: var(--ds-s-1) var(--ds-s-4);
 }
-/* the season sits between brand and links (`space-between`), in the brand's face (22-04) —
-   the UI face, as the home page prints the same season line (`.ds-home-season`). No rule of
-   its own: it inherits the footer's. */
 /* WRAP. `.ds-foot` itself wraps, so the brand and the links already stack on a
    phone — but this row did not, and it is a flex row whose contents outgrew the
    viewport: it went from four links (Download / Contributors / Changes / Discord)

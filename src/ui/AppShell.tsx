@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { showConsentSettings } from '../ads/adsense';
-import { APP_NAME, fullNameOf, seasonFor } from '../seasons';
+import { APP_NAME, seasonFor } from '../seasons';
 import { SUPPORT_ENABLED } from '../net/env';
 import { useLanEnabled } from './useLanEnabled';
 import type { GameId } from '../games/types';
@@ -93,7 +93,7 @@ export function AppShell({
   /** the signed-in account's own user id — drives the panel's "Recently played"
    * suggestions (opponents/teammates from recent matches you can friend) */
   myUserId?: string | null;
-  /** the selected game — the footer names its season (DECODE / Chain Reaction) */
+  /** the selected game — the app bar names its season, and footer links carry its URL prefix */
   game: GameId;
 }) {
   const lanOn = useLanEnabled();
@@ -187,12 +187,6 @@ export function AppShell({
               announces it; this is the standing credit that makes "presented by"
               a property of the product rather than of its landing page. */}
           <SponsorFooterMark />
-        </span>
-        {/* THE SEASON, as its own footer item (design review 22-04). It used to sit inside the
-            brand run, so "DSIM · BIOBUZZ 2026–27 PRESENTED BY OFFSET" read as Offset presenting
-            the game. The season's presenter is FIRST's (RTX, goBILDA) and says so here. */}
-        <span className="ds-foot-season">
-          {fullNameOf(season)} · {season.years}
         </span>
         <span className="ds-foot-links">
           {/* TWO GROUPS, by position and weight: the product's own destinations at the
