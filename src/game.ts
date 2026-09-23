@@ -17,7 +17,8 @@ import type {
   GameSettings,
 } from './types';
 import * as C from './config';
-import { DEFAULT_ASSISTS, DEFAULT_SPEC, type RobotSetup } from './sim/spawn';
+import type { RobotSetup } from './sim/spawn';
+import { practiceSetups } from './settings';
 import { moduleFor, gameOf } from './games';
 import { TutorialRunner } from './tutorial/runner';
 import { markTutorialSeen } from './tutorial/flag';
@@ -680,8 +681,8 @@ export class GameController {
   // on `World` would be snapshotted, reconciled and replayed; these live here, are disposed on
   // every rebuild, and nothing downstream knows they exist.
 
-  /** live AI drivers for the solo world, keyed by robot id. Empty online, in free drive, and
-   *  whenever `practiceBots` is `'off'` — which is the default. */
+  /** live AI drivers for the solo world, keyed by robot id. Empty online, and
+   *  while no practice seat is AI — which is the default. */
   private readonly bots = new Map<number, { step(w: World): RobotCommand; dispose?(): void }>();
   /**
    * THE TUTORIAL IN FLIGHT, or null — which is every other run this controller has ever done.
@@ -1062,73 +1063,13 @@ export class GameController {
         autoPathEnabled: s.autoPathEnabled,
       },
     ];
-    if (s.mode === 'free' && s.practiceDummies) {
-      // three idle default robots as physical obstacles / parking practice
-      const opp: Alliance = s.alliance === 'blue' ? 'red' : 'blue';
-      const dummy = (id: number, alliance: Alliance, startIndex: number): RobotSetup => ({
-        id,
-        alliance,
-        spec: { ...DEFAULT_SPEC, name: `Dummy ${id}`, teamName: 'Practice', teamNumber: 0 },
-        // inert: `passive` makes the sim skip ALL their action compute (turret solve,
-        // flywheel, fire, intake) — they only ever exist to be bumped into. Aim assist is
-        // no longer switchable (coerceAssists forces it on) and would be moot here anyway.
-        assists: { ...DEFAULT_ASSISTS, autoIntake: false, autoFire: false },
-        startIndex,
-        passive: true,
-      });
-      setups.push(
-        // the partner dummy takes the OTHER preset so it never overlaps the player
-        dummy(1, s.alliance, s.startIndex === 1 ? 0 : 1),
-        dummy(2, opp, 0),
-        dummy(3, opp, 1),
-      );
-    }
-    /**
-     * OPPONENTS (plan §6): fill the empty seats of the format with bots of the chosen tier.
-     *
-     * The format is the one a room has — a 2v2 — so three seats: a partner and two opponents,
-     * ids 1..3, on the anchors the player is not using. SOLO PRACTICE ONLY (`mode: 'match'`),
-     * because a bot plays a MATCH: it reads the phase, the clock and the derived lists, and in
-     * free drive there is no match for it to play. Free drive keeps `practiceDummies`, which is
-     * a different thing on purpose — those are inert obstacles (`passive: true`), and the whole
-     * point of them is that they do nothing.
-     */
-    const botDriver = moduleFor(this.gameId).bot;
-    // COERCED AT THE POINT OF USE, by the driver that owns the tier list. `coerceSettings` keeps
-    // a stored tier verbatim while the active game has no driver (see its note), so the string
-    // reaching here may be another game's word for a difficulty — or one this game has since
-    // renamed. This is the place that can answer.
-    const stored = s.mode === 'match' ? (s.practiceBots ?? 'off') : 'off';
-    const botTier = stored === 'off' || !botDriver ? 'off' : botDriver.coerceTier(stored);
-    if (botTier !== 'off' && botDriver) {
-      const opp: Alliance = s.alliance === 'blue' ? 'red' : 'blue';
-      const anchors = moduleFor(this.gameId).startPoseCount;
-      // THE ROBOT IS THE DRIVER'S CHOICE: a game whose bot offers builds seats each bot on its
-      // own (`BotDriver.build`, deterministic in the match seed and the seat, so a restart is a
-      // new line-up and a replay carries the specs in its setups); a game without one keeps the
-      // shared default chassis.
-      const seat = (id: number, alliance: Alliance, startIndex: number): RobotSetup => ({
-        id,
-        alliance,
-        spec: botDriver.build?.({ seed, robotId: id, tier: botTier, alliance }) ?? {
-          ...DEFAULT_SPEC,
-          name: `${botTier} bot`,
-          teamName: 'AI',
-          teamNumber: 0,
-        },
-        assists: { ...DEFAULT_ASSISTS },
-        startIndex,
-      });
-      setups.push(
-        // the partner takes the anchor the player is NOT on, so the two never overlap
-        seat(1, s.alliance, s.startIndex === 1 ? 0 : 1),
-        seat(2, opp, 0),
-        seat(3, opp, Math.min(1, anchors - 1)),
-      );
-    }
+    // THE PRACTICE SEATS — partner, opponent 1, opponent 2 — in Solo practice AND Free drive
+    // (`practiceSetups`, DOM-free so `npm test` holds the line-up it builds)
+    const { setups: others, botTiers } = practiceSetups(s, this.gameId, seed);
+    setups.push(...others);
     this.soloSetups = setups;
     const world = build(s.mode, seed, setups, this.settings);
-    this.seatBots(world, seed, botTier);
+    this.seatBots(world, seed, botTiers);
     /**
      * THE TUTORIAL STAGES ITS STEP HERE, AND NOWHERE ELSE — tick 0, on a world nothing has
      * stepped, before the recorder could exist.
@@ -1151,7 +1092,7 @@ export class GameController {
    * `makeWorld` and nowhere else, which is the one place a world is replaced — so a rebuild can
    * never leave a driver pointed at a world that no longer exists.
    */
-  private seatBots(world: World, seed: number, tier: string): void {
+  private seatBots(world: World, seed: number, tiers: ReadonlyMap<number, string>): void {
     for (const b of this.bots.values()) {
       try {
         b.dispose?.();
@@ -1161,9 +1102,10 @@ export class GameController {
     }
     this.bots.clear();
     const drv = moduleFor(this.gameId).bot;
-    if (tier === 'off' || !drv) return;
+    if (!drv) return;
     for (const r of world.robots) {
-      if (r.id === this.localRobotId) continue;
+      const tier = tiers.get(r.id);
+      if (tier === undefined || r.id === this.localRobotId) continue;
       this.bots.set(r.id, drv.create(world, r.id, tier, (seed ^ ((r.id + 1) * 0x9e3779b1)) >>> 0));
     }
   }
@@ -3059,7 +3001,7 @@ export class GameController {
     this.audio.stopSpeech();
     this.audio.stopKeepAlive();
     // the solo AI seats: the caller owns their memory, so the caller gives it back
-    this.seatBots(this.world, this.soloSeed, 'off');
+    this.seatBots(this.world, this.soloSeed, new Map());
     cancelAnimationFrame(this.raf);
     if (this.simTimer) window.clearInterval(this.simTimer);
     this.input.detach();

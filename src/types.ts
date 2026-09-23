@@ -836,6 +836,16 @@ export interface GameLoadout {
   startMemory: { close: StartSel; far: StartSel };
 }
 
+/** one practice seat beside the player (`GameSettings.practiceSeats`). `tier` is kept while the
+ *  seat is not AI, so switching a seat Dummy → AI brings its difficulty back. */
+export type PracticeSeatKind = 'none' | 'dummy' | 'ai';
+export interface PracticeSeat {
+  kind: PracticeSeatKind;
+  tier: string;
+}
+/** partner, opponent 1, opponent 2 */
+export type PracticeSeats = [PracticeSeat, PracticeSeat, PracticeSeat];
+
 export interface GameSettings {
   /** which game the player has selected (DECODE / Chain Reaction). Drives spawn,
    * step, render, HUD, the builder, and the room/queue game key. Persists + syncs. */
@@ -893,6 +903,19 @@ export interface GameSettings {
    * ranked or record room refuses them outright.
    */
   practiceBots?: string;
+  /**
+   * WHO ELSE IS ON A PRACTICE FIELD, PER GAME: the three seats beside the player — partner,
+   * opponent 1, opponent 2, in that order — each None, a Dummy (an inert `passive` robot) or an
+   * AI driver at its own tier. Read by Solo practice AND Free drive. Absent, or absent for a game,
+   * is three None.
+   *
+   * A NEW SIBLING, like `bindings.perGame`: it supersedes `practiceBots` / `practiceDummies`,
+   * which stay in the blob untouched so an older client still reads the shape it knows. Per game
+   * because AI is one game's today, and an AI seat set there must not read as None in another
+   * game and come back cleared. The tier is opaque for the reason `practiceBots` gives, resolved
+   * through the game's own `coerceTier` where it is used.
+   */
+  practiceSeats?: Partial<Record<GameId, PracticeSeats>>;
   /** the ACTIVE resolved driver assists (what spawns + goes on the wire).
    * MIRRORED from `spec.assists`, which is where the preference is actually STORED — the
    * robot owns its assists, so loading a saved robot / preset / the other game's loadout

@@ -39,6 +39,7 @@ export function OptRow<T extends string | number | boolean>({
   cols,
   hint,
   mini,
+  disabled,
 }: {
   label?: string;
   value: T;
@@ -55,6 +56,10 @@ export function OptRow<T extends string | number | boolean>({
    * one bit. `ToggleRow` sets this whenever no side carries a description.
    */
   mini?: boolean;
+  /** the row EXISTS but does nothing right now (a difficulty for a seat that is not AI).
+   *  Greyed rather than removed, so the rows under it never move (§1.4). The picked tile
+   *  stays lit, so the row still says what it will be when it comes back. */
+  disabled?: boolean;
 }) {
   const grid = (
     <div className={`ds-opts${cols ? ` ${cols}` : ''}`}>
@@ -63,6 +68,7 @@ export function OptRow<T extends string | number | boolean>({
           key={String(o.v)}
           className={`ds-opt ${mini ? 'mini ' : ''}${value === o.v ? 'on' : ''}`}
           aria-pressed={value === o.v}
+          disabled={disabled}
           onClick={() => onPick(o.v)}
         >
           <span className="ot">{o.t}</span>

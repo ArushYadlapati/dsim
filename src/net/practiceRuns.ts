@@ -60,6 +60,13 @@ export interface PracticeRunMeta {
    * `uploadPracticeRun` documents on the POST.
    */
   view?: string;
+  /**
+   * HOW MANY OTHER ROBOTS WERE ON THE FIELD (`Match ▸ Practice`: dummies and AI seats), off the
+   * container's own setups. A score made beside an AI partner, or against defenders, is not a
+   * solo score, and the list says so. Absent on a run kept before this field, which was solo or
+   * one of the old all-three line-ups — unknown, so no mark.
+   */
+  others?: number;
 }
 
 const readIndex = (): PracticeRunMeta[] => {
@@ -137,6 +144,7 @@ export function savePracticeRun(replay: Replay, result: ReplayResult): PracticeR
     sim: replay.sim ?? 0,
     physics: replay.physics,
     view: getViewPref(),
+    others: Math.max(0, replay.setups.length - 1),
   };
 
   const body = JSON.stringify(replay);

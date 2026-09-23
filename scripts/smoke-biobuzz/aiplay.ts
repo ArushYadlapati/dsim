@@ -121,9 +121,10 @@ export function aiPlayChecks(check: Check): void {
   // default chassis again. A source check, because the Room half is only reachable through a
   // socket handshake this lane does not stand up (NET3D does, with a stub driver).
   {
-    const game = readFileSync(join(root, 'src', 'game.ts'), 'utf8');
+    // solo practice's seating is `practiceSetups` (settings.ts), DOM-free so smoke also drives it
+    const game = readFileSync(join(root, 'src', 'settings.ts'), 'utf8');
     const room = readFileSync(join(root, 'server', 'room.ts'), 'utf8');
-    check('solo practice seats each bot on the driver\'s own robot (game.ts calls build)', /botDriver\.build\?\.\(\{\s*seed/.test(game));
+    check('solo practice seats each bot on the driver\'s own robot (practiceSetups calls build)', /botDriver\.build\?\.\(\{\s*seed/.test(game));
     check('the server Room seats each bot on the driver\'s own robot (room.ts calls build)', /drv\?\.build\?\.\(\{\s*seed/.test(room));
   }
 

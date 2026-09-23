@@ -4280,6 +4280,18 @@ tr.lb-detail td {
 .ds-sec > .ds-panel + .ds-panel {
   margin-top: 0;
 }
+/* Match ▸ Practice: ONE robot seat — what it is, then its difficulty. The two rows sit at the
+   field's own 8px, closer than the section's 12, so a tier row reads as its seat's; the rule
+   between seats is the second seat's, like `.ds-ctl-row`. */
+.ds-seat {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+.ds-seat + .ds-seat {
+  padding-top: var(--ds-s-3);
+  border-top: 1px solid var(--ds-line-soft);
+}
 .ds-sec > h2 {
   font-family: var(--ds-font-mono);
   font-size: 12px;

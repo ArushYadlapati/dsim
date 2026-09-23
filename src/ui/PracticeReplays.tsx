@@ -47,6 +47,8 @@ interface Row {
   physics: string | null;
   /** which renderer it was watched in, or null when unknown */
   view: string | null;
+  /** other robots were on the field (`PracticeRunMeta.others`) — known only for a device copy */
+  withRobots: boolean;
 }
 
 /** merge the account's runs with this device's, newest first, without double-counting one
@@ -68,6 +70,7 @@ function mergeRuns(remote: PracticeRun[], local: PracticeRunMeta[]): Row[] {
       // fields existed still has them on the server if it was uploaded after the column landed
       physics: m.physics ?? match?.physics ?? null,
       view: m.view ?? match?.view ?? null,
+      withRobots: (m.others ?? 0) > 0,
     });
   }
   for (const r of remote) {
@@ -81,6 +84,7 @@ function mergeRuns(remote: PracticeRun[], local: PracticeRunMeta[]): Row[] {
       localId: null,
       physics: r.physics ?? null,
       view: r.view ?? null,
+      withRobots: false,
     });
   }
   return rows.sort((a, b) => b.at - a.at);
@@ -163,7 +167,17 @@ export function PracticeReplays({
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.key}>
-                    <td>{fmtDay(r.at)}</td>
+                    {/* WITH ROBOTS: the score beside it was not made alone, so it is not a solo
+                        number (owner, 2026-09-23) */}
+                    <td>
+                      {fmtDay(r.at)}
+                      {r.withRobots && (
+                        <>
+                          {' '}
+                          <span className="ds-badge">With robots</span>
+                        </>
+                      )}
+                    </td>
                     <td className="num">{r.score}</td>
                     <td className="num">{runLength(r.ticks)}</td>
                     {/* ABSENT, not '2D'. A run kept before a tag existed genuinely does not

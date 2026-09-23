@@ -184,7 +184,7 @@ import {
 } from '../src/sim/physics';
 import { beamBlock, beamDrag, beamDragFactor, beamStrafeBlock, beamForwardness, beamRide, canCrossBeams, cogFactor, wheelsOnBeam, CHAIN_BEAMS } from '../src/games/chain/beams';
 import { butterflyTankRpmLimits, driveParams, massLimits, rpmLimits, motorStep, driveSummary, widthLimits, pushForce, shoveMass } from '../src/sim/drivetrain';
-import { PERF_DISPLAY_LEVELS, coerceSettings, defaultSettings, switchGame, syncAudioMirrors } from '../src/settings';
+import { PERF_DISPLAY_LEVELS, coerceSettings, defaultSettings, practiceSeatsFor, practiceSetups, switchGame, syncAudioMirrors } from '../src/settings';
 import {
   authFlowsForTesting,
   classifySdkError,
@@ -857,6 +857,81 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
       bbHashes.every((h) => h === bbHashes[0]),
       JSON.stringify(bbHashes),
     );
+  }
+}
+
+// ---- PRACTICE SEATS: the Practice card's partner / opponent 1 / opponent 2, per game.
+// `coerceSettings` holds the stored shape; `practiceSetups` is the line-up `makeWorld` spawns. --
+{
+  {
+    const seat = (kind: string, tier = 'hard') => ({ kind, tier });
+    const def = coerceSettings({});
+    check(
+      'practice seats: absent reads as three None, in every game',
+      (['decode', 'chain', 'biobuzz'] as const).every((g) => practiceSeatsFor(def, g).every((x) => x.kind === 'none')),
+    );
+    check(
+      "practice seats: an absent entry's tier is the game's own default (the bot's, else 'medium')",
+      practiceSeatsFor(def, 'biobuzz')[0].tier === simModuleFor('biobuzz').bot!.defaultTier &&
+        practiceSeatsFor(def, 'decode')[0].tier === 'medium',
+    );
+    check('practice seats: a blob without the field stays without it', def.practiceSeats === undefined || Object.keys(def.practiceSeats).length === 0);
+    const good = [seat('ai'), seat('dummy', 'easy'), seat('none', 'medium')];
+    const back = coerceSettings(JSON.parse(JSON.stringify({ practiceSeats: { biobuzz: good, decode: [seat('dummy'), seat('none'), seat('ai')] } })));
+    check(
+      'practice seats: a valid per-game line-up survives the JSON round-trip, tiers verbatim',
+      JSON.stringify(back.practiceSeats?.biobuzz) === JSON.stringify(good) && back.practiceSeats?.decode?.[2].kind === 'ai',
+      JSON.stringify(back.practiceSeats),
+    );
+    const bad = coerceSettings({
+      practiceSeats: {
+        biobuzz: [seat('ai'), seat('robot'), seat('none')], // unknown kind
+        chain: [seat('dummy'), seat('dummy')], // two seats, not three
+        decode: [seat('ai'), seat('none'), { kind: 'none', tier: 'x'.repeat(40) }], // runaway tier
+        pong: [seat('ai'), seat('ai'), seat('ai')], // not a game
+      },
+    });
+    check(
+      'practice seats: a bad kind, a short line-up, a runaway tier and an unknown game are all dropped',
+      bad.practiceSeats?.biobuzz === undefined &&
+        bad.practiceSeats?.chain === undefined &&
+        bad.practiceSeats?.decode === undefined &&
+        !('pong' in (bad.practiceSeats ?? {})),
+      JSON.stringify(bad.practiceSeats),
+    );
+    check('practice seats: a non-object field is dropped whole', coerceSettings({ practiceSeats: 'all ai' }).practiceSeats === undefined || Object.keys(coerceSettings({ practiceSeats: 'all ai' }).practiceSeats!).length === 0);
+
+    // THE LINE-UP. Blue player on anchor 1, so the partner takes anchor 0.
+    const base = { ...coerceSettings({}), alliance: 'blue' as const, startIndex: 1 };
+    const none = practiceSetups(base, 'biobuzz', 7);
+    check('practice line-up: all None spawns nobody and seats no driver', none.setups.length === 0 && none.botTiers.size === 0);
+    const mixed = practiceSetups({ ...base, practiceSeats: { biobuzz: [seat('dummy'), seat('ai', 'easy'), seat('ai', 'no-such-tier')] } }, 'biobuzz', 7);
+    const [p, o1, o2] = mixed.setups;
+    check(
+      'practice line-up: ids 1..3, partner on our side on the OTHER anchor, opponents on 0 and 1',
+      mixed.setups.length === 3 &&
+        p.id === 1 && p.alliance === 'blue' && p.startIndex === 0 &&
+        o1.id === 2 && o1.alliance === 'red' && o1.startIndex === 0 &&
+        o2.id === 3 && o2.alliance === 'red' && o2.startIndex === 1,
+      JSON.stringify(mixed.setups.map((x) => [x.id, x.alliance, x.startIndex])),
+    );
+    check('practice line-up: a Dummy is passive, an AI is not', p.passive === true && !o1.passive && !o2.passive);
+    check(
+      'practice line-up: each AI seat gets its OWN tier, coerced by the driver',
+      mixed.botTiers.size === 2 && mixed.botTiers.get(2) === 'easy' &&
+        mixed.botTiers.get(3) === simModuleFor('biobuzz').bot!.defaultTier && !mixed.botTiers.has(1),
+      JSON.stringify([...mixed.botTiers]),
+    );
+    const again = practiceSetups({ ...base, practiceSeats: { biobuzz: [seat('dummy'), seat('ai', 'easy'), seat('ai', 'no-such-tier')] } }, 'biobuzz', 7);
+    check('practice line-up: deterministic in the seed (a replay rebuilds the same specs)', JSON.stringify(again) === JSON.stringify(mixed));
+    const decode = practiceSetups({ ...base, practiceSeats: { decode: [seat('ai'), seat('dummy'), seat('ai')] } }, 'decode', 7);
+    check(
+      'practice line-up: an AI seat in a game with no driver is None — the Dummy still spawns',
+      decode.setups.length === 1 && decode.setups[0].id === 2 && decode.setups[0].passive === true && decode.botTiers.size === 0,
+      JSON.stringify(decode.setups.map((x) => x.id)),
+    );
+    const other = practiceSetups({ ...base, practiceSeats: { decode: [seat('dummy'), seat('dummy'), seat('dummy')] } }, 'chain', 7);
+    check("practice line-up: per game — DECODE's line-up does not spawn in Chain Reaction", other.setups.length === 0);
   }
 }
 

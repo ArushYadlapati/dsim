@@ -1,5 +1,6 @@
-import type { GameId, GameLoadout, GameSettings, PerfDisplay } from './types';
+import type { Alliance, GameId, GameLoadout, GameSettings, PerfDisplay, PracticeSeat, PracticeSeats } from './types';
 import {
+  DEFAULT_ASSISTS,
   DEFAULT_SPEC,
   coerceSpec,
   coerceAssists,
@@ -7,6 +8,7 @@ import {
   coerceStartPose,
   defaultAssistsFor,
   PLAYER_ASSISTS,
+  type RobotSetup,
 } from './sim/spawn';
 import { MAX_SAVED_ROBOTS, MAX_SAVED_AUTOS, MAX_SAVED_STARTS_SUPPORTER } from './config';
 import { GAME_IDS, isGameId } from './games/types';
@@ -97,6 +99,94 @@ export function defaultSettings(): GameSettings {
     tankControlMode: 'normal',
     mobileLayout: cloneMobileLayout(DEFAULT_MOBILE_LAYOUT),
   };
+}
+
+// ---- PRACTICE SEATS (who else is on a practice field) ---------------------------
+
+function coercePracticeSeat(raw: unknown): PracticeSeat | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  if (r.kind !== 'none' && r.kind !== 'dummy' && r.kind !== 'ai') return null;
+  if (typeof r.tier !== 'string' || r.tier.length > 32) return null;
+  return { kind: r.kind, tier: r.tier };
+}
+
+/** `game`'s three practice seats, or three None — at the game's default tier, so picking AI on
+ *  a fresh seat starts at the difficulty the game itself suggests. */
+export function practiceSeatsFor(s: GameSettings, game: GameId): PracticeSeats {
+  const stored = s.practiceSeats?.[game];
+  if (stored) return stored;
+  const tier = simModuleFor(game).bot?.defaultTier ?? 'medium';
+  return [
+    { kind: 'none', tier },
+    { kind: 'none', tier },
+    { kind: 'none', tier },
+  ];
+}
+
+/**
+ * THE PRACTICE SEATS AS SETUPS: partner, opponent 1, opponent 2, each None, a Dummy or an AI
+ * driver at its own tier — read by Solo practice AND Free drive (`GameController.makeWorld`).
+ * The ids, sides and anchors are the format a room has, a 2v2: the partner (id 1) takes the
+ * anchor the player is NOT on so the two never overlap, the opponents (2, 3) take the other
+ * side's first two.
+ *
+ * A DUMMY is inert: `passive` makes the sim skip ALL its action compute (turret solve,
+ * flywheel, fire, intake) — it only ever exists to be bumped into. An AI seat in a game with no
+ * driver is None, the same way the Practice card does not offer one there. An AI seat in FREE
+ * DRIVE plays as it would in teleop: there is no clock for it to read, only the field.
+ *
+ * Returns the setups to append after the player's (id 0) and, per AI robot id, the tier its
+ * driver is to be seated at.
+ */
+export function practiceSetups(
+  s: GameSettings,
+  game: GameId,
+  seed: number,
+): { setups: RobotSetup[]; botTiers: Map<number, string> } {
+  const botDriver = simModuleFor(game).bot;
+  const opp: Alliance = s.alliance === 'blue' ? 'red' : 'blue';
+  const places: [id: number, alliance: Alliance, startIndex: number][] = [
+    [1, s.alliance, s.startIndex === 1 ? 0 : 1],
+    [2, opp, 0],
+    [3, opp, Math.min(1, startPoseCount(game) - 1)],
+  ];
+  const setups: RobotSetup[] = [];
+  const botTiers = new Map<number, string>();
+  practiceSeatsFor(s, game).forEach((pick, i) => {
+    const [id, alliance, startIndex] = places[i];
+    if (pick.kind === 'dummy') {
+      setups.push({
+        id,
+        alliance,
+        spec: { ...DEFAULT_SPEC, name: `Dummy ${id}`, teamName: 'Practice', teamNumber: 0 },
+        assists: { ...DEFAULT_ASSISTS, autoIntake: false, autoFire: false },
+        startIndex,
+        passive: true,
+      });
+    } else if (pick.kind === 'ai' && botDriver) {
+      // COERCED AT THE POINT OF USE, by the driver that owns the tier list: the stored string
+      // is kept verbatim across games (see `coerceSettings`), so it may be a word this game has
+      // since renamed. THE ROBOT IS THE DRIVER'S CHOICE: `BotDriver.build` is deterministic in
+      // the match seed and the seat, so a restart is a new line-up and a replay carries the
+      // specs in its setups; a driver without one keeps the default chassis.
+      const tier = botDriver.coerceTier(pick.tier);
+      botTiers.set(id, tier);
+      setups.push({
+        id,
+        alliance,
+        spec: botDriver.build?.({ seed, robotId: id, tier, alliance }) ?? {
+          ...DEFAULT_SPEC,
+          name: `${tier} bot`,
+          teamName: 'AI',
+          teamNumber: 0,
+        },
+        assists: { ...DEFAULT_ASSISTS },
+        startIndex,
+      });
+    }
+  });
+  return { setups, botTiers };
 }
 
 function cloneMobileLayout(l: GameSettings['mobileLayout']): GameSettings['mobileLayout'] {
@@ -339,6 +429,20 @@ export function coerceSettings(raw: unknown): GameSettings {
     if (typeof s.practiceBots === 'string' && s.practiceBots.length <= 32) {
       const bot = simModuleFor(out.game).bot;
       out.practiceBots = s.practiceBots === 'off' || !bot ? s.practiceBots : bot.coerceTier(s.practiceBots);
+    }
+    // PRACTICE SEATS, entry by entry: an unknown game id is dropped, a game's entry is exactly
+    // three seats or it is dropped whole, and a tier is bounded but kept VERBATIM — the same
+    // reasoning as `practiceBots` above, resolved by the game's own `coerceTier` at use.
+    if (typeof s.practiceSeats === 'object' && s.practiceSeats !== null) {
+      const ps = s.practiceSeats as Record<string, unknown>;
+      const seats: Partial<Record<GameId, PracticeSeats>> = {};
+      for (const g of GAME_IDS) {
+        const list = ps[g];
+        if (!Array.isArray(list) || list.length !== 3) continue;
+        const clean = list.map(coercePracticeSeat);
+        if (clean.every((x): x is PracticeSeat => x !== null)) seats[g] = clean as PracticeSeats;
+      }
+      out.practiceSeats = seats;
     }
     if (typeof s.audio === 'object' && s.audio !== null) {
       const au = s.audio as Record<string, unknown>;

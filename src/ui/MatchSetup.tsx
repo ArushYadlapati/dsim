@@ -7,6 +7,9 @@ import type {
   PathPoint,
   Vec2,
   Alliance,
+  PracticeSeat,
+  PracticeSeatKind,
+  PracticeSeats,
 } from '../types';
 import { MAX_SAVED_AUTOS } from '../config';
 import { StartPositionEditor } from './StartPositionEditor';
@@ -16,6 +19,7 @@ import { selectStart, switchCategory, saveStart, deleteSavedStart } from './star
 import { ChainStartEditor } from './ChainStartEditor';
 import { moduleFor } from '../games';
 import { OptRow, ToggleRow } from './OptRow';
+import { practiceSeatsFor } from '../settings';
 
 /**
  * A BOT TIER, IN SENTENCE CASE. The seam's tiers are opaque lower-case strings a game owns, and
@@ -25,9 +29,15 @@ import { OptRow, ToggleRow } from './OptRow';
  */
 export const botLabel = (tier: string): string => tier.charAt(0).toUpperCase() + tier.slice(1);
 
+/** the seats beside the player, in `PracticeSeats` order */
+const SEAT_LABELS = ['Partner', 'Opponent 1', 'Opponent 2'] as const;
+/** `.ds-opts`'s column modifiers by tile count, so a tier row lines up with the seat row */
+const COLS = { 2: 'two', 3: 'three', 4: 'four', 5: 'five' } as const;
+
 /**
  * Match configuration — the pre-game options that belong to the MATCH, not the
- * robot: alliance, start position, practice dummies, and an imported auto path.
+ * robot: alliance, start position and an imported auto path — and, in a card of its own,
+ * the practice around the match: its physics and the three other robots.
  * These apply to the SOLO/offline modes (Solo Practice, Free Drive, Records);
  * Ranked and Custom assign alliance + start in the lobby / strategy screen.
  *
@@ -177,21 +187,19 @@ export function MatchSetup({
   // actually step the second physics offers the picker — absent `physicsOptions` (DECODE,
   // Chain Reaction) reads as `['2d']` only, so this never shows for them.
   const physicsOptions = moduleFor(settings.game).physicsOptions;
-  // OPPONENTS (plan §6). The tier list is the GAME's (`GameSimModule.bot.tiers`) — opaque
-  // strings, so a game can add or rename a difficulty without this file changing — and its
-  // absence is what hides the control for DECODE and Chain Reaction.
+  // THE PRACTICE SEATS (`practiceSeatsFor`). The tier list is the GAME's
+  // (`GameSimModule.bot.tiers`) — opaque strings, so a game can add or rename a difficulty
+  // without this file changing — and its absence is what takes AI off the menu for DECODE and
+  // Chain Reaction. Offering a driver nothing can play is worse than offering nothing.
   const botDriver = moduleFor(settings.game).bot;
-  const botTiers = botDriver?.tiers;
-  // WHICH BUTTON IS PRESSED, resolved through this game's own `coerceTier`: the stored string
-  // may be another game's word for a difficulty (it is kept verbatim across a game that has no
-  // driver — see `coerceSettings`), and an unrecognised one must light the tier that would
-  // actually be played rather than none at all.
-  const activeBotTier =
-    !botDriver || (settings.practiceBots ?? 'off') === 'off'
-      ? 'off'
-      : botDriver.coerceTier(settings.practiceBots);
+  const seats = practiceSeatsFor(settings, settings.game);
+  const setSeat = (i: number, patch: Partial<PracticeSeat>): void => {
+    const next = seats.map((x, j) => (j === i ? { ...x, ...patch } : x)) as PracticeSeats;
+    set({ practiceSeats: { ...settings.practiceSeats, [settings.game]: next } });
+  };
 
   return (
+    <>
     <section className="ds-panel">
       <div className="ds-panel-h">
         <h2 className="ds-panel-title">Match setup</h2>
@@ -269,55 +277,6 @@ export function MatchSetup({
           )}
         </section>
 
-        {/* ---------- WHO ELSE IS ON THE FIELD ----------
-            Both of these used to hang off the `Start position` heading, along with the physics
-            picker and a second copy of the 3D view toggle, because that is the order they were
-            added in. Neither is a start position. */}
-        <section className="ds-sec">
-          <h2>Opponents</h2>
-            {/* OPPONENTS (plan §6): fill the empty seats of the format with AI drivers, at a tier
-                this game names itself. The row is absent for a game with no `bot` driver —
-                offering difficulties nothing can play is worse than offering nothing. Solo
-                PRACTICE only: free drive has no match for a bot to play. */}
-            {botTiers && settings.mode === 'match' && (
-              <OptRow<string>
-                label="AI drivers"
-                value={activeBotTier}
-                onPick={(t) => set({ practiceBots: t })}
-                options={[{ v: 'off', t: 'None' }, ...botTiers.map((t) => ({ v: t, t: botLabel(t) }))]}
-              />
-            )}
-            {/* DUMMIES are a different thing from the bots on purpose: inert obstacles, and the
-                only opponents free drive has. */}
-          <ToggleRow
-            label="Practice dummies"
-            value={settings.practiceDummies}
-            onPick={(practiceDummies) => set({ practiceDummies })}
-          />
-        </section>
-
-        {/* BIOBUZZ 3D SEAM: which physics a SOLO practice steps on — absent reads '3d',
-            the seam's default (`settings.ts`). Ranked/matchmade/record rooms always run
-            3D; this picker only ever applies here.
-            ⚠️ THE 2D/3D *VIEW* PICKER THAT USED TO SIT BESIDE IT IS GONE. It wrote the same
-            per-device store as Graphics ▸ Field view, so there were two controls for one
-            setting on two screens — and this file's own comment already said a Graphics
-            section "replaces this control on Day 3". It did; this is the removal. */}
-        {physicsOptions?.includes('3d') && (
-          <section className="ds-sec">
-            <h2>Practice physics</h2>
-            <OptRow<'2d' | '3d'>
-              value={settings.practicePhysics ?? '3d'}
-              cols="two"
-              onPick={(practicePhysics) => set({ practicePhysics })}
-              options={[
-                { v: '2d', t: '2D', d: 'Lighter on a slow machine' },
-                { v: '3d', t: '3D', d: 'What ranked and record rooms run' },
-              ]}
-            />
-          </section>
-        )}
-
         {runsAutoPaths && (
         <section className="ds-sec">
           <h2>
@@ -387,5 +346,72 @@ export function MatchSetup({
         )}
       </div>
     </section>
+
+    {/* PRACTICE: WHAT THE FIELD AROUND YOU IS — its own card (owner, 2026-09-23), because none
+        of it is the match you are setting up: it is the practice around it, and it applies to
+        Free drive as much as to Solo practice. Ranked, record and Custom rooms decide all of it
+        for themselves. */}
+    <section className="ds-panel">
+      <div className="ds-panel-h">
+        <h2 className="ds-panel-title">Practice</h2>
+      </div>
+      <div className="ds-panel-body stack">
+        {/* BIOBUZZ 3D SEAM: which physics a SOLO practice steps on — absent reads '3d',
+            the seam's default (`settings.ts`). Ranked/matchmade/record rooms always run
+            3D; this picker only ever applies here.
+            ⚠️ THE 2D/3D *VIEW* PICKER THAT USED TO SIT BESIDE IT IS GONE. It wrote the same
+            per-device store as Graphics ▸ Field view, so there were two controls for one
+            setting on two screens. */}
+        {physicsOptions?.includes('3d') && (
+          <section className="ds-sec">
+            <h2>Practice physics</h2>
+            <OptRow<'2d' | '3d'>
+              value={settings.practicePhysics ?? '3d'}
+              cols="two"
+              onPick={(practicePhysics) => set({ practicePhysics })}
+              options={[
+                { v: '2d', t: '2D', d: 'Lighter on a slow machine' },
+                { v: '3d', t: '3D', d: 'What ranked and record rooms run' },
+              ]}
+            />
+          </section>
+        )}
+
+        {/* THE THREE OTHER ROBOTS, one block each: what the seat is, then — only in a game with
+            an AI driver — its difficulty. The difficulty row is DISABLED rather than absent
+            while the seat is not AI, so picking AI moves nothing below it. A Dummy is an inert
+            robot to be bumped into; it never drives. */}
+        <section className="ds-sec">
+          <h2>Robots</h2>
+          {SEAT_LABELS.map((label, i) => (
+            <div className="ds-seat" key={label}>
+              <OptRow<PracticeSeatKind>
+                label={label}
+                value={botDriver || seats[i].kind !== 'ai' ? seats[i].kind : 'none'}
+                cols={botDriver ? 'three' : 'two'}
+                mini
+                onPick={(kind) => setSeat(i, { kind })}
+                options={[
+                  { v: 'none', t: 'None' },
+                  { v: 'dummy', t: 'Dummy' },
+                  ...(botDriver ? [{ v: 'ai' as const, t: 'AI' }] : []),
+                ]}
+              />
+              {botDriver && (
+                <OptRow<string>
+                  value={botDriver.coerceTier(seats[i].tier)}
+                  cols={COLS[botDriver.tiers.length as keyof typeof COLS]}
+                  mini
+                  disabled={seats[i].kind !== 'ai'}
+                  onPick={(tier) => setSeat(i, { tier })}
+                  options={botDriver.tiers.map((t) => ({ v: t, t: botLabel(t) }))}
+                />
+              )}
+            </div>
+          ))}
+        </section>
+      </div>
+    </section>
+    </>
   );
 }

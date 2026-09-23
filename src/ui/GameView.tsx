@@ -433,7 +433,7 @@ export function GameView({
        * left it when the tutorial finishes.
        */
       let effectiveSettings = runTutorial
-        ? { ...settings, mode: 'free' as const, practiceDummies: false, practiceBots: 'off' }
+        ? { ...settings, mode: 'free' as const, practiceSeats: {} }
         : settings;
       let physicsFallbackNotice: string | undefined;
       if (need3d && !physics3dReady()) {

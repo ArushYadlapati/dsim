@@ -156,6 +156,33 @@ export function aiChecks(check: Check): void {
     );
   }
 
+  // ---- FREE DRIVE: an AI practice seat plays as it would in teleop ----------------------------
+  //
+  // The Practice card offers AI in Free drive too, where the phase is `freeplay` and there is no
+  // clock. A policy that gated on `teleop` would sit there — a seat that spawns and never moves.
+  for (const physics of ['2d', '3d'] as const) {
+    const seed = 21;
+    const world = createBiobuzzWorld('free', seed, [seat(0, 'blue', 0, false), seat(1, 'red', 1, false)], undefined, physics);
+    const drv = BIOBUZZ_BOT.create(world, 1, 'medium', seed);
+    const cmds = new Map<number, RobotCommand>();
+    const x0 = world.robots[1].pos.x;
+    const y0 = world.robots[1].pos.y;
+    let live = 0;
+    for (let t = 0; t < 600; t++) {
+      const c = drv.step(world);
+      if (c.driveX !== 0 || c.driveY !== 0 || c.rotate !== 0 || c.intake || c.fire) live++;
+      cmds.set(1, c);
+      biobuzzStep(world, SIM_DT, cmds);
+    }
+    drv.dispose?.();
+    const moved = Math.hypot(world.robots[1].pos.x - x0, world.robots[1].pos.y - y0);
+    check(
+      `free drive (${physics}): the phase is freeplay and the AI drives in it`,
+      world.match.phase === 'freeplay' && live > 60 && moved > 6,
+      `phase ${world.match.phase}, ${live} live commands of 600, moved ${moved.toFixed(1)} in`,
+    );
+  }
+
   // ---- THE COMMAND IS ALREADY QUANTIZED ----------------------------------------------------
   //
   // A bot seat's command is RECORDED and BROADCAST exactly like a driver's, so it has to be a
