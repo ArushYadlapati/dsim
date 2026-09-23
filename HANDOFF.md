@@ -1,6 +1,6 @@
 # HANDOFF — 2026-09-23c (Controls status in the card title; Practice card on Match)
 
-**State: green, UNCOMMITTED on `alpha`.** `build`, `server:check`, `uiaudit` (after
+**State: green, committed and pushed on `alpha` (205adb9, 54fc0fd, fa62da7).** `build`, `server:check`, `uiaudit` (after
 `uiindex`), `contrast` and `docaudit` pass. `npm test`: 5021 checks. The failures are the known
 perf flakes under load (`PREDICT_FULL_BUDGET` ×3, Auto probe, BIOBUZZ `step3d` median/p95 ×4),
 plus ONE that was already there before this session: `lan guide: the clone command is built from
@@ -35,8 +35,6 @@ New checks:
 - aiplay.ts: the `build` source check now reads `settings.ts`.
 
 Next:
-- The owner reviews, then commit. Suggested split: (1) the Controls title swap, (2) practice
-  seats, with settings + spawn + UI + tests + docs.
 - Not run this session: `shiftaudit` (needs `vite preview`) and the Electron screenshots of the
   Controls title swap and the two-card Match page (DECODE vs BIOBUZZ, phone + desk).
 
