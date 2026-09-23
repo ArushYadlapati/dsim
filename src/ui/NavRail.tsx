@@ -35,7 +35,7 @@ export function NavRail({
       <div className="ds-rail-items">
         {/* a PEER item, not a breadcrumb: the arrow-glyph "← Home" at 13px sat above 15px
             items like a second component (design review 01-22) */}
-        <button className="ds-rail-btn" onClick={() => onNav('home')}>
+        <button className="ds-rail-btn home" onClick={() => onNav('home')}>
           <span className="rl">Home</span>
         </button>
         {RAIL_ITEMS.map((it) => (

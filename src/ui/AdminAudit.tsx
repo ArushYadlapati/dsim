@@ -143,8 +143,8 @@ export function AdminAudit({ onOpenUser }: { onOpenUser?: (userId: string) => vo
             : 'No admin action has been recorded yet.'}
         </ListState>
       ) : (
-        <div className="adm-table-wrap">
-          <table className="adm-table">
+        <div className="ds-table-scroll">
+          <table className="ds-table adm-table">
             <thead>
               <tr>
                 <th>When</th>

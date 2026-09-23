@@ -44,6 +44,7 @@ import { seasonFor, type Season } from '../seasons';
 import { visibleSeasons } from '../seasonVisibility';
 import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
+import { useCoarsePointer } from './useCoarsePointer';
 import { ACTION_LABELS, ALL_GAMES_PANELS, seasonPanel, type BindPanel } from './controlsLayout';
 
 /**
@@ -163,6 +164,7 @@ function PadSlider({
 
 export function ControlsSection({ bindings, onChange, onEditTouchControls, onTutorial }: Props) {
   const [scope, setScope] = useState<Scope>('all');
+  const coarse = useCoarsePointer();
   const [capture, setCapture] = useState<Capture | null>(null);
   /** the one status line under the scope switch: a refused bind, or what a main edit took from
    *  a row this scope does not show. `null` holds the line EMPTY but present, so a message never
@@ -631,7 +633,34 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     </section>
   );
 
-  return (
+  /* TOUCH CONTROLS + TUTORIAL: ONE PANEL, TWO ROWS (design review 04-09). They were two
+     head-only cards a section gap apart, one button each. TOUCH CONTROLS AT THE TOP (owner,
+     2026-09-22): it sat in a "More" fold under the whole keyboard map, which on a phone — the
+     one device it is for — was the last thing on the page. THE TUTORIAL STAYS ON THIS SCREEN:
+     it is where somebody lands when the controls are what they do not understand, and the
+     only way back in for a player who skipped the Modes page's first-run card. */
+  const startPanel = (
+    <section className="ds-panel">
+      <div className="ds-panel-body">
+        <div className="ds-ctl-row">
+          <h2 className="ds-panel-title">Touch controls</h2>
+          <button className="ds-btn small" onClick={onEditTouchControls}>
+            Customize
+          </button>
+        </div>
+        {onTutorial && (
+          <div className="ds-ctl-row">
+            <h2 className="ds-panel-title">Tutorial</h2>
+            <button className="ds-btn small" onClick={onTutorial}>
+              Start
+            </button>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+
+  const scopeSwitch = (
     <>
       {/* THE SCOPE SWITCH, first, because it decides what everything under it is. A season's
           button carries a mark while one of its own rows has no bind — see `lossNotice` for how
@@ -680,84 +709,86 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
                 : '\u00a0')}
         </p>
       </div>
+    </>
+  );
 
-      {game === null ? (
+  const panels =
+    game === null ? (
+      <>
+        {ALL_GAMES_PANELS.map(bindPanel)}
+
+        {/* THE PAD'S BUTTONS — when a trigger counts as pressed, how long a combo's buttons wait,
+            and whether the pad drives the menus. How a hand works, not what a button means, so
+            every one is the same in every season. The `.ds-field` rows Audio and Graphics use:
+            these were the only sliders in Configure drawn a different way. */}
+        <section className="ds-panel">
+          <div className="ds-panel-h">
+            <h2 className="ds-panel-title">Gamepad</h2>
+          </div>
+          <div className="ds-panel-body stack">
+            <PadSlider
+              label="Trigger threshold"
+              shown={`${Math.round(pad.triggerThreshold * 100)}%`}
+              value={pad.triggerThreshold}
+              min={0.1}
+              max={0.9}
+              step={0.05}
+              onChange={(triggerThreshold) => setPad({ triggerThreshold })}
+            />
+            {/* THE COMBO WAIT. Disabled rather than hidden while no combo is bound: it does
+                nothing then, and a row that appears when the first combo lands would move every
+                row under it (§1.4 of the UI standard), whereas a greyed slider says it exists. */}
+            <PadSlider
+              label="Combo wait"
+              shown={`${Math.round(pad.chordGraceMs)} ms`}
+              value={pad.chordGraceMs}
+              min={PAD_CHORD_GRACE_MIN_MS}
+              max={PAD_CHORD_GRACE_MAX_MS}
+              step={10}
+              disabled={!anyCombo}
+              onChange={(chordGraceMs) => setPad({ chordGraceMs })}
+            />
+            {/* the one rule a player cannot work out from the keycaps: how to make a combo, and
+                that it beats its own buttons at a price */}
+            <p className="ds-hint">
+              Hold two or three buttons together while binding to make a combo. It wins over the
+              buttons it is made of, which then fire on their own only after the combo wait.
+            </p>
+            <ToggleRow
+              label="Controller menu navigation"
+              value={pad.navEnabled}
+              onPick={(navEnabled) => setPad({ navEnabled })}
+            />
+          </div>
+        </section>
+      </>
+    ) : (
+      bindPanel(seasonPanel(game))
+    );
+
+  return (
+    <>
+      {/* A PHONE LEADS WITH TOUCH (design review 18-15). The scope switch and the whole
+          keyboard/gamepad grid are unusable without a keyboard or a pad, and they filled the
+          page under the one panel a touch device can use — so on a coarse pointer they fold,
+          closed, behind one disclosure. A tablet with a pad paired opens it. */}
+      {coarse ? (
         <>
-          {/* TOUCH CONTROLS AT THE TOP (owner, 2026-09-22). It sat in a "More" fold under the
-              whole keyboard map, which on a phone — the one device it is for — was the last
-              thing on the page. One row: it leaves Configure for Free Drive with the layout
-              editor open, so there is nothing else to put in it. */}
-          <section className="ds-panel">
-            <div className="ds-panel-h">
-              <h2 className="ds-panel-title">Touch controls</h2>
-              <button className="ds-btn small" onClick={onEditTouchControls}>
-                Customize
-              </button>
+          {startPanel}
+          <details className="ds-fold ds-bind-fold">
+            <summary>Keyboard &amp; gamepad bindings</summary>
+            <div className="ds-fold-body">
+              {scopeSwitch}
+              {panels}
             </div>
-          </section>
-          {/* THE TUTORIAL STAYS ON THIS SCREEN: it is where somebody lands when the controls are
-              what they do not understand, and the only way back in for a player who skipped the
-              Modes page's first-run card or has just rebound half their keys. */}
-          {onTutorial && (
-            <section className="ds-panel">
-              <div className="ds-panel-h">
-                <h2 className="ds-panel-title">Tutorial</h2>
-                <button className="ds-btn small" onClick={onTutorial}>
-                  Start
-                </button>
-              </div>
-            </section>
-          )}
-
-          {ALL_GAMES_PANELS.map(bindPanel)}
-
-          {/* THE PAD'S BUTTONS — when a trigger counts as pressed, how long a combo's buttons wait,
-              and whether the pad drives the menus. How a hand works, not what a button means, so
-              every one is the same in every season. The `.ds-field` rows Audio and Graphics use:
-              these were the only sliders in Configure drawn a different way. */}
-          <section className="ds-panel">
-            <div className="ds-panel-h">
-              <h2 className="ds-panel-title">Gamepad</h2>
-            </div>
-            <div className="ds-panel-body stack">
-              <PadSlider
-                label="Trigger threshold"
-                shown={`${Math.round(pad.triggerThreshold * 100)}%`}
-                value={pad.triggerThreshold}
-                min={0.1}
-                max={0.9}
-                step={0.05}
-                onChange={(triggerThreshold) => setPad({ triggerThreshold })}
-              />
-              {/* THE COMBO WAIT. Disabled rather than hidden while no combo is bound: it does
-                  nothing then, and a row that appears when the first combo lands would move every
-                  row under it (§1.4 of the UI standard), whereas a greyed slider says it exists. */}
-              <PadSlider
-                label="Combo wait"
-                shown={`${Math.round(pad.chordGraceMs)} ms`}
-                value={pad.chordGraceMs}
-                min={PAD_CHORD_GRACE_MIN_MS}
-                max={PAD_CHORD_GRACE_MAX_MS}
-                step={10}
-                disabled={!anyCombo}
-                onChange={(chordGraceMs) => setPad({ chordGraceMs })}
-              />
-              {/* the one rule a player cannot work out from the keycaps: how to make a combo, and
-                  that it beats its own buttons at a price */}
-              <p className="ds-hint">
-                Hold two or three buttons together while binding to make a combo. It wins over the
-                buttons it is made of, which then fire on their own only after the combo wait.
-              </p>
-              <ToggleRow
-                label="Controller menu navigation"
-                value={pad.navEnabled}
-                onPick={(navEnabled) => setPad({ navEnabled })}
-              />
-            </div>
-          </section>
+          </details>
         </>
       ) : (
-        bindPanel(seasonPanel(game))
+        <>
+          {scopeSwitch}
+          {game === null && startPanel}
+          {panels}
+        </>
       )}
 
       <div className="ds-actions">

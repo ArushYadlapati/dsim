@@ -4,7 +4,8 @@ import type { GameHudProps } from '../module';
  * Chain Reaction's top-right HUD, two columns — mirrors BIOBUZZ's `BiobuzzHudChips`
  * dot/icon layout (`.bb-hud`) rather than the plain-text chips this replaces
  * (`HOPPER n/storage`, `×N`, `CARRYING CATALYST`, the pick-up/place/throw prompts).
- * Every icon carries no text of its own, so each row gets a spoken `aria-label`/`title`.
+ * Every icon carries no text of its own, so each row gets a spoken `aria-label` (no `title`: `.hud` is
+ * `pointer-events: none`, so a tooltip could never show).
  *
  * LEFT: the ×N multiplier badge, the 4 catalyst pips (filled left-to-right by count —
  * there's no per-hook identity in `HudSnapshot`, same by-count idiom BIOBUZZ uses for its
@@ -12,8 +13,8 @@ import type { GameHudProps } from '../module';
  * about it (gold = an action is available now, green = carrying but out of range, absent
  * otherwise). RIGHT: a vertical fill for the hopper's storage capacity, reading near-white
  * (neutral `--ds-ink`) when full and draining toward red as it empties, with a numeric
- * n/storage fraction underneath for an exact reading (the bar's title already says it aloud,
- * so the fraction is `aria-hidden`, same relationship as `.pg-num` to `.power-gauge`'s title).
+ * n/storage fraction underneath for an exact reading (the bar's `aria-label` already says it aloud,
+ * so the fraction is `aria-hidden`, same relationship as `.pg-num` to `.power-gauge`'s label).
  */
 export function ChainHudChips({ hud }: GameHudProps) {
   const chain = hud.chain;
@@ -33,10 +34,10 @@ export function ChainHudChips({ hud }: GameHudProps) {
   return (
     <div className="cr-hud">
       <div className="cr-hud-left">
-        <span className={`mult-badge${chain.mult > 1 ? ' on' : ''}`} role="img" aria-label={multSaid} title={multSaid}>
+        <span className={`mult-badge${chain.mult > 1 ? ' on' : ''}`} role="img" aria-label={multSaid}>
           {chain.mult}x
         </span>
-        <div className="hopper vertical" role="img" aria-label={catalystsSaid} title={catalystsSaid}>
+        <div className="hopper vertical" role="img" aria-label={catalystsSaid}>
           {Array.from({ length: 4 }, (_, i) => (
             <span key={i} className={`catalyst-pip${i < chain.catalysts ? ' filled' : ''}`} />
           ))}
@@ -46,12 +47,11 @@ export function ChainHudChips({ hud }: GameHudProps) {
             className={`catalyst-pip${chain.ringAction !== null ? ' prompt' : ' carrying'}`}
             role="img"
             aria-label={holdSaid}
-            title={holdSaid}
           />
         )}
       </div>
       <div className="cr-hud-right">
-        <span className="v-gauge" role="img" aria-label={storageSaid} title={storageSaid}>
+        <span className="v-gauge" role="img" aria-label={storageSaid}>
           <span className="v-gauge-fill storage" style={{ ['--vg' as string]: String(storage) }} />
         </span>
         <span className="v-frac" aria-hidden="true">

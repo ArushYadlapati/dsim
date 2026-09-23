@@ -62,7 +62,7 @@ const BASELINE = {
   // somebody typed; §2's "one owner per gap" now holds there. The rest became `.adm-sub`,
   // `.adm-gap` and `.adm-sec`.
   // 5 → 4, 2026-09-22: design review wave 3.
-  'inline-spacing': 4,
+  'inline-spacing': 0,
   'fractional-font-size': 0,
   'banned-font-weight': 0,
   // 155 → 152, 2026-09-19: the three HUD read-outs became one. `.ping-graph`'s `8px 10px`
@@ -101,7 +101,7 @@ const BASELINE = {
   // `--ds-t-control` (17 control/body literals became the token), the h1/h2 clamps are
   // `--ds-t-h1`/`--ds-t-h2`, and every 10px chrome label moved UP to `--ds-t-xs`, the floor.
   // What is left is display type (16/18/19/22/24) and the standing gauge's SVG user units.
-  'off-scale-font-size': 13,
+  'off-scale-font-size': 12,
   // 14 → 13, 2026-09-19: `.perf-readout`'s `border-radius: 6px` went with the `?perf=1` line.
   // 13 → 12, 2026-09-22: `.net-overlay-card`'s `14px` is `--ds-round-lg`, which is what it was
   // approximating — it sat beside `.overlay-panel`, which already used the token.
@@ -124,12 +124,13 @@ const BASELINE = {
   // tokens in the same commit, leaving the odd values (1.02, 1.3, 1.35, 16px …) and the `/n`
   // inside `font:` shorthands.
   // 33 → 32, 2026-09-22: `.as-field input` restated .ds-input with its own `/ 1.4`; it is gone.
-  'literal-line-height': 32,
+  'literal-line-height': 31,
   // measured 2026-09-22 (design review 13-12), when the tip, the banners, the danger button and
   // the LAN panel moved to shell.css. The four left are deliberate: `.ds-dialog-title` is the one
   // title contract the match overlays share with the shell dialogs, `.ds-key.capturing` sits in
   // styles.css's reduced-motion list, and two are admin-page compounds (`.adm-sub` / `.adm-sec`).
-  'ds-outside-shell': 4,
+  // 4 → 2, 2026-09-23: the whole admin block moved to shell.css, the two compounds with it.
+  'ds-outside-shell': 2,
   // measured 2026-09-22 (design review 21-09/21-16), when --ds-dur-press / --ds-dur-fade landed
   // and every colour fade moved onto them. What is left animates DATA, not state — gauge fills,
   // progress widths, a ring's dashoffset, a gate icon's swing — plus one joystick fade.

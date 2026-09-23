@@ -253,7 +253,7 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
             ("DOUBLE TURRET"). What the launcher's rules actually DO to the controls is already
             in the controls themselves; the hopper column beside it is the part that changes. */}
         {r && (
-          <div className="hopper vertical" role="img" aria-label={said} title={said}>
+          <div className="hopper vertical" role="img" aria-label={said}>
             {[...held].reverse().map((c, i) => (
               <span key={`h${i}`} className={`hopper-pip ${c}${i === 0 ? ' next' : ''}`} />
             ))}
@@ -274,7 +274,6 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
             className={`flower-icon${flowerOpen ? ' open' : ''}${r?.flowerInReach ? ' reach' : ''}`}
             role="img"
             aria-label={flowerSaid}
-            title={flowerSaid}
           />
         )}
       </div>
@@ -286,7 +285,7 @@ export function BiobuzzHudChips({ hud }: GameHudProps) {
           `ringCount`, and is never drawn on a grey dot. */}
       {f && (
         <div className="bb-hud-right">
-          <div className="hopper vertical" role="img" aria-label={nectarSaid} title={nectarSaid}>
+          <div className="hopper vertical" role="img" aria-label={nectarSaid}>
             {Array.from({ length: NECTAR_STAGED }, (_, i) => (
               <span key={`ns${i}`} className={`hopper-pip ${hud.alliance}`} />
             ))}
@@ -409,9 +408,9 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           sits on the bar rather than only in the desktop-only chip row. `nectarIn` is null
           outside TELEOP, where a countdown would be a guess at the remaining AUTO — so the
           chip states the lock and says nothing about when. */}
-      {/* G421 rides the same row and for the same reason G410 does: `GameView` suppresses the
-          whole chip row on a coarse pointer, so on a phone the bar is the only place a PIN can
-          be read — and 20 points every three seconds is not a tariff to leave to a cue the
+      {/* G421 rides the same row and for the same reason G410 does: `GameView` suppressed the
+          whole chip row on a coarse pointer until design review 05-05, and even now the phone's
+          card is a shrunken column in a gutter, so the bar is where a PIN is sure to be read — and 20 points every three seconds is not a tariff to leave to a cue the
           device does not render. `.warn` because it is a clock running against somebody, not a
           state of the field like the lock beside it. */}
       {/* ⚠️ THE ROW IS ALWAYS MOUNTED, AND ITS CONTENTS ARE WHAT COME AND GO.
@@ -424,7 +423,7 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
           only the spans inside it are conditional. An empty row draws nothing. */}
       {/* PENDING rides this row for the third time the same reason the two above do: it is a
           number the field draws nowhere, it belongs to the driver rather than to the field, and
-          this row is the only one a coarse-pointer device renders. It is deliberately NOT in
+          this row is the one a coarse-pointer device renders at full size. It is deliberately NOT in
           the alliance panel — the panel is the score, and the whole point of this figure is
           that it is not in the score yet (§10.5 C/E/F/G). */}
       <div className="breakdown-row" data-hud-band>

@@ -42,8 +42,8 @@ export class Camera {
     const spanW = 2 * (c * ex + s * ey);
     const spanH = 2 * (s * ex + c * ey);
     // fit within the viewport MINUS the HUD bands, and center in that band so the
-    // score bar / chips never cover the field. On a TOUCH device the top status chips
-    // are hidden and (in landscape) the scorebar is compact, so reserve much less —
+    // score bar / chips never cover the field. On a TOUCH device the status card is compact (it floats over a field corner),
+    // and (in landscape) the scorebar is compact, so reserve much less —
     // this is what gives the field its room back in landscape (the CSS scorebar shrink
     // in styles.css is kept in sync with the bottom band here).
     const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;

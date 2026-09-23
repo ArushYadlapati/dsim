@@ -46,7 +46,7 @@ export function ScoreReportDialog({
       }}
     >
       <h3 className="ds-report-h" id={`${id}-h`}>Report a misscore</h3>
-      <p className="ds-hint" style={{ margin: 0 }}>
+      <p className="ds-hint">
         Only for a score that changed the outcome. A moderator checks it against the replay.
       </p>
 
@@ -63,7 +63,7 @@ export function ScoreReportDialog({
           onChange={(e) => setDetail(e.target.value)}
           placeholder="What the score should have been, and what the sim missed"
         />
-        <span className="ds-hint" style={{ margin: 0 }}>
+        <span className="ds-hint">
           {detail.length}/{REPORT_DETAIL_MAX}
         </span>
       </label>
@@ -72,7 +72,7 @@ export function ScoreReportDialog({
           be used as a weapon, and a penalty nobody was warned about is a trap rather than a
           deterrent — the point is that people do not file false claims, not that they are
           punished for it afterwards. */}
-      <p className="ds-hint" style={{ margin: 0 }}>
+      <p className="ds-hint">
         Filing a claim a moderator finds to be false costs account standing.
       </p>
 

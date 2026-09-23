@@ -141,21 +141,22 @@ export function PracticeReplays({
         </div>
       ) : (
         <>
-          {/* the same scroller the two sibling tables use. `.ds-panel` is
+          {/* the one table scroller (`.ds-table-scroll`). `.ds-panel` is
               `overflow: hidden` for its rounded corners, so a table wider than the
-              panel is CUT rather than scrolled — this was the one list in the slice
-              without it. */}
-          <div className="mh-scroll">
+              panel is CUT rather than scrolled. */}
+          <div className="ds-table-scroll">
             <table className="ds-table">
               <thead>
                 <tr>
                   <th>Played</th>
                   <th className="num">Score</th>
                   <th className="num">Length</th>
-                  {/* the two tags, one column: what was SIMULATED and what it was WATCHED in.
-                      They answer different questions and only the first one decides whether the
-                      score means anything against ranked play (the note under the table). */}
+                  {/* TWO COLUMNS, not one (design review 09-22): what was SIMULATED and what it
+                      was WATCHED in answer different questions, and only the first one decides
+                      whether the score means anything against ranked play (the note under the
+                      table). One cell read "2D 3D VIEW". */}
                   <th>Physics</th>
+                  <th>View</th>
                   <th className="r" />
                 </tr>
               </thead>
@@ -165,21 +166,21 @@ export function PracticeReplays({
                     <td>{fmtDay(r.at)}</td>
                     <td className="num">{r.score}</td>
                     <td className="num">{runLength(r.ticks)}</td>
+                    {/* ABSENT, not '2D'. A run kept before a tag existed genuinely does not
+                        know, and writing a default would state something nobody measured —
+                        the same reasoning migration 0039 gives for `practice_runs.view`. */}
                     <td>
                       {r.physics ? (
-                        <span className="ds-dt" title={`Simulated on the ${r.physics.toUpperCase()} physics`}>
-                          {r.physics.toUpperCase()}
-                        </span>
+                        <span className="ds-dt">{r.physics.toUpperCase()}</span>
                       ) : (
-                        // ABSENT, not '2D'. A run kept before the tag existed genuinely does not
-                        // know, and writing a default here would state something nobody measured
-                        // — the same reasoning migration 0039 gives for `practice_runs.view`.
-                        <span className="ds-muted">-</span>
-                      )}{' '}
-                      {r.view && (
-                        <span className="ds-dt" title={`Watched in the ${r.view.toUpperCase()} view`}>
-                          {r.view.toUpperCase()} view
-                        </span>
+                        <span className="ds-muted">—</span>
+                      )}
+                    </td>
+                    <td>
+                      {r.view ? (
+                        <span className="ds-dt">{r.view.toUpperCase()}</span>
+                      ) : (
+                        <span className="ds-muted">—</span>
                       )}
                     </td>
                     {/* NOT `.num` — this cell holds buttons, and `.ds-btn` is

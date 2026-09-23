@@ -360,10 +360,11 @@ export function Leaderboard({
 
   return (
     <>
-      {/* the page heading is owned by the Records host; the season badge is not */}
-      <h2 className="ds-h2 lb-period-head">
+      {/* the page heading is owned by the Records host; the period heading is the same
+          one Career prints (07-08) */}
+      <h2 className="ds-h2 ds-period-head">
         {seasonLabel}
-        {isArchived ? ' · archived' : ''}
+        {isArchived ? ' · final' : ''}
       </h2>
 
       <PeriodPicker seasons={seasons} current={current} value={season} onChange={setSeason} label="Period" />
@@ -438,16 +439,16 @@ export function Leaderboard({
           /* SCROLL WRAPPER. `.ds-panel` is `overflow: hidden` for its rounded corners,
              which on a phone did not shrink this table — it CUT it, ~200px of it, with
              no way to scroll to the Score column and driver @usernames sliced mid-word.
-             Same wrapper Match history already uses (`.mh-scroll`), so the two tables
-             now degrade identically. */
-          <div className="lb-scroll" aria-busy={refetching}>
-          <table className="ds-table">
+             The one table scroller (`.ds-table-scroll`), so every table degrades
+             identically; on a phone `.lb-table` pins the value column to the right. */
+          <div className="ds-table-scroll tall" aria-busy={refetching}>
+          <table className="ds-table lb-table">
             <thead>
               <tr>
                 <th className="rk">#</th>
                 <th>Driver</th>
                 {isRecords && <th>Robot</th>}
-                {!isRecords && <th>Games</th>}
+                {!isRecords && <th className="r">Games</th>}
                 <th className="r">{valueLabel}</th>
               </tr>
             </thead>
@@ -519,7 +520,7 @@ export function Leaderboard({
                           )}
                         </td>
                       )}
-                      {!isRecords && <td>{(r as EloRow).games}</td>}
+                      {!isRecords && <td className="num">{(r as EloRow).games}</td>}
                       <td className="sc">
                         {isRecords ? rec.score : (r as EloRow).rating}
                         {/* the button is the keyboard path; the row click is a mouse convenience,

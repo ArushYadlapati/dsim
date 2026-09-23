@@ -48,8 +48,10 @@ function playRevealCue(): void {
   }
 }
 
-function KindBadge({ kind }: { kind: AnnouncementKind }): JSX.Element {
-  return <span className={`ann-badge ${kind}`}>{KIND_LABEL[kind]}</span>;
+/** the kind pill, shared by the modal, the changelog page and the admin list. A new season
+ *  is the one kind that WARNS (it resets ranked); patches and acts carry the accent. */
+export function KindBadge({ kind }: { kind: AnnouncementKind }): JSX.Element {
+  return <span className={`ds-badge ${kind === 'season' ? 'warn' : 'accent'}`}>{KIND_LABEL[kind]}</span>;
 }
 
 /** the full-screen cinematic reveal for a new season / act */

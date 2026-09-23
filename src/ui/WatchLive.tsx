@@ -4,6 +4,7 @@ import { fetchLiveRoom, fetchLiveRooms } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { normalizeRoomCode, isValidRoomCode, ROOM_CODE_LENGTH } from '../net/roomCode';
 import { seasonFor } from '../seasons';
+import { fmtTime } from './timerPanel';
 
 /**
  * "Watch Live" — the games currently in progress on the game server.
@@ -90,10 +91,19 @@ export function WatchLive({
             {rooms.map((r) => (
               <button key={r.room} className="ds-opt" onClick={() => onWatch(r.room, r.region)}>
                 <span className="ot">{title(r)}</span>
+                {/* the SCORE is its own mono line and the clock is m:ss like every other
+                    clock (design review 09-19) — the two live numbers were buried mid-prose,
+                    and a zero clock left a double space in the template */}
+                <span className="om">{score(r)}</span>
                 <span className="od">
-                  {seasonFor(r.game).name} · {r.kind === 'record' ? 'Record' : 'Ranked'} {r.mode} ·{' '}
-                  {phaseLabel(r.phase)} {r.timeLeft > 0 ? `· ${r.timeLeft}s` : ''} · {score(r)}
-                  {r.spectators > 0 ? ` · ${r.spectators} watching` : ''}
+                  {[
+                    seasonFor(r.game).name,
+                    `${r.kind === 'record' ? 'Record' : 'Ranked'} ${r.mode}`,
+                    r.timeLeft > 0 ? `${phaseLabel(r.phase)} ${fmtTime(r.timeLeft)}` : phaseLabel(r.phase),
+                    r.spectators > 0 ? `${r.spectators} watching` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                 </span>
               </button>
             ))}

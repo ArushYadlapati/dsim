@@ -866,21 +866,12 @@
   background: var(--ds-panel);
 }
 /* the collapsed rail's only signal that a request is waiting — without it an
-   incoming request is invisible until someone happens to expand the panel */
+   incoming request is invisible until someone happens to expand the panel. The dot
+   itself is `.ds-badge.count`; this only parks it on the icon's corner. */
 .fr-badge {
   position: absolute;
   top: 0;
   right: 0;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: var(--ds-round-full);
-  background: var(--ds-accent);
-  color: var(--ds-accent-ink);
-  font-size: var(--ds-t-xs);
-  font-weight: 800;
-  line-height: 16px;
-  text-align: center;
 }
 .fr-head {
   display: flex;
@@ -1478,6 +1469,14 @@
   font-weight: 600;
   text-decoration: none; /* most items are real <a href> destinations (FootLink) */
 }
+/* the LEGAL group (Privacy · Privacy & cookie settings · Terms) closes the row one step
+   down: smaller, lighter and muted, so the product links lead (design review 11-19).
+   Colour and size only, so `:hover` below still lifts it to ink. */
+.ds-foot-link.legal {
+  font-size: var(--ds-t-sm);
+  font-weight: 400;
+  color: var(--ds-mut);
+}
 .ds-foot-link:hover {
   color: var(--ds-ink);
 }
@@ -1497,6 +1496,13 @@
 .ds-foot-brand {
   font-family: var(--ds-font-mono);
   letter-spacing: 0.02em;
+  /* TWO ITEMS, not one run: the app/season text (an anonymous flex item) and the sponsor
+     credit. Inline, "DSIM · DECODE 2025–26" ran straight into "PRESENTED BY" 8px away and
+     read as one line in two sizes, and a phone broke it mid-credit (design review 11-20). */
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ds-s-1) var(--ds-s-4);
 }
 /* WRAP. `.ds-foot` itself wraps, so the brand and the links already stack on a
    phone — but this row did not, and it is a flex row whose contents outgrew the
@@ -1818,7 +1824,8 @@ button.ds-key:where(:not(:disabled)):active,
   min-width: 128px;
 }
 .ds-homestats .ds-stat .sv {
-  font-size: 22px;
+  /* on the type scale (20-08): 22px was the one off-scale size in the stat family */
+  font-size: var(--ds-t-xl);
 }
 .ds-homestats-break {
   font-family: var(--ds-font-mono);
@@ -1840,9 +1847,13 @@ button.ds-key:where(:not(:disabled)):active,
   background: color-mix(in srgb, var(--ds-accent) 12%, transparent);
 }
 /* ---- play tiles ------------------------------------------------------ */
+/* auto-FILL, not auto-fit (the `.ds-opts.fill` reasoning): /modes stacks three of these,
+   and auto-fit stretched each to its OWN item count — 455px tiles, then 298, then 455 — so
+   no column edge lined up with the row above it (design review 02-11). Kept empty tracks
+   give every section the same column rhythm. */
 .ds-tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   gap: 14px;
 }
 .ds-tile {
@@ -1944,18 +1955,16 @@ button.ds-key:where(:not(:disabled)):active,
    block with no gap, the label has no top margin, and `--ds-block` is an offset shadow that
    paints 4px below the border — so the label's cap height landed inside the shadow (LAN
    play, Host → Join). One rule for every page that stacks labelled cards. */
-.ds-panelbox + .ds-tileset-label,
 .ds-panel + .ds-tileset-label {
   margin-top: 28px;
 }
 
 /* THE SAME DEFECT BETWEEN TWO STACKED CARDS. `--ds-block` is a 4px offset shadow, `.ds-main`
-   is a plain block with no gap, and `.ds-panelbox` carries no margin — so a second card starts
+   is a plain block with no gap, and a `.ds-panel` carries no margin — so a second card starts
    exactly where the first one's border ends and the first one's shadow paints onto it. Two
    cards in a row used to be rare; the LAN page now stacks them twice (Host in this tab / Host
    with no internet, Room code / Host address). 16px clears the shadow and reads as two cards
    rather than one split one. */
-.ds-panelbox + .ds-panelbox,
 .ds-panel + .ds-panel {
   margin-top: 16px;
 }
@@ -2065,10 +2074,10 @@ button.ds-key:where(:not(:disabled)):active,
   padding: var(--ds-s-3) var(--ds-s-4);
   border-top: 1px solid var(--ds-line);
 }
-/* the field status under a `.ds-panelbox` control is EMPTY until you save or mistype,
+/* the field status under a card's control is EMPTY until you save or mistype,
    and a line that only appears once you have saved moves the panel under it. 1.45em is
    exactly one line of `.ds-hint`. */
-.ds-panelbox > .ds-hint {
+.ds-panel-body.stack > .ds-hint {
   min-height: 1.45em;
 }
 /* the status pair `.ds-claim-msg` already has */
@@ -2123,11 +2132,27 @@ button.ds-key:where(:not(:disabled)):active,
 .ds-field > .cap .val.muted {
   color: var(--ds-mut);
 }
+/* Profile ▸ Account's identity rows: label · value · action, one shape for every row (08-15) */
+.ds-acct-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--ds-s-3);
+}
+.ds-acct-row > .lbl {
+  color: var(--ds-mut);
+  font-size: var(--ds-t-sm);
+}
 .ds-acct-email {
   font-weight: 700;
   color: var(--ds-ink);
+  overflow-wrap: anywhere;
 }
-.ds-acct-id {
+/* the Danger zone heading opens a new group, a step further from the panel above */
+.ds-danger-head {
+  margin-top: var(--ds-s-5);
+}
+.ds-fold-body.ds-acct-id {
   display: flex;
   flex-direction: column;
   gap: var(--ds-s-1);
@@ -2219,7 +2244,9 @@ button.ds-key:where(:not(:disabled)):active,
 }
 
 /* the leaderboard's large Act·Season heading (sits below the Records tab strip) */
-.lb-period-head {
+/* the PERIOD heading, one for both Records tabs (design review 07-08): Leaderboard printed an
+   h2, Career only a mono panel title with a second FINAL chip */
+.ds-period-head {
   margin-top: 18px;
 }
 
@@ -2586,19 +2613,44 @@ button.ds-key:where(:not(:disabled)):active,
 .mh-filters .ds-select {
   flex: 0 1 auto;
 }
-/* the two table scrollers. A `.ds-panel` clips (`overflow: hidden`, for its rounded
-   corners), so any table wider than a phone has to carry its OWN horizontal scroller
-   or its right-hand columns are simply gone. `.lb-scroll` is the leaderboard's; it
-   went without one until a mobile sweep found ~200px of the Records table cut off. */
-.mh-scroll,
-.lb-scroll {
+/* THE TABLE SCROLLER — one class (design review 18-14). A `.ds-panel` clips (`overflow:
+   hidden`, for its rounded corners), so any table wider than a phone has to carry its OWN
+   horizontal scroller or its right-hand columns are simply gone. Five copies of this rule
+   grew up one phone sweep at a time (mh/yd/an-scroll, adm-table-wrap); they are all this now.
+   THE EDGE SHADOWS are the scroll affordance: a scroll-attached shade at each edge, and a
+   content-attached panel-coloured cover over it that slides away as soon as there is more
+   to see that way — so the shade shows only on the side the table continues. Pure CSS. */
+.ds-table-scroll {
   overflow-x: auto;
   transition: opacity var(--ds-dur-fade);
+  background:
+    linear-gradient(to right, var(--ds-panel) 40%, transparent) left / 24px 100% no-repeat local,
+    linear-gradient(to left, var(--ds-panel) 40%, transparent) right / 24px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, color-mix(in srgb, var(--ds-ink) 22%, transparent), transparent) left / 12px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, var(--ds-ink) 22%, transparent), transparent) right / 12px 100% no-repeat scroll,
+    var(--ds-panel);
 }
 /* a refetch: the previous rows stay mounted and fade, so the panel holds its height */
-.mh-scroll[aria-busy='true'],
-.lb-scroll[aria-busy='true'] {
+.ds-table-scroll[aria-busy='true'] {
   opacity: 0.5;
+}
+/* STICKY HEADER (07-17). The horizontal scroller is itself a scroll container, so a header
+   can only stick inside it — hence the height cap, opt-in with `.tall` for the long lists
+   (leaderboard, match history) so short tables never scroll in place, on a desktop only (a nested vertical
+   scroller on a phone traps the page's own scroll). The header's rule is an inset shadow,
+   because a collapsed border does not travel with a stuck cell. */
+@media (min-width: 641px) {
+  .ds-table-scroll.tall {
+    max-height: 70vh;
+  }
+  .ds-table-scroll.tall .ds-table th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--ds-panel);
+    border-bottom: none;
+    box-shadow: inset 0 -1px var(--ds-line);
+  }
 }
 .mh-table {
   min-width: 640px;
@@ -2608,14 +2660,68 @@ button.ds-key:where(:not(:disabled)):active,
    instead of scrolling and the Driver cell — the only one with prose in it — absorbed all
    of it. A floor is what makes the scroller do its job. 520, not 640: this table has four
    columns to match history's six, and the extra 120 would scroll on a phone for nothing. */
-.lb-scroll .ds-table {
+.lb-table {
   min-width: 520px;
 }
 /* the two FIXED columns, so a wide name can never take their width. `.rk` is already 34;
    the value column is mono tabular and its widest content is a 5-digit Chain Reaction
    score plus the watch arrow. */
-.lb-scroll .ds-table .sc {
+.lb-table .sc {
   width: 88px;
+}
+/* the date + type sub-line inside the Players cell — shown only where those two columns
+   are dropped (a phone, below) */
+.mh-sub {
+  display: none;
+}
+/* PHONES: THE SCORE IS WHAT PEOPLE CAME FOR (07-05). At 375px the panel is ~343px and the
+   table floors pushed Score behind a sideways scroll. Match history drops When and Type
+   (folded into Players as a sub-line) and caps the Players cell so Score lands on screen;
+   the leaderboard pins its value column to the right edge instead of dropping Robot,
+   because the Robot button is the only way into the config detail row. */
+@media (max-width: 640px) {
+  .ds-table th,
+  .ds-table td {
+    padding: 8px 12px;
+  }
+  .mh-table {
+    min-width: 480px;
+  }
+  .mh-table .mh-when,
+  .mh-table .mh-type-col {
+    display: none;
+  }
+  .mh-sub {
+    display: block;
+    margin-top: var(--ds-s-1);
+    color: var(--ds-mut);
+    font-size: var(--ds-t-xs);
+    white-space: nowrap;
+  }
+  .mh-table .mh-players {
+    max-width: 176px;
+  }
+  .lb-table th:last-child,
+  .lb-table td.sc {
+    position: sticky;
+    right: 0;
+    /* the pinned edge is a 1px rule painted in the background, not a border (a collapsed
+       border stays behind with the table) and not a shadow (one depth model) */
+    background: linear-gradient(to right, var(--ds-line) 1px, var(--ds-panel) 1px);
+  }
+  /* the pinned cell is opaque, so it repaints the row's hover tint itself */
+  .lb-table tr.ds-clickable:hover > td.sc {
+    background:
+      linear-gradient(to right, var(--ds-line) 1px, transparent 1px),
+      linear-gradient(color-mix(in srgb, var(--ds-accent) 8%, transparent), color-mix(in srgb, var(--ds-accent) 8%, transparent)),
+      var(--ds-panel);
+  }
+  .lb-table tr.lb-you > td.sc {
+    background:
+      linear-gradient(to right, var(--ds-line) 1px, transparent 1px),
+      linear-gradient(color-mix(in srgb, var(--ds-accent) 12%, transparent), color-mix(in srgb, var(--ds-accent) 12%, transparent)),
+      var(--ds-panel);
+  }
 }
 .mh-when {
   color: var(--ds-mut);
@@ -2983,18 +3089,25 @@ tr.lb-detail td {
   text-align: center;
 }
 
+/* A 1fr / auto / 1fr GRID (design review 09-14): with `space-between` the title sat left of
+   centre whenever the right group (view segs + Download, ~170px) outweighed `← Back`, and a
+   90px spacer pretended to fix it. Equal outer tracks centre the middle one exactly. */
 .ds-replay-top {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--ds-s-3);
   padding: 12px 18px;
   border-bottom: 1px solid var(--ds-line);
   background: var(--ds-bar);
 }
-/* the view toggle (`docs/roadmap.md` item 2) sits beside the download menu, not as a fourth
-   `.ds-replay-top` child — that would unbalance the `space-between` the title's centring
-   depends on. One flex group, so the header's column count is unchanged. */
+.ds-replay-top > :first-child {
+  justify-self: start;
+}
+/* the view toggle (`docs/roadmap.md` item 2) sits beside the download menu in ONE group —
+   the grid's third track */
 .ds-replay-actions {
+  justify-self: end;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -3581,9 +3694,6 @@ tr.lb-detail td {
 .ds-dl {
   position: relative;
   display: inline-flex;
-  justify-content: flex-end;
-  /* matches the ← Leaderboard button opposite it, so the title stays centred */
-  min-width: 90px;
 }
 .ds-dl-pop {
   position: absolute;
@@ -3996,6 +4106,13 @@ tr.lb-detail td {
 .ds-console-in > .ds-sub-tight {
   margin-top: -10px;
 }
+/* a CAPTION of the control above it (Ranked's queue-depth line under the 1v1/2v2 pick):
+   it takes back most of the stack gap, so it belongs to that control rather
+   than sitting equidistant between it and the next one. Used since Matchmaking 1138 and
+   defined nowhere until design review 02-23. */
+.ds-panel-body.stack > .ds-hint-caption {
+  margin-top: calc(-1 * var(--ds-s-2));
+}
 /* the console scaffold's own width, which Lobby, Matchmaking and RecordRun each
    re-typed as an inline `maxWidth: 520`. */
 .ds-console-in.narrow {
@@ -4011,7 +4128,12 @@ tr.lb-detail td {
   flex-wrap: wrap;
 }
 .ds-console-in {
-  width: min(900px, 94vw);
+  /* `100%`, NOT `94vw`: vw counts the always-on scrollbar of `.ds-console`'s
+     `overflow-y: scroll`, so at 375px the column was 352px inside a 360px scroll box —
+     a 4px gutter, off-centre, with Back and the h1 on the screen edge (design review
+     02-02, 18-07). 22px a side is `.ds-main`'s own inline padding, so a console screen
+     and a shell screen share one gutter. */
+  width: min(900px, 100% - 44px);
   margin: 0 auto;
   padding: 26px 0 72px;
   display: flex;
@@ -4222,7 +4344,7 @@ tr.lb-detail td {
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
 }
 /* An UNSELECTED .ds-opt is a control whose only boundary is this border, so it takes
-   --ds-line-strong (1.4.11). It lives on a --ds-panel card (`.ds-panelbox`), which is
+   --ds-line-strong (1.4.11). It lives on a --ds-panel card (a stacked `.ds-panel`), which is
    the ground --ds-line-strong is tuned for — 3.06:1. Dropped straight onto --ds-bg it
    would measure 2.92 and need #7d8883 instead. */
 .ds-opt {
@@ -4583,7 +4705,7 @@ tr.lb-detail td {
 .ds-opt .go {
   margin-left: auto;
   color: var(--ds-accent);
-  font-size: 15px;
+  font-size: var(--ds-t-lg);
 }
 .ds-note {
   display: block;
@@ -4595,16 +4717,6 @@ tr.lb-detail td {
 }
 
 /* ---- form fields + sliders ------------------------------------------ */
-.ds-panelbox {
-  border: 1px solid var(--ds-line);
-  border-radius: var(--ds-round);
-  background: var(--ds-panel);
-  padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  box-shadow: var(--ds-block);
-}
 /* three inline `flex` overrides of the same class, written once */
 .ds-fields > .ds-field.wide {
   flex: 1 1 100%;
@@ -4623,7 +4735,7 @@ tr.lb-detail td {
   gap: 8px;
 }
 /* the 150px basis is a COLUMN WIDTH in the `.ds-fields` row. A `.ds-field` placed
-   straight into a `.ds-panelbox` (Lobby, Account) is a child of a COLUMN flexbox,
+   straight into a stacked panel body (Lobby, Account) is a child of a COLUMN flexbox,
    where that same basis became a 150px row HEIGHT — a blank gap under the input. */
 .ds-fields > .ds-field {
   flex: 1 1 150px;
@@ -5079,7 +5191,7 @@ button.bb-cell:where(:not(:disabled)):active {
   margin-top: 1px;
 }
 
-/* BELOW THE STRIP, the card STACKS. `220px 1fr` needs ~600px of card to hold a preview beside
+/* BELOW THE STRIP (901-1099px), the card STACKS. `220px 1fr` needs ~600px of card to hold a preview beside
    a stat grid, and between the sub-nav and the app's own nav rail the section is 355px wide at
    920px of viewport — which gave the stats an 80px column, one tile wide and nine tiles tall,
    for a 729px card. Long-standing (the rail never reached down here either); it is fixed now
@@ -5105,9 +5217,12 @@ button.bb-cell:where(:not(:disabled)):active {
    It PINS only where there is height to spend (the rule below), and the strip SHAPE only where
    there is width for a name and a row of chips beside the sprite. 1100px is where that starts:
    between 900 and 1100 the page is carrying BOTH the 190px nav rail and the 190px sub-nav, which
-   leaves the card ~650px and the chips a column too narrow to wrap in. Under it this whole block
-   is off and the card is the ordinary one above, at the top of the page. */
-@media (min-width: 1100px) {
+   leaves the card ~650px and the chips a column too narrow to wrap in. So between 901 and 1099
+   this whole block is off and the card is the ordinary one above, at the top of the page.
+   AT 900 AND UNDER IT IS ON AGAIN: both rails have become strips above the content, so the card
+   has the full width back, and a phone is where a 700px stack of tiles hurts most (design review
+   18-05). It does not PIN there — that rule is keyed on ≥1100 — and ≤640 reshapes it once more. */
+@media (min-width: 1100px), (max-width: 900px) {
   .ds-hero {
     /* the sprite sizes itself from its own box; everything else takes the rest */
     grid-template-columns: auto minmax(0, 1fr);
@@ -5243,15 +5358,28 @@ button.bb-cell:where(:not(:disabled)):active {
 }
 /* ---- narrow viewports -------------------------------------------------
    The rail and the Configure sub-nav are vertical columns beside the content;
-   below ~900px there isn't room, so both become horizontal scrolling strips
-   above it. `.ds-app` stays the only vertical scroll container throughout. */
+   below ~900px there isn't room, so both become horizontal strips above it.
+   `.ds-app` stays the only vertical scroll container throughout.
+
+   ONE NAV ROW, NOT TWO. `.ds-body` WRAPS here: the rail and the collapsed friends
+   chip share the first line and the content takes a full line of its own. Stacked,
+   they were two strips (rail ~72px with its scrollbar, friends ~52px for one chip)
+   and the first control of a page sat at ~355px on a 375px phone (design review
+   18-04).
+
+   NOT A SCROLLER. Both strips WRAP rather than scroll, for the reason `.ds-segs.even`
+   gives: a strip that hides some of its items hides how many there are. At 375px the
+   scrolling rail cut "Profile" off and the sub-nav cut "Audio and…" mid-word, with
+   nothing but a scrollbar to say there was more (01-07, 04-05). */
 @media (max-width: 900px) {
   .ds-body {
-    flex-direction: column;
+    flex-wrap: wrap;
     align-items: stretch;
   }
   .ds-rail {
-    width: 100%;
+    flex: 1 1 0;
+    min-width: 0;
+    width: auto;
     align-self: auto;
     flex-direction: row;
     align-items: center;
@@ -5259,20 +5387,19 @@ button.bb-cell:where(:not(:disabled)):active {
     padding: 10px 12px;
     border-right: 0;
     border-bottom: 1px solid var(--ds-line);
-    overflow-x: auto;
   }
   .ds-rail-items {
     flex-direction: row;
+    flex-wrap: wrap;
     gap: 6px;
   }
   .ds-rail-btn {
     flex: none;
     padding: 8px 12px;
   }
-  /* `.ds-body` is a COLUMN here, so the friends panel would otherwise land at
-     the very bottom, below the content. Order it directly under the rail and
-     let it span the width, matching how the rail itself degrades — an expanded
-     panel is a strip above the content rather than a side column.
+  /* Order the friends panel directly after the rail: collapsed it is a chip at the
+     right end of the rail's row, expanded it is a full-width strip above the content
+     rather than a side column.
      SCOPE the order to `.ds-body`'s children: on home (`showRail={false}`) the
      content is `.ds-main.ds-main-home`, a DIRECT flex child of `.ds-app`, and an
      unscoped `.ds-main { order: 3 }` pushed it BELOW the order:0 footer — the
@@ -5295,14 +5422,19 @@ button.bb-cell:where(:not(:disabled)):active {
     max-height: none;
     overflow-y: visible;
   }
+  /* the chip at the END OF THE RAIL'S ROW: same `--ds-bar` surface and the same bottom
+     rule, stretched to the rail's height, so the two read as one strip. No left padding —
+     the rail's own 12px is the gap between them. */
   .ds-friends.collapsed {
-    width: 100%;
+    width: auto;
+    align-self: stretch;
     align-items: flex-start;
-    padding: var(--ds-s-2) var(--ds-s-3);
+    justify-content: center;
+    padding: var(--ds-s-2) var(--ds-s-3) var(--ds-s-2) 0;
     /* UNDO the desktop CARD, for the same reason the block above undoes the desktop
-       column: here this is a strip across the top of the content, and a rounded,
-       shadowed, inset card spanning the full width is just a box drawn around a
-       chip. The media query adds no specificity, so these have to be restated —
+       column: here this is part of a strip across the top of the content, and a
+       rounded, shadowed, inset card is just a box drawn around a chip. The media
+       query adds no specificity, so these have to be restated —
        `.ds-friends.collapsed` outranks the `.ds-friends` rules above whatever the
        source order. */
     margin: 0;
@@ -5332,24 +5464,32 @@ button.bb-cell:where(:not(:disabled)):active {
   }
 
   /* A room has its own scrolling console rather than `.ds-app` beneath this
-     panel. Keep the panel above that console on narrow screens and cap its
-     expanded list, so a long friends list cannot squeeze the room itself away. */
+     panel. The panel goes BELOW that console on narrow screens — a room screen has
+     no app bar, so its `← Back` is the way out and has to be the first control on
+     it, not the second under an unrelated social strip (design review 02-10) — and
+     its expanded list is capped, so a long friends list cannot squeeze the room
+     itself away. */
   .ds-room-layout {
     flex-direction: column;
   }
-  .ds-room-layout > .ds-friends {
+  .ds-room-layout > .ds-console {
     order: 1;
+    flex: 1 1 0;
+  }
+  .ds-room-layout > .ds-friends {
+    order: 2;
     flex: none;
     max-height: min(42dvh, 360px);
     overflow-y: auto;
     overscroll-behavior: contain;
+    padding-left: var(--ds-s-3);
+    border-bottom: 0;
+    border-top: 1px solid var(--ds-line);
   }
-  .ds-room-layout > .ds-console {
-    order: 2;
-    flex: 1 1 0;
-  }
+  /* the content is a line of its own under the nav row (see the note on this block) */
   .ds-body > .ds-main {
     order: 3;
+    flex-basis: 100%;
   }
 
   .ds-subnav-layout {
@@ -5359,9 +5499,8 @@ button.bb-cell:where(:not(:disabled)):active {
   .ds-subnav {
     position: static;
     flex-direction: row;
+    flex-wrap: wrap;
     gap: 6px;
-    overflow-x: auto;
-    padding-bottom: 2px;
   }
   .ds-subnav-btn {
     flex: none;
@@ -5369,13 +5508,81 @@ button.bb-cell:where(:not(:disabled)):active {
 }
 
 @media (max-width: 640px) {
+  /* THE PHONE HERO is the strip's shape (the block above now also covers ≤900px) with one
+     change: at 375px a name AND a chip column beside a 96px sprite leaves the chips ~190px,
+     five rows deep. So `.ds-hero-info` dissolves into the card's grid — sprite beside the
+     name, chips on a full-width row under both — and the chips wrap freely instead of
+     scrolling inside the 96px box, since nothing pins here. ~190px of card for what was a
+     ~700px stack of two-line tiles that filled the first screen (design review 03-04, 18-05). */
   .ds-hero {
-    grid-template-columns: 1fr;
+    row-gap: var(--ds-s-2);
+    padding: var(--ds-s-3);
   }
-  /* stacked, the view box was the third of four concentric frames round one robot; its fill
-     alone separates it, and the sprite's own mat is the frame */
-  .ds-hero-view {
-    border: 0;
+  .ds-hero-info {
+    display: contents;
+  }
+  .ds-hero .ds-stats {
+    grid-column: 1 / -1;
+    max-height: none;
+    overflow-y: visible;
+  }
+  /* HOME IS THE MARK. The bar's DSIM mark already routes home (`AppShell`), so the rail's
+     own Home item is the one to give up for the other four to fit ONE row at 375px. */
+  .ds-rail-btn.home {
+    display: none;
+  }
+  .ds-rail {
+    padding: var(--ds-s-2);
+  }
+  .ds-rail-items {
+    gap: var(--ds-s-1);
+  }
+  .ds-rail-btn {
+    padding: 8px 6px;
+  }
+  .ds-rail-btn .rl {
+    font-size: var(--ds-t-control);
+  }
+  /* the Configure sub-nav as a GRID, the `.ds-segs.even` shape: its six sections wrapped as a
+     ragged 4 + 2 (or 3 + 2 + 1), and a grid reads as a deliberate 3 + 3 */
+  .ds-subnav {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  }
+  .ds-subnav-btn {
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+  /* the name WRAPS here: the strip's one-line ellipsis cut a two-word name and its CUSTOM
+     chip to "My Robot…" beside BIOBUZZ's wider 2D/3D preview */
+  .ds-hero-name,
+  .ds-hero-team {
+    white-space: normal;
+    overflow: visible;
+  }
+  /* the chip wraps as ONE unit under the name, never cut to "CUS…" */
+  .ds-hero-name .cust {
+    display: inline-block;
+    white-space: nowrap;
+  }
+  /* the collapsed friends chip at the end of the rail's row goes ICON-ONLY: its label is
+     visually hidden (the `.ds-sr` technique), not removed, so it stays the button's name.
+     `.ds-body >` only: in a room it is a strip of its own under the console, with room to
+     say what it is. */
+  .ds-body > .ds-friends.collapsed .fr-toggle-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .ds-body > .ds-friends.collapsed {
+    padding: var(--ds-s-2) var(--ds-s-2) var(--ds-s-2) 0;
+  }
+  .ds-body > .ds-friends.collapsed .fr-toggle {
+    padding: var(--ds-s-1) var(--ds-s-2);
   }
   .ds-home-title {
     margin-bottom: 16px;
@@ -5396,17 +5603,28 @@ button.bb-cell:where(:not(:disabled)):active {
     justify-content: center;
     gap: 8px 14px;
   }
+  /* the brand line and the sponsor credit are two flex items (see `.ds-foot-brand`), so
+     centre them too, or a wrapped credit sits flush left under a centred brand */
+  .ds-foot-brand {
+    justify-content: center;
+  }
+}
 
-  /* ---- TOUCH TARGETS ------------------------------------------------------
-     Everything below is POINTER-SIZE only: sizes, never colours or borders, and
-     scoped to this breakpoint so the desktop layout is byte-identical. A mouse
-     hits a 17px-tall text link; a thumb does not. These are the controls a sweep
-     at 320-414px found under ~32px that a player actually has to hit, sized so
-     the TAP AREA clears 32px even where the ink stays small — mostly via padding,
-     because growing the ink itself would reflow rows the shift audit guards.
-     Untouched on purpose: `.ds-key` (a keybinding readout — rebinding needs a
-     keyboard, so it is not a phone control) and the range TRACK (the thumb is the
-     target, and it is bumped below). */
+/* ---- TOUCH TARGETS ------------------------------------------------------
+   KEYED ON THE POINTER, NOT THE WIDTH (design review 18-02). This block used to live
+   inside `max-width: 640px`, so an iPad or a landscape phone — a coarse pointer at
+   667-1024px — got the mouse sizes, and a 600px desktop window with a mouse got the
+   thumb sizes. `tutorial.css` and the HUD were already keyed on the pointer; the shell
+   was the one place that was not. Width queries stay for LAYOUT; this is sizes only.
+   Everything below is POINTER-SIZE only: sizes, never colours or borders, so a mouse
+   layout is byte-identical. A mouse hits a 17px-tall text link; a thumb does not.
+   These are the controls a sweep at 320-414px found under ~32px that a player
+   actually has to hit, sized so the TAP AREA clears 32px even where the ink stays
+   small — mostly via padding, because growing the ink itself would reflow rows the
+   shift audit guards. Untouched on purpose: `.ds-key` (a keybinding readout —
+   rebinding needs a keyboard, so it is not a phone control) and the range TRACK (the
+   thumb is the target, and it is bumped below). */
+@media (pointer: coarse) {
   .ds-seg {
     min-height: 34px;
     padding: 6px 12px;
@@ -5527,24 +5745,53 @@ a.ds-cta {
 
 /* ---- rebindable controls (keycaps) ---------------------------------- */
 /* THE SCOPE SWITCH and the one status line under it — a refused bind, or what a main edit took
-   from a row the current scope does not show. The line is ALWAYS there (it reads the Backspace
-   hint when there is nothing else to say), so a message never pushes the panels down. */
+   from a row the current scope does not show. The line is ALWAYS there (an empty line when there
+   is nothing to say), so a message never pushes the panels down. */
 .ds-bind-scope {
   display: flex;
   flex-direction: column;
   gap: var(--ds-s-2);
 }
+/* Controls ▸ the Touch controls / Tutorial panel: label · button rows (04-09). The rule
+   between rows is the second row's, so one row alone has none. */
+.ds-ctl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-3);
+}
+.ds-ctl-row + .ds-ctl-row {
+  margin-top: var(--ds-s-3);
+  padding-top: var(--ds-s-3);
+  border-top: 1px solid var(--ds-line-soft);
+}
+/* the bindings fold a coarse pointer gets (18-15) holds the same stack `.ds-subnav-body`
+   lays out, so it takes that column's gap and cancels the panel-pair margin the same way */
+.ds-bind-fold > .ds-fold-body {
+  gap: var(--ds-s-5);
+}
+.ds-bind-fold > .ds-fold-body > .ds-panel + .ds-panel {
+  margin-top: 0;
+}
 /* A SEASON WITH A ROW THAT HAS NO BIND. Pinned to the button's corner, out of flow, so lighting
    it moves nothing — an inline dot either reflowed the strip when it lit or, reserved, left a gap
    after every season's name. Never lit on the season being shown: its UNBOUND keycaps are
-   already on screen, and its button is the accent fill the red would sit on. */
+   already on screen, and its button is the accent fill the red would sit on.
+   THE BORDER (design review 04-15): wrapped two by two on a phone, a bare `.ds-seg` read as
+   floating label text, not a button — the control's boundary is what 1.4.11 asks for, in the
+   colour `.ds-opt` uses for the same reason. Transparent → coloured, so it moves nothing. The
+   dot sits 4px INSIDE the corner, not on the rounded corner half outside the shape. */
 .ds-bind-scope .ds-seg {
   position: relative;
+  border-color: var(--ds-line-strong);
+}
+.ds-bind-scope .ds-seg.on {
+  border-color: var(--ds-accent);
 }
 .ds-seg-dot {
   position: absolute;
-  top: 0;
-  right: 0;
+  top: 4px;
+  right: 4px;
   width: 8px;
   height: 8px;
   border-radius: var(--ds-round-full);
@@ -5809,6 +6056,31 @@ a.ds-cta {
 /* a stretched flex item would run the ghost button the full column width */
 .ds-dlpage > .ds-btn {
   align-self: flex-start;
+}
+/* the build list: one group per platform, each a column of ROWS (ui-standard §6 Row) —
+   variant left, format beside it, the arrow inline at the right edge of its own row */
+.ds-dlpage-builds {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-items: start;
+  gap: var(--ds-s-4);
+}
+.ds-dlpage-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+.ds-dlpage-group > .ds-tileset-label {
+  margin: 0;
+}
+.ds-dlpage-build {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--ds-s-3);
+}
+.ds-dlpage-build .od {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .ds-dl-hero {
   display: flex;
@@ -6514,7 +6786,7 @@ a.ds-cta {
 }
 .ds-standing-cost { font: 600 11px/1.4 var(--ds-font-mono); }
 
-/* the standing pill in the moderation queue is `.adm-pill.ok|warn|danger` (styles.css), by tier */
+/* the standing pill in the moderation queue is `.ds-badge.ok|warn|danger`, by tier */
 
 /* REPORT a player — the post-match dialog. Lives inside the results panel, which is itself
    a scroll container on a phone, so this only has to size itself sanely. */
@@ -6792,10 +7064,21 @@ a.ds-cta {
 .ds-home-presents {
   margin: 0 0 var(--ds-s-5);
 }
-/* FOOTER — the standing credit, on every shell screen. It shares `.ds-foot-brand`
-   with the app/season line, which is a mono row on one baseline. */
-.ds-foot-sponsor {
-  margin-left: var(--ds-s-2);
+/* FOOTER — the standing credit, on every shell screen. It is the second flex item of
+   `.ds-foot-brand`, after the app/season line, so it wraps as ONE unit (11-20).
+   24px of hit area round a 14px logo (WCAG 2.5.8); the negative margin cancels the
+   padding in layout, so the footer line does not grow. `(pointer: coarse)` takes it to 32. */
+.ds-foot-sponsor .sponsor-mark {
+  padding-block: 5px;
+  margin-block: -5px;
+}
+/* after the base rule on purpose: the same selector earlier in the file, in the TOUCH TARGETS
+   block, lost to it and the 32px never applied */
+@media (pointer: coarse) {
+  .ds-foot-sponsor .sponsor-mark {
+    padding-block: 9px;
+    margin-block: -9px;
+  }
 }
 /* DOWNLOAD — below the build list, closing the desktop handoff. */
 .ds-dl-sponsor {
@@ -6823,11 +7106,6 @@ a.ds-cta {
 }
 .yd-group-name {
   font-weight: 700;
-}
-/* `.ds-panel` clips for its rounded corners, so a table wider than a phone needs its own
-   horizontal scroller — the same fix `.mh-scroll` and `.lb-scroll` carry. */
-.yd-scroll {
-  overflow-x: auto;
 }
 /* narrower than match history's 640: two of the three columns are prose and wrap, so the
    floor is only what keeps the key column from breaking mid-token. */
@@ -7237,12 +7515,6 @@ a.ds-cta {
 }
 
 /* ---- tables ---- */
-/* `.ds-panel` clips for its rounded corners, so a table wider than a phone needs its
-   own scroller or its right-hand columns are simply gone — the fix `.mh-scroll` and
-   `.yd-scroll` already carry. */
-.an-scroll {
-  overflow-x: auto;
-}
 .an-table {
   min-width: 420px;
 }
@@ -8171,4 +8443,446 @@ a.ds-cta {
   .ds-lan-leave {
     min-height: 32px; /* the same thumb floor as the shell's other phone targets */
   }
+}
+
+/* =====================================================================
+   BADGE — `.ds-badge` (design review 16-09)
+   ---------------------------------------------------------------------
+   A short label BESIDE something: a count, a state, a category. It replaced
+   the console's `.adm-pill`, the announcement kind pill `.ann-badge` and the
+   friends-rail count `.fr-badge`, each of which picked its own size, padding,
+   radius and fill — two of them below the 11px floor of the type scale.
+
+   The plain badge is NEUTRAL data (a count, a game, a reason). A tone says what
+   a state MEANS, not where the badge first appeared: text + edge on the recessed
+   tile, and each ink is a contrast.mjs pair on --ds-tile. Never --ds-red here:
+   that is alliance identity. `.count` is the one FILLED form — a number on a
+   dot, where there is no room for an edge to carry the colour.
+   ===================================================================== */
+.ds-badge {
+  display: inline-block;
+  padding: var(--ds-s-0) var(--ds-s-2);
+  border: 1px solid var(--ds-line-strong);
+  border-radius: var(--ds-round-full);
+  background: var(--ds-tile);
+  color: var(--ds-mut);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  font-weight: 700;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.ds-badge.accent { color: var(--ds-accent); border-color: var(--ds-accent); }
+.ds-badge.ok { color: var(--ds-ok-ink); border-color: var(--ds-ok-ink); }
+.ds-badge.warn { color: var(--ds-warn); border-color: var(--ds-warn); }
+.ds-badge.danger { color: var(--ds-danger); border-color: var(--ds-danger); }
+/* the same hue as the admin role's name badge (`.sup-badge.admin`) */
+.ds-badge.staff { color: var(--ds-staff); border-color: var(--ds-staff); }
+.ds-badge.count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 var(--ds-s-1);
+  border: 0;
+  background: var(--ds-accent);
+  color: var(--ds-accent-ink);
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+/* =====================================================================
+   ADMIN CONSOLE (src/ui/Admin*.tsx, adminBits.tsx) — the `adm-`/`admin-` family
+   ---------------------------------------------------------------------
+   Moved here from styles.css (design review 13-12): the console renders on the
+   SHELL, and styles.css is the in-match sheet. Its tables are `.ds-table` and its
+   pills are `.ds-badge` (above); what is left is the console's own layout.
+   ===================================================================== */
+.adm-maint { border-color: var(--ds-line-strong); }
+.adm-maint.biting { border-color: var(--ds-danger); }
+.adm-maint-h { display: flex; align-items: center; gap: var(--ds-s-3); justify-content: space-between; }
+.adm-guest-id {
+  font-family: var(--ds-font-mono);
+  font-size: 12px;
+  color: var(--ds-mut);
+}
+
+/* the console is wider than a settings column now — it carries a live table */
+.adm-wide { max-width: 940px; }
+
+.adm-h3 {
+  font-size: var(--ds-t-md);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+  margin: var(--ds-s-6) 0 var(--ds-s-3);
+}
+
+/* only when it follows the maintenance card directly (Live tab) — `.adm-user`'s own
+   `.adm-stats.small` already sits in a flex column with its own gap, and adding a
+   margin here too would double it. */
+.admin-card + .adm-stats {
+  margin-top: var(--ds-s-4);
+}
+/* the "N sessions belong to N accounts + N guests…" line right under the tiles — same
+   missing-gap bug, one sibling further down. */
+.adm-stats + .ds-hint {
+  margin-top: var(--ds-s-4);
+}
+.adm-stats { display: flex; flex-wrap: wrap; gap: var(--ds-s-3); }
+.adm-stat {
+  flex: 1 1 120px;
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-0);
+}
+/* on the scale since the move (13-12): 24/18 were between steps */
+.adm-stat b { font-size: var(--ds-t-xl); line-height: var(--ds-lh-tight); color: var(--ds-ink); }
+.adm-stat span {
+  font-size: var(--ds-t-sm);
+  font-weight: 700;
+  letter-spacing: var(--ds-track-caps);
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.adm-stats.small .adm-stat b { font-size: var(--ds-t-lg); }
+
+.adm-regions { display: flex; flex-wrap: wrap; gap: 8px; }
+.adm-region {
+  display: flex;
+  align-items: baseline;
+  gap: var(--ds-s-3);
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-md);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  font-size: var(--ds-t-sm);
+}
+.adm-region b { text-transform: uppercase; letter-spacing: var(--ds-track-caps); color: var(--ds-ink); }
+
+/* layout only — the control is `.ds-input` (DESIGN.md "Input Fields"), like every admin field */
+.adm-filter {
+  width: 100%;
+  margin-top: var(--ds-s-5);
+  margin-bottom: var(--ds-s-3);
+}
+
+/* the table itself is `.ds-table` (16-13); `.adm-table` adds the floor its wrapper scrolls past */
+/* and the density: an operator scans many rows, so admin tables run a step tighter */
+.adm-table { min-width: 620px; font-size: var(--ds-t-sm); }
+.adm-table td { vertical-align: middle; }
+.adm-table th,
+.adm-table td { padding: 8px 12px; }
+.adm-name { font-weight: 700; color: var(--ds-ink); }
+
+
+.adm-rooms { display: flex; flex-direction: column; gap: var(--ds-s-2); }
+.adm-room {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ds-s-3);
+  flex-wrap: wrap;
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-md);
+  padding: var(--ds-s-2) 14px;
+  font-size: var(--ds-t-md);
+}
+
+/* the standing note about what this page can and cannot see. Bordered rather than
+   muted into the background on purpose: the limits are part of the feature, not a
+   footnote to it. `p.adm-privacy` (not `.adm-privacy` alone) because this rule used to live in
+   `styles.css`, which loads before `shell.css`, so `.ds-hint`'s own `margin: 0` won the tie
+   and silently zeroed this margin-top. Kept: it no longer depends on where the rule sits. */
+p.adm-privacy {
+  margin-top: var(--ds-s-6);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-md);
+  padding: 12px 14px;
+  background: var(--ds-tile);
+}
+
+/* the `.ds-panel` card (same radius, same block shadow) with the 14/18 chrome rhythm, which is
+   by design. Not the class itself: `.ds-panel` is `overflow: hidden`, and a card holding a
+   native <select> and a focus ring must not clip them. */
+.admin-card {
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  box-shadow: var(--ds-block);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+/* a lone note or the next section's heading right after a card — .admin-card owns
+   no gap outside itself, so these are the ones spacing it from what follows */
+.admin-card + .ds-hint { margin-top: var(--ds-s-4); }
+.admin-card + .ds-h2 { margin-top: var(--ds-s-6); }
+.admin-field { display: flex; align-items: center; gap: var(--ds-s-2); font-size: var(--ds-t-md); font-weight: 600; }
+.admin-field.col { flex-direction: column; align-items: stretch; gap: var(--ds-s-1); }
+/* `.admin-field` is LAYOUT: its controls are `.ds-input`/`.ds-select`, which own the recess
+   and the focus ring. Five bespoke copies of the field used to live here, none with either. */
+.admin-field input[type="number"] { width: 72px; }
+.admin-field.col input { width: 100%; }
+.admin-buttons { display: flex; gap: var(--ds-s-3); margin-top: var(--ds-s-1); }
+.admin-textarea {
+  width: 100%;
+  resize: vertical;
+  line-height: var(--ds-lh-prose);
+}
+.admin-list { display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; }
+.admin-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--ds-tile);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+/* the rank NUMBER is content, not chrome — `opacity:.5` put it at 3.19:1 */
+.admin-row .admin-rank { color: var(--ds-mut); min-width: 20px; text-align: right; font-variant-numeric: tabular-nums; }
+.admin-row .admin-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* One player, two jobs: the rename row and the membership row belong to the SAME
+   person, so they are grouped rather than listed as two independent rows — an
+   admin acting on a chargeback must not be able to revoke the row below the one
+   they read. The sub-row is visually subordinate (no border of its own). */
+.admin-user {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.admin-row.admin-sub {
+  background: transparent;
+  border: 0;
+  padding: 0 10px 2px;
+  flex-wrap: wrap;
+}
+.admin-row.admin-sub .ds-hint { font-size: 12px; margin: 0; }
+/* a compact `.ds-input` for a count inside an action row */
+input.admin-months {
+  width: 64px;
+  padding: var(--ds-s-1) var(--ds-s-2);
+}
+.admin-history {
+  padding: 4px 10px 8px;
+  border-left: 2px solid var(--ds-line);
+  margin-left: 10px;
+}
+.admin-history .ds-hint { font-size: 12px; margin: 0 0 2px; }
+/* ================================================================= *
+ *  ADMIN CONSOLE — the Users / Audit surfaces and the shared bits
+ *  (src/ui/adminBits.tsx, AdminUser.tsx, AdminAudit.tsx).
+ *
+ *  Every value here is a token. The rules above it are the console's
+ *  older debt (10px gaps) and §10 of docs/ui-standard.md
+ *  records them as debt rather than precedent — new code does not get
+ *  to match them, which is what the uiaudit ratchet enforces.
+ * ================================================================= */
+
+/* the two spacing classes that replaced inline `style={{ margin }}` in the
+   console. One owner per gap (§2): the CLASS owns it, not a style prop. */
+.ds-section .ds-sub.adm-sub { margin: 0 0 var(--ds-s-5); }
+.adm-gap { margin-top: var(--ds-s-4); }
+.ds-section .ds-h2.adm-sec { margin-top: var(--ds-s-6); }
+/* §2, ONE OWNER PER GAP. `.admin-card` is a flex column with a gap of its own, and
+   eleven of its children carried an inline margin as well — so the space between a
+   status line and the buttons above it was the gap plus a number somebody typed. The
+   card owns it. */
+.admin-card > p,
+.admin-card > .admin-list,
+.admin-card > .admin-field .ds-hint { margin: 0; }
+
+/* a row of controls above a list: filters, a search box, the exports.
+   Wraps rather than scrolls, so it survives 375px without a horizontal bar. */
+.adm-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+  margin: 0 0 var(--ds-s-3);
+}
+.adm-toolbar input,
+.adm-toolbar select { min-width: 0; }
+.adm-toolbar .adm-grow { flex: 1 1 160px; }
+.adm-more { margin-top: var(--ds-s-3); }
+
+/* the id copier. `min-width` so the label swap (copy → copied) cannot change
+   the box — §1.4, no state change moves layout. */
+.adm-copy {
+  min-width: 52px;
+  background: transparent;
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-full);
+  padding: var(--ds-s-0) var(--ds-s-2);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  color: var(--ds-mut);
+  cursor: pointer;
+  transition: color var(--ds-dur-fade), border-color var(--ds-dur-fade);
+}
+.adm-copy:hover { color: var(--ds-ink); border-color: var(--ds-line-strong); }
+/* flat: a press is ink, not a 1px sink with no edge under it; the ring is the house one */
+.adm-copy:active { color: var(--ds-ink); border-color: var(--ds-ink-dim); }
+
+/* one account, as it appears in a table cell */
+.adm-who {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ds-s-1);
+}
+.adm-wholink {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+.adm-wholink:hover .adm-name { text-decoration: underline; }
+.adm-wholink:focus-visible { outline: 2px solid var(--ds-accent); outline-offset: 2px; border-radius: var(--ds-round-sm); }
+/* "no username yet" / "no profile yet" — a FOOTNOTE, not a name. It replaced
+   "(no profile)", which said the same wrong thing about three different states. */
+.adm-nouser {
+  font-size: var(--ds-t-xs);
+  font-style: italic;
+  color: var(--ds-mut);
+}
+
+.adm-action { font-family: var(--ds-font-mono); font-size: var(--ds-t-sm); color: var(--ds-ink); }
+.adm-detail { display: block; font-size: var(--ds-t-xs); }
+/* an action button parked on a section heading (Export CSV). The heading is
+   uppercase micro-type, so the button has to not inherit its letter-spacing. */
+.adm-h3-act { margin-left: var(--ds-s-2); text-transform: none; letter-spacing: 0; }
+
+/* ---- the user detail panel --------------------------------------------- */
+.adm-user {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-3);
+}
+.adm-user-h {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ds-s-3);
+  flex-wrap: wrap;
+}
+.adm-user-name { margin: 0; font-size: var(--ds-t-xl); font-weight: 800; color: var(--ds-ink); }
+.adm-user-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+  margin-top: var(--ds-s-1);
+  font-size: var(--ds-t-sm);
+}
+.adm-user-sub .adm-guest-id { word-break: break-all; }
+.adm-stat.bad b { color: var(--ds-danger); }
+.adm-stat-sub {
+  font-size: var(--ds-t-xs);
+  font-style: normal;
+  font-weight: 600;
+  color: var(--ds-mut);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.adm-lockline {
+  margin: 0;
+  border: 1px solid var(--ds-danger);
+  border-radius: var(--ds-round-md);
+  padding: var(--ds-s-2) var(--ds-s-3);
+  background: var(--ds-tile);
+  font-size: var(--ds-t-md);
+  font-weight: 700;
+  color: var(--ds-ink);
+}
+
+/* the account's facts. A definition list because that is what it is: each row
+   is a term and its value, and a screen reader should say so. */
+.adm-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--ds-s-2) var(--ds-s-4);
+  margin: 0;
+}
+.adm-fact { display: flex; align-items: baseline; gap: var(--ds-s-2); min-width: 0; }
+.adm-fact dt {
+  flex: 0 0 auto;
+  font-size: var(--ds-t-xs);
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+}
+.adm-fact dd { margin: 0; font-size: var(--ds-t-md); color: var(--ds-ink); min-width: 0; }
+
+.adm-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+  background: var(--ds-panel);
+  border: 1px solid var(--ds-line);
+  border-radius: var(--ds-round-md);
+  padding: var(--ds-s-3);
+}
+.adm-rowacts { display: inline-flex; gap: var(--ds-s-2); }
+
+.adm-noteadd { display: flex; gap: var(--ds-s-2); }
+.adm-noteadd input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.adm-notes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+}
+.adm-notes li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--ds-s-2);
+  border-bottom: 1px solid var(--ds-line);
+  padding: var(--ds-s-2) 0;
+  font-size: var(--ds-t-sm);
+}
+.adm-note-body { flex: 1 1 200px; min-width: 0; color: var(--ds-ink); overflow-wrap: anywhere; }
+
+/* PHONE. The console is a desktop tool, but an incident does not wait for one —
+   so the tables scroll inside their own wrapper (`.ds-table-scroll`) and
+   everything else stacks rather than overflowing the page sideways. */
+@media (max-width: 480px) {
+  .adm-toolbar { align-items: stretch; }
+  .adm-toolbar .adm-grow { flex-basis: 100%; }
+  .adm-user-h { flex-direction: column; }
+  .adm-facts { grid-template-columns: 1fr; }
+  .adm-noteadd { flex-direction: column; }
+}
+
+/* the one `lb-` rule styles.css still carried (13-12). `.sup-badge.sup-sm` (styles.css) gives the
+   badge a left margin — except in the leaderboard's name row, a flex container that
+   already spaces its children with `gap` — the margin would be added on top of
+   it and push the badge away from the name it belongs to. */
+.lb-name > .sup-badge {
+  margin-left: 0;
 }

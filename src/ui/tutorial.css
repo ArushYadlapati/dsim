@@ -109,6 +109,11 @@
 .ds-tut .game-btn:focus-visible {
   outline-color: var(--ds-accent);
 }
+/* A 32px FLOOR (design review 12-02). The HUD cap is ~27px on its own, and these three sit 4px
+   apart with Exit — which drops the run — next to Skip. The coarse block below takes it to 44. */
+.ds-tut .game-btn {
+  min-height: 32px;
+}
 
 /*
  * THE FIRST-RUN OFFER on the Modes page (`ModeSelect.tsx`).
@@ -156,5 +161,13 @@
   .ds-tut-acts {
     flex-direction: row;
     justify-content: flex-end;
+    gap: var(--ds-s-2);
+  }
+}
+
+/* a thumb's target, keyed on the POINTER alone: a narrow mouse window keeps the 32px floor */
+@media (pointer: coarse) {
+  .ds-tut .game-btn {
+    min-height: 44px;
   }
 }

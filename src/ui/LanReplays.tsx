@@ -140,7 +140,7 @@ function LanReplaysPanel({ signedIn, game, onWatchId, onWatchLocal }: LanReplays
       <div className="ds-panel-h">
         <span className="ds-panel-title">LAN matches</span>
       </div>
-      <div className="mh-scroll">
+      <div className="ds-table-scroll">
         <table className="ds-table">
           <thead>
             <tr>

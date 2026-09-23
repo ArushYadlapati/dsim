@@ -32,13 +32,23 @@ export function Download() {
     trackEvent('desktop_download', { os: build.os });
   };
 
-  const card = (build: DesktopBuild) => (
-    <a className="ds-opt" key={build.label} href={build.url} download onClick={taken(build)}>
-      <span className="ot">{build.label}</span>
+  // A ROW per build, grouped under its platform (design review 11-13): "Windows · Installer" as
+  // a card title wrapped at 375px, and the arrow sat in the tile's far corner away from its
+  // label. The platform is the group's label once, so a row only has to say which variant.
+  // ponytail: rides on src/download.ts writing labels as "Platform · Variant"
+  const row = (build: DesktopBuild) => (
+    <a className="ds-opt ds-dlpage-build" key={build.label} href={build.url} download onClick={taken(build)}>
+      <span className="ot">{build.label.split(' · ').slice(1).join(' · ') || build.label}</span>
       <span className="od">{build.note}</span>
-      <span className="go">↓</span>
+      <span className="go" aria-hidden="true">↓</span>
     </a>
   );
+  const groups: { os: DesktopBuild['os']; name: string; list: DesktopBuild[] }[] = [];
+  for (const b of builds) {
+    const g = groups.find((x) => x.os === b.os);
+    if (g) g.list.push(b);
+    else groups.push({ os: b.os, name: b.label.split(' · ')[0], list: [b] });
+  }
 
   const mobile = isMobile();
   // when we recognise the visitor's desktop OS, feature its PRIMARY build (the
@@ -102,7 +112,14 @@ export function Download() {
           )}
         </div>
 
-        <div className="ds-opts two">{builds.map(card)}</div>
+        <div className="ds-dlpage-builds">
+          {groups.map((g) => (
+            <div key={g.os} className="ds-dlpage-group">
+              <p className="ds-tileset-label">{g.name}</p>
+              {g.list.map(row)}
+            </div>
+          ))}
+        </div>
 
         <a className="ds-btn ghost" href={releasesUrl()} target="_blank" rel="noreferrer">
           All releases →

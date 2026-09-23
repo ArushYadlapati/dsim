@@ -526,7 +526,7 @@ function EventsPanel({
           </div>
         </div>
       ) : (
-        <div className="an-scroll">
+        <div className="ds-table-scroll">
           <table className="ds-table an-table">
             <thead>
               <tr>
@@ -812,7 +812,7 @@ function ProductSection({ data }: { data: ProductReport }) {
             </div>
           </div>
         ) : (
-          <div className="an-scroll">
+          <div className="ds-table-scroll">
             <table className="ds-table an-table">
               <thead>
                 <tr>

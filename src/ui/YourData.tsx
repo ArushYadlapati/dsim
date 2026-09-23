@@ -100,9 +100,9 @@ function StorageGroup({ cat }: { cat: StorageCategory }) {
         </div>
       ) : (
         /* `.ds-panel` clips for its rounded corners, so a table wider than a phone needs its
-           own scroller or its right-hand columns are simply gone — the same fix `.mh-scroll`
+           own scroller or its right-hand columns are simply gone — the same fix `.ds-table-scroll`
            carries on match history. */
-        <div className="yd-scroll">
+        <div className="ds-table-scroll">
           <table className="ds-table yd-table">
             <thead>
               <tr>

@@ -214,7 +214,7 @@ export function RecordRun({
    * Matchmaking, MatchStrategy) — back control + brand mark, then a titled panel. */
   const page = (title: JSX.Element, sub: string, body: JSX.Element): JSX.Element => (
     <div className="ds-console">
-      <div className="ds-console-in" style={{ maxWidth: 520 }}>
+      <div className="ds-console-in narrow">
         <div className="ds-head">
           <button className="ds-back" onClick={onCancel}>
             ← Back
@@ -227,10 +227,10 @@ export function RecordRun({
         <div className="ds-title">
           <h1>{title}</h1>
         </div>
-        <p className="ds-sub" style={{ marginTop: -10 }}>
+        <p className="ds-sub ds-sub-tight">
           {sub}
         </p>
-        <div className="ds-panelbox">{body}</div>
+        <div className="ds-panel ds-panel-body stack">{body}</div>
       </div>
     </div>
   );

@@ -10,8 +10,8 @@ import { averageMatch, playtimeLong, playtimeText } from '../playtime';
  * The competitive-stats panel shared by "My Stats" (own account) and the public
  * `/profile/<username>` page: overall 1v1/2v2 ELO + rank, solo/duo record bests +
  * rank, ranked W–L, and recent match history. Purely presentational — the caller
- * (a `CareerView`) fetches the `UserStats` for the selected period and passes the
- * resolved "Act X · Season Y" label. `name` is the chip shown in the panel header;
+ * (a `CareerView`) fetches the `UserStats` for the selected period and prints the
+ * period heading above it. `name` is the chip shown in the panel header;
  * `archived` marks a PAST period, whose numbers are that season's FINAL standings.
  */
 export function CareerPanel({
@@ -19,7 +19,6 @@ export function CareerPanel({
   status,
   error,
   name,
-  seasonLabel,
   archived,
   headerAction,
 }: {
@@ -27,8 +26,6 @@ export function CareerPanel({
   status: 'loading' | 'ok' | 'error';
   error?: string;
   name: string;
-  /** "Act X · Season Y" label for the selected period */
-  seasonLabel: string;
   /** true when viewing a past period ⇒ these are the season's final stats */
   archived?: boolean;
   /** optional control rendered in the panel header (e.g. a Share button) */
@@ -39,16 +36,19 @@ export function CareerPanel({
   const solo = stats?.records.find((r) => r.mode === 'solo');
   const duo = stats?.records.find((r) => r.mode === 'duo');
   const rankTag = (rank: number | null): string => (rank ? `Rank #${rank}` : 'Unranked');
+  /* NO GAMES, NO NUMBERS (design review 07-06). The season tiles used to render "1000 · 1V1
+     ELO" and "0–0" right above the empty state saying there was nothing — the 1000 is the
+     server's starting value, not a rating the player holds. Empty ⇒ the empty state INSTEAD
+     of the tiles; otherwise an absent mode reads "—" / "Unplaced", never 1000. */
+  const empty = !!stats && stats.match.played === 0 && solo?.best == null && duo?.best == null;
   const winPct =
     stats && stats.match.played > 0 ? Math.round((stats.match.wins / stats.match.played) * 100) : null;
 
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">
-          {seasonLabel} · {archived ? 'Final' : 'Overall'}
-        </span>
-        {archived && <span className="ds-dt lb-you-tag">FINAL</span>}
+        {/* the period is the h2 above; FINAL was printed twice here (07-08) */}
+        <span className="ds-panel-title">{archived ? 'Final standings' : 'Overall'}</span>
         <span className="ds-head-spacer" />
         {/* the name chip is the ONLY place "My Stats" prints who you are — the
             public profile has a header for it, Career does not — so this is where
@@ -73,7 +73,7 @@ export function CareerPanel({
         </div>
       )}
 
-      {status === 'ok' && stats && (
+      {status === 'ok' && stats && (!empty || stats.activity || (stats.awards?.length ?? 0) > 0) && (
         <div className="ds-panel-body stack">
           {/* PLAYTIME + GAMES PLAYED. Lifetime, not season-scoped like the tiles below —
               "how much have I played" is a question about the account, and an answer that
@@ -112,28 +112,25 @@ export function CareerPanel({
               <AwardList awards={[...stats.awards].sort(compareAwards)} />
             </div>
           )}
+          {!empty && (
           <div className="ds-stats">
             <div className="ds-stat">
-              <span className="sv">{elo1?.rating ?? 1000}</span>
+              <span className="sv">{elo1 ? elo1.rating : '—'}</span>
               <span className="sl">1V1 ELO</span>
-              <span className="sl">
-                {rankTag(elo1?.rank ?? null)} · {elo1?.games ?? 0} games
-              </span>
+              <span className="sl">{elo1 ? `${rankTag(elo1.rank)} · ${elo1.games} games` : 'Unplaced'}</span>
             </div>
             <div className="ds-stat">
-              <span className="sv">{elo2?.rating ?? 1000}</span>
+              <span className="sv">{elo2 ? elo2.rating : '—'}</span>
               <span className="sl">2V2 ELO</span>
-              <span className="sl">
-                {rankTag(elo2?.rank ?? null)} · {elo2?.games ?? 0} games
-              </span>
+              <span className="sl">{elo2 ? `${rankTag(elo2.rank)} · ${elo2.games} games` : 'Unplaced'}</span>
             </div>
             <div className="ds-stat">
-              <span className="sv">{solo?.best ?? '-'}</span>
+              <span className="sv">{solo?.best ?? '—'}</span>
               <span className="sl">Solo best</span>
               <span className="sl">{rankTag(solo?.rank ?? null)}</span>
             </div>
             <div className="ds-stat">
-              <span className="sv">{duo?.best ?? '-'}</span>
+              <span className="sv">{duo?.best ?? '—'}</span>
               <span className="sl">Duo best</span>
               <span className="sl">{rankTag(duo?.rank ?? null)}</span>
             </div>
@@ -145,6 +142,7 @@ export function CareerPanel({
               <span className="sl">{winPct != null ? `${winPct}% win` : ''}</span>
             </div>
           </div>
+          )}
         </div>
       )}
 
@@ -152,7 +150,7 @@ export function CareerPanel({
           these screens (`.ds-empty` + a `.big` headline) rather than as a stray
           hint paragraph. A sibling of the body, not a child of it, so it is inset
           by its own padding instead of by the body's as well. */}
-      {status === 'ok' && stats && stats.match.played === 0 && solo?.best == null && duo?.best == null && (
+      {status === 'ok' && empty && (
         <div className="ds-empty">
           <div className="big">
             {archived ? 'No games were played this period' : 'No games played yet this period'}

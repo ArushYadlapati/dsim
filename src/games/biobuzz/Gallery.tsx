@@ -546,7 +546,7 @@ function LiveScene({ scene, onBack }: { scene: Scene; onBack(): void }) {
           <span className="ot">{paused ? 'Resume' : 'Pause'}</span>
         </button>
       </div>
-      <div className="ds-panelbox">
+      <div className="ds-panel ds-panel-body stack">
         <canvas ref={canvasRef} style={LIVE_STYLE} />
         <p className="ds-note">{scene.title}</p>
         {/* the module's own HUD slice, as text — see the note on the missing chrome above */}

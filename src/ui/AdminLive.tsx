@@ -164,7 +164,7 @@ export function AdminLive({
                 role={p.role}
                 onOpen={onOpenUser}
               />
-              {(p.sessions ?? 1) > 1 && <span className="adm-pill">×{p.sessions}</span>}
+              {(p.sessions ?? 1) > 1 && <span className="ds-badge">×{p.sessions}</span>}
             </>
           ),
           act: p.act,
@@ -340,8 +340,8 @@ function SessionTable({
 }) {
   if (rows.length === 0) return <ListState empty={empty} />;
   return (
-    <div className="adm-table-wrap">
-      <table className="adm-table">
+    <div className="ds-table-scroll">
+      <table className="ds-table adm-table">
         <thead>
           <tr>
             <th>Session</th>
@@ -356,10 +356,10 @@ function SessionTable({
             <tr key={r.key}>
               <td>{r.who}</td>
               <td>
-                <span className={`adm-pill ${r.act}`}>{r.actLabel}</span>
+                <span className={`ds-badge${r.act === 'match' ? ' ok' : ''}`}>{r.actLabel}</span>
               </td>
               <td>
-                {r.queue ? <span className="adm-pill queued">{r.queue}</span> : <span className="ds-muted">—</span>}
+                {r.queue ? <span className="ds-badge accent">{r.queue}</span> : <span className="ds-muted">—</span>}
               </td>
               <td>
                 {r.room ? (
@@ -456,7 +456,7 @@ function MaintenancePanel() {
         <b role="heading" aria-level={3}>
           Maintenance lockdown
         </b>
-        <span className={`adm-pill ${biting ? 'danger' : live ? 'warn' : ''}`}>
+        <span className={`ds-badge${biting ? ' danger' : live ? ' warn' : ''}`}>
           {biting ? 'LOCKED — only admins can start' : live ? 'SCHEDULED' : 'Off'}
         </span>
       </div>

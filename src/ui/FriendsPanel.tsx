@@ -62,7 +62,10 @@ export interface RoomInviteTarget {
  * untouched, so widening the window restores whatever the player had. Storing
  * "open" on a desktop must never produce a panel that eats a laptop screen.
  */
-const SQUEEZE = '(max-width: 1100px) and (min-width: 901px)';
+// ponytail: literal widths, no shared breakpoint module yet (design review 18-10). They MUST
+// match shell.css: `.ds-body` collapses at `max-width: 900px`, and 1099/1100 is the builder
+// strip's split. It was `max-width: 1100px`, so at exactly 1100 the two disagreed (18-19).
+const SQUEEZE = '(max-width: 1099px) and (min-width: 901px)';
 
 function useMediaQuery(query: string): boolean {
   const [match, setMatch] = useState(() =>
@@ -175,7 +178,7 @@ export function FriendsPanel({
           <span className="fr-toggle-icon">
             <PeopleGlyph />
             {waiting > 0 && (
-              <span className="fr-badge" aria-label={`${waiting} friend requests and invites`}>
+              <span className="ds-badge count fr-badge" aria-label={`${waiting} friend requests and invites`}>
                 {waiting}
               </span>
             )}

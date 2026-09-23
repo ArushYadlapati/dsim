@@ -89,9 +89,12 @@ export function Account({
 
       {authEnabled && SUPPORT_ENABLED && <Membership onDonate={onDonate} />}
 
+      {/* THE TWO IRREVERSIBLE ACTIONS, grouped under one heading at the foot of the page
+          (design review 08-15) rather than as two more peers of Server and Privacy */}
+      <h2 className="ds-h2 ds-danger-head">Danger zone</h2>
       <div className="ds-panel">
         <div className="ds-panel-h">
-          <h2 className="ds-panel-title">Reset settings</h2>
+          <h3 className="ds-panel-title">Reset settings</h3>
         </div>
         <div className="ds-panel-body stack start">
           {/* `danger`: it wipes builds, autos and bindings, which for a local-only player is
@@ -334,7 +337,7 @@ export function DeleteAccount() {
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <h2 className="ds-panel-title">Delete account</h2>
+        <h3 className="ds-panel-title">Delete account</h3>
       </div>
       <div className="ds-panel-body stack">
         <p className="ds-hint">
@@ -401,15 +404,20 @@ function Identity() {
       </div>
       {user ? (
         <div className="ds-panel-body stack">
-          <div className="ds-field-row">
+          {/* TWO ROWS OF ONE SHAPE — label · value · action (design review 08-15). The email
+              was bold ink, "Password" a hint, and the Account ID a hint over a code line. */}
+          <div className="ds-acct-row">
+            <span className="lbl">Email</span>
             <span className="ds-acct-email">{user.email ?? 'signed in'}</span>
-            <span className="ds-head-spacer" />
-            <button className="ds-btn ghost" onClick={() => client.signOut()}>
+            <button className="ds-btn ghost small" onClick={() => client.signOut()}>
               Sign out
             </button>
           </div>
           {user.email && <PasswordRow email={user.email} />}
-          <div className="ds-acct-id">
+          {/* a SUPPORT identifier, not an identity fact — it folds (ui.md "rare controls fold") */}
+          <details className="ds-fold inset">
+            <summary>Support details</summary>
+            <div className="ds-fold-body ds-acct-id">
             <p className="ds-hint">Account ID</p>
             <div className="ds-field-row">
               {/* not clickable: the Copy button beside it is the control (a click-only
@@ -427,7 +435,8 @@ function Identity() {
                 {copied ? 'Copied' : 'Copy'}
               </button>
             </div>
-          </div>
+            </div>
+          </details>
         </div>
       ) : (
         <div className="ds-panel-body row">
@@ -464,11 +473,11 @@ function PasswordRow({ email }: { email: string }) {
   };
   return (
     <>
-      <div className="ds-field-row">
+      <div className="ds-acct-row">
+        <span className="lbl">Password</span>
         <span className="ds-hint">
-          {state === 'sent' ? `A link to set a new password is on its way to ${email}.` : 'Password'}
+          {state === 'sent' ? `A link to set a new password is on its way to ${email}.` : 'Set by email link'}
         </span>
-        <span className="ds-head-spacer" />
         <button
           className={`ds-btn ghost small${state === 'sending' ? ' busy' : ''}`}
           disabled={state === 'sending' || state === 'sent'}

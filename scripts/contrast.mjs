@@ -433,11 +433,11 @@ const serverPairs = (t) => {
     ['.ds-standing-name on tile', t('--ds-ink'), tile, AA],
     ['.ds-standing-lock', t('--ds-red-ink'), composite(t('--ds-red'), 0.12, panel), AA],
     // admin pills are text + edge on the recessed tile, one ink per MEANING
-    ['.adm-pill.danger on tile', t('--ds-danger'), tile, AA],
-    ['.adm-pill.warn on tile', t('--ds-warn'), tile, AA],
-    ['.adm-pill.ok on tile', t('--ds-ok-ink'), tile, AA],
-    ['.adm-pill.queued on tile', t('--ds-accent'), tile, AA],
-    ['.adm-pill.role.admin on tile', t('--ds-staff'), tile, AA],
+    ['.ds-badge.danger on tile', t('--ds-danger'), tile, AA],
+    ['.ds-badge.warn on tile', t('--ds-warn'), tile, AA],
+    ['.ds-badge.ok on tile', t('--ds-ok-ink'), tile, AA],
+    ['.ds-badge.accent on tile', t('--ds-accent'), tile, AA],
+    ['.ds-badge.staff on tile', t('--ds-staff'), tile, AA],
     // chart series marks (1.4.11) — adminCharts SERIES and .an-line.visitors
     ['--ds-viz-1 on panel (1.4.11)', t('--ds-viz-1'), panel, NON_TEXT],
     ['--ds-viz-2 on panel (1.4.11)', t('--ds-viz-2'), panel, NON_TEXT],

@@ -188,6 +188,13 @@ export function AppShell({
           <SponsorFooterMark />
         </span>
         <span className="ds-foot-links">
+          {/* TWO GROUPS, by position and weight: the product's own destinations at the
+              link weight, then the legal set small and muted (design review 11-19). The
+              consent link's label is fixed by the privacy policy, which names it verbatim
+              (legalText.ts), and outside the EEA/UK/CH it lands on the same page as Privacy
+              — so the two sit together at the legal weight instead of reading as six peers.
+              No `.bold` on any of them: within a group they are peers. No Discord link
+              here: the home page carries it. */}
           <FootLink href={`/${game}/download`} go={onDownload}>
             Download
           </FootLink>
@@ -202,29 +209,15 @@ export function AppShell({
               Support
             </FootLink>
           )}
-          <FootLink href={`/${game}/privacy`} go={onPrivacy}>
-            Privacy
-          </FootLink>
-          {/* immediately after Privacy, not after Terms. Its label is fixed by the
-              privacy policy, which names the link verbatim (legalText.ts), so it
-              cannot be shortened — but two items both starting "Privacy" should at
-              least sit together rather than have Terms between them. */}
-          <ConsentLink onPrivacy={onPrivacy} />
-          <FootLink href={`/${game}/terms`} go={onTerms}>
-            Terms
-          </FootLink>
-          {/* main replaced the bare GitHub link with Changes — keep that, plus
-              monetization's Support/Privacy/Terms destinations.
-
-              NO `.bold`. These are peer destinations, and the row once rendered
-              them in two weights by accident of markup: 400 for the plain
-              `.ds-foot-link`s and 700 for this one because it carried `.bold`.
-              One treatment for all of them; if an item ever has to lead, promote
-              it by POSITION. No Discord link here: the home page carries it, and
-              the footer copy came back through a main merge with no `<a>` rule
-              behind it (a0bb3b4 had removed both). */}
           <FootLink href={`/${game}/changelogs`} go={onChangelog}>
             Changes
+          </FootLink>
+          <FootLink href={`/${game}/privacy`} go={onPrivacy} legal>
+            Privacy
+          </FootLink>
+          <ConsentLink onPrivacy={onPrivacy} />
+          <FootLink href={`/${game}/terms`} go={onTerms} legal>
+            Terms
           </FootLink>
         </span>
       </footer>
@@ -239,10 +232,21 @@ export function AppShell({
  * left click stays in the SPA through the app's own `navigate` (`go`). The hrefs mirror
  * `screenSuffix` in App.tsx, which the router's `parseScreen` reads back.
  */
-function FootLink({ href, go, children }: { href: string; go: () => void; children: ReactNode }) {
+function FootLink({
+  href,
+  go,
+  legal,
+  children,
+}: {
+  href: string;
+  go: () => void;
+  /** the small, muted legal group at the end of the row */
+  legal?: boolean;
+  children: ReactNode;
+}) {
   return (
     <a
-      className="ds-foot-link"
+      className={legal ? 'ds-foot-link legal' : 'ds-foot-link'}
       href={href}
       onClick={(e) => {
         if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -288,7 +292,7 @@ function FootLink({ href, go, children }: { href: string; go: () => void; childr
 function ConsentLink({ onPrivacy }: { onPrivacy: () => void }) {
   return (
     <button
-      className="ds-foot-link"
+      className="ds-foot-link legal"
       onClick={() => {
         if (showConsentSettings()) return;
         onPrivacy();

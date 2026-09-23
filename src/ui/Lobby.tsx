@@ -736,7 +736,7 @@ export function Lobby({
               )}
             </h1>
           </div>
-          <div className="ds-panelbox">
+          <div className="ds-panel ds-panel-body stack">
             {/* THE ROOM LOOKS IDENTICAL EITHER WAY, so this screen has to say which it is.
                 It is the last point before a socket is opened, and the consequence — the
                 match will not be rated and will not reach a board — is the sort of thing

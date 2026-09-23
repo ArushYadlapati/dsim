@@ -209,14 +209,14 @@ function ReportedRow({
         <span className="adm-report-counts">
           {/* OPEN is the number a moderator is working through; TOTAL is the history. Both,
               because a player with 1 open and 40 reviewed is a different problem. */}
-          {u.open > 0 && <span className="adm-pill warn">{u.open} open</span>}
-          <span className="adm-pill">{u.total} total</span>
-          <span className="adm-pill">{u.reporters} reporter{u.reporters === 1 ? '' : 's'}</span>
+          {u.open > 0 && <span className="ds-badge warn">{u.open} open</span>}
+          <span className="ds-badge">{u.total} total</span>
+          <span className="ds-badge">{u.reporters} reporter{u.reporters === 1 ? '' : 's'}</span>
           {/* STANDING is the corroborating half. Reports are what other players CLAIM; this
               is what the server itself watched them do — a full standing next to twelve
               reports reads very differently from a collapsed one. */}
           {typeof u.standing === 'number' && u.standing < STANDING_MAX && (
-            <span className={`adm-pill ${STANDING_PILL[tierOf(u.standing).key] ?? 'danger'}`}>
+            <span className={`ds-badge ${STANDING_PILL[tierOf(u.standing).key] ?? 'danger'}`}>
               {tierOf(u.standing).name} {u.standing}
             </span>
           )}
@@ -238,7 +238,7 @@ function ReportedRow({
               <div className="adm-report-list">
                 {detail.reports.map((r) => (
                   <div className="adm-report-item" key={r.id}>
-                    <span className="adm-pill">{REPORT_LABELS[r.reason] ?? r.reason}</span>
+                    <span className="ds-badge">{REPORT_LABELS[r.reason] ?? r.reason}</span>
                     <span className="adm-report-by ds-muted">
                       by {r.reporterUsername ? `@${r.reporterUsername}` : r.reporterHandle} ·{' '}
                       <When at={r.createdAt} />
@@ -381,9 +381,9 @@ function ScoreReportQueue({
                 known
                 onOpen={onOpenUser}
               />
-              <span className="adm-pill">{GAME_LABEL[r.game] ?? r.game}</span>
+              <span className="ds-badge">{GAME_LABEL[r.game] ?? r.game}</span>
               {r.reporterRejected > 0 && (
-                <span className="adm-pill warn">
+                <span className="ds-badge warn">
                   {r.reporterRejected} of {r.reporterFiled} rejected
                 </span>
               )}

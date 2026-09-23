@@ -1194,9 +1194,9 @@ export function ReplayView({
         )}
         {/* DOWNLOAD BELONGS HERE, not in the transport row below: it is an action on the
             replay, not on playback, and two ghost buttons wedged between the seek bar and the
-            clock read as two more transport controls. The spacer keeps the title centred on
-            the screens where there is nothing to download. */}
-        {status === 'ready' ? (
+            clock read as two more transport controls. The header is a 1fr/auto/1fr grid, so
+            the title is centred whatever sits either side of it (design review 09-14). */}
+        {status === 'ready' && (
           <div className="ds-replay-actions">
             {/* SHOW THE MATCH IN THE GRAPHICS THE PLAYER DEFINED (`docs/roadmap.md` item 2):
                 starts from the device's own view preference (`getViewPref`, see the
@@ -1321,11 +1321,6 @@ export function ReplayView({
               )}
             </div>
           </div>
-        ) : (
-          // the same box the menu occupies, so the title stays centred on the
-          // screens with nothing to download — `.ds-dl` owns that width, rather
-          // than a literal repeating it here and drifting from it
-          <span className="ds-dl" aria-hidden />
         )}
       </div>
 

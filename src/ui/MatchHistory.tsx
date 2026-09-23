@@ -259,12 +259,12 @@ export function MatchHistory({
       )}
       {(status === 'ok' || refetching) && total > 0 && page && (
         <>
-          <div className="mh-scroll" aria-busy={refetching}>
+          <div className="ds-table-scroll tall" aria-busy={refetching}>
             <table className="ds-table mh-table">
               <thead>
                 <tr>
-                  <th>When</th>
-                  <th>Type</th>
+                  <th className="mh-when">When</th>
+                  <th className="mh-type-col">Type</th>
                   <th>Players</th>
                   <th>Result</th>
                   <th className="r">Score</th>
@@ -280,7 +280,7 @@ export function MatchHistory({
                   return (
                     <tr key={`${r.kind}-${r.id}`}>
                       <td className="mh-when">{fmtDayTime(r.createdAt)}</td>
-                      <td>
+                      <td className="mh-type-col">
                         {/* a record run takes the bare chip: `.mh-type.rec` was in the
                             markup with no rule behind it, and the three kinds already
                             read apart — ranked is accent, custom is dimmed, a run says
@@ -291,6 +291,10 @@ export function MatchHistory({
                       </td>
                       <td>
                         <Players r={r} onOpenProfile={onOpenProfile} />
+                        {/* phones drop When + Type (07-05); they fold in here */}
+                        <div className="mh-sub">
+                          {fmtDayTime(r.createdAt)} · {typeLabel(r)}
+                        </div>
                       </td>
                       <td>
                         {r.kind === 'record' ? (

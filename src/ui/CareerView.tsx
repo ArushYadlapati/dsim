@@ -100,20 +100,25 @@ export function CareerView({
         notFound
       ) : (
         <>
+          {/* the SAME period heading the Leaderboard tab prints (design review 07-08) — the
+              period used to live only in the panel title, beside a second FINAL chip */}
+          <h2 className="ds-h2 ds-period-head">
+            {seasonLabel}
+            {archived ? ' · final' : ''}
+          </h2>
           <PeriodPicker seasons={seasons} current={current} value={season} onChange={setSeason} label="Period" />
           <CareerPanel
             stats={stats}
             status={status}
             error={error}
             name={name}
-            seasonLabel={seasonLabel}
             archived={archived}
             headerAction={headerAction?.(stats)}
           />
           <MatchHistory
             fetchPage={fetchPage}
             season={season}
-            seasonLabel={seasonLabel}
+            seasonLabel={info ? periodLabel(info) : 'this period'}
             onWatch={nav.onWatch}
             onOpenProfile={nav.onOpenProfile}
           />

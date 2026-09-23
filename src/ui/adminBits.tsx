@@ -227,7 +227,7 @@ export function AccountName({
       ) : (
         body
       )}
-      {role && <span className={`adm-pill role ${role}`}>{role === 'owner' ? 'owner' : 'admin'}</span>}
+      {role && <span className={`ds-badge ${role === 'owner' ? 'accent' : 'staff'}`}>{role === 'owner' ? 'owner' : 'admin'}</span>}
       <CopyId id={userId} label="account id" />
     </span>
   );

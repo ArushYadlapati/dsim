@@ -64,7 +64,7 @@ export function DisplayName({
   };
 
   return (
-    <div className="ds-panelbox">
+    <div className="ds-panel ds-panel-body stack">
       <label className="ds-field">
         <span className="cap">
           Display name <span className={`val${valid ? '' : ' over'}`}>{trimmed.length}/24</span>
@@ -144,7 +144,7 @@ export function Username({ userId }: { userId: string }) {
   };
 
   return (
-    <div className="ds-panelbox">
+    <div className="ds-panel ds-panel-body stack">
       <label className="ds-field">
         <span className="cap">Username</span>
         <div className="ds-field-row">

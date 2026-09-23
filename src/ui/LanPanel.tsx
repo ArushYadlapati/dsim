@@ -452,7 +452,7 @@ export function LanPanel({
           </div>
 
           {active && (
-            <div className="ds-panelbox">
+            <div className="ds-panel ds-panel-body stack">
               <p className="ds-lan-state">
                 Connected to <b>{lanServerUrl().replace(/^wss?:\/\//, '')}</b>
               </p>
@@ -464,7 +464,7 @@ export function LanPanel({
             </div>
           )}
 
-          <div className="ds-panelbox">
+          <div className="ds-panel ds-panel-body stack">
             <label className="ds-field">
               <span className="cap">Your name</span>
               <input
@@ -642,7 +642,7 @@ export function LanPanel({
                   GUESTS ARE UNAFFECTED either way, which is the part people assume wrong:
                   only the HOST needs any of this. `docs/lan-selfhost.md` carries the long
                   version. ---------------------------------------------------------------- */}
-              <div className="ds-panelbox">
+              <div className="ds-panel ds-panel-body stack">
                 <p className="ds-lan-state">Host without browser</p>
                 <p className="ds-hint">
                   Runs the game server from a terminal, so it works with no internet at all. Players
@@ -666,7 +666,7 @@ export function LanPanel({
               </div>
 
               {bridge?.lan && (
-                <div className="ds-panelbox">
+                <div className="ds-panel ds-panel-body stack">
                   {!running && (
                     <>
                       <p className="ds-hint">

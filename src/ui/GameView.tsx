@@ -127,7 +127,8 @@ function PowerGauge({ draw }: { draw: number }) {
   return (
     <span
       className="power-gauge"
-      title={`Drive power draw. Flywheel spin-up and intake pull current off the drive motors (${pct}% slower right now)`}
+      role="img"
+      aria-label={`Drive power draw: ${pct}% slower right now.`}
     >
       <span className="v-gauge">
         {/* the LEVEL, not a height: the fill is full-size and clipped to it, so the bar
@@ -820,8 +821,8 @@ export function GameView({
             a driver reaches for mid-match, so they keep the corner; the mark reads
             as the line's credit rather than as the first button.
 
-            On this line at all because `.game-buttons` is the one top-corner cluster
-            every layout renders — the status chips opposite are fine-pointer only.
+            On this line at all because `.game-buttons` is the top-corner cluster with
+            room on every layout — the status card opposite is sized to a phone's gutter.
             Outside the `ads` gate entirely: see the note at the top of Sponsor.tsx.
             It renders on a phone, in the Electron build, and for supporters, all
             three of which the ad path deliberately skips. */}
@@ -1037,7 +1038,12 @@ function Hud({
         </div>
       )}
 
-      {(!coarsePointer) && (
+      {/* EVERY POINTER GETS THE CARD (design review 05-05). It used to be fine-pointer only, so
+          a phone lost the hopper, the gate, the power draw, every game's own column, the card
+          icon, the frame rate and DESYNC — facts a driver cannot get anywhere else. The compact
+          blocks in styles.css shrink the card and keep it in the gutter; what a phone skips is
+          listed at each gate below, and each skip has another home. */}
+      {(
         /**
          * ⚠️ `data-hud-band` IS ON THE CHIP ROW, NOT ON THE WRAPPER.
          *
@@ -1050,6 +1056,9 @@ function Hud({
          * below them is deliberately NOT — a diagnostic that changed the shot would ruin every
          * before/after comparison somebody turned it on to make.
          *
+         * Not on a coarse pointer: there the card floats over a field corner, as camera.ts
+         * says, rather than shrinking a phone's 3D field by the card's height.
+         *
          * The 3D scrim still reaches everything in here: `.game-root.view-3d .status-wrap`
          * redefines the tokens for the whole cluster (styles.css).
          */
@@ -1058,7 +1067,7 @@ function Hud({
               aligned together. The mark used to sit in its own line above and push
               the whole cluster down, which read as a floating badge over the field
               rather than as part of the HUD chrome. */}
-          <div className="status-row" data-hud-band>
+          <div className="status-row" data-hud-band={coarsePointer ? undefined : true}>
             <div className="robot-status">
               {GameChips && <GameChips hud={hud} />}
               {dec && (
@@ -1081,13 +1090,6 @@ function Hud({
                             : 'Gate open.'
                           : 'Gate closed.'
                       }
-                      title={
-                        hud.gateOpen
-                          ? hud.gateForced
-                            ? 'Gate forced open by the opponent'
-                            : 'Gate open'
-                          : 'Gate closed'
-                      }
                     />
                   </div>
                   <div className="dec-hud-right">
@@ -1099,11 +1101,12 @@ function Hud({
                   a gauge, a lever — and every text/emoji chip that used to sit beside them was
                   relocated by the owner's own pass over this corner (`HUD-RELOCATION.md`, which
                   names a destination per chip):
-                    · SERVER <region>, SPEC <n>, ⚠ DESYNC → the bottom-right `.net-corner`, below;
+                    · SERVER <region>, WATCHING <n>, ⚠ DESYNC → the bottom-right `.net-corner`,
+                      below (on a phone, DESYNC alone, at the foot of this cluster);
                     · WAITING · <name>, FOULS, PIN / CONTROL 5+ → pinned lines in the event log
                       (`GamePinnedNotice` / `eventlog-pinned`), because each is a call to action
                       rather than a standing fact;
-                    · REVERSED / butterfly / card → the icon-only `.sub-hud` under this card;
+                    · REVERSED / butterfly / card → the `.sub-hud` under this card;
                     · Chain Reaction's mult/catalyst/hold state → `ChainHudChips` (`GameChips`
                       above), its ASCENDED/PARKED status → the `.park-status` card below;
                     · 🎮 gamepad → nowhere. A pad that is plugged in says so by driving the
@@ -1113,37 +1116,50 @@ function Hud({
                   one spectator chip took the band from 83px to 227px in BIOBUZZ. */}
             </div>
           </div>
-          {/* a SECOND card, below the first — icon-only rows for state that's active only
-              sometimes (reversed drive, a butterfly's wheel set, a card), so it appears and
-              grows downward rather than permanently reserving chip width in the row above. */}
+          {/* a SECOND card, below the first — rows for state that's active only sometimes
+              (reversed drive, a butterfly's wheel set, a card), so it appears and grows downward
+              rather than permanently reserving chip width in the row above.
+              EACH GLYPH CARRIES A VISIBLE WORD (design review 05-06). They explained themselves
+              through `title`, and `.hud` is `pointer-events: none`, so no tooltip ever showed —
+              a new driver could not learn what two amber rings meant. The word is `aria-hidden`
+              because the glyph's own `aria-label` already says it in full. This card is NOT in
+              `[data-hud-band]`, so a word here never re-frames the 3D field. */}
           {(hud.frontFlipped || hud.butterflyMode || hud.card) && (
             <div className="sub-hud">
               {hud.frontFlipped && (
-                <span
-                  className="reversed-icon"
-                  role="img"
-                  aria-label="Front flipped: driving reversed."
-                  title="Front flipped, driving reversed"
-                />
+                <span className="sub-hud-item">
+                  <span className="reversed-icon" role="img" aria-label="Front flipped: driving reversed." />
+                  <span className="sub-hud-lbl" aria-hidden="true">
+                    REVERSED
+                  </span>
+                </span>
               )}
               {hud.butterflyMode && (
-                <span
-                  className={`butterfly-icon ${hud.butterflyMode}`}
-                  role="img"
-                  aria-label={`Butterfly drivetrain: ${hud.butterflyMode === 'tank' ? 'traction' : 'mecanum'} wheels down.`}
-                  title={hud.butterflyMode === 'tank' ? 'Traction wheels down' : 'Mecanum wheels down'}
-                />
+                <span className="sub-hud-item">
+                  <span
+                    className={`butterfly-icon ${hud.butterflyMode}`}
+                    role="img"
+                    aria-label={`Butterfly drivetrain: ${hud.butterflyMode === 'tank' ? 'traction' : 'mecanum'} wheels down.`}
+                  />
+                  <span className="sub-hud-lbl" aria-hidden="true">
+                    {hud.butterflyMode === 'tank' ? 'TRACTION' : 'MECANUM'}
+                  </span>
+                </span>
               )}
               {hud.card && (
-                <span
-                  className={`card-icon ${hud.card}`}
-                  role="img"
-                  aria-label={`${hud.card === 'red' ? 'Red' : 'Yellow'} card issued.`}
-                  title={hud.card === 'red' ? 'Red card' : 'Yellow card'}
-                >
-                  {/* a LETTER as well as the fill (design review 17-06): yellow and red must not
-                      be told apart by hue alone */}
-                  {hud.card === 'red' ? 'R' : 'Y'}
+                <span className="sub-hud-item">
+                  <span
+                    className={`card-icon ${hud.card}`}
+                    role="img"
+                    aria-label={`${hud.card === 'red' ? 'Red' : 'Yellow'} card issued.`}
+                  >
+                    {/* a LETTER as well as the fill (design review 17-06): yellow and red must not
+                        be told apart by hue alone */}
+                    {hud.card === 'red' ? 'R' : 'Y'}
+                  </span>
+                  <span className="sub-hud-lbl" aria-hidden="true">
+                    CARD
+                  </span>
                 </span>
               )}
             </div>
@@ -1153,21 +1169,35 @@ function Hud({
               the sim itself, see `chainStep`), so no default/reminder state to render.
               Border colour matches the existing on-canvas badge over the robot
               (`drawChain.ts`: ascended gold, parked white) see HUD-RELOCATION.md. */}
-          {cr && hud.chain && (hud.chain.endgame === 'ascended' || hud.chain.endgame === 'parked') && (
+          {/* NOT on a phone: the breakdown row prints the same ASCENDED / PARKED, and a landscape
+              gutter has no height for the word twice. */}
+          {!coarsePointer && cr && hud.chain && (hud.chain.endgame === 'ascended' || hud.chain.endgame === 'parked') && (
             <div className={`park-status ${hud.chain.endgame}`}>
               {hud.chain.endgame === 'ascended' ? 'ASCENDED' : 'PARKED'}
             </div>
           )}
-          <PerfHud level={perfLevel} stats={perfStats} />
+          {/* a phone gets the `simple` line at most: frame rate and ping fit the gutter, and the
+              detailed rows and graphs do not (the review's own suggestion, 05-05). */}
+          <PerfHud level={coarsePointer && perfLevel !== 'off' ? 'simple' : perfLevel} stats={perfStats} />
           {/* THE PREDICTION PICKER, whenever the setting would do something (a 3D-physics room
               and nothing else, `hud.prediction` is null everywhere it is inert).
               It used to be behind the connection chip's click, which means it was never
               reachable: that click never landed (see the top of this file). It is a CONTROL, so
               it is not part of the read-out above, a `pointer-events: none` card cannot hold
               one, and it is not gated on the display level either, because hiding a control
-              behind a diagnostic's setting is the same mistake in a different place. */}
-          {hud.prediction && (
+              behind a diagnostic's setting is the same mistake in a different place.
+              Fine pointer only: the panel is taller than a landscape gutter, and the same setting
+              is in Configure › Network, which a phone reaches from the menu. */}
+          {!coarsePointer && hud.prediction && (
             <PredictionPanel stats={hud.prediction} onPick={setPredictionPref} />
+          )}
+          {/* DESYNC, on a phone, at the foot of this cluster: the bottom-right corner is the
+              thumb pad's. It is the one net chip that is a state rather than a fact (see the
+              corner below); WATCHING and SERVER stay desktop-only. */}
+          {coarsePointer && hud.net?.desync && (
+            <span className="chip desync" role="status">
+              <span aria-hidden="true">⚠</span> DESYNC
+            </span>
           )}
         </div>
       )}
@@ -1189,19 +1219,17 @@ function Hud({
           because a link that has gone actively wrong is a state, not a measurement. */}
       {/* gated on the three things inside it, not on `hud.net` alone: main could gate on the
           connection because the connection chip was always in here to fill the cluster, and
-          that chip is on `PerfHud` now — a bare `hud.net` would mount an empty corner. */}
+          that chip is on `PerfHud` now — a bare `hud.net` would mount an empty corner.
+          Fine pointer only: on a phone this corner is the thumb pad's, and DESYNC moved up into
+          the status cluster above. */}
       {!coarsePointer && (hud.spectators > 0 || !!hud.net?.desync || !!hud.net?.server) && (
         <div className="net-corner">
           <div className="net-corner-row">
             {/* who is watching. Shown only when somebody IS: a standing "0 watching" is
                 noise, and the moment worth surfacing is the one where it stops being zero. */}
             {hud.spectators > 0 && (
-              <span
-                className="chip"
-                title={`${hud.spectators} ${hud.spectators === 1 ? 'person is' : 'people are'} watching this match live`}
-              >
-                SPEC {hud.spectators}
-              </span>
+              // the WORD, not SPEC plus a `title` nobody could hover (`.hud` is pointer-events: none)
+              <span className="chip">WATCHING {hud.spectators}</span>
             )}
             {hud.net?.desync && (
               <span className="chip desync" role="status">

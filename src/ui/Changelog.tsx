@@ -1,14 +1,9 @@
 import { useEffect, useState } from 'react';
-import { fetchAnnouncements, type Announcement, type AnnouncementKind } from '../net/api';
+import { fetchAnnouncements, type Announcement } from '../net/api';
 import { gameServerConfigured } from '../net/env';
 import { LINKS } from '../seasons';
+import { KindBadge } from './Announcements';
 import { Markdown } from './markdown';
-
-const KIND_LABEL: Record<AnnouncementKind, string> = {
-  patch: 'Patch notes',
-  season: 'New season',
-  act: 'New act',
-};
 
 /**
  * Changelog — every published announcement (patch notes, new seasons, new
@@ -68,7 +63,7 @@ export function Changelog() {
               {items.map((a) => (
                 <article key={a.id} className={`ann-item ${a.kind}`}>
                   <header className="ann-item-head">
-                    <span className={`ann-badge ${a.kind}`}>{KIND_LABEL[a.kind]}</span>
+                    <KindBadge kind={a.kind} />
                     <time className="ds-hint">{new Date(a.publishedAt).toLocaleDateString()}</time>
                   </header>
                   <h2 className="ann-item-title">{a.title}</h2>

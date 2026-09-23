@@ -264,11 +264,11 @@ export function AdminUser({
             ) : (
               <span className="adm-nouser">no username yet</span>
             )}
-            {u.role && <span className={`adm-pill role ${u.role}`}>{u.role}</span>}
-            {u.supporter && <span className="adm-pill">supporter</span>}
-            {suspendedUntil !== null && <span className="adm-pill danger">suspended</span>}
+            {u.role && <span className={`ds-badge ${u.role === 'owner' ? 'accent' : 'staff'}`}>{u.role}</span>}
+            {u.supporter && <span className="ds-badge">supporter</span>}
+            {suspendedUntil !== null && <span className="ds-badge danger">suspended</span>}
             {!u.known && (
-              <span className="adm-pill" title="No profiles row exists for this account id">
+              <span className="ds-badge" title="No profiles row exists for this account id">
                 no profile row
               </span>
             )}
@@ -517,7 +517,7 @@ export function AdminUser({
           <div className="adm-report-list">
             {(u.reportsAgainstList ?? []).map((r) => (
               <div className="adm-report-item" key={r.id}>
-                <span className="adm-pill">{REPORT_LABELS[r.reason as ReportReason] ?? r.reason}</span>
+                <span className="ds-badge">{REPORT_LABELS[r.reason as ReportReason] ?? r.reason}</span>
                 <span className="adm-report-by ds-muted">
                   by {r.reporterUsername ? `@${r.reporterUsername}` : r.reporterHandle} ·{' '}
                   <When at={r.createdAt} />
@@ -540,7 +540,7 @@ export function AdminUser({
           <div className="adm-report-list">
             {(u.reportsFiledList ?? []).map((r) => (
               <div className="adm-report-item" key={r.id}>
-                <span className="adm-pill">{REPORT_LABELS[r.reason as ReportReason] ?? r.reason}</span>
+                <span className="ds-badge">{REPORT_LABELS[r.reason as ReportReason] ?? r.reason}</span>
                 <span className="adm-report-by ds-muted">
                   {/* the SUBJECT is the useful name here — the filer is the open account */}
                   against{' '}
@@ -697,7 +697,7 @@ export function AdminUser({
                   ) : (
                     <span className="ds-muted"> · no transaction id</span>
                   )}
-                  {p.refundedAt && <span className="adm-pill danger">charged back</span>}
+                  {p.refundedAt && <span className="ds-badge danger">charged back</span>}
                 </span>
                 <span className="ds-muted">
                   <When at={p.claimedAt} />

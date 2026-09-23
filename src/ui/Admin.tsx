@@ -17,6 +17,7 @@ import {
   type Announcement,
   type AnnouncementKind,
 } from '../net/api';
+import { KindBadge } from './Announcements';
 import { Markdown } from './markdown';
 import { SEASONS } from '../seasons';
 import type { GameId } from '../types';
@@ -432,8 +433,8 @@ export function Admin({
                   {userStatus ?? 'Search above, or open a name from the Live, Moderation or Audit tab.'}
                 </div>
               ) : (
-                <div className="adm-table-wrap">
-                  <table className="adm-table">
+                <div className="ds-table-scroll">
+                  <table className="ds-table adm-table">
                     <thead>
                       <tr>
                         <th>Account</th>
@@ -640,7 +641,7 @@ export function Admin({
           <div className="admin-list">
             {announcements.map((a) => (
               <div key={a.id} className="admin-row">
-                <span className={`ann-badge ${a.kind}`}>{a.kind}</span>
+                <KindBadge kind={a.kind} />
                 <span className="admin-grow">
                   <strong>{a.title}</strong>
                   <span className="ds-hint"> · {new Date(a.publishedAt).toLocaleDateString()}</span>

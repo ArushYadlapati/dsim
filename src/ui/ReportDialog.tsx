@@ -127,7 +127,7 @@ export function ReportDialog({
           onChange={(e) => setDetail(e.target.value)}
           placeholder="Anything that helps a moderator find it in the replay"
         />
-        <span className="ds-hint" style={{ margin: 0 }}>
+        <span className="ds-hint">
           {detail.length}/{REPORT_DETAIL_MAX}
         </span>
       </label>
