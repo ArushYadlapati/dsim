@@ -53,10 +53,13 @@ export function BiobuzzRobotPreview({
   spec,
   size = 200,
   fluid = false,
+  caption = true,
 }: {
   spec: RobotSpec;
   size?: number;
   fluid?: boolean;
+  /** print the dimension line under the robot (see the DECODE `RobotPreview`'s prop) */
+  caption?: boolean;
 }) {
   const w = spec.width;
   const len = spec.length;
@@ -101,12 +104,13 @@ export function BiobuzzRobotPreview({
   // clips to its viewport, and a 14.5"-wide robot would otherwise lop the ends off
   // `17" wide · 15" long`.
   const dimLabel = `${w}" wide · ${len}" long`;
-  const labelHalf = (dimLabel.length * DIM_FONT * 0.56) / 2; // ~0.56em avg advance
+  const labelHalf = caption ? (dimLabel.length * DIM_FONT * 0.56) / 2 : 0; // ~0.56em avg advance
   const halfSpan = Math.max(w / 2, half, labelHalf, place ? Math.abs(markSX) + markR : 0) + 2.5;
   const top = Math.min(tipY, place ? markSY - markR : tipY) - 2;
   // The label clears whatever hangs off the BACK — a rear sweeper, or a marker behind the robot.
   const labelY = Math.max(rearY, place ? markSY + markR : rearY) + 2.6;
-  const bottom = labelY + DIM_FONT + 0.9;
+  // with no caption the drawing ends at the robot, plus the same margin the top gets
+  const bottom = caption ? labelY + DIM_FONT + 0.9 : labelY - 0.6;
   const vbW = halfSpan * 2;
   const vbH = bottom - top;
 
@@ -536,16 +540,18 @@ export function BiobuzzRobotPreview({
       {liftEl}
 
       {/* dimension label */}
-      <text
-        x={0}
-        y={labelY}
-        textAnchor="middle"
-        fill="var(--ds-mut)"
-        fontSize={DIM_FONT}
-        fontFamily="var(--ds-font-mono)"
-      >
-        {dimLabel}
-      </text>
+      {caption && (
+        <text
+          x={0}
+          y={labelY}
+          textAnchor="middle"
+          fill="var(--ds-mut)"
+          fontSize={DIM_FONT}
+          fontFamily="var(--ds-font-mono)"
+        >
+          {dimLabel}
+        </text>
+      )}
     </svg>
   );
 }

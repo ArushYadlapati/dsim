@@ -311,7 +311,7 @@ export function MatchSetup({
               cols="two"
               onPick={(practicePhysics) => set({ practicePhysics })}
               options={[
-                { v: '2d', t: '2D', d: 'The original solver. Lighter on a slow machine' },
+                { v: '2d', t: '2D', d: 'Lighter on a slow machine' },
                 { v: '3d', t: '3D', d: 'What ranked and record rooms run' },
               ]}
             />

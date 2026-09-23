@@ -179,25 +179,31 @@ export interface GameModule extends GameSimModule {
    * stops saying where it is rendered. A game that wants both still writes them off ONE
    * vocabulary module, which is what keeps the two from describing a robot differently.
    *
-   * Returns DATA, not markup, for the reason `presets.lines` and `resultsRows` do: the
-   * `.ds-stat` tile (and its CSS) has one owner, and a game contributing a tile cannot
-   * drift it.
+   * Returns DATA, not markup, for the reason `resultsRows` does: the builder owns how a
+   * mechanism is printed, and a game contributing one cannot drift it.
+   *
+   * ⚠️ NO LONGER TILES ON SCREEN (2026-09-22). The hero's chip wall is gone; each entry is now a
+   * WORD in `buildWords` (`src/ui/robotLabels.ts`) — `value, sub` — which is the build line under
+   * the hero's team and the one line on every robot card. The shape stayed so the vocabulary
+   * stayed: `value`/`sub` are still what this game says about its mechanisms, and `label` is
+   * what the checks assert those words are about.
    */
   statTiles?(spec: RobotSpec): readonly GameStatTile[];
   /**
-   * THE BODY OF ONE SAVED-ROBOT CARD — under the name and team, where `Menu.tsx` prints the
-   * one-line build summary.
+   * THE THUMBNAIL ON ONE SAVED-ROBOT CARD — beside the name, in the builder's garage.
    *
-   * It is a COMPONENT rather than a second string slot because what belongs there is no longer
-   * always a string: BIOBUZZ shows a 3D thumbnail of the saved build when the device is on the 3D
-   * view and the summary sentence when it is not (`docs/roadmap.md` item 1). The choice is the
+   * It is a COMPONENT because what belongs there is a picture the game renders: BIOBUZZ shows a
+   * 3D thumbnail of the saved build when the device is on the 3D view (`docs/roadmap.md` item 1)
+   * and NOTHING on the 2D one, where the card is its name and build line alone. The choice is the
    * GAME's, not the menu's — the menu does not know what a 3D view is, and a `showThumbnail`
    * boolean threaded through it would be the shared screen learning one game's rendering model.
    *
-   * A game that fills it also owns printing its own summary, which it already has: the slot's
-   * filler and `labels.configSummary` read the same vocabulary module.
+   * It used to be the card's whole BODY, and on the 3D view the build line was replaced by the
+   * picture — so a saved robot whose image had not rendered (a failed context, a software
+   * renderer) was a tall empty card with a name in its corner. The line is the card's now, in
+   * every game and on both views; this slot only ever adds a picture beside it.
    */
-  savedCard?: ComponentType<GameSavedCardProps>;
+  savedThumb?: ComponentType<GameSavedCardProps>;
   /**
    * The game's PRESET ROBOTS — the cards the builder's `Presets` section offers.
    *
@@ -208,8 +214,9 @@ export interface GameModule extends GameSimModule {
    * Chain Reaction's robots, described in Chain Reaction's words. Not a missing feature:
    * a wrong one, and invisible, because the section still rendered nine plausible cards.
    *
-   * A game fills this and gets its own list, its own match test and its own card body;
-   * a game that does not is routed through the unchanged branch exactly as before.
+   * A game fills this and gets its own list and its own match test; the card's line is
+   * `buildWords`, which reads the game's `statTiles`. A game that fills nothing is routed
+   * through the unchanged branch exactly as before.
    *
    * `matches` is a BUILD comparison and deliberately not a deep equality: the player's
    * name / team / number are theirs and are copied across when a card is applied, so a
@@ -222,10 +229,9 @@ export interface GameModule extends GameSimModule {
     list: readonly RobotSpec[];
     /** does `spec` carry this preset's BUILD? Identity fields are excluded — see above. */
     matches(spec: RobotSpec, preset: RobotSpec): boolean;
-    /** the detail lines under the preset's name. `meta` is the build; `zone` is the
-     * one-line "what it is for", rendered with the same emphasis DECODE gives its
-     * optimised-range line. Absent `zone` simply renders nothing. */
-    lines(preset: RobotSpec): { meta: string; zone?: string };
+    // NO `lines` ANY MORE. A preset card printed a tagline, a spec line and a loadout chip, three
+    // readings of one robot; it prints `buildWords` now, the same one line a saved robot prints,
+    // which already reads this game's `statTiles`.
     /** how many LEADING entries are real, documented robots rather than archetype
      * demos. The builder rules off after them so a player can tell "this is a real
      * team's robot" from "this is what a drum shooter feels like". Absent ⇒ all demos.
@@ -285,6 +291,9 @@ export interface GamePreviewProps {
   spec: RobotSpec;
   /** rendered edge length in px */
   size?: number;
+  /** print the `W" wide · L" long` line under a 2D schematic. Absent ⇒ printed. The builder hero
+   * turns it off: at its 88px the line was 5px type, and the hero states the size itself. */
+  caption?: boolean;
   /**
    * Whose robot this is. A 2D schematic has no use for it (both current ones draw in neutral
    * `ds-*` tokens), but a 3D preview does: the alliance is the chassis outline and the sign
@@ -303,7 +312,7 @@ export interface GamePreviewProps {
 }
 
 /**
- * props for `GameModule.savedCard` — the BODY of one saved-robot card in the builder's garage.
+ * props for `GameModule.savedThumb` — the thumbnail on one saved-robot card in the builder's garage.
  */
 export interface GameSavedCardProps {
   spec: RobotSpec;

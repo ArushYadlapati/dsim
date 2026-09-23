@@ -41,12 +41,8 @@ import { BB_DEFAULT_SPEC } from '../../src/games/biobuzz/robotConfig';
 import { bbLauncherOf, bbLiftOf } from '../../src/games/biobuzz/mechs';
 import type { BbMechSpec } from '../../src/games/biobuzz/mechs';
 import { bbConfigSummary, bbLiftKindLabel } from '../../src/games/biobuzz/labels';
-import {
-  BB_PRESET_LIST,
-  BB_REAL_PRESETS,
-  BB_STARTER_BOTS,
-  bbPresetLines,
-} from '../../src/games/biobuzz/presets';
+import { BB_PRESET_LIST, BB_REAL_PRESETS, BB_STARTER_BOTS } from '../../src/games/biobuzz/presets';
+import { buildWords, shotRange, teamLine } from '../../src/ui/robotLabels';
 import { SIM_DT } from '../../src/config';
 import { createBiobuzzWorld } from '../../src/games/biobuzz/spawn';
 import { biobuzzStep } from '../../src/games/biobuzz/step';
@@ -450,33 +446,38 @@ export function coreChecks(check: Check): void {
     check('decode does NOT fill labels (its inline arm stays the live path)', !moduleFor('decode').labels);
     check('chain does NOT fill labels (its inline arm stays the live path)', !moduleFor('chain').labels);
 
-    // THE WIRING, pinned at the source. A correct `bbConfigSummary` that no screen reads is
-    // the whole bug this section exists for, and it is invisible to every check that calls
-    // the function directly — the same reason the crawler files below are pinned as text.
+    // THE WIRING, pinned at the source. A correct summary that no screen reads is the whole bug
+    // this section exists for, and it is invisible to every check that calls the function
+    // directly — the same reason the crawler files below are pinned as text.
+    // Since 2026-09-22 a saved robot and a preset are ONE card (`RobotCard`), and its one line
+    // is `buildWords`, which reads the game's `statTiles` slot BEFORE either inline arm. The
+    // long sentence (`labels.configSummary`, above) is still the roster's and the leaderboard's.
     const menu = readRepo('src/ui/Menu.tsx');
+    const card = readRepo('src/ui/RobotCard.tsx');
+    const labelsSrc = readRepo('src/ui/robotLabels.ts');
     check(
-      'Menu.tsx reads the slot for the saved-robot line',
-      menu.includes('const gameSummary = mod.labels?.configSummary;'),
+      'Menu.tsx renders saved robots AND presets through RobotCard, with the active game',
+      (menu.match(/<RobotCard\b/g) ?? []).length === 2 && (menu.match(/game=\{settings\.game\}/g) ?? []).length >= 2,
     );
     check(
-      'Menu.tsx renders it as the `.om` detail line',
-      menu.includes('<span className="om">{gameSummary(r)}</span>'),
-    );
-    // and BOTH shipped arms are still there, byte for byte.
-    check(
-      'the DECODE saved-robot arm is unchanged',
-      menu.includes('{INTAKE_SHORT[r.intake]} · {r.flywheelInertia} inertia'),
+      'RobotCard prints buildWords as its one `.om` line',
+      card.includes('<span className="om">{buildWords(spec, game).join(\' · \')}</span>'),
     );
     check(
-      'the CR saved-robot arm is unchanged',
-      menu.includes('{CHAIN_MODE_LABELS[r.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE]}'),
+      'buildWords reads the statTiles SLOT before the DECODE and CR arms',
+      /const tiles = moduleFor\(game\)\.statTiles\?\.\(spec\);\s*\n\s*if \(tiles\)/.test(labelsSrc.replace(/\r\n/g, '\n')),
     );
-    // THE PRESET CARD BODY is keyed on the SAME slot that picks the LIST, so the words under a
-    // card can never describe a robot out of a different game's list.
+    // and BOTH shipped arms are there: DECODE names the intake, CR the archetype and catalyst.
+    check('the DECODE arm names the intake', labelsSrc.includes('`${INTAKE_SHORT[spec.intake]} intake`'));
     check(
-      'the preset card body is keyed on the same slot as the preset list',
-      menu.includes('const presets = gamePresets ? gamePresets.list :') &&
-        menu.includes('{gamePresets ? ('),
+      'the CR arm names the archetype and the catalyst',
+      labelsSrc.includes('CHAIN_MODE_LABELS[mode]') && labelsSrc.includes('CHAIN_CATALYST_LABELS[spec.catalystType'),
+    );
+    // THE PRESET LIST is keyed on the SAME slot as always, so a card can never describe a robot
+    // out of a different game's list.
+    check(
+      'the preset list is keyed on the game slot',
+      menu.includes('const presets = gamePresets ? gamePresets.list :'),
     );
     // THE DRIVETRAIN CHROME IS EVERY GAME'S. A filled `Builder` slot used to replace the whole
     // Customize section, and BIOBUZZ lost the drivetrain picker (and name, team, RPM) with it.
@@ -541,6 +542,37 @@ export function coreChecks(check: Check): void {
     // and the POSITIVE half: every build names this game's own element, so a summary cannot
     // pass the sweep above by saying nothing at all.
     check('every biobuzz build names POLLEN', builds.every((b) => say(b).includes('pollen')));
+
+    // ---- THE CARD LINE (`buildWords`) — every robot card and the hero's build line ----------
+    const words = (raw: unknown): string[] => buildWords(bbCoerce(raw), 'biobuzz');
+    const cardLines = builds.map((b) => words(b).join(' · ').toLowerCase()).join(' | ');
+    for (const word of FOREIGN_LINE) {
+      check(`biobuzz card lines never say "${word}"`, !cardLines.includes(word));
+    }
+    check(
+      'a card line is the drivetrain, then the game’s own two mechanism words',
+      builds.every((b) => {
+        const w = words(b);
+        const tiles = bbTiles ? bbTiles(bbCoerce(b)) : [];
+        return w.length === 1 + tiles.length && w.slice(1).every((x, i) => x.startsWith(tiles[i].value));
+      }),
+    );
+    check(
+      'a Box Tube CHANGES the card line',
+      words(rawOf(LOADOUTS[0].mech)).join() !== words(rawOf(LOADOUTS[1].mech)).join(),
+    );
+    // DECODE and CR take their own arms, in their own words
+    const decodeWords = buildWords({ ...DEFAULT_SPEC, intake: 'vector', canSort: true, flywheelInertia: 0.9 }, 'decode');
+    check(
+      'DECODE card line: drivetrain, intake, sorter, shot range',
+      decodeWords.join(' · ') === `${decodeWords[0]} · Vector intake · sorter · ${shotRange(0.9)}`,
+      decodeWords.join(' · '),
+    );
+    const chainWords = buildWords({ ...DEFAULT_SPEC }, 'chain').join(' · ').toLowerCase();
+    check('a CR card line never says POLLEN or intake style', !chainWords.includes('pollen') && !chainWords.includes('sloped'), chainWords);
+    // THE TEAM LINE: number then name, and nothing at all when there is neither
+    check('teamLine: number · name', teamLine({ teamNumber: 12345, teamName: 'Robo Hornets' }) === '12345 · Robo Hornets');
+    check('teamLine: empty when there is no team', teamLine({ teamNumber: 0, teamName: '  ' }) === '');
   }
 
   // ---- the preset cards: ONE StarterBot, no vendor names -------------------
@@ -565,10 +597,12 @@ export function coreChecks(check: Check): void {
       (moduleFor('biobuzz').presets?.list ?? []).map((p) => p.name).join(',') === BB_PRESET_LIST.map((p) => p.name).join(','),
     );
     const VENDOR = /gobilda|\brev\b|andymark|robits|studica/i;
-    const shown = BB_PRESET_LIST.flatMap((p) => {
-      const l = bbPresetLines(p);
-      return [p.name, p.teamName, l.meta, l.zone ?? '', bbConfigSummary(p)];
-    });
+    const shown = BB_PRESET_LIST.flatMap((p) => [
+      p.name,
+      p.teamName,
+      buildWords(p, 'biobuzz').join(' · '),
+      bbConfigSummary(p),
+    ]);
     const hits = shown.filter((t) => VENDOR.test(t));
     check('no vendor name in any preset name, team name, card line or summary', hits.length === 0, hits.join(' | '));
     // not vacuous: the sweep read real text for every card, and there is more than one card

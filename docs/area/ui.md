@@ -287,15 +287,29 @@ where the settings are stored, which nobody picks a section by, and went as clut
   be nesting. The marker rotates and `[open]` changes a border COLOUR, never a width.
 - **THE ROBOT PREVIEW STAYS ON SCREEN, AT THE TOP.** Owner ruling, 2026-09-22: the 260px rail is
   gone — it kept the robot on screen but read as a widget parked beside the build — and `.ds-hero`
-  is a pinned strip again, flush under the app bar from 1100px up. ⚠️ **The strip that was reverted
-  before held 26% of a 720px viewport, and the cause was `.ds-stats`**, an auto-fit grid of 96px
-  two-line tiles wrapping to two rows — never the sprite. **The budget is 105px**, set by the 96px
-  sprite box: the tiles are ONE-LINE chips that wrap inside that box, so another game's stat tile
-  cannot grow the card. Under 1100px wide it is the ordinary stacked card at the top of the page,
-  and at 720px tall or less it keeps the strip shape but stops pinning.
+  is pinned flush under the app bar from 1100px up (not at 720px tall or less). ⚠️ **The strip that
+  was reverted before held 26% of a 720px viewport, and the cause was the stat tiles**, never the
+  sprite. The chip wall that replaced them failed the other way: nine chips wrapped inside 96px,
+  scrolling in both directions between 1100 and 1280 with the top chip clipped and the name cut to
+  "My Ro…", and under 1100 the card was 509px tall (690 on a phone). **It is ONE card now, laid
+  out by a CONTAINER query on its own width** — the viewport breakpoint gave a 535px card a strip it
+  could not hold. The 96px picture sets the row; beside it the name (it wraps, never truncates), the
+  team, and ONE build line (`buildWords`); then a FIXED grid of six numbers, 3×2 or 2×3, so no
+  season's stat can widen or deepen the card and nothing in it scrolls. 114px as a strip (up to 134
+  with a 24-character name at 1100); on a phone the numbers go under the picture. A 3D preview
+  that cannot start marks its 3D segment (dashed, reason in the title); it does not print a
+  sentence into the 96px column, which is what cut the name.
+- **ONE ROBOT CARD** (`src/ui/RobotCard.tsx`): a saved robot, a preset, and the "Your robot" swap
+  row in the lobby and the ranked strategy window. Name, the team when there is one (a preset's
+  only when it is a real team — a demo's `teamName` is a tagline), and ONE line, `buildWords`: the
+  drivetrain and the mechanisms, no numbers. A preset card used to carry a tagline, a spec line and
+  a loadout chip — three readings of one robot. A game's thumbnail (`GameModule.savedThumb`,
+  BIOBUZZ's 3D render) sits beside the name and never replaces the line. `.ds-opts.robots` is
+  auto-FILL, so a lone saved robot is one card wide, not a slab across the panel.
 
-**Configure copy.** No decorative glyph (the `🎯` on preset cards and the `＋` on the add cards
-are gone), no sentence whose content is where another screen is, and no sub-line naming a KEY —
+**Configure copy.** No decorative glyph (the `🎯` on preset cards, the `＋` on the add cards and
+the `✎` on Edit build are gone), no sentence whose content is where another screen is, and no
+sub-line naming a KEY —
 every control in this app is rebindable, so `L-stick/W-S: Fwd/Back` is a claim that goes stale
 the moment somebody opens Controls. A blurb survives only where it names a trade-off the player
 is choosing between (`docs/ui-standard.md` §8): the archetype and drivetrain descriptions, the

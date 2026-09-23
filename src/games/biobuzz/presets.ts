@@ -1,15 +1,7 @@
 import type { RobotSpec } from '../../types';
-import { DRIVETRAIN_LABELS } from '../../ui/labelData';
 import { BB_DEFAULT_SCORE_MODE, BB_HOOD_DEFAULT_DEG, BB_INERTIA_DEFAULT, BB_PRESETS, BB_STORAGE_MAX, bbMassLimits } from './config';
 import { bbIntakeMountOf, bbShooterMountOf } from './mounts';
 import { type BbMechSpec, bbLauncherOf, bbLiftOf } from './mechs';
-import {
-  BB_INTAKE_MOUNT_LABELS,
-  BB_MODE_LABELS,
-  BB_MOUNT_POS_LABELS,
-  bbLauncherMountLabel,
-  bbLiftKindLabel,
-} from './labels';
 import { bbCoerceSpec } from './robotConfig';
 
 /**
@@ -216,45 +208,4 @@ function bbMechMatches(spec: RobotSpec, preset: RobotSpec): boolean {
   const pf = bbLiftOf(preset);
   const liftEq = sf === null || pf === null ? sf === pf : sf.mount === pf.mount;
   return launcherEq && liftEq;
-}
-
-/**
- * The two detail lines under a preset's name.
- *
- * `meta` is the BUILD, in the same order the builder's own blocks run so a card reads like a
- * summary of the panel below it. `zone` is the MECHANISM LOADOUT — the thing a player actually
- * chooses a card for — given the same emphasis DECODE gives its optimised-range line.
- *
- * Read through `bbLauncherOf`/`bbLiftOf` rather than the raw `scoreMode` field. A single turret
- * aims itself from wherever it is bolted, so naming its cell would be noise; a double turret's
- * two cells and a dumper's firing edge are the point of the build and are named. A Box Tube gets
- * its own segment — same reasoning as `bbConfigSummary` (`labels.ts`): a build that differs from
- * another only by its tube must not print the same line, or the card reads as inert.
- */
-export function bbPresetLines(preset: RobotSpec): { meta: string; zone?: string } {
-  const launcher = bbLauncherOf(preset, BB_HOOD_DEFAULT_DEG);
-  const lift = bbLiftOf(preset);
-  const meta = [
-    DRIVETRAIN_LABELS[preset.drivetrain],
-    `${preset.massLb} lb`,
-    // BUTTERFLY prints BOTH gearings. It is the one drivetrain that carries two independently
-    // geared wheel sets and two sliders, and a card that showed only the first would describe
-    // half of the reason to pick it. Every other drivetrain has no `tankRpm` at all — the
-    // coercer strips it — so this reads as one number for them without a branch on the name.
-    preset.tankRpm ? `${preset.driveRpm}/${preset.tankRpm} rpm` : `${preset.driveRpm} rpm`,
-    `${BB_INTAKE_MOUNT_LABELS[bbIntakeMountOf(preset)]} sweeper`,
-    // POLLEN, never "balls" — `docs/biobuzz-contract.md` §6.
-    `${preset.ballStorage ?? 0} pollen`,
-  ].join(' · ');
-  const zoneParts = [
-    launcher.kind === 'turret'
-      ? BB_MODE_LABELS.turret
-      : `${BB_MODE_LABELS[launcher.kind]} · ${bbLauncherMountLabel(launcher)}`,
-  ];
-  if (lift) zoneParts.push(`${bbLiftKindLabel(lift.kind)} · ${BB_MOUNT_POS_LABELS[lift.mount]}`);
-  // NO GLYPH. The `.oz` chip is already a separate chip in a different colour from the `.om`
-  // line above it, so a target emoji marked something the layout had already marked — and
-  // DECODE's and Chain Reaction's preset cards carried the same one, in the same slot, for the
-  // same non-reason. All three are gone (`docs/area/ui.md`, Configure copy).
-  return { meta, zone: zoneParts.join(' · ') };
 }

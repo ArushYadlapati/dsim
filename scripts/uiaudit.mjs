@@ -77,7 +77,9 @@ const BASELINE = {
   // went with them.
   // 144 → 143, 2026-09-22: the Controls overhaul. `.ds-keys` spaced its keycaps `6px` apart; it
   // is `--ds-s-2`, the within-a-row step, now that the rows are a grid the keycaps can wrap in.
-  'off-grid-gap': 143,
+  // 143 → 141, 2026-09-22: the builder hero's rebuild. Its narrow-screen card was spaced in
+  // `18px` twice (gap and padding); the one card it became is on the token scale throughout.
+  'off-grid-gap': 141,
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
   // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
   // not the 31 first measured. The other two start where they stand: paying them down needs a
@@ -85,7 +87,10 @@ const BASELINE = {
   // being able to grow back.
   // 46 → 45, 2026-09-22: `.ds-home-lead`'s `15px` went with the home page's lead sentence,
   // removed once the homepage no longer needed a line saying DSIM is "2D".
-  'off-scale-font-size': 45,
+  // 45 → 43, 2026-09-22: the builder hero's `24px` name and the `10px` CUSTOM chip beside it.
+  // The name is `--ds-t-xl`, and the chip is gone: the preset cards right under the hero
+  // already show whether the build is one of them.
+  'off-scale-font-size': 43,
   // 14 → 13, 2026-09-19: `.perf-readout`'s `border-radius: 6px` went with the `?perf=1` line.
   // 13 → 12, 2026-09-22: `.net-overlay-card`'s `14px` is `--ds-round-lg`, which is what it was
   // approximating — it sat beside `.overlay-panel`, which already used the token.

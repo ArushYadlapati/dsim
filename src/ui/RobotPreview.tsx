@@ -39,7 +39,17 @@ const DIM_FONT = 11;
  * almost invisible. `--ds-on-field-accent` is the same mint in both themes, tuned for
  * exactly this ground — see the THEMING note in CLAUDE.md for the three categories.
  */
-export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: number }) {
+export function RobotPreview({
+  spec,
+  size = 200,
+  caption = true,
+}: {
+  spec: RobotSpec;
+  size?: number;
+  /** print the `18" wide · 15" long` line under the robot. The builder hero turns it off: at the
+   * hero's 88px it rendered at 5px, and the hero states the size in its own stat grid. */
+  caption?: boolean;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // a real world, and therefore a real RobotState — turret, wheels, hopper and all.
@@ -104,6 +114,7 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
     drawRobot(ctx, robot, false, [], undefined, undefined, onFieldAccent());
     ctx.restore();
 
+    if (!caption) return;
     // the caption, in SCREEN space — inside the flipped camera it would be mirrored
     ctx.save();
     ctx.scale(dpr, dpr);
@@ -114,7 +125,7 @@ export function RobotPreview({ spec, size = 200 }: { spec: RobotSpec; size?: num
     ctx.textBaseline = 'bottom';
     ctx.fillText(`${spec.width}" wide · ${spec.length}" long`, size / 2, height - 6);
     ctx.restore();
-  }, [world, spec, size, height, boxW, boxH, fx.front, fx.rear]);
+  }, [world, spec, size, height, boxW, boxH, fx.front, fx.rear, caption]);
 
   return (
     <canvas

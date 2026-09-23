@@ -237,25 +237,26 @@ export function BbPassPicker({ spec, alliance, startIndex, startPose, onChange, 
             aria-label={`Pass target field map. Current target ${round1(point.x)}, ${round1(point.y)} inches${custom ? ' (custom point)' : ` (${BB_PASS_PRESET_LABEL[preset]} preset)`}.`}
           />
         </div>
+        {/* LABELS ALONE. The map beside them draws the point each one resolves to, so a sentence
+            under every tile ("Your own loading zone, against the side wall") described the dot
+            the player is looking at, and the coordinates line under the grid printed it a third
+            time. The one fact the map cannot show — that PAST THE GOAL and FAR END follow the
+            thrower — rides the tile's title; the coordinates stay in the map's aria-label. */}
         <div className="ds-passpick-presets">
           <div className="ds-opts two">
             {BB_PASS_PRESETS.map((p) => (
               <button
                 key={p}
                 type="button"
-                className={`ds-opt ${!custom && preset === p ? 'on' : ''}`}
+                className={`ds-opt mini ${!custom && preset === p ? 'on' : ''}`}
+                aria-pressed={!custom && preset === p}
+                title={BB_PASS_PRESET_HINT[p]}
                 onClick={() => pickPreset(p)}
               >
                 <span className="ot">{BB_PASS_PRESET_LABEL[p]}</span>
-                <span className="od">{BB_PASS_PRESET_HINT[p]}</span>
               </button>
             ))}
           </div>
-          <p className="ds-hint">
-            {custom
-              ? `Custom point: ${round1(point.x)}, ${round1(point.y)} in.`
-              : `${BB_PASS_PRESET_LABEL[preset]}: ${round1(point.x)}, ${round1(point.y)} in.`}
-          </p>
         </div>
       </div>
     </>

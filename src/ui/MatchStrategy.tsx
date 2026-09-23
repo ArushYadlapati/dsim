@@ -16,7 +16,8 @@ import type { LobbyPlayer, PlayerIntro, QueueMode } from '../net/protocol';
 import { RobotPreview } from './RobotPreview';
 import { ChainRobotPreview } from '../games/chain/RobotPreview';
 import { moduleFor } from '../games';
-import { DRIVETRAIN_LABELS, buildSummary } from './robotLabels';
+import { buildSummary, teamLine } from './robotLabels';
+import { RobotCard } from './RobotCard';
 import { Menu } from './Menu';
 import { MatchAudio } from '../audio';
 import { APP_NAME } from '../seasons';
@@ -422,7 +423,7 @@ export function MatchStrategy({
         {ranked && (
         <section className="ds-sec">
           <h2>Your robot</h2>
-          <div className="ds-opts">
+          <div className="ds-opts robots">
             {settings.savedRobots.map((r, i) => {
               const active =
                 r.length === mySpec.length &&
@@ -431,22 +432,21 @@ export function MatchStrategy({
                 r.drivetrain === mySpec.drivetrain &&
                 r.driveRpm === mySpec.driveRpm &&
                 r.massLb === mySpec.massLb;
+              // the builder's own card (`RobotCard`), so a saved robot reads the same here as
+              // it does in Configure and in the custom-room lobby
               return (
-                <button
+                <RobotCard
                   key={i}
-                  className={`ds-opt mini ${active ? 'on' : ''}`}
-                  onClick={() => pickSpec({ ...r })}
-                >
-                  <span className="ot">{r.name || `Robot ${i + 1}`}</span>
-                  {/* `.od`, like every other `.ds-opt` sub-line: `.ds-opt.on .od`
-                      re-inks against the selected card's mint fill and `.ds-note`
-                      has no such rule, so the picked robot's drivetrain stayed muted. */}
-                  <span className="od">{DRIVETRAIN_LABELS[r.drivetrain]}</span>
-                </button>
+                  spec={r}
+                  game={settings.game}
+                  on={active}
+                  team={teamLine(r)}
+                  onPick={() => pickSpec({ ...r })}
+                />
               );
             })}
             <button className="ds-opt mini" onClick={() => setBuilding(true)}>
-              <span className="ot">Edit build ✎</span>
+              <span className="ot">Edit build</span>
             </button>
           </div>
         </section>

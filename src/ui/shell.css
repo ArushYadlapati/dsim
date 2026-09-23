@@ -1370,12 +1370,7 @@
   font-weight: 800;
   letter-spacing: 0.04em;
 }
-.ds-menu-btn .mh {
-  font-family: var(--ds-font-mono);
-  font-size: 12px;
-  letter-spacing: 0.06em;
-  color: var(--ds-mut);
-}
+
 .ds-menu-btn:hover {
   border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
   transform: translateY(1px);
@@ -1391,9 +1386,7 @@
   border-color: transparent;
   box-shadow: var(--ds-edge);
 }
-.ds-menu-btn.primary .mh {
-  color: color-mix(in srgb, var(--ds-accent-ink) 74%, transparent);
-}
+
 .ds-menu-btn.primary:hover {
   background: color-mix(in srgb, var(--ds-accent) 88%, white);
   box-shadow: 0 2px 0 var(--ds-accent-edge);
@@ -1779,13 +1772,13 @@ button.ds-key:focus-visible {
   background: var(--ds-tile);
   color: var(--ds-ink);
   padding: 16px 18px;
-  /* Top-aligned, NOT space-between: with the descriptions removed a tile is just a
-     kicker + title (+ an optional disabled-reason). space-between bottom-pinned the
-     title, so a tile with a reason (taller) and one without landed their titles at
-     DIFFERENT heights across a row. Stacking from the top keeps every title on the
-     same line; `min-height` matches the natural kicker+title height so a label-only
-     tile has no dead space, while a row-mate carrying a reason simply grows taller. */
-  min-height: 78px;
+  /* Top-aligned, NOT space-between: a tile is its title (+ an optional disabled-reason).
+     space-between bottom-pinned the title, so a tile with a reason (taller) and one without
+     landed their titles at DIFFERENT heights across a row. Stacking from the top keeps every
+     title on the same line; the grid stretches a row-mate to the one carrying a reason.
+     NO KICKER. Each tile used to open with a mono eyebrow — SOLO over "Solo Practice",
+     RECORDS over "Solo Record", LIVE over "Watch Live" — which said the title again, or said
+     the set's own label ("Compete · online") again, in smaller type. */
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
@@ -1810,18 +1803,10 @@ button.ds-key:focus-visible {
   box-shadow: var(--ds-block-sm);
   cursor: not-allowed;
 }
-.ds-tile .k {
-  font-family: var(--ds-font-mono);
-  font-size: 11px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ds-mut);
-}
 .ds-tile .t {
   display: block;
   font-size: 18px;
   font-weight: 750;
-  margin-top: 10px;
 }
 .ds-tile .d {
   display: block;
@@ -1841,7 +1826,6 @@ button.ds-key:focus-visible {
 .ds-tile.primary:active {
   box-shadow: 1px 1px 0 var(--ds-accent-edge);
 }
-.ds-tile.primary .k,
 .ds-tile.primary .d {
   color: color-mix(in srgb, var(--ds-accent-ink) 72%, transparent);
 }
@@ -4109,8 +4093,10 @@ tr.lb-detail td {
   justify-content: center;
   text-align: center;
 }
-/* Same fix for a row of four CARDS (title + blurb, left-aligned): the base `.ds-opts`
-   200px track only fits three at panel width, so a four-archetype row broke 3+1. */
+/* Same fix for a row of CARDS (title + blurb, left-aligned): the base `.ds-opts` 200px
+   track only fits three at panel width, so a four-archetype row broke 3+1. A three-card row
+   takes it too, rather than `.three`, which is a fixed grid for the chassis maps: three-up on
+   a phone gave each blurb a 70px column and one word a line. */
 .ds-opts.card4 {
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
@@ -4461,6 +4447,74 @@ tr.lb-detail td {
   color: var(--ds-accent);
   font-size: 15px;
 }
+/* ---- robot cards (`RobotCard.tsx`) ----------------------------------------------------------
+   A saved robot and a preset are ONE card, in the builder and in the lobby's swap row: the name,
+   the team when there is one, and one build line. AUTO-FILL, so a lone saved robot is one card
+   wide — the width of a preset under it — rather than a slab across the whole panel. */
+.ds-opts.robots {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+/* (0,3,0), so it outranks `.ds-opt:not(.mini):not(:has(.od))` by source order */
+.ds-opts .ds-opt.ds-robot-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--ds-s-1) var(--ds-s-3);
+}
+/* a card with a picture: the picture beside the NAME, and the team and build line under both,
+   so neither of them is squeezed into what is left beside a 48px square */
+.ds-opts .ds-opt.ds-robot-card:has(> .ds-robot-card-thumb) {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+/* `-2` is the LAST column: the only one without a picture, the second with one */
+.ds-robot-card > .ot {
+  grid-column: -2;
+  align-self: center;
+}
+.ds-robot-card > .od {
+  grid-column: 1 / -1;
+}
+/* the build line is a sentence of words, not a row of figures, so it takes the UI face */
+.ds-robot-card > .om {
+  grid-column: 1 / -1;
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-t-sm);
+  letter-spacing: normal;
+  line-height: 1.45;
+}
+/* the delete ✕ sits in the top-right corner; the name keeps clear of it */
+.ds-robot-card.del > .ot {
+  padding-right: var(--ds-s-5);
+}
+/* 48px shows the 192px capture at a quarter, crisp on a 2x panel. It holds its size while the
+   image renders, so the card does not jump (§1.4). On the field's dark ground, like the sprite. */
+.ds-robot-card-thumb {
+  display: block;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--ds-round-sm);
+  border: 1px solid var(--ds-hud-line);
+  background: var(--ds-bg);
+  overflow: hidden;
+}
+/* the capture frames the whole floor disc; at 48px the robot is what matters, so it is cropped
+   in on the centre (a transform, so it moves nothing) */
+.ds-robot-card-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.35);
+}
+/* SCREEN-READER ONLY: in the accessibility tree, out of the layout */
+.ds-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .ds-note {
   display: block;
   font-family: var(--ds-font-mono);
@@ -4584,21 +4638,37 @@ input[type='range'].ds-range:disabled {
 }
 
 /* ---- robot hero ------------------------------------------------------ */
-/* Every control in the builder changes the robot, and the robot + its stats ARE the feedback
-   for that change, so the card has to stay on screen. This block is the card as it reads on a
-   NARROW screen — the sprite over the stats, flowing with the page. The PINNED STRIP it becomes
-   from 1100px up is the block further down, and the height budget is stated there. */
+/* Every control in the builder changes the robot, and the robot and its numbers ARE the feedback
+   for that change, so the card stays on screen — PINNED under the app bar from 1100px up (the
+   rule at the end of this block).
+
+   ONE CARD AT EVERY WIDTH, laid out by the CARD's width, not the viewport's. It is a container
+   query because the same viewport breakpoint hands this card 535px at 1100 (beside the nav rail
+   AND the Configure sub-nav) and 824px at 1440 — and it was the viewport breakpoint that gave a
+   535px card a one-row strip it could not hold: nine chips wrapped inside 96px, scrolling in both
+   directions, the top chip clipped and the name cut to "My Ro…". Under it the card was a 509px
+   stack, 690px on a phone.
+
+   THE BUDGET: the 96px picture sets the row. Six numbers in a fixed grid sit beside it — three
+   by two where the card has the room, two by three where it does not — so no season's stat can
+   widen or deepen the card, and nothing inside it scrolls. The build's WORDS are one line under
+   the team. The card is 114px as a strip, 118px when its numbers stack three deep. */
 .ds-hero {
-  display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: 18px;
+  container: hero / inline-size;
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
   background: linear-gradient(160deg, var(--ds-tile), var(--ds-panel));
-  padding: 18px;
+  padding: var(--ds-s-2) var(--ds-s-4);
   box-shadow: var(--ds-block);
 }
-/* the team line is identity, not feedback — first thing to go when space is tight */
+/* the card's own row. A container query cannot style the container, so the grid is one in. */
+.ds-hero-in {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: 'view info stats';
+  align-items: center;
+  gap: var(--ds-s-3) var(--ds-s-4);
+}
 /* the robot preview is a CANVAS of the real sprite, drawn on the field's own mat —
    see the note in RobotPreview.tsx for why it does not theme with the panel. */
 .ds-robot-sprite {
@@ -4606,31 +4676,129 @@ input[type='range'].ds-range:disabled {
   border-radius: var(--ds-round);
   border: 1px solid var(--ds-hud-line);
 }
+/* 96px is the picture's box, and the budget for the whole row. A picture's size, not a spacing
+   value, so it is a literal on purpose. */
 .ds-hero-view {
+  grid-area: view;
   display: grid;
   place-items: center;
+  height: 96px;
+  min-width: 96px;
+  padding: var(--ds-s-1);
   background:
     radial-gradient(120% 120% at 50% 0%, color-mix(in srgb, var(--ds-accent) 8%, transparent), transparent),
     var(--ds-bg);
   border: 1px solid var(--ds-line-soft);
   border-radius: var(--ds-round);
-  min-height: 150px;
-  padding: 12px;
 }
-/* keep a portrait (long, narrow) robot from stretching the hero card tall — cap it
- * a touch under the stats column so the stats drive the height (no empty gap) */
+/* 88px = the box less its padding. A PERCENTAGE cannot do this job: BIOBUZZ's schematic hangs off
+   `.bb-prev`, whose height is auto, so `max-height: 100%` resolved to none.
+   BOTH ELEMENTS: Chain Reaction and BIOBUZZ draw an `<svg>`, DECODE a `<canvas>`. */
 .ds-hero-view svg {
-  max-height: 190px;
-  max-width: 100%;
+  max-height: 88px;
+  max-width: 88px;
   width: auto;
   height: auto;
 }
+/* THE CANVAS CARRIES BOTH ITS SIDES INLINE (`RobotPreview.tsx`), so a max constraint does NOT
+   scale the other one — clamping the height alone squashed DECODE's robot to a letterbox of the
+   wrong shape. Box it square and let `object-fit` read the bitmap's own ratio. */
+.ds-hero-view canvas {
+  max-width: 88px;
+  max-height: 88px;
+  object-fit: contain;
+}
+.ds-hero-info {
+  grid-area: info;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  min-width: 0;
+}
+/* THE NAME WRAPS; IT IS NEVER CUT. It is the one thing on the card the player typed. */
+.ds-hero-name {
+  font-size: var(--ds-t-xl);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1;
+  overflow-wrap: anywhere;
+}
+.ds-hero-team {
+  color: var(--ds-mut);
+  font-size: var(--ds-t-md);
+  line-height: 1;
+}
+/* the build's words — drivetrain and mechanisms — as a sentence, so it wraps like one */
+.ds-hero-build {
+  color: var(--ds-ink-dim);
+  font-size: var(--ds-t-sm);
+  line-height: 1.45;
+}
+/* THE NUMBERS. A caption over a value, on a fixed grid: equal rows, columns as wide as their
+   widest entry, no boxes. It used to be a chip per stat, each as wide as its own text, which is
+   what made the wall look ragged. */
+.ds-hero-stats {
+  grid-area: stats;
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: var(--ds-s-2) var(--ds-s-4);
+  margin: 0;
+}
+.ds-hero-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+}
+.ds-hero-stats dt {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ds-mut);
+  line-height: 1;
+  white-space: nowrap;
+}
+.ds-hero-stats dd {
+  margin: 0;
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--ds-t-md);
+  font-weight: 700;
+  color: var(--ds-ink);
+  line-height: 1;
+  white-space: nowrap;
+}
+.ds-hero-stats .u {
+  margin-left: var(--ds-s-1);
+  font-size: var(--ds-t-xs);
+  font-weight: 500;
+  color: var(--ds-mut);
+}
+/* A NARROWER CARD keeps the one row and stacks the numbers three deep instead of two. 640px of
+   content is where three columns of them stop leaving the name a line of its own. */
+@container hero (max-width: 639px) {
+  .ds-hero-stats {
+    grid-template-columns: repeat(2, auto);
+  }
+}
+/* A PHONE-WIDTH CARD: the picture and the name share the top row, the numbers go under both —
+   three across, which a 280px card holds. */
+@container hero (max-width: 439px) {
+  .ds-hero-in {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      'view info'
+      'stats stats';
+  }
+  .ds-hero-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
 
 /* ─── the BIOBUZZ robot preview: the 2D/3D toggle and the live turntable ───────────────────
-   `docs/roadmap.md` item 1. The hero's preview column is 220px wide with 16px of padding, so
-   the host is whatever is left of it, square. A FIXED box either way (the schematic is capped
-   at the same 190px above): switching 2D/3D must not resize the card, and neither must a
-   thumbnail landing on a saved-robot card below. */
+   `docs/roadmap.md` item 1. The base rules are the preview on its own; inside the hero it is the
+   96px row below (`.ds-hero .bb-prev`). A FIXED box either way: switching 2D/3D must not resize
+   the card, and neither must a thumbnail landing on a saved-robot card below. */
 .bb-prev {
   display: grid;
   gap: var(--ds-s-2);
@@ -4782,50 +4950,6 @@ button.bb-cell:focus-visible {
   width: 192px;
   height: 192px;
 }
-/* one saved robot's 3D thumbnail, in place of its summary line. The box keeps its height while
-   the image is still rendering, so the card does not jump (§1.4 of docs/ui-standard.md). */
-.bb-savedthumb {
-  display: block;
-  height: 96px;
-}
-.bb-savedthumb img {
-  display: block;
-  height: 100%;
-  width: auto;
-}
-.ds-hero-info {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-}
-.ds-hero-name {
-  font-size: 24px;
-  font-weight: 800;
-  letter-spacing: -0.01em;
-  line-height: 1.2;
-}
-.ds-hero-name .cust {
-  font-family: var(--ds-font-mono);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  color: var(--ds-accent-ink);
-  background: var(--ds-accent);
-  border-radius: var(--ds-round-full);
-  padding: 2px 8px;
-  margin-left: 10px;
-  vertical-align: middle;
-}
-/* The name/team pair is a two-line unit, so the space between them is set here rather
-   than left to the two line boxes' leading. It used to be `margin-top: -6px`, which
-   cancelled the name's leading and then pulled the team 6px INTO the name's box. */
-.ds-hero-team {
-  color: var(--ds-mut);
-  font-size: 13px;
-  line-height: 1.35;
-  margin-top: 4px;
-}
 .ds-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
@@ -4861,156 +4985,37 @@ button.bb-cell:focus-visible {
   margin-top: 1px;
 }
 
-/* BELOW THE STRIP, the card STACKS. `220px 1fr` needs ~600px of card to hold a preview beside
-   a stat grid, and between the sub-nav and the app's own nav rail the section is 355px wide at
-   920px of viewport — which gave the stats an 80px column, one tile wide and nine tiles tall,
-   for a 729px card. Long-standing (the rail never reached down here either); it is fixed now
-   because this is the width the strip hands back to. */
-@media (max-width: 1099px) {
-  .ds-hero {
-    grid-template-columns: minmax(0, 1fr);
-  }
+/* the BIOBUZZ preview INSIDE the hero: the 2D/3D toggle goes BESIDE the picture — stacked over
+   it, the toggle and not the robot would set the row's height. */
+.ds-hero .bb-prev {
+  grid-auto-flow: column;
+  align-items: center;
+  width: auto;
+}
+.ds-hero .bb-prev-tabs {
+  order: 2;
+  flex-direction: column;
+}
+.ds-hero .bb-prev-stow {
+  margin-left: 0;
+}
+.ds-hero .bb-prev-host {
+  width: 88px;
+  height: 88px;
+  max-height: none;
+}
+/* 3D ASKED FOR AND NOT AVAILABLE: the segment reads as the chassis map's TAKEN cell does — a
+   dashed edge and muted ink — and its title says why. Still a button: pressing it retries. */
+.ds-seg.off {
+  border-style: dashed;
+  border-color: var(--ds-line-strong);
+  color: var(--ds-mut);
 }
 
-/* ── THE BUILDER'S PINNED STRIP ────────────────────────────────────────────────────────
-   OWNER RULING, 2026-09-22: the robot goes back to the TOP. The 260px rail this replaces kept
-   it on screen but parked it beside the build, where it read as a widget rather than as the
-   thing every control on the page is aimed at.
-
-   ⚠️ THE HEIGHT IS THE WHOLE PROBLEM, AND IT WAS NEVER THE SPRITE. The strip that shipped
-   before the rail held 26% of a 720px viewport because `.ds-stats` is an auto-fit grid of 96px
-   two-line tiles, which wrapped to two rows and set the card's height. So the budget is stated
-   here: the 96px sprite box is the tallest thing in the row, the tiles become ONE-LINE chips
-   that wrap inside that 96px, and the card measures 105px — 15% of a 720px viewport, and it
-   does not grow when a game contributes another tile.
-
-   It PINS only where there is height to spend (the rule below), and the strip SHAPE only where
-   there is width for a name and a row of chips beside the sprite. 1100px is where that starts:
-   between 900 and 1100 the page is carrying BOTH the 190px nav rail and the 190px sub-nav, which
-   leaves the card ~650px and the chips a column too narrow to wrap in. Under it this whole block
-   is off and the card is the ordinary one above, at the top of the page. */
-@media (min-width: 1100px) {
-  .ds-hero {
-    /* the sprite sizes itself from its own box; everything else takes the rest */
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: var(--ds-s-4);
-    padding: var(--ds-s-1) var(--ds-s-4);
-  }
-  /* 96px is the budget. A picture's size, not a spacing value, so it is a literal on purpose. */
-  .ds-hero-view {
-    height: 96px;
-    min-height: 0;
-    min-width: 96px;
-    padding: var(--ds-s-1);
-  }
-  /* 88px = the 96px box less its padding. A PERCENTAGE cannot do this job: BIOBUZZ's schematic
-     hangs off `.bb-prev`, whose height is auto, so `max-height: 100%` resolved to none and the
-     sprite's dimension label hung out the bottom of the card.
-     BOTH ELEMENTS: Chain Reaction and BIOBUZZ draw an `<svg>`, DECODE a `<canvas>`. */
-  .ds-hero-view svg {
-    max-height: 88px;
-  }
-  /* THE CANVAS CARRIES BOTH ITS SIDES INLINE (`RobotPreview.tsx`), so a max constraint does NOT
-     scale the other one — clamping the height alone squashed DECODE's robot to a 160x88 letterbox
-     of the wrong shape. Box it square and let `object-fit` do the fitting, which is the one thing
-     that reads the bitmap's own ratio rather than the element's. */
-  .ds-hero-view canvas {
-    max-width: 88px;
-    max-height: 88px;
-    object-fit: contain;
-  }
-  /* BIOBUZZ's preview brings a 2D/3D toggle with it. It goes BESIDE the picture: stacked over
-     it, the toggle — not the robot — would be what set the card's height. */
-  .ds-hero .bb-prev {
-    grid-auto-flow: column;
-    align-items: center;
-    width: auto;
-  }
-  .ds-hero .bb-prev-tabs {
-    order: 2;
-    flex-direction: column;
-  }
-  .ds-hero .bb-prev-stow {
-    margin-left: 0;
-  }
-  .ds-hero .bb-prev-host {
-    width: 88px;
-    height: 88px;
-    max-height: none;
-  }
-  /* name/team and the chips sit side by side — the one row the ruling asks for */
-  .ds-hero-info {
-    flex-direction: row;
-    align-items: center;
-    gap: var(--ds-s-4);
-  }
-  /* the name takes its own width and the chips take the rest. Without the `0` basis below,
-     `.ds-stats` claims its max-content (every chip on one line, ~900px) and both columns then
-     shrink in proportion — which wrapped a two-word robot name onto two lines. */
-  .ds-hero-info > div:first-child {
-    flex: 0 1 auto;
-    min-width: 0;
-  }
-  .ds-hero-name,
-  .ds-hero-team {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .ds-hero-name {
-    font-size: var(--ds-t-xl);
-  }
-  /* CHIPS, not tiles: value and caption on ONE line, wrapping inside the sprite's 96px box.
-     A chip is 18px, so four rows fit — which is every stat BIOBUZZ has (the most of the three
-     games) at 1280 and up. Between 1100 and 1280 the chip column drops under ~290px and the
-     wrap needs a fifth row; it SCROLLS there rather than growing the card, because a pinned
-     strip whose height depends on the widest stat a game happens to define is the bug the
-     first strip was reverted for. */
-  .ds-hero .ds-stats {
-    /* a 220px FLOOR, so the name gives way before the chips do. With a 0 basis the name kept its
-       full width and the chips were squeezed to nothing just above the breakpoint. */
-    flex: 1 1 220px;
-    display: flex;
-    flex-wrap: wrap;
-    align-content: center;
-    gap: var(--ds-s-1) var(--ds-s-2);
-    max-height: 96px;
-    overflow-y: auto;
-    scrollbar-width: thin;
-  }
-  .ds-hero .ds-stat {
-    display: inline-flex;
-    align-items: baseline;
-    gap: var(--ds-s-0);
-    /* 2px vertical: the one place the standard allows it is INSIDE a chip (§2), and four
-       wrapped rows of these have to clear 96px. */
-    padding: var(--ds-s-0) var(--ds-s-1);
-    /* SINGLE-LINE UI, so line-height 1 (§3). Inherited 1.5 leading put a three-row wrap at
-       96.5px inside a 96px box and clipped the last row of chips by half a pixel. */
-    line-height: 1;
-    /* nine offset shadows in a tight wrap is noise; the border carries the chip */
-    box-shadow: none;
-  }
-  .ds-hero .ds-stat .sv {
-    font-size: var(--ds-t-md);
-  }
-  .ds-hero .ds-stat .sl {
-    display: inline;
-    margin-top: 0;
-    /* the base tile tracks its caption out to read as an eyebrow under a number. Inline beside
-       one it is a unit, and the tracking is 20px per chip that the wrap cannot spend. */
-    letter-spacing: normal;
-  }
-  /* a tile's SUB (a mount, a second turret's cell) qualifies the caption before it */
-  .ds-hero .ds-stat .sl + .sl::before {
-    content: '· ';
-  }
-}
-
-/* PINNED, but only with height to spare. At 720px tall or less the strip stays a strip and
-   simply scrolls away: 105px is 15% of that viewport, which is affordable to LOOK at and not
-   to give up permanently.
+/* PINNED, but only with height to spare. At 720px tall or less the card simply scrolls away:
+   114px is 16% of that viewport, which is affordable to LOOK at and not to give up permanently.
+   1100px wide is where the Configure page has both nav columns and the card has 535px, which the
+   container rules above still fit on one row.
 
    FLUSH UNDER THE BAR, unlike `.ds-subnav`'s 84px. The sub-nav is a list of transparent
    buttons, so the 21px of page showing above it is page; an opaque card pinned there instead
@@ -5154,9 +5159,6 @@ button.bb-cell:focus-visible {
 }
 
 @media (max-width: 640px) {
-  .ds-hero {
-    grid-template-columns: 1fr;
-  }
   .ds-home-title {
     margin-bottom: 16px;
   }
