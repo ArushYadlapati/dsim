@@ -39,24 +39,19 @@ export function isConfigureSection(s: string | null): s is ConfigureSection {
 }
 
 /**
- * A HINT NAMES WHAT IS BEHIND THE LABEL; it never restates it, and it is not a table of
- * contents. `NavRail` settled this rule for the four top-level destinations and these five
- * were written before it: "Audio and Visual · Sounds, voice & theme" said the label again in
- * other words, and "Robot · Presets, build, intake" listed three of the section's six panels
- * — which is a promise that goes stale every time one is added.
- *
- * NO HINTS. Audio and Visual said "Follows your account" and Graphics "This device only",
- * and the owner called both clutter (2026-09-22); the other three went with them, since a
- * sub-nav where some rows carry a second line and others do not reads as unfinished.
+ * A HINT NAMES WHAT IS BEHIND THE LABEL; it never restates it (`NavRail` settled the rule for
+ * the four top-level destinations). Cut on 2026-09-22 and restored on 2026-09-23 (owner): every
+ * row carries one, since a sub-nav where some rows have a second line and others do not reads
+ * as unfinished. The narrow layouts hide `.sh` with the rail's `.rh`.
  */
-const LABELS: Record<ConfigureSection, { label: string }> = {
-  robot: { label: 'Robot' },
-  controls: { label: 'Controls' },
-  match: { label: 'Match' },
+const LABELS: Record<ConfigureSection, { label: string; hint: string }> = {
+  robot: { label: 'Robot', hint: 'Presets, build, intake' },
+  controls: { label: 'Controls', hint: 'Keyboard & gamepad' },
+  match: { label: 'Match', hint: 'Alliance, start, autos' },
   // route key stays 'audio' — /configure/audio is deep-linkable and already shipped
-  audio: { label: 'Audio and visual' },
-  graphics: { label: 'Graphics' },
-  network: { label: 'Network' },
+  audio: { label: 'Audio and visual', hint: 'Sounds, voice & theme' },
+  graphics: { label: 'Graphics', hint: '3D view quality' },
+  network: { label: 'Network', hint: 'Client prediction' },
 };
 
 /**
@@ -115,6 +110,7 @@ export function Configure({
               }}
             >
               <span className="sl">{LABELS[s].label}</span>
+              <span className="sh">{LABELS[s].hint}</span>
             </a>
           ))}
         </nav>

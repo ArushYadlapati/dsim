@@ -4,9 +4,10 @@ import { QueueCounts } from './QueueCounts';
 /** the four top-level destinations, in the order they appear on the home menu.
  *
  * A hint NAMES WHAT IS BEHIND THE LABEL; it never restates it. "Play → Pick a
- * game mode" said nothing the word Play did not. It renders on the home keycaps
- * (`.mh`) only: the rail is on every screen, and there it was clutter (owner,
- * 2026-09-22). */
+ * game mode" said nothing the word Play did not. It renders twice: under the home
+ * keycap (`.mh`) and under the rail label (`.rh`, hidden once the rail turns
+ * horizontal). The rail's hints were cut on 2026-09-22 and restored on 2026-09-23
+ * (owner). */
 export const RAIL_ITEMS: ReadonlyArray<{ id: ShellNav; label: string; hint: string }> = [
   { id: 'play', label: 'Play', hint: 'Practice & compete' },
   { id: 'configure', label: 'Configure', hint: 'Robot & match setup' },
@@ -37,6 +38,7 @@ export function NavRail({
             items like a second component (design review 01-22) */}
         <button className="ds-rail-btn home" onClick={() => onNav('home')}>
           <span className="rl">Home</span>
+          <span className="rh">Main menu</span>
         </button>
         {RAIL_ITEMS.map((it) => (
           <button
@@ -49,6 +51,7 @@ export function NavRail({
               {it.label}
               {it.id === 'play' && <QueueCounts className="rail" />}
             </span>
+            <span className="rh">{it.hint}</span>
           </button>
         ))}
         {showAdmin && (
@@ -58,6 +61,7 @@ export function NavRail({
             onClick={() => onNav('admin')}
           >
             <span className="rl">Admin</span>
+            <span className="rh">Server control</span>
           </button>
         )}
       </div>

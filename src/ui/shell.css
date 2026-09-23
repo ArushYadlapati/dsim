@@ -708,6 +708,11 @@
   font-size: 15px;
   font-weight: 700;
 }
+/* the hint line under each rail label (restored, owner 2026-09-23) */
+.ds-rail-btn .rh {
+  font-size: var(--ds-t-sm);
+  color: var(--ds-mut);
+}
 .ds-rail-btn:hover {
   color: var(--ds-ink);
   background: var(--ds-panel);
@@ -733,6 +738,10 @@
   background: var(--ds-accent-soft);
   border-color: var(--ds-accent);
   color: var(--ds-accent-soft-ink);
+}
+.ds-rail-btn.on .rh,
+.ds-subnav-btn.on .sh {
+  color: var(--ds-accent-soft-mut);
 }
 
 /* ---- friends panel ----------------------------------------------------
@@ -1375,11 +1384,21 @@
   font-weight: 800;
   letter-spacing: 0.04em;
 }
+/* the keycap's hint line: what is behind the label (restored, owner 2026-09-23) */
+.ds-menu-btn .mh {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+  letter-spacing: 0.06em;
+  color: var(--ds-mut);
+}
 .ds-menu-btn.primary {
   --cap-edge: var(--ds-accent-edge);
   background: var(--ds-accent);
   color: var(--ds-accent-ink);
   border-color: transparent;
+}
+.ds-menu-btn.primary .mh {
+  color: color-mix(in srgb, var(--ds-accent-ink) 74%, transparent);
 }
 /* ---- section sub-nav (Configure) + tab strip (Records) ---------------- */
 .ds-subnav-layout {
@@ -1414,6 +1433,10 @@
 .ds-subnav-btn .sl {
   font-size: var(--ds-t-control);
   font-weight: 700;
+}
+.ds-subnav-btn .sh {
+  font-size: var(--ds-t-xs);
+  color: var(--ds-mut);
 }
 .ds-subnav-btn:hover {
   background: var(--ds-panel);
@@ -5328,6 +5351,11 @@ button.bb-cell:where(:not(:disabled)):active {
   .ds-rail-btn {
     flex: none;
     padding: 8px 12px;
+  }
+  /* the hint line is the first thing to go when the rail turns horizontal (main's rule) */
+  .ds-rail-btn .rh,
+  .ds-subnav-btn .sh {
+    display: none;
   }
   /* Order the friends panel directly after the rail: collapsed it is a chip at the
      right end of the rail's row, expanded it is a full-width strip above the content

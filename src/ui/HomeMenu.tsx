@@ -154,13 +154,11 @@ export function HomeMenu({
             className={`ds-menu-btn${i === 0 ? ' primary' : ''}`}
             onClick={() => onNav(it.id)}
           >
-            {/* THE LABEL ALONE. Each button carried the nav rail's sub-line under it
-                ("Practice & compete" under Play), which on the home page is a second menu
-                saying the first one again, in smaller type. */}
             <span className="ml">
               {it.label}
               {it.id === 'play' && <QueueCounts className="menu" />}
             </span>
+            <span className="mh">{it.hint}</span>
           </button>
         ))}
       </nav>
