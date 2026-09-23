@@ -131,7 +131,7 @@ export function AudioSection({
     <>
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Audio</span>
+          <h2 className="ds-panel-title">Audio</h2>
         </div>
         <div className="ds-panel-body stack">
           <VolumeRow
@@ -209,7 +209,7 @@ export function AudioSection({
 
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Visual</span>
+          <h2 className="ds-panel-title">Visual</h2>
         </div>
         <div className="ds-panel-body stack">
           <OptRow<ThemePref>

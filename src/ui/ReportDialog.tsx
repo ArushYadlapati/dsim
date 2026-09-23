@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
+import { FOCUSABLE } from './PadNavLayer';
 import {
   REPORT_REASONS,
   REPORT_LABELS,
@@ -41,34 +42,51 @@ export function ReportDialog({
   // nothing at all — so it is the one category that requires the note.
   const needsDetail = reason === 'other';
   const ready = robotId !== null && reason !== null && (!needsDetail || detail.trim().length > 0);
+  const id = useId();
+  // THE FORM OPENS INLINE, so focus has to be carried into it or a keyboard user is left
+  // where the link that opened it used to be (design review 06-03). Escape closes it, and
+  // the results screen hands focus back to that link.
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    root.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+  }, []);
+  const onKeyDown = (e: React.KeyboardEvent): void => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    onClose();
+  };
 
   if (sent) {
     return (
-      <div className="ds-report">
-        <h3 className="ds-report-h">Report submitted</h3>
+      <div className="ds-report" role="group" aria-labelledby={`${id}-sent`} onKeyDown={onKeyDown}>
+        <h3 className="ds-report-h" id={`${id}-sent`}>Report submitted</h3>
         <p className="ds-hint">
           A moderator will check it against the match. One report is enough.
         </p>
         <div className="ds-report-actions">
-          <button className="ds-btn" onClick={onClose}>CLOSE</button>
+          {/* SUBMIT unmounted under the focus; this takes it over */}
+          <button className="ds-btn" onClick={onClose} autoFocus>CLOSE</button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="ds-report">
-      <h3 className="ds-report-h">Report a player</h3>
+    <div className="ds-report" ref={root} role="group" aria-labelledby={`${id}-h`} onKeyDown={onKeyDown}>
+      <h3 className="ds-report-h" id={`${id}-h`}>Report a player</h3>
 
       {drivers.length > 1 && (
         <>
-          <span className="ds-report-cap">Who</span>
-          <div className="ds-opts">
+          <span className="ds-report-cap" id={`${id}-who`}>Who</span>
+          {/* role=group + aria-pressed, the house spelling of a pick (TitlePicker) — 06-02 */}
+          <div className="ds-opts" role="group" aria-labelledby={`${id}-who`}>
             {drivers.map((d) => (
               <button
                 key={d.robotId}
                 type="button"
                 className={`ds-opt mini ${robotId === d.robotId ? 'on' : ''}`}
+                aria-pressed={robotId === d.robotId}
                 onClick={() => setRobotId(d.robotId)}
               >
                 <span className="ot">{d.name}</span>
@@ -78,17 +96,18 @@ export function ReportDialog({
         </>
       )}
 
-      <span className="ds-report-cap">Why</span>
+      <span className="ds-report-cap" id={`${id}-why`}>Why</span>
       {/* MINI, and no blurb. Six full option cards each carrying a sentence turned a
           dialog into a page — and every one of those sentences restated its own label
           ("Not playing / AFK" / "Present but not driving, for most of the match"). The
           "Who" grid above is already mini; these now match it. */}
-      <div className="ds-opts two">
+      <div className="ds-opts two" role="group" aria-labelledby={`${id}-why`}>
         {REPORT_REASONS.map((r) => (
           <button
             key={r}
             type="button"
             className={`ds-opt mini ${reason === r ? 'on' : ''}`}
+            aria-pressed={reason === r}
             onClick={() => setReason(r)}
           >
             <span className="ot">{REPORT_LABELS[r]}</span>

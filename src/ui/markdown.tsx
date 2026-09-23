@@ -131,15 +131,26 @@ function renderItems(items: Item[], keyOf: () => string): ReactNode[] {
   return out;
 }
 
-function heading(level: number, content: ReactNode, key: string): ReactNode {
+/** `base` is the element `#` becomes, so the document nests under whatever heads its page:
+ *  3 under an announcement card's h2, 1 on a legal page (its `##` sections become h2 under
+ *  the page h1). The CLASS stays keyed to the SOURCE level, so the look does not move. */
+function heading(level: number, content: ReactNode, key: string, base: number): ReactNode {
   const cls = `md-h md-h${Math.min(level, 4)}`;
-  if (level <= 1) return <h3 key={key} className={cls}>{content}</h3>;
-  if (level === 2) return <h4 key={key} className={cls}>{content}</h4>;
-  return <h5 key={key} className={cls}>{content}</h5>;
+  const Tag = `h${Math.min(base + level - 1, 6)}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
+  return <Tag key={key} className={cls}>{content}</Tag>;
 }
 
 /** Render a Markdown string as themed React elements. */
-export function Markdown({ text, className }: { text: string; className?: string }): JSX.Element {
+export function Markdown({
+  text,
+  className,
+  baseLevel = 3,
+}: {
+  text: string;
+  className?: string;
+  /** the heading element `#` renders as (default 3: a card whose own title is an h2) */
+  baseLevel?: number;
+}): JSX.Element {
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
   const blocks: ReactNode[] = [];
   let k = 0;
@@ -159,7 +170,7 @@ export function Markdown({ text, className }: { text: string; className?: string
     const h = HEADING_RE.exec(line);
     if (h) {
       const key = keyOf();
-      blocks.push(heading(h[1].length, inline(h[2].trim(), key), key));
+      blocks.push(heading(h[1].length, inline(h[2].trim(), key), key, baseLevel));
       i++;
       continue;
     }

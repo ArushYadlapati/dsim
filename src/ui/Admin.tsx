@@ -12,6 +12,7 @@ import {
   adminPublishAnnouncement,
   adminDeleteAnnouncement,
   fetchAnnouncements,
+  fetchSeasons,
   type AdminRecordRow,
   type Announcement,
   type AnnouncementKind,
@@ -264,9 +265,21 @@ export function Admin({
 
   const startSeason = async (newAct: boolean): Promise<void> => {
     const what = newAct ? 'ACT' : 'season';
+    // NAME THE PERIOD THIS CREATES, so the moderator is not confirming blind: the next
+    // Act/Season number off the live one, plus the custom title if one was typed. If the
+    // season list will not load, the sentence still carries the title and the kind.
+    const title = seasonName.trim();
+    const list = await fetchSeasons().catch(() => null);
+    const live = list?.seasons.find((s) => s.season === list.current);
+    const target = live
+      ? `Act ${newAct ? live.act + 1 : live.act} · Season ${newAct ? 1 : live.seasonNo + 1}` +
+        (title ? ` “${title}”` : '')
+      : `a fresh ${what.toLowerCase()}${title ? ` “${title}”` : ''}`;
     if (
-      !window.confirm(
-        `Archive the live leaderboards and start a fresh ${what}? Old boards stay viewable.` +
+      !confirmed(
+        'Start',
+        target,
+        'The live leaderboards are archived; old boards stay viewable.' +
           (newAct ? ' A new act resets the season count to 1.' : ''),
       )
     )
@@ -282,7 +295,14 @@ export function Admin({
   };
 
   const purgeReplays = async (): Promise<void> => {
-    if (!window.confirm('Delete the replays of every ARCHIVED season? Boards stay; those runs stop being watchable. This frees storage and cannot be undone.')) return;
+    if (
+      !confirmed(
+        'Delete the replays of',
+        'every ARCHIVED season',
+        'Boards stay; those runs stop being watchable. This frees storage and cannot be undone.',
+      )
+    )
+      return;
     setSeasonBusy(true);
     const freed = await adminPurgeReplays();
     setSeasonBusy(false);
@@ -328,7 +348,7 @@ export function Admin({
   };
 
   const retireAnnouncement = async (a: Announcement): Promise<void> => {
-    if (!window.confirm(`Retire "${a.title}"? It stops appearing for anyone who hasn’t seen it yet.`)) return;
+    if (!confirmed('Retire', `“${a.title}”`, 'It stops appearing for anyone who hasn’t seen it yet.')) return;
     setAnnBusy(true);
     const ok = await adminDeleteAnnouncement(a.id);
     setAnnBusy(false);
@@ -346,6 +366,8 @@ export function Admin({
     return (
       <div className="ds-section adm-wide">
         <AdminHeader tab={tab} setTab={setTab} />
+        {/* every tab opens on an h2 under the page h1, so AdminLive's section h3s nest */}
+        <h2 className="ds-h2">Live</h2>
         <AdminLive onWatch={onWatch} onWatchReplay={onWatchReplay} onOpenUser={openAccount} />
       </div>
     );
@@ -482,6 +504,7 @@ export function Admin({
 
       {tab === 'server' && (
         <>
+      <h2 className="ds-h2">Server restart</h2>
       <p className="ds-sub adm-sub">
         Announce a restart to every connected player with a live countdown, then deploy the
         server when it hits zero. Players see a banner; anyone already playing gets warned.
@@ -507,7 +530,15 @@ export function Admin({
           <button
             className="ds-btn"
             disabled={busy}
-            onClick={() => run(() => adminAnnounce(minutes * 60, message), `Announced. Restart in ${minutes} min.`)}
+            onClick={() =>
+              // a banner on EVERY connected player's screen, so it is asked about like the
+              // other console actions that reach past this one account
+              confirmed(
+                'Announce a restart to',
+                'every connected player',
+                `They see “${message}” with a ${minutes}-minute countdown. It only warns; it doesn’t restart anything.`,
+              ) && run(() => adminAnnounce(minutes * 60, message), `Announced. Restart in ${minutes} min.`)
+            }
           >
             ANNOUNCE RESTART
           </button>

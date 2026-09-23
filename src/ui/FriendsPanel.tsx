@@ -9,7 +9,7 @@ import {
   type RoomInvite,
 } from '../net/api';
 import type { FriendsApi } from './useFriends';
-import { useFriendsCtx } from './friendsContext';
+import { confirmBlock, confirmUnfriend, useFriendsCtx } from './friendsContext';
 import { challengeLine, formatLabel } from './challenge';
 import { Select, type SelectOption } from './Select';
 import { SupporterBadge } from './SupporterBadge';
@@ -189,7 +189,8 @@ export function FriendsPanel({
   return (
     <aside className="ds-friends" aria-label="Friends">
       <div className="fr-head">
-        <span className="fr-title">Friends</span>
+        {/* the heading the section h3s below nest under */}
+        <h2 className="fr-title">Friends</h2>
         <button className="fr-collapse" onClick={toggle} aria-expanded aria-label="Hide friends">
           ✕
         </button>
@@ -679,10 +680,10 @@ function RowMenu({
     <details className="fr-menu">
       <summary aria-label="More">⋯</summary>
       <div className="fr-menu-body">
-        <button className="ds-btn small ghost" onClick={() => void friends.unfriend(username)}>
+        <button className="ds-btn small ghost" onClick={() => confirmUnfriend(username) && void friends.unfriend(username)}>
           Unfriend
         </button>
-        <button className="ds-btn small ghost" onClick={() => void friends.block(username)}>
+        <button className="ds-btn small ghost" onClick={() => confirmBlock(username) && void friends.block(username)}>
           Block
         </button>
       </div>

@@ -144,14 +144,15 @@ export function Username({ userId }: { userId: string }) {
         <span className="cap">Username</span>
         <div className="ds-field-row">
           <div className="grow">
-            <UsernameInput value={value} onChange={setValue} />
+            <UsernameInput value={value} onChange={setValue} hintId="ds-profile-uname-hint" status={check.status} />
           </div>
           <button className="ds-btn primary" disabled={!canSave} onClick={save}>
             {status === 'saving' ? 'Saving…' : 'Save'}
           </button>
         </div>
       </label>
-      <p className="ds-hint">
+      {/* live, so the checker's verdict and a failed save are heard, not just seen */}
+      <p className="ds-hint" id="ds-profile-uname-hint" aria-live="polite">
         {current && (
           <>
             Your profile: <code>/profile/{current}</code>.{' '}
@@ -159,7 +160,9 @@ export function Username({ userId }: { userId: string }) {
         )}
         {!configured && 'Editing needs the game server. '}
         {status === 'error' ? (
-          <span className="err">{error}</span>
+          <span className="err" role="alert">
+            {error}
+          </span>
         ) : status === 'ok' && !dirty ? (
           <span className="ok">Saved.</span>
         ) : (

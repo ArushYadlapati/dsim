@@ -194,7 +194,7 @@ export function MatchSetup({
   return (
     <section className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Match setup</span>
+        <h2 className="ds-panel-title">Match setup</h2>
       </div>
 
       <div className="ds-panel-body stack">
@@ -330,30 +330,27 @@ export function MatchSetup({
             {settings.savedAutos.map((a, i) => {
               const active = settings.autoPath?.fileName === a.fileName;
               return (
-                <div
-                  key={i}
-                  className={`ds-opt ${active ? 'on' : ''}`}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => selectAuto(a)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') selectAuto(a);
-                  }}
-                >
+                // the card and its ✕ are SIBLINGS in a slot — a button nested inside a
+                // button-role card had no clean name and leaked its keypresses to the card
+                <div key={i} className="ds-opt-slot">
+                  <button
+                    className={`ds-opt ${active ? 'on' : ''}`}
+                    aria-pressed={active}
+                    onClick={() => selectAuto(a)}
+                  >
+                    <span className="ot">{a.fileName}</span>
+                    <span className="od">
+                      {a.lines?.length ?? 0} segments
+                    </span>
+                  </button>
                   <button
                     className="ds-opt-del"
                     title="Delete this auto"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteAuto(i);
-                    }}
+                    aria-label={`Delete ${a.fileName}`}
+                    onClick={() => deleteAuto(i)}
                   >
                     ✕
                   </button>
-                  <span className="ot">{a.fileName}</span>
-                  <span className="od">
-                    {a.lines?.length ?? 0} segments
-                  </span>
                 </div>
               );
             })}

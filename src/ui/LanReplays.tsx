@@ -174,18 +174,22 @@ function LanReplaysPanel({ signedIn, game, onWatchId, onWatchLocal }: LanReplays
                       }}
                       disabled={!(r.localId && loadLanReplay(r.localId)) && !r.replayId}
                     >
-                      ▶ Watch
+                      <span aria-hidden="true">▶</span> Watch
                     </button>
+                    {/* named and confirmed, naming the match (design review 09-01): a LAN log
+                        that never uploaded exists nowhere else */}
                     {r.localId && (
                       <button
                         className="ds-btn small ghost"
                         onClick={() => {
+                          const what = `the ${fmtDay(r.at)} LAN match (${r.score.red}–${r.score.blue})`;
+                          if (!window.confirm(`Remove ${what} from this computer?`)) return;
                           deleteLocalLanRun(r.localId!);
                           reload();
                         }}
-                        title="Remove from this device"
+                        aria-label={`Remove the ${fmtDay(r.at)} LAN match, ${r.score.red} to ${r.score.blue}, from this computer`}
                       >
-                        ✕
+                        <span aria-hidden="true">✕</span>
                       </button>
                     )}
                   </span>

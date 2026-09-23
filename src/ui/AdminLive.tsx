@@ -13,7 +13,7 @@ import {
 import { SEASONS } from '../seasons';
 import { windowLabel } from './MaintenanceBanner';
 import { adminFail } from './adminCopy';
-import { AccountName, When, downloadCsv, shortId, usePolled } from './adminBits';
+import { AccountName, When, confirmed, downloadCsv, shortId, usePolled } from './adminBits';
 
 /**
  * The operator's live view: who is connected, what each of them is doing, which
@@ -432,6 +432,18 @@ function MaintenancePanel() {
   };
 
   const schedule = (): void => {
+    // "starts in 0" is not a schedule, it is locking every player out on this click — the
+    // one action on the incident view that needs asking about. A scheduled one announces
+    // itself first, which is its own warning.
+    if (
+      mins <= 0 &&
+      !confirmed(
+        'Lock down',
+        'every region now',
+        `New matches, queueing and custom rooms stop for everyone except admins, for ${dur} min.`,
+      )
+    )
+      return;
     const startsAt = Date.now() + Math.max(0, mins) * 60_000;
     void apply(
       { active: true, startsAt, endsAt: startsAt + Math.max(1, dur) * 60_000, message: msg },
@@ -445,7 +457,10 @@ function MaintenancePanel() {
   return (
     <div className={`admin-card adm-maint${biting ? ' biting' : ''}`}>
       <div className="adm-maint-h">
-        <b>Maintenance lockdown</b>
+        {/* a heading for the section list, not a restyle: .adm-maint-h lays the <b> out */}
+        <b role="heading" aria-level={3}>
+          Maintenance lockdown
+        </b>
         <span className={`adm-pill ${biting ? 'queued' : ''}`}>
           {biting ? 'LOCKED — only admins can start' : live ? 'SCHEDULED' : 'Off'}
         </span>
@@ -467,7 +482,7 @@ function MaintenancePanel() {
         <input type="text" maxLength={200} value={msg} onChange={(e) => setMsg(e.target.value)} />
       </label>
       <div className="admin-buttons">
-        <button className="ds-btn" disabled={busy} onClick={schedule}>
+        <button className={mins > 0 ? 'ds-btn' : 'ds-btn danger'} disabled={busy} onClick={schedule}>
           {mins > 0 ? 'SCHEDULE LOCKDOWN' : 'LOCK DOWN NOW'}
         </button>
         <button className="ds-btn ghost" disabled={busy || !live} onClick={lift}>

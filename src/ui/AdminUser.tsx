@@ -61,6 +61,9 @@ export function AdminUser({
   const [note, setNote] = useState('');
   const [showStanding, setShowStanding] = useState(false);
   const [susDays, setSusDays] = useState('7');
+  /** the reason Grant / Revoke / Suspend / Delete record — see the field above the actions */
+  const [reason, setReason] = useState('');
+  const why = reason.trim();
 
   const load = useCallback(async (): Promise<void> => {
     const d = await adminFetchUser(userId);
@@ -75,6 +78,7 @@ export function AdminUser({
     setU(null);
     setStatus(null);
     setShowStanding(false);
+    setReason('');
     void load();
   }, [load]);
 
@@ -108,7 +112,10 @@ export function AdminUser({
     const done = await fn();
     setBusy(false);
     setStatus(done ? ok : adminFail(fail));
-    if (done) await load();
+    if (done) {
+      setReason(''); // a reason belongs to ONE action; never carry it into the next
+      await load();
+    }
   };
 
   const doRename = (): void => {
@@ -128,8 +135,7 @@ export function AdminUser({
       setStatus('Months must be 1–60.');
       return;
     }
-    const why = window.prompt(`Give ${name} ${n} month(s) of supporter. Reason?`, '');
-    if (why === null) return;
+    if (!confirmed(`Give ${n} month${n === 1 ? '' : 's'} of supporter to`, name, `Reason recorded: “${why}”.`)) return;
     void act(
       async () => (await adminGrantSupporter(userId, n, why)) !== null,
       `Granted ${n} month${n === 1 ? '' : 's'}.`,
@@ -138,8 +144,7 @@ export function AdminUser({
   };
 
   const doRevoke = (): void => {
-    const why = window.prompt(`Revoke ${name}’s supporter membership. Reason?`, 'chargeback');
-    if (why === null) return;
+    if (!confirmed('Revoke the supporter membership of', name, `Reason recorded: “${why}”.`)) return;
     void act(
       async () => (await adminRevokeSupporter(userId, why)) !== null,
       'Membership ended.',
@@ -168,7 +173,8 @@ export function AdminUser({
    * player reads at the door — a refusal with nothing after it generates an appeal that has
    * to be answered by looking the account up by hand, which is the work this panel exists to
    * remove. Anything a moderator does not want them to read goes in a note instead, and the
-   * prompt says so.
+   * hint under the actions says so. It is typed INLINE (the reason field, required, capped),
+   * not in a one-line `window.prompt` with no length and no second look before it ships.
    */
   const doSuspend = (): void => {
     const d = Math.floor(Number(susDays));
@@ -176,18 +182,16 @@ export function AdminUser({
       setStatus('Days must be 1–3650. Use a long one for a permanent ban.');
       return;
     }
-    const why = window.prompt(
-      `Suspend ${name} from online play for ${d} day${d === 1 ? '' : 's'}.\n\n` +
-        'This reason is shown to them at the door. Put anything private in a note instead.',
-      '',
-    );
-    if (why === null) return;
-    if (!why.trim()) {
-      setStatus('Give a reason. The player is shown it.');
+    if (
+      !confirmed(
+        'Suspend',
+        `${name} from online play for ${d} day${d === 1 ? '' : 's'}`,
+        `They are shown this reason at the door: “${why}”.`,
+      )
+    )
       return;
-    }
     void act(
-      async () => (await adminSuspendUser(userId, d, why.trim())) !== null,
+      async () => (await adminSuspendUser(userId, d, why)) !== null,
       `Suspended for ${d} day${d === 1 ? '' : 's'}.`,
       'suspend the account',
     );
@@ -235,7 +239,8 @@ export function AdminUser({
       setStatus('That didn’t match, so nothing was deleted.');
       return;
     }
-    const why = window.prompt('Why is this account being deleted?', '') ?? '';
+    // the reason is the inline field, required before the button enables — this used to be a
+    // SECOND prompt whose Cancel still deleted, with an empty reason (`?? ''`)
     void act(
       async () => (await adminDeleteUser(userId, why))?.ok === true,
       'Account deleted.',
@@ -255,7 +260,7 @@ export function AdminUser({
     <div className="adm-user">
       <div className="adm-user-h">
         <div className="adm-user-id">
-          <h3 className="adm-user-name">{name}</h3>
+          <h2 className="adm-user-name">{name}</h2>
           <div className="adm-user-sub">
             {u.username ? (
               <span className="ds-muted">@{u.username}</span>
@@ -347,7 +352,21 @@ export function AdminUser({
       {/* ACTIONS. Rename and membership were on the search row and nowhere else, so they
           were unreachable from the report queue — the one place you are actually looking at
           somebody's behaviour when you decide to take a name off them. */}
-      <h4 className="adm-h3">Actions</h4>
+      <h3 className="adm-h3">Actions</h3>
+      {/* ONE REASON FIELD for every action that records one, the way the standing editor's
+          note sits above its buttons: it is visible while you type it, it has a cap, and the
+          buttons that need it stay disabled until it is filled. */}
+      <label className="admin-field col">
+        <span>Reason (recorded; a suspended player is shown it)</span>
+        <input
+          type="text"
+          required
+          maxLength={200}
+          value={reason}
+          placeholder="e.g. chargeback, repeated griefing"
+          onChange={(e) => setReason(e.target.value)}
+        />
+      </label>
       <div className="adm-actions">
         <label className="admin-field">
           <span>Display name</span>
@@ -368,17 +387,21 @@ export function AdminUser({
             onChange={(e) => setMonths(e.target.value)}
           />
         </label>
-        <button className="ds-btn ghost small" disabled={busy} onClick={doGrant}>
+        <button className="ds-btn ghost small" disabled={busy || !why} onClick={doGrant}>
           Grant
         </button>
-        <button className="ds-btn ghost small" disabled={busy || !u.supporter} onClick={doRevoke}>
+        <button className="ds-btn ghost small" disabled={busy || !why || !u.supporter} onClick={doRevoke}>
           Revoke
         </button>
+        {/* a DISCLOSURE, not an action: it opens the editor below. It flipped to a green
+            primary to show "open", which in a row of actions read as "the recommended one". */}
         <button
-          className={showStanding ? 'ds-btn small primary' : 'ds-btn ghost small'}
+          className="ds-btn ghost small"
+          aria-expanded={showStanding}
+          aria-controls="adm-standing-editor"
           onClick={() => setShowStanding(!showStanding)}
         >
-          Standing
+          Standing <span aria-hidden>{showStanding ? '▴' : '▾'}</span>
         </button>
         <button className="ds-btn danger small" disabled={busy || u.records.length === 0} onClick={doClearRecords}>
           Clear all records
@@ -407,7 +430,7 @@ export function AdminUser({
               />
               <span>days</span>
             </label>
-            <button className="ds-btn danger small" disabled={busy} onClick={doSuspend}>
+            <button className="ds-btn danger small" disabled={busy || !why} onClick={doSuspend}>
               Suspend
             </button>
           </>
@@ -416,7 +439,7 @@ export function AdminUser({
             Lift suspension
           </button>
         )}
-        <button className="ds-btn danger small" disabled={busy || !u.known} onClick={doDelete}>
+        <button className="ds-btn danger small" disabled={busy || !why || !u.known} onClick={doDelete}>
           Delete account
         </button>
       </div>
@@ -427,15 +450,17 @@ export function AdminUser({
       </p>
       {status && <p className="ds-hint">{status}</p>}
 
-      {showStanding && <StandingEditor userId={userId} handleHint={u.handle ?? undefined} />}
+      <div id="adm-standing-editor">
+        {showStanding && <StandingEditor userId={userId} handleHint={u.handle ?? undefined} />}
+      </div>
 
       {/* NOTES. Not a punishment and never shown to the player — which is exactly why the
           standing ledger could not hold them (0036: the ledger is read BACK to the player).
           "Warned in Discord", "team says this is a shared laptop", "third alt of X": the
           things that otherwise live in one moderator's head and leave when they do. */}
-      <h4 className="adm-h3">
+      <h3 className="adm-h3">
         Notes <span className="ds-muted">· private to staff</span>
-      </h4>
+      </h3>
       <div className="adm-noteadd">
         <input
           type="text"
@@ -486,9 +511,9 @@ export function AdminUser({
           read them from this direction. */}
       {(u.reportsAgainstList?.length ?? 0) > 0 && (
         <>
-          <h4 className="adm-h3">
+          <h3 className="adm-h3">
             Reports against them <span className="ds-muted">· {u.reportsAgainst.open} still open</span>
-          </h4>
+          </h3>
           <div className="adm-report-list">
             {(u.reportsAgainstList ?? []).map((r) => (
               <div className="adm-report-item" key={r.id}>
@@ -508,10 +533,10 @@ export function AdminUser({
 
       {(u.reportsFiledList?.length ?? 0) > 0 && (
         <>
-          <h4 className="adm-h3">
+          <h3 className="adm-h3">
             Reports they filed{' '}
             <span className="ds-muted">· {u.reportsFiled.rejected} dismissed</span>
-          </h4>
+          </h3>
           <div className="adm-report-list">
             {(u.reportsFiledList ?? []).map((r) => (
               <div className="adm-report-item" key={r.id}>
@@ -536,7 +561,7 @@ export function AdminUser({
         </>
       )}
 
-      <h4 className="adm-h3">
+      <h3 className="adm-h3">
         Recent matches
         {u.recentMatches.length > 0 && (
           <button
@@ -561,7 +586,7 @@ export function AdminUser({
             Export CSV
           </button>
         )}
-      </h4>
+      </h3>
       {u.recentMatches.length === 0 ? (
         <p className="ds-hint">No matches on record.</p>
       ) : (
@@ -586,7 +611,7 @@ export function AdminUser({
         </div>
       )}
 
-      <h4 className="adm-h3">Record runs</h4>
+      <h3 className="adm-h3">Record runs</h3>
       {u.records.length === 0 ? (
         <p className="ds-hint">No leaderboard runs.</p>
       ) : (
@@ -627,7 +652,7 @@ export function AdminUser({
 
       {u.grants.length > 0 && (
         <>
-          <h4 className="adm-h3">Membership history</h4>
+          <h3 className="adm-h3">Membership history</h3>
           <ul className="adm-notes">
             {u.grants.map((g, i) => (
               <li key={i}>
@@ -653,7 +678,7 @@ export function AdminUser({
           payments, so revoking is a second decision and Revoke above is where it lives. */}
       {(u.payments?.length ?? 0) > 0 && (
         <>
-          <h4 className="adm-h3">Payments claimed</h4>
+          <h3 className="adm-h3">Payments claimed</h3>
           <ul className="adm-notes">
             {(u.payments ?? []).map((p, i) => (
               <li key={p.transactionId ?? i}>
@@ -709,7 +734,7 @@ export function AdminUser({
       {/* WHAT HAS BEEN DONE TO THIS ACCOUNT — the audit log, filtered to them. The Audit tab
           answers "what has this moderator done"; this answers the other direction, which is
           the one an appeal arrives as. */}
-      <h4 className="adm-h3">Moderation history</h4>
+      <h3 className="adm-h3">Moderation history</h3>
       {u.audit.length === 0 ? (
         <p className="ds-hint">Nothing has been done to this account.</p>
       ) : (

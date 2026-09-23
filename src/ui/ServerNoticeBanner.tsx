@@ -16,7 +16,11 @@ export function ServerNoticeBanner() {
 
   if (!notice) return null;
 
-  let text = notice.message;
+  // The LIVE part is the stable sentence only. The m:ss countdown changes every second, and
+  // inside a live region it re-announced the whole banner every second; it is aria-hidden,
+  // and a screen reader gets the wall-clock time it counts down to instead.
+  let at: string | null = null;
+  let clock: string | null = null;
   let restarting = false;
   if (notice.until) {
     const leftMs = notice.until - Date.now();
@@ -27,19 +31,29 @@ export function ServerNoticeBanner() {
     }
     if (leftMs <= 0) {
       restarting = true;
-      text = `${notice.message} · restarting now…`;
     } else {
       const left = Math.round(leftMs / 1000);
       const m = Math.floor(left / 60);
       const s = left % 60;
-      text = `${notice.message} in ${m}:${String(s).padStart(2, '0')}`;
+      clock = `${m}:${String(s).padStart(2, '0')}`;
+      at = new Date(notice.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
   }
 
   return (
-    <div className={`server-notice ${restarting ? 'urgent' : ''}`} role="status">
-      <span className="server-notice-icon">⚠</span>
-      {text}
+    <div className={`server-notice ${restarting ? 'urgent' : ''}`}>
+      <span className="server-notice-icon" aria-hidden>
+        ⚠
+      </span>
+      {/* one flex item, so the countdown sits in the sentence and not a gap away from it */}
+      <span>
+        <span role="status">
+          {notice.message}
+          {restarting && ' · restarting now…'}
+          {at && <span className="ds-sr"> at {at}</span>}
+        </span>
+        {clock && <span aria-hidden> in {clock}</span>}
+      </span>
     </div>
   );
 }

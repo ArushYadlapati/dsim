@@ -48,7 +48,8 @@ import { trackEvent } from '../analytics';
  *  impression/click events for a contracted placement — see the note there. */
 export function SponsorLogo({ h }: { h: number }) {
   const w = sponsorLogoWidth(h);
-  const alt = `${SPONSOR.name} logo`;
+  // the NAME, not "… logo": inside a link that word is noise in the link's name
+  const alt = SPONSOR.name;
   return (
     <span className="sponsor-logo-swap">
       <img
@@ -219,7 +220,9 @@ function SponsorMark({
       href={sponsorLink(placement)}
       target="_blank"
       rel="noreferrer"
-      title={`${SPONSOR.presents} ${SPONSOR.name}`}
+      // the name is spoken whole, with the new-tab cue a sighted user gets from the browser; no
+      // `title` — it only repeated the name as a hover tooltip
+      aria-label={`${SPONSOR.presents} ${SPONSOR.name} (opens in new tab)`}
       onClick={() => trackEvent('sponsor_click', { placement })}
     >
       {children}

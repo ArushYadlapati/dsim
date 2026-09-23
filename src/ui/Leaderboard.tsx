@@ -360,29 +360,29 @@ export function Leaderboard({
       <div className="ds-panel">
         <div className="ds-panel-h">
           <div className="ds-segs">
-            <button className={`ds-seg ${isRecords ? 'on' : ''}`} onClick={() => setKind('records')}>
+            <button className={`ds-seg ${isRecords ? 'on' : ''}`} aria-pressed={isRecords} onClick={() => setKind('records')}>
               Records
             </button>
-            <button className={`ds-seg ${!isRecords ? 'on' : ''}`} onClick={() => setKind('ranked')}>
+            <button className={`ds-seg ${!isRecords ? 'on' : ''}`} aria-pressed={!isRecords} onClick={() => setKind('ranked')}>
               Ranked
             </button>
           </div>
           <div className="ds-segs">
             {isRecords ? (
               <>
-                <button className={`ds-seg ${recMode === 'solo' ? 'on' : ''}`} onClick={() => setRecMode('solo')}>
+                <button className={`ds-seg ${recMode === 'solo' ? 'on' : ''}`} aria-pressed={recMode === 'solo'} onClick={() => setRecMode('solo')}>
                   Solo
                 </button>
-                <button className={`ds-seg ${recMode === 'duo' ? 'on' : ''}`} onClick={() => setRecMode('duo')}>
+                <button className={`ds-seg ${recMode === 'duo' ? 'on' : ''}`} aria-pressed={recMode === 'duo'} onClick={() => setRecMode('duo')}>
                   Duo
                 </button>
               </>
             ) : (
               <>
-                <button className={`ds-seg ${eloMode === '1v1' ? 'on' : ''}`} onClick={() => setEloMode('1v1')}>
+                <button className={`ds-seg ${eloMode === '1v1' ? 'on' : ''}`} aria-pressed={eloMode === '1v1'} onClick={() => setEloMode('1v1')}>
                   1v1
                 </button>
-                <button className={`ds-seg ${eloMode === '2v2' ? 'on' : ''}`} onClick={() => setEloMode('2v2')}>
+                <button className={`ds-seg ${eloMode === '2v2' ? 'on' : ''}`} aria-pressed={eloMode === '2v2'} onClick={() => setEloMode('2v2')}>
                   2v2
                 </button>
               </>
@@ -397,7 +397,7 @@ export function Leaderboard({
                 rather than a ragged 4 + 2. See the rule in shell.css for why not a scroller. */}
             <div className="ds-segs even">
               {BOARDS.map((b) => (
-                <button key={b.id} className={`ds-seg ${board === b.id ? 'on' : ''}`} onClick={() => setBoard(b.id)}>
+                <button key={b.id} className={`ds-seg ${board === b.id ? 'on' : ''}`} aria-pressed={board === b.id} onClick={() => setBoard(b.id)}>
                   {b.label}
                 </button>
               ))}
@@ -491,6 +491,8 @@ export function Leaderboard({
                           {cfg ? (
                             <button
                               className="lb-robot"
+                              aria-expanded={isOpen}
+                              aria-controls={`lb-detail-${r.userId}`}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setOpenRow(isOpen ? null : r.userId);
@@ -498,7 +500,7 @@ export function Leaderboard({
                             >
                               {DT_LABEL[cfg.spec.drivetrain]}
                               {cfg.partnerSpec && ` + ${DT_LABEL[cfg.partnerSpec.drivetrain]}`}
-                              <span className="tw">{isOpen ? '▴' : '▾'}</span>
+                              <span className="tw" aria-hidden="true">{isOpen ? '▴' : '▾'}</span>
                             </button>
                           ) : (
                             <span className="ds-muted">-</span>
@@ -528,7 +530,7 @@ export function Leaderboard({
                       </td>
                     </tr>
                     {isRecords && isOpen && cfg && (
-                      <tr className="lb-detail">
+                      <tr className="lb-detail" id={`lb-detail-${r.userId}`}>
                         <td colSpan={4}>
                           <ConfigSummary cfg={cfg} game={game} />
                         </td>

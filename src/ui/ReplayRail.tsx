@@ -80,7 +80,7 @@ export function PenaltyLog({
 }) {
   return (
     <section className="rr-sec">
-      <h3 className="rr-h">Penalties</h3>
+      <h2 className="rr-h">Penalties</h2>
       {entries.length === 0 ? (
         <p className="rr-none">{done ? 'No fouls in this match.' : 'No fouls yet.'}</p>
       ) : (
@@ -189,7 +189,7 @@ export function ScoreEditor({
   if (missing) {
     return (
       <section className="rr-sec">
-        <h3 className="rr-h">Score</h3>
+        <h2 className="rr-h">Score</h2>
         <p className="rr-none">
           This replay isn’t attached to a stored match, so there is no result to correct.
         </p>
@@ -227,7 +227,7 @@ export function ScoreEditor({
 
   return (
     <section className="rr-sec">
-      <h3 className="rr-h">Score</h3>
+      <h2 className="rr-h">Score</h2>
 
       {/* THE TWO NUMBERS, side by side, because the whole judgement is the comparison. */}
       <div className="rr-cmp">
@@ -325,7 +325,7 @@ export function ScoreEditor({
 
       {status && <p className="rr-status">{status}</p>}
 
-      <h4 className="rr-h4">Who played</h4>
+      <h3 className="rr-h4">Who played</h3>
       <ul className="rr-players">
         {match.participants.map((p) => (
           <li key={p.userId}>
@@ -343,7 +343,7 @@ export function ScoreEditor({
 
       {match.corrections.length > 0 && (
         <>
-          <h4 className="rr-h4">Already corrected</h4>
+          <h3 className="rr-h4">Already corrected</h3>
           <ul className="rr-hist">
             {match.corrections.map((c) => (
               <li key={c.id}>

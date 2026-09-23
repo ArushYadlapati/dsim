@@ -70,7 +70,7 @@ function RequestLink() {
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Email a reset link</span>
+        <h2 className="ds-panel-title">Email a reset link</h2>
       </div>
       <div className="ds-panel-body stack start">
         {sent ? (
@@ -88,11 +88,15 @@ function RequestLink() {
                 required
                 autoFocus
                 autoComplete="email"
+                aria-describedby="ds-reset-email-err"
+                aria-invalid={!!error}
                 value={email}
                 onChange={(ev) => setEmail(ev.target.value)}
               />
             </label>
-            <div className={`ds-form-hint${error ? ' err' : ''}`}>{error}</div>
+            <div id="ds-reset-email-err" className={`ds-form-hint${error ? ' err' : ''}`} role="alert">
+              {error}
+            </div>
             <button className="ds-btn primary" type="submit" disabled={busy}>
               {busy ? 'Sending…' : 'Send reset link'}
             </button>
@@ -130,7 +134,7 @@ function SetNewPassword({ token, onAccount }: { token: string; onAccount: () => 
     return (
       <div className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Password changed</span>
+          <h2 className="ds-panel-title">Password changed</h2>
         </div>
         <div className="ds-panel-body stack start">
           <p className="ds-hint">Your password is set. Sign in with it to carry on.</p>
@@ -155,7 +159,7 @@ function SetNewPassword({ token, onAccount }: { token: string; onAccount: () => 
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Choose a new password</span>
+        <h2 className="ds-panel-title">Choose a new password</h2>
       </div>
       <div className="ds-panel-body stack start">
         <form className="ds-form" onSubmit={submit}>
@@ -167,6 +171,8 @@ function SetNewPassword({ token, onAccount }: { token: string; onAccount: () => 
               required
               autoFocus
               autoComplete="new-password"
+              aria-describedby="ds-reset-pw-msg"
+              aria-invalid={tooShort || !!failed}
               value={pw}
               onChange={(e) => setPw(e.target.value)}
             />
@@ -178,11 +184,17 @@ function SetNewPassword({ token, onAccount }: { token: string; onAccount: () => 
               type="password"
               required
               autoComplete="new-password"
+              aria-describedby="ds-reset-pw-msg"
+              aria-invalid={mismatch}
               value={again}
               onChange={(e) => setAgain(e.target.value)}
             />
           </label>
-          <div className={`ds-form-hint${message ? ' err' : ''}`}>{message}</div>
+          {/* live: the length and match checks change as you type, and a polite region
+              waits for a pause instead of interrupting every keystroke the way alert would */}
+          <div id="ds-reset-pw-msg" className={`ds-form-hint${message ? ' err' : ''}`} aria-live="polite">
+            {message}
+          </div>
           <button className="ds-btn primary" type="submit" disabled={!canSubmit}>
             {busy ? 'Saving…' : 'Set password'}
           </button>

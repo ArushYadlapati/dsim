@@ -66,7 +66,7 @@ export function Account({
         // dropdown can escape below the card instead of being clipped by it.
         <div className="ds-panel ds-panel-open">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Server</span>
+            <h2 className="ds-panel-title">Server</h2>
           </div>
           <div className="ds-panel-body">
             <ServerMenu
@@ -91,11 +91,13 @@ export function Account({
 
       <div className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Reset</span>
+          <h2 className="ds-panel-title">Reset settings</h2>
         </div>
         <div className="ds-panel-body stack start">
+          {/* `danger`: it wipes builds, autos and bindings, which for a local-only player is
+              more loss than deleting the account. The confirm names every one of them. */}
           <button
-            className="ds-btn"
+            className="ds-btn danger"
             onClick={() => {
               if (
                 confirm(
@@ -176,7 +178,7 @@ function ReplayPrivacy() {
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Privacy</span>
+        <h2 className="ds-panel-title">Privacy</h2>
       </div>
       <div className="ds-panel-body stack start">
         <p className="ds-hint">
@@ -244,7 +246,7 @@ function Membership({ onDonate }: { onDonate?: () => void }) {
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Membership</span>
+        <h2 className="ds-panel-title">Membership</h2>
         {ent?.supporter && <span className="ds-count">supporter</span>}
       </div>
       <div className="ds-panel-body stack start">
@@ -332,7 +334,7 @@ export function DeleteAccount() {
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Delete account</span>
+        <h2 className="ds-panel-title">Delete account</h2>
       </div>
       <div className="ds-panel-body stack">
         <p className="ds-hint">
@@ -393,7 +395,7 @@ function Identity() {
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Account</span>
+        <h2 className="ds-panel-title">Account</h2>
         {session.isPending && <span className="ds-chip">…</span>}
       </div>
       {user ? (

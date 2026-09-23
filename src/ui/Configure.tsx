@@ -98,16 +98,24 @@ export function Configure({
       <h1 className="ds-h1">Configure</h1>
 
       <div className="ds-subnav-layout">
+        {/* LINKS, not buttons: each section is a real route, so it can be middle-clicked,
+            opened in a tab or copied. A plain left click routes in-app, the same as the
+            footer's `FootLink` (AppShell.tsx); a modified click is left to the browser. */}
         <nav className="ds-subnav" aria-label="Configure sections">
           {sections.map((s) => (
-            <button
+            <a
               key={s}
               className={`ds-subnav-btn${section === s ? ' on' : ''}`}
+              href={`/${settings.game}/configure/${s}`}
               aria-current={section === s ? 'page' : undefined}
-              onClick={() => onSection(s)}
+              onClick={(e) => {
+                if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                e.preventDefault();
+                onSection(s);
+              }}
             >
               <span className="sl">{LABELS[s].label}</span>
-            </button>
+            </a>
           ))}
         </nav>
 

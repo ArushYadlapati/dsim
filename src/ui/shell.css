@@ -869,6 +869,7 @@
   gap: 8px;
 }
 .fr-title {
+  margin: 0;
   font-size: 14px;
   font-weight: 800;
   letter-spacing: 0.06em;
@@ -1427,6 +1428,7 @@
   border: 1px solid transparent;
   background: none;
   color: var(--ds-ink-dim);
+  text-decoration: none; /* an <a> since 04-16 (a real route); it must not read as body link */
   cursor: pointer;
 }
 .ds-subnav-btn .sl {
@@ -1619,6 +1621,11 @@ button.ds-chip {
   padding: 4px 12px;
   border-radius: var(--ds-round-sm);
 }
+/* a dialog card focused BY SCRIPT (useDialog's fallback when it holds no control) is not a
+   target the user moved to — the ring would frame the whole card mid-match */
+[role='dialog'][tabindex='-1']:focus {
+  outline: none;
+}
 .ds-btn:focus-visible,
 .ds-back:focus-visible,
 .ds-tile:focus-visible,
@@ -1632,6 +1639,12 @@ button.ds-chip {
 .ds-cta:focus-visible,
 .ds-opt:focus-visible,
 .ds-fold > summary:focus-visible,
+.ds-foot-link:focus-visible,
+.ds-home-link:focus-visible,
+.ds-discord-join:focus-visible,
+.lb-name:focus-visible,
+.lb-robot:focus-visible,
+.mh-player.link:focus-visible,
 button.ds-key:focus-visible {
   outline: 2px solid var(--ds-accent);
   outline-offset: 2px;
@@ -2111,6 +2124,9 @@ button.ds-key:focus-visible {
   flex-wrap: wrap;
 }
 .ds-panel-title {
+  /* often an h2 (C19): the resets make it render exactly as the old span did */
+  margin: 0;
+  font-weight: inherit;
   font-family: var(--ds-font-mono);
   font-size: 12px;
   letter-spacing: 0.12em;
@@ -2558,6 +2574,14 @@ button.ds-key:focus-visible {
   margin: 0 7px;
   text-transform: uppercase;
 }
+/* the RED / BLUE chip heading each versus group — the alliance is carried by a fill and a
+   word, not by the names' ink (DESIGN.md Don'ts); table-row sized */
+.mh-al {
+  font-size: 11px;
+  padding: 0 8px;
+  margin-right: 4px;
+  text-transform: uppercase;
+}
 .mh-run {
   color: var(--ds-mut);
   font-size: 12px;
@@ -2601,6 +2625,15 @@ button.ds-key:focus-visible {
 .ds-share {
   margin-left: 0;
   white-space: nowrap;
+  /* both labels share one cell, so the width is the longer one's and never jumps (09-25) */
+  display: inline-grid;
+  position: relative;
+}
+.ds-share > span {
+  grid-area: 1 / 1;
+}
+.ds-share > .off {
+  visibility: hidden;
 }
 .ds-profile-friend-actions {
   display: inline-flex;
@@ -4182,13 +4215,24 @@ tr.lb-detail td {
   font-weight: 600;
   color: var(--ds-mut);
 }
-/* per-card delete (✕) button, top-right */
+/* A deletable card: the `.ds-opt` button and its ✕ are SIBLINGS in this slot, never
+   nested — a button inside a button-role card had no clean accessible name and leaked
+   Enter to the card. The slot is the grid item; the card stretches to fill it, and its
+   right padding keeps a long name clear of the ✕. */
+.ds-opt-slot {
+  position: relative;
+  display: grid;
+}
+.ds-opt-slot > .ds-opt {
+  padding-right: 40px;
+}
+/* per-card delete (✕) button, top-right. 24px is the WCAG 2.5.8 floor; 32 on a phone. */
 .ds-opt-del {
   position: absolute;
   top: 8px;
   right: 8px;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   display: grid;
   place-items: center;
   border-radius: 6px;
@@ -4204,6 +4248,18 @@ tr.lb-detail td {
   color: var(--ds-red-ink);
   background: color-mix(in srgb, var(--ds-red) 14%, transparent);
   border-color: color-mix(in srgb, var(--ds-red) 40%, var(--ds-line));
+}
+.ds-opt-del:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
+@media (max-width: 640px) {
+  .ds-opt-del {
+    width: 32px;
+    height: 32px;
+    top: 4px;
+    right: 4px;
+  }
 }
 /* "save current" / "add" slot: dashed, muted until hovered */
 .ds-opt-add {
@@ -4774,7 +4830,7 @@ button.bb-cell:focus-visible {
 }
 /* TAKEN and FRAME read the same way, because they are the same fact: something else owns this
    piece of chassis. A dashed edge and muted ink, NOT an opacity fade — a faded control reads as
-   "loading", and the `title` on a disabled cell is the only place the reason lives. */
+   "loading"; the reason is printed in the status line under the map. */
 .bb-cell:disabled,
 .bb-cell.dead {
   cursor: default;
@@ -6752,11 +6808,10 @@ button.ds-key:active {
   color: var(--ds-mut);
 }
 
-/* A LABEL FOR A SCREEN READER AND NOT FOR THE EYE. The date inputs and the game
-   select are self-evident in a row headed by the range picker, and a visible
-   "From"/"To" would be helper text restating its own control (ui-standard §8).
-   The name still has to exist for anybody not looking at it. */
-.an-sr {
+/* A LABEL FOR A SCREEN READER AND NOT FOR THE EYE — the app's one visually-hidden utility
+   (analytics' From/To, the results live line, "Link copied", the connection word). Use it
+   instead of visible helper text that restates its own control (ui-standard §8). */
+.ds-sr {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -7664,14 +7719,12 @@ button.ds-key:active {
   line-height: 1;
   color: var(--ds-ink-dim);
 }
+/* the TYPE is `.ds-dialog-title`'s (styles.css); this owns only the card's own layout, and
+   the podium tiers' size step below. It restated the spec at line-height 1, which set a
+   two-line 28px podium headline solid. */
 .rw-h {
   margin: 0;
-  font-size: var(--ds-t-xl);
-  font-weight: 800;
-  letter-spacing: -0.015em;
-  line-height: 1;
   text-wrap: balance;
-  color: var(--ds-ink);
 }
 .ds-modal.rw-card.tier-gold .rw-h,
 .ds-modal.rw-card.tier-silver .rw-h,

@@ -11,7 +11,9 @@ export interface SelectOption<T extends string> {
  * this one is ours end to end, in both themes. Follows the ARIA
  * button+listbox pattern: the trigger is `aria-haspopup="listbox"`, the popup is
  * `role="listbox"` with `role="option"` children, arrow keys move a highlighted
- * option, Enter/Space commits it, Escape closes and returns focus to the trigger.
+ * option (Home/End jump to the ends), Enter/Space commits it, Escape closes and
+ * returns focus to the trigger. `ariaLabel` is required: it names the control, and
+ * the trigger's accessible name is `label: value`, so the value is still announced.
  *
  * Not a drop-in `<select>` replacement (no native form submission) — built for
  * the handful of app-controlled pickers that already call `onChange` directly.
@@ -25,7 +27,7 @@ export function Select<T extends string>({
   value: T;
   options: SelectOption<T>[];
   onChange: (v: T) => void;
-  ariaLabel?: string;
+  ariaLabel: string;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0); // highlighted index while open
@@ -73,6 +75,12 @@ export function Select<T extends string>({
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       setActive((i) => Math.max(0, i - 1));
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setActive(0);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      setActive(options.length - 1);
     } else if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       commit(active);
@@ -93,7 +101,7 @@ export function Select<T extends string>({
         className="ds-listbox-btn"
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={ariaLabel}
+        aria-label={`${ariaLabel}: ${current?.label ?? ''}`}
         onClick={() => setOpen((o) => !o)}
         onKeyDown={(e) => {
           if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {

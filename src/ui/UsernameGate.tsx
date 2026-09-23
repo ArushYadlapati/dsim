@@ -4,6 +4,7 @@ import { gameServerConfigured } from '../net/env';
 import { fetchProfile, updateUsername } from '../net/api';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
 import { trackEvent } from '../analytics';
+import { GateDialog } from './TermsGate';
 
 /** derive a reasonable default username from an auth name / email local-part */
 function suggest(seed: string | undefined): string {
@@ -96,24 +97,35 @@ export function UsernameGate({ suspended = false, children }: { suspended?: bool
   };
 
   return (
-    <div className="ds-modal-backdrop">
-      <div className="ds-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="ds-modal-h">
-          <span className="ds-panel-title">Choose your username</span>
-        </div>
-        <form className="ds-form" onSubmit={submit}>
-          <label>
-            <span>Username</span>
-            <UsernameInput value={value} onChange={setValue} autoFocus />
-          </label>
-          <div className="ds-form-hint" style={{ color: usernameHintColor(check.status) }}>
-            {err || check.message}
-          </div>
-          <button className="ds-btn primary" type="submit" disabled={!check.ok || busy}>
-            {busy ? 'Saving…' : 'Save username'}
-          </button>
-        </form>
+    <GateDialog titleId="ds-uname-gate-title">
+      <div className="ds-modal-h">
+        <h2 className="ds-dialog-title" id="ds-uname-gate-title">Choose your username</h2>
       </div>
-    </div>
+      <form className="ds-form" onSubmit={submit}>
+        <label>
+          <span>Username</span>
+          <UsernameInput
+            value={value}
+            onChange={setValue}
+            autoFocus
+            hintId="ds-uname-gate-hint"
+            status={err ? 'error' : check.status}
+          />
+        </label>
+        {/* a failed save is an alert; the checker's verdicts are polite live text */}
+        <div
+          className={`ds-form-hint${err ? ' err' : ''}`}
+          id="ds-uname-gate-hint"
+          role={err ? 'alert' : undefined}
+          aria-live={err ? undefined : 'polite'}
+          style={err ? undefined : { color: usernameHintColor(check.status) }}
+        >
+          {err || check.message}
+        </div>
+        <button className="ds-btn primary" type="submit" disabled={!check.ok || busy}>
+          {busy ? 'Saving…' : 'Save username'}
+        </button>
+      </form>
+    </GateDialog>
   );
 }

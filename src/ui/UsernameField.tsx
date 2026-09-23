@@ -79,27 +79,41 @@ export function useUsernameCheck(raw: string, ownValue?: string): UsernameCheck 
   return { normalized, status, ok: status === 'available', message };
 }
 
+/** the verdicts that mean "this name will not do" — the input's `aria-invalid` and the
+ *  hint's danger colour both read this, so the two cannot disagree. */
+export function usernameBad(status: UsernameStatus): boolean {
+  return status === 'invalid' || status === 'blocked' || status === 'taken' || status === 'error';
+}
+
 /** colour for the status hint TEXT. --ds-ok-ink, not --ds-ok: the latter is a fill
  *  (3.25:1 as 12px type on the light panel). --ds-danger is already a text token. */
 export function usernameHintColor(status: UsernameStatus): string | undefined {
   if (status === 'available') return 'var(--ds-ok-ink)';
-  if (status === 'invalid' || status === 'blocked' || status === 'taken' || status === 'error')
-    return 'var(--ds-danger)';
+  if (usernameBad(status)) return 'var(--ds-danger)';
   return undefined;
 }
 
 /** a bare username `<input>` with a live @-prefix; the parent owns validation via
- * `useUsernameCheck` and renders the hint. Coerces to lowercase-alnum as typed. */
+ * `useUsernameCheck` and renders the hint. Coerces to lowercase-alnum as typed.
+ *
+ * `hintId` is the id of that hint, and `status` the checker's verdict: the input points
+ * `aria-describedby` at the hint and turns `aria-invalid` on for a bad verdict, so a screen
+ * reader hears "taken" instead of just finding the submit disabled (design review C11).
+ * The hint itself carries `aria-live="polite"` at each call site. */
 export function UsernameInput({
   value,
   onChange,
   autoFocus,
   placeholder = 'yourname',
+  hintId,
+  status,
 }: {
   value: string;
   onChange: (v: string) => void;
   autoFocus?: boolean;
   placeholder?: string;
+  hintId?: string;
+  status?: UsernameStatus;
 }) {
   return (
     <div className="ds-username-input">
@@ -109,6 +123,9 @@ export function UsernameInput({
         type="text"
         maxLength={20}
         autoFocus={autoFocus}
+        autoComplete="username"
+        aria-describedby={hintId}
+        aria-invalid={status ? usernameBad(status) : undefined}
         value={value}
         placeholder={placeholder}
         autoCapitalize="none"

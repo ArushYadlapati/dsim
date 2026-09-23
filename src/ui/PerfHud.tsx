@@ -112,14 +112,17 @@ export const PerfHud = memo(function PerfHud({
   const scene = stats.scene;
   const pred = stats.prediction;
   return (
-    /* `role="status"` and not `aria-live`: it is a read-out a screen reader can go and read,
-       never one that should announce itself — the numbers change four times a second. */
-    <div className="perf-hud" role="status" aria-label="Performance">
+    /* A labelled GROUP, not `role="status"`: status is an implicit polite live region, so the
+       numbers — changing four times a second — would be announced four times a second. A
+       group is a read-out a screen reader can go and read, and says nothing on its own. */
+    <div className="perf-hud" role="group" aria-label="Performance">
       <div className="perf-head">
         <span className="perf-fps">{Math.round(stats.fps)} fps</span>
         {ping !== null && (
           <span className={`perf-ping ${qualityClass(net!.quality)}`}>
-            <span className="perf-dot" />
+            {/* the dot's colour IS the quality, so the word has to exist for anyone not seeing it */}
+            <span className="perf-dot" aria-hidden />
+            {net!.quality && <span className="ds-sr">{net!.quality} connection, </span>}
             {ping} ms
           </span>
         )}

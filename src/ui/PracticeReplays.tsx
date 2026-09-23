@@ -199,18 +199,23 @@ export function PracticeReplays({
                           }}
                           disabled={!(r.localId && loadPracticeReplay(r.localId)) && !r.replayId}
                         >
-                          ▶ Watch
+                          <span aria-hidden="true">▶</span> Watch
                         </button>
+                        {/* ONE CLICK USED TO DELETE, and the button's only name was "✕" (design
+                            review 09-01). A local-only run never uploaded is gone for good, so the
+                            confirm names the run it is about to remove. */}
                         {r.localId && (
                           <button
                             className="ds-btn small ghost"
                             onClick={() => {
+                              const what = `the ${fmtDay(r.at)} run (score ${r.score})`;
+                              if (!window.confirm(`Remove ${what} from this device?`)) return;
                               deletePracticeRun(r.localId!);
                               reload();
                             }}
-                            title="Remove from this device"
+                            aria-label={`Remove the ${fmtDay(r.at)} run, score ${r.score}, from this device`}
                           >
-                            ✕
+                            <span aria-hidden="true">✕</span>
                           </button>
                         )}
                       </span>

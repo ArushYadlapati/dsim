@@ -26,6 +26,7 @@ import { useServerNotice } from '../net/notice';
 import { APP_NAME } from '../seasons';
 import { Logo } from './Logo';
 import { useEscape } from './useEscape';
+import { OptRow, ToggleRow } from './OptRow';
 import { formatLabel, type PendingChallenge } from './challenge';
 import { clearStagedMatch, loadStagedMatch, saveStagedMatch } from '../net/stagedMatch';
 
@@ -1124,14 +1125,16 @@ export function Matchmaking({
     </>,
     '',
     <>
-      <div className="ds-opts two">
-        <button className={`ds-opt ${mode === '1v1' ? 'on' : ''}`} onClick={() => setMode('1v1')}>
-          <span className="ot">1v1</span>
-        </button>
-        <button className={`ds-opt ${mode === '2v2' ? 'on' : ''}`} onClick={() => setMode('2v2')}>
-          <span className="ot">2v2</span>
-        </button>
-      </div>
+      {/* OptRow, so the pick carries aria-pressed and not only the `.on` fill */}
+      <OptRow<QueueMode>
+        cols="two"
+        value={mode}
+        onPick={setMode}
+        options={[
+          { v: '1v1', t: '1v1' },
+          { v: '2v2', t: '2v2' },
+        ]}
+      />
       {/* the mode picker's CAPTION, not a third row: at the panelbox's plain gap it
           sat exactly equidistant from the tiles it describes and the unrelated region
           toggle below, so it belonged to neither. */}
@@ -1153,11 +1156,9 @@ export function Matchmaking({
         )}
       </p>
       {multiServer() && (
-        <div className="ds-opts">
-          <button className={`ds-opt ${noWiden ? 'on' : ''}`} onClick={() => setNoWiden(!noWiden)}>
-            <span className="ot">Only my region {noWiden ? 'ON' : 'OFF'}</span>
-          </button>
-        </div>
+        // ONE SPELLING OF A PICK (ui.md): a single tile whose LABEL carried "ON"/"OFF" is the
+        // bad one — the state belongs to the tiles, and the label stays the question.
+        <ToggleRow label="Only my region" value={noWiden} onPick={setNoWiden} />
       )}
       {/* THE CUTOVER, STATED BEFORE IT IS ENFORCED (plan §7). `find()` refuses a BIOBUZZ ranked
           queue on a server that has not been deployed with the 3D code; saying so here means the

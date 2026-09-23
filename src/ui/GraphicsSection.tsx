@@ -648,7 +648,7 @@ export function GraphicsSection() {
     <>
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">View</span>
+          <h2 className="ds-panel-title">View</h2>
         </div>
         <div className="ds-panel-body stack">
           <OptRow
@@ -681,7 +681,7 @@ export function GraphicsSection() {
 
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Quality</span>
+          <h2 className="ds-panel-title">Quality</h2>
           <button className="ds-btn small" onClick={resetToAuto}>
             Reset to Auto
           </button>
@@ -723,7 +723,7 @@ export function GraphicsSection() {
         <div className="ds-fold-body panels">
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Resolution</span>
+          <h2 className="ds-panel-title">Resolution</h2>
         </div>
         <div className="ds-panel-body stack">
           <label className="ds-field">
@@ -764,7 +764,7 @@ export function GraphicsSection() {
 
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Lighting</span>
+          <h2 className="ds-panel-title">Lighting</h2>
         </div>
         <div className="ds-panel-body stack">
           <OptRow
@@ -816,7 +816,7 @@ export function GraphicsSection() {
 
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Detail</span>
+          <h2 className="ds-panel-title">Detail</h2>
         </div>
         <div className="ds-panel-body stack">
           <OptRow
@@ -873,7 +873,7 @@ export function GraphicsSection() {
 
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Camera</span>
+          <h2 className="ds-panel-title">Camera</h2>
         </div>
         <div className="ds-panel-body stack">
           <label className="ds-field">

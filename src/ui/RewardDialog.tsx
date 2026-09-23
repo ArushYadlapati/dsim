@@ -15,6 +15,7 @@ import {
   type RewardGrant,
 } from '../rewards';
 import { AwardBadge } from './AwardBadge';
+import { useDialog } from './useDialog';
 import { BadgeArt } from './BadgeMark';
 import { TitleChip } from './TitleChip';
 import { claimPending, loadRewards, postponeRewards, reopenRewards, useRewards } from './rewardsStore';
@@ -69,15 +70,6 @@ export function RewardDialog({
   const grant = r.state?.pending[0] ?? null;
   const showing = !!grant && !blocked && !r.postponed && r.status === 'ready';
 
-  useEffect(() => {
-    if (!showing) return;
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') postponeRewards();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [showing]);
-
   // a new card is a new question — a failure on the last one says nothing about this one
   useEffect(() => setErr(false), [grant?.id]);
 
@@ -102,6 +94,7 @@ export function RewardDialog({
       error={err}
       onClaim={() => void take(false)}
       onEquip={() => void take(true)}
+      onDismiss={postponeRewards}
     />
   );
 }
@@ -116,6 +109,7 @@ export function RewardCard({
   error = false,
   onClaim,
   onEquip,
+  onDismiss,
 }: {
   grant: RewardGrant;
   /** badge id → times earned so far; the card shows the count it is ABOUT to reach */
@@ -125,7 +119,11 @@ export function RewardCard({
   error?: boolean;
   onClaim: () => void;
   onEquip: () => void;
+  /** Escape: not now — the queue comes back on the next return to the menus */
+  onDismiss?: () => void;
 }) {
+  // declared BEFORE the equip focus below, so it records the opener before focus moves
+  const dialogRef = useDialog(onDismiss);
   const equipRef = useRef<HTMLButtonElement>(null);
   // focus the primary action when a card appears — a keyboard or pad user lands on it
   useEffect(() => equipRef.current?.focus(), [grant.id]);
@@ -140,7 +138,14 @@ export function RewardCard({
 
   return (
     <div className="ds-modal-backdrop rw-backdrop" role="presentation">
-      <div className={`ds-modal rw-card tier-${tier}`} role="dialog" aria-modal="true" aria-labelledby={headId}>
+      <div
+        ref={dialogRef}
+        className={`ds-modal rw-card tier-${tier}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={headId}
+        tabIndex={-1}
+      >
         <div className="rw-top">
           <span className="rw-eyebrow">{rewardEyebrow(grant)}</span>
           {position && position.of > 1 && (

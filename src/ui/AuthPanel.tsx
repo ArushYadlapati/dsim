@@ -1,17 +1,19 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { authClient } from '../lib/authClient';
 import { describeAuthError, requestEmailVerification, requestPasswordReset } from '../lib/authFlows';
 import { isEmbeddedBrowser } from '../lib/browserEnv';
 import { acceptTerms, updateUsername } from '../net/api';
 import { TermsAgreement } from './TermsGate';
 import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
-import { useEscape } from './useEscape';
+import { useDialog } from './useDialog';
 
 /** which of the three forms the modal is showing */
 type AuthMode = 'in' | 'up' | 'forgot';
 
 /** the panel title's element id, so `aria-labelledby` on the dialog can point at it */
 const TITLE_ID = 'ds-auth-title';
+/** the username hint's id, for the input's `aria-describedby` */
+const UNAME_HINT_ID = 'ds-auth-uname-hint';
 
 const TITLES: Record<AuthMode, string> = {
   in: 'Sign in',
@@ -39,9 +41,21 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
   // In-app webviews (LinkedIn/Instagram/… browsers) get Google's
   // `disallowed_useragent` 403 — steer them to a real browser instead.
   const embedded = useMemo(() => isEmbeddedBrowser(), []);
-  // Esc closes, same as the ✕ and the backdrop — this modal is dismissible (unlike the
-  // blocking gates), so the keyboard needs the exit the mouse already has.
-  useEscape(onClose);
+  // Esc closes, same as the ✕ — this modal is dismissible (unlike the blocking gates), so
+  // the keyboard needs the exit the mouse already has. `useDialog` also traps Tab and hands
+  // focus back to the "Sign in" button that opened it.
+  const dialogRef = useDialog(onClose);
+  /* THE FIRST FIELD TAKES FOCUS on open AND on every switch of form: the button that switched
+     it has just unmounted, which would drop focus to <body>, outside the Tab trap. The panel
+     itself (tabIndex -1) is the fallback for the reset-sent sentence, which has no field. */
+  useEffect(() => {
+    const el = dialogRef.current;
+    (el?.querySelector<HTMLElement>('input') ?? el)?.focus();
+  }, [mode, resetSent, dialogRef]);
+  /* A BACKDROP CLICK CLOSES ONLY AN UNTOUCHED FORM. On a phone the 380px card leaves a lot
+     of scrim, and a stray tap there used to throw away a half-typed sign-up. The ✕ and Esc
+     are deliberate, so they still close whatever is typed. */
+  const touched = !!(email || password || name || username || agreed);
 
   const copyLink = async () => {
     try {
@@ -165,18 +179,20 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="ds-modal-backdrop" onClick={onClose}>
+    <div className="ds-modal-backdrop" onClick={touched ? undefined : onClose}>
       {/* the DIALOG is the panel, not the backdrop: the backdrop is the click-away scrim and
           naming it the dialog would put everything behind it inside the modal boundary. */}
       <div
+        ref={dialogRef}
         className="ds-modal"
         role="dialog"
         aria-modal="true"
         aria-labelledby={TITLE_ID}
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="ds-modal-h">
-          <span className="ds-panel-title" id={TITLE_ID}>{TITLES[mode]}</span>
+          <h2 className="ds-dialog-title" id={TITLE_ID}>{TITLES[mode]}</h2>
           <button className="ds-btn ghost" onClick={onClose} aria-label="Close">✕</button>
         </div>
         {mode === 'forgot' ? (
@@ -194,13 +210,12 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
                     className="ds-input"
                     type="email"
                     required
-                    autoFocus
                     autoComplete="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                   />
                 </label>
-                {error && <div className="ds-form-err">{error}</div>}
+                {error && <div className="ds-form-err" role="alert">{error}</div>}
                 <button className="ds-btn primary" type="submit" disabled={busy}>
                   {busy ? 'Sending…' : 'Send reset link'}
                 </button>
@@ -217,24 +232,38 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
                 <>
                   <label>
                     <span>Display name</span>
-                    <input className="ds-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="On the leaderboard" />
+                    <input className="ds-input" autoComplete="nickname" value={name} onChange={(e) => setName(e.target.value)} placeholder="On the leaderboard" />
                   </label>
+                  {/* the hint sits OUTSIDE the label, as on the username gate: inside, its
+                      text would be read into the input's name as well as its description */}
                   <label>
                     <span>Username</span>
-                    <UsernameInput value={username} onChange={setUsername} />
-                    <span className="ds-form-hint" style={{ color: usernameHintColor(uname.status) }}>
-                      {uname.message}
-                    </span>
+                    <UsernameInput value={username} onChange={setUsername} hintId={UNAME_HINT_ID} status={uname.status} />
                   </label>
+                  <span
+                    className="ds-form-hint"
+                    id={UNAME_HINT_ID}
+                    aria-live="polite"
+                    style={{ color: usernameHintColor(uname.status) }}
+                  >
+                    {uname.message}
+                  </span>
                 </>
               )}
               <label>
                 <span>Email</span>
-                <input className="ds-input" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+                <input className="ds-input" type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
               </label>
               <label>
                 <span>Password</span>
-                <input className="ds-input" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+                <input
+                  className="ds-input"
+                  type="password"
+                  required
+                  autoComplete={mode === 'up' ? 'new-password' : 'current-password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
               </label>
               {/* Sign-in only. On the sign-up form there is no password to have
                   forgotten, and offering one there is how people end up resetting
@@ -266,7 +295,7 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
                   </span>
                 </label>
               )}
-              {error && <div className="ds-form-err">{error}</div>}
+              {error && <div className="ds-form-err" role="alert">{error}</div>}
               <button
                 className="ds-btn primary"
                 type="submit"

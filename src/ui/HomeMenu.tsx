@@ -98,12 +98,13 @@ export function HomeMenu({
       <SponsorPresents />
 
       {games.length > 1 && (
-        <div className="ds-segs ds-home-games" role="tablist" aria-label="Game">
+        // Toggle buttons, not a tablist: there is no tabpanel, and a tablist owes roving
+        // tabindex + arrow keys — half that pattern is worse than none (OptRow's ruling).
+        <div className="ds-segs ds-home-games" role="group" aria-label="Game">
           {games.map((g) => (
             <button
               key={g.id}
-              role="tab"
-              aria-selected={settings.game === g.id}
+              aria-pressed={settings.game === g.id}
               className={`ds-seg${settings.game === g.id ? ' on' : ''}`}
               onClick={() => onGame(g.id)}
             >

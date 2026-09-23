@@ -125,6 +125,14 @@ function twinCellBlock(m: BbMountPos, at: BbMountPos, other: BbMountPos, otherNa
 /** what a chassis-map cell carries on top of its own name: the mechanism already bolted there. */
 type BbCellMark = 'turret' | 'nectar' | 'dumper' | 'tube';
 
+/** a cell's mark in words, for its accessible name — the glyph itself is `aria-hidden`. */
+const BB_CELL_MARK_NAMES: Record<BbCellMark, string> = {
+  turret: 'turret',
+  nectar: 'NECTAR turret',
+  dumper: 'dumper',
+  tube: 'Box tube',
+};
+
 /**
  * ONE mounted mechanism, as a 16x16 glyph.
  *
@@ -201,6 +209,14 @@ function BbChassisMap({
   blocked?: (m: BbMountPos) => string | undefined;
   onPick(m: BbMountPos): void;
 }) {
+  // WHY A CELL IS REFUSED, AS A LINE UNDER THE MAP. It used to live only in the disabled cell's
+  // `title`, which a disabled button never shows to a keyboard (it cannot take focus) or on a
+  // phone (there is no hover). One sentence per reason, naming the cells it refuses.
+  const refused = new Map<string, string[]>();
+  for (const m of cells) {
+    const why = blocked?.(m);
+    if (why !== undefined) refused.set(why, [...(refused.get(why) ?? []), BB_MOUNT_POS_LABELS[m]]);
+  }
   return (
     <div className="ds-field">
       <span className="cap">{caption}</span>
@@ -244,6 +260,7 @@ function BbChassisMap({
                 disabled={why !== undefined}
                 title={why}
                 aria-pressed={on}
+                aria-label={mark ? `${BB_MOUNT_POS_LABELS[m]}, ${BB_CELL_MARK_NAMES[mark]}` : BB_MOUNT_POS_LABELS[m]}
                 onClick={() => onPick(m)}
               >
                 {body}
@@ -252,6 +269,11 @@ function BbChassisMap({
           })}
         </div>
       </div>
+      {[...refused].map(([why, where]) => (
+        <p className="ds-hint" key={why}>
+          {where.join(', ')}: {why}
+        </p>
+      ))}
     </div>
   );
 }
@@ -369,6 +391,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
           <button
             key={m}
             className={`ds-opt ${launcher.kind === m ? 'on' : ''}`}
+            aria-pressed={launcher.kind === m}
             onClick={() => pickLauncher(m)}
           >
             <span className="ot">{BB_MODE_LABELS[m]}</span>
@@ -446,11 +469,15 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
       {/* ---- FLOWER SCORING: the Box Tube ---- */}
       <h3 className="ds-subh">Flower scoring</h3>
       <div className="ds-opts two">
-        <button className={`ds-opt ${lift === null ? 'on' : ''}`} onClick={() => pickLift(null)}>
+        <button className={`ds-opt ${lift === null ? 'on' : ''}`} aria-pressed={lift === null} onClick={() => pickLift(null)}>
           <span className="ot">None</span>
         </button>
         {BB_LIFT_KINDS.map((k) => (
-          <button key={k} className={`ds-opt ${lift?.kind === k ? 'on' : ''}`} onClick={() => pickLift(k)}>
+          <button
+            key={k}
+            className={`ds-opt ${lift?.kind === k ? 'on' : ''}`}
+            aria-pressed={lift?.kind === k}
+            onClick={() => pickLift(k)}>
             <span className="ot">{bbLiftKindLabel(k)}</span>
           </button>
         ))}
@@ -485,6 +512,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
           <button
             key={k}
             className={`ds-opt ${intakeKind === k ? 'on' : ''}`}
+            aria-pressed={intakeKind === k}
             onClick={() => pickIntake(k)}
           >
             <span className="ot">{BB_INTAKE_LABELS[k]}</span>
@@ -497,6 +525,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
           <button
             key={m}
             className={`ds-opt mini ${bbIntakeMountOf(spec) === m ? 'on' : ''}`}
+            aria-pressed={bbIntakeMountOf(spec) === m}
             onClick={() => setSpec({ intakeMount: m })}
           >
             <span className="ot">{BB_INTAKE_MOUNT_LABELS[m]}</span>
@@ -519,6 +548,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
             max={dials.length.max}
             step={BB_SIZE_STEP}
             value={spec.length}
+            aria-valuetext={`${dialText(spec.length, BB_SIZE_STEP)} inches`}
             style={rangeFill(spec.length, dials.length.min, dials.length.max)}
             onChange={(e) => setSpec({ length: Number(e.target.value) })}
           />
@@ -534,6 +564,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
             max={dials.width.max}
             step={BB_SIZE_STEP}
             value={spec.width}
+            aria-valuetext={`${dialText(spec.width, BB_SIZE_STEP)} inches`}
             style={rangeFill(spec.width, dials.width.min, dials.width.max)}
             onChange={(e) => setSpec({ width: Number(e.target.value) })}
           />
@@ -549,6 +580,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
             max={dials.mass.max}
             step={1}
             value={spec.massLb}
+            aria-valuetext={`${dialText(spec.massLb, 0.1)} pounds`}
             style={rangeFill(spec.massLb, dials.mass.min, dials.mass.max)}
             onChange={(e) => setSpec({ massLb: Number(e.target.value) })}
           />
@@ -572,6 +604,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
             max={dials.storage.max}
             step={1}
             value={store}
+            aria-valuetext={`${store} of ${dials.storage.max} pollen`}
             style={rangeFill(store, BB_STORAGE_MIN, dials.storage.max)}
             onChange={(e) => setSpec({ ballStorage: Number(e.target.value) })}
           />
@@ -593,6 +626,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
             max={BB3_HEIGHT_MAX}
             step={1}
             value={deployed}
+            aria-valuetext={`${dialText(deployed, 1)} inches`}
             style={rangeFill(deployed, BB3_HEIGHT_MIN, BB3_HEIGHT_MAX)}
             onChange={(e) => setSpec({ heightIn: Number(e.target.value) })}
           />
@@ -615,6 +649,7 @@ export function BiobuzzBuilder({ spec, setSpec, alliance, startIndex, startPose 
               max={deployed}
               step={1}
               value={stow}
+              aria-valuetext={`${dialText(stow, 1)} inches`}
               style={rangeFill(stow, BB3_HEIGHT_MIN, deployed)}
               onChange={(e) => setSpec({ stowHeightIn: Number(e.target.value) })}
             />

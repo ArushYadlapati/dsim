@@ -778,12 +778,14 @@ export function Lobby({
             <div className="ds-opts two">
               <button
                 className={`ds-opt ${entryMode === 'create' ? 'on' : ''}`}
+                aria-pressed={entryMode === 'create'}
                 onClick={() => setEntryMode('create')}
               >
                 <span className="ot">Create room</span>
               </button>
               <button
                 className={`ds-opt ${entryMode === 'join' ? 'on' : ''}`}
+                aria-pressed={entryMode === 'join'}
                 onClick={() => setEntryMode('join')}
               >
                 <span className="ot">Join room</span>
@@ -999,6 +1001,7 @@ export function Lobby({
                   <button
                     key={t}
                     className={`ds-opt mini ${botTier === t ? 'on' : ''}`}
+                    aria-pressed={botTier === t}
                     onClick={() => setBotTier(t)}
                   >
                     <span className="ot">{botLabel(t)}</span>
@@ -1070,12 +1073,14 @@ export function Lobby({
             <div className="ds-opts two">
               <button
                 className={`ds-opt red ${me?.alliance === 'red' ? 'on' : ''}`}
+                aria-pressed={me?.alliance === 'red'}
                 onClick={() => setAlliance('red')}
               >
                 <span className="ot">RED</span>
               </button>
               <button
                 className={`ds-opt blue ${me?.alliance === 'blue' ? 'on' : ''}`}
+                aria-pressed={me?.alliance === 'blue'}
                 onClick={() => setAlliance('blue')}
               >
                 <span className="ot">BLUE</span>
@@ -1177,6 +1182,7 @@ export function Lobby({
                   <button
                     key={i}
                     className={`ds-opt mini ${active ? 'on' : ''}`}
+                    aria-pressed={active}
                     onClick={() => pickSpec({ ...r })}
                   >
                     <span className="ot">{r.name || `Robot ${i + 1}`}</span>

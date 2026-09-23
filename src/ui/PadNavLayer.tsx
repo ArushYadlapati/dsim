@@ -42,7 +42,7 @@ import {
  * reason is `'match'`: that is how a driver gets back out.
  */
 
-const FOCUSABLE = [
+export const FOCUSABLE = [
   'a[href]',
   'button:not([disabled])',
   'input:not([disabled]):not([type="hidden"])',

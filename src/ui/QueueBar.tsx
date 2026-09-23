@@ -63,19 +63,29 @@ export function QueueBar({ onOpen, overlay = false }: { onOpen: () => void; over
   }
 
   return (
-    <div className={`ds-queuebar${found ? ' found' : ''}${overlay ? ' over' : ''}`} role="status">
+    // NOT a live region as a whole: the elapsed clock re-renders every second and would be
+    // announced every second, for as long as someone is queued. Only the found / not-found
+    // phrase is live, so "Match found" is the one thing that speaks up.
+    <div className={`ds-queuebar${found ? ' found' : ''}${overlay ? ' over' : ''}`}>
       <span className="qb-dot" aria-hidden />
       <span className="qb-txt">
-        {found ? (
-          <b>Match found</b>
-        ) : (
+        <span role="status">
+          <b>{found ? 'Match found' : q.mode.toUpperCase()}</b>
+          {!found && ' queue'}
+        </span>
+        {!found && (
           <>
-            <b>{q.mode.toUpperCase()}</b> queue · {elapsedLabel(q.since)}
+            {' · '}
+            {elapsedLabel(q.since)}
             {q.size > 0 && ` · ${q.size}/${q.need}`}
           </>
         )}
       </span>
-      {q.error && <span className="qb-err">{q.error}</span>}
+      {q.error && (
+        <span className="qb-err" role="alert">
+          {q.error}
+        </span>
+      )}
       <button className="ds-btn small primary" onClick={onOpen}>
         {found ? 'Play →' : 'View'}
       </button>

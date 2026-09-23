@@ -99,8 +99,11 @@ function Players({
     const blue = r.players.filter((p) => p.alliance === 'blue');
     return (
       <span className="mh-players">
+        {/* the alliance is named in a FILLED chip, never by the names' ink alone (DESIGN.md) */}
+        <span className="ds-chip red mh-al">Red</span>
         {join(red)}
         <span className="mh-vs">vs</span>
+        <span className="ds-chip blue mh-al">Blue</span>
         {join(blue)}
       </span>
     );
@@ -205,10 +208,10 @@ export function MatchHistory({
   return (
     <div className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Match history</span>
+        <h2 className="ds-panel-title">Match history</h2>
       </div>
       <div className="mh-filters">
-          <select className="ds-select" value={type} onChange={(e) => changeType(e.target.value as TypeFilter)}>
+          <select className="ds-select" aria-label="Match type" value={type} onChange={(e) => changeType(e.target.value as TypeFilter)}>
             {TYPE_OPTS.map((o) => (
               <option key={o.id} value={o.id}>
                 {o.label}
@@ -217,6 +220,7 @@ export function MatchHistory({
           </select>
           <select
             className="ds-select"
+            aria-label="Result"
             value={result}
             onChange={(e) => changeResult(e.target.value as ResultFilter)}
           >
@@ -226,7 +230,7 @@ export function MatchHistory({
               </option>
             ))}
           </select>
-          <select className="ds-select" value={pageSize} onChange={(e) => changeSize(Number(e.target.value))}>
+          <select className="ds-select" aria-label="Matches per page" value={pageSize} onChange={(e) => changeSize(Number(e.target.value))}>
             {PAGE_SIZES.map((n) => (
               <option key={n} value={n}>
                 Show {n}

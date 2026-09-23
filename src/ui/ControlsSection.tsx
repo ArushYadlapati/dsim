@@ -15,6 +15,7 @@ import {
   effectiveBindings,
   keyDesynced,
   keyLabel,
+  keyName,
   padBindLabel,
   padBinds,
   padButtonLabel,
@@ -153,6 +154,7 @@ function PadSlider({
         step={step}
         value={value}
         disabled={disabled}
+        aria-label={label}
         aria-valuetext={shown}
         style={rangeFill(value, min, max)}
         onChange={(e) => onChange(Number(e.target.value))}
@@ -235,6 +237,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         }
         const b0 = cloneBindings(bindingsRef.current);
         onChangeRef.current({ ...b0, pad: { ...b0.pad, menuButton: i } });
+        setNotice(`Menu: ${padButtonLabel(i)}`);
         setMenuCapture(false);
         return;
       }
@@ -276,6 +279,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
               ? removePadBindInGame(b, g, capture.action, capture.slot)
               : removePadBind(b, capture.action, capture.slot),
         );
+        setNotice(`${ACTION_LABELS[capture.action]}: bind removed`);
         setCapture(null);
         return;
       }
@@ -285,13 +289,17 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
         // REFUSED, AND STILL ARMED: the next key the player tries lands on the same slot
         const holder = sharedKeyHolder(b, k);
         if (holder) {
-          setNotice(refusal(keyLabel(k), holder, 'key'));
+          setNotice(refusal(keyName(k), holder, 'key'));
           return;
         }
         onChangeRef.current(assignKeyInGame(b, g, capture.action, capture.slot, k));
+        setNotice(`${ACTION_LABELS[capture.action]}: ${keyName(k)}`);
       } else {
         const next = assignKey(b, capture.action, capture.slot, k);
-        setNotice(lossNotice(b, next, 'key', keyLabel(k), seasonsRef.current));
+        // what it took from a hidden row if anything, else the confirmation "<action>: W"
+        setNotice(
+          lossNotice(b, next, 'key', keyName(k), seasonsRef.current) ?? `${ACTION_LABELS[capture.action]}: ${keyName(k)}`,
+        );
         onChangeRef.current(next);
       }
       setCapture(null);
@@ -329,9 +337,13 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
           return false;
         }
         onChangeRef.current(assignPadBindInGame(b, game, action, slot, chord));
+        setNotice(`${ACTION_LABELS[action]}: ${padBindLabel(sorted)}`);
       } else {
         const next = assignPadBind(b, action, slot, chord);
-        setNotice(lossNotice(b, next, 'pad', padBindLabel(sorted), seasonsRef.current));
+        setNotice(
+          lossNotice(b, next, 'pad', padBindLabel(sorted), seasonsRef.current) ??
+            `${ACTION_LABELS[action]}: ${padBindLabel(sorted)}`,
+        );
         onChangeRef.current(next);
       }
       done = true;
@@ -385,10 +397,13 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
     onClick: () => void,
     key?: number,
     activeLabel = 'PRESS…',
+    spoken = label,
   ) => (
     <button
       key={key}
       className={`ds-key ${active ? 'capturing' : ''} ${unbound ? 'unbound' : ''}`}
+      // the glyph alone is a poor name ("leftwards arrow"); while armed the status line speaks
+      aria-label={active ? undefined : unbound ? 'Unbound, press to bind' : `${spoken}, press to rebind`}
       onClick={onClick}
     >
       {active ? activeLabel : label}
@@ -465,7 +480,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
             keyDesynced(bindings, game, a) &&
             syncBtn(ACTION_LABELS[a], () => onChange(syncKeyInGame(bindings, game, a)))}
           {list.map((k, i) =>
-            keycap(keyLabel(k), armed?.slot === i, false, () => begin({ kind: 'key', action: a, slot: i, game }), i),
+            keycap(keyLabel(k), armed?.slot === i, false, () => begin({ kind: 'key', action: a, slot: i, game }), i, undefined, keyName(k)),
           )}
           {list.length === 0
             ? keycap('UNBOUND', !!armed, true, () => begin({ kind: 'key', action: a, slot: 0, game }))
@@ -508,7 +523,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
   const bindPanel = (p: BindPanel) => (
     <section className="ds-panel" key={`${p.id}-${game ?? 'all'}`}>
       <div className="ds-panel-h">
-        <span className="ds-panel-title">{p.title}</span>
+        <h2 className="ds-panel-title">{p.title}</h2>
       </div>
       <div className="ds-panel-body">
         <div className="ds-binds">
@@ -617,8 +632,15 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
             );
           })}
         </div>
+        {/* THE ONE LIVE LINE: it prompts while a slot is armed ("Press a key for Forward…") and
+            confirms after ("Forward: W"), so capture is not announced by a keycap's text alone */}
         <p className="ds-hint" role="status">
-          {notice ?? REMOVE_HINT}
+          {notice ??
+            (capture
+              ? `Press ${capture.kind === 'key' ? 'a key' : 'a button or combo'} for ${ACTION_LABELS[capture.action]}. Esc cancels, Backspace removes.`
+              : menuCapture
+                ? 'Press a gamepad button for Menu. Esc cancels.'
+                : REMOVE_HINT)}
         </p>
       </div>
 
@@ -630,7 +652,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
               editor open, so there is nothing else to put in it. */}
           <section className="ds-panel">
             <div className="ds-panel-h">
-              <span className="ds-panel-title">Touch controls</span>
+              <h2 className="ds-panel-title">Touch controls</h2>
               <button className="ds-btn small" onClick={onEditTouchControls}>
                 Customize
               </button>
@@ -642,7 +664,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
           {onTutorial && (
             <section className="ds-panel">
               <div className="ds-panel-h">
-                <span className="ds-panel-title">Tutorial</span>
+                <h2 className="ds-panel-title">Tutorial</h2>
                 <button className="ds-btn small" onClick={onTutorial}>
                   Start
                 </button>
@@ -658,7 +680,7 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
               these were the only sliders in Configure drawn a different way. */}
           <section className="ds-panel">
             <div className="ds-panel-h">
-              <span className="ds-panel-title">Gamepad</span>
+              <h2 className="ds-panel-title">Gamepad</h2>
             </div>
             <div className="ds-panel-body stack">
               <PadSlider
@@ -706,6 +728,12 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
           <button
             className="ds-btn"
             onClick={() => {
+              if (
+                !window.confirm(
+                  'Reset all controls? Every keyboard and gamepad bind, in every game, goes back to its default.',
+                )
+              )
+                return;
               setNotice(null);
               onChange(cloneBindings(DEFAULT_BINDINGS));
             }}
@@ -717,6 +745,9 @@ export function ControlsSection({ bindings, onChange, onEditTouchControls, onTut
             className="ds-btn"
             title={`${seasonFor(game).name}’s own binds back to their defaults, and Intake and Shoot back on All games`}
             onClick={() => {
+              const name = seasonFor(game).name;
+              if (!window.confirm(`Reset ${name} controls? Its own binds go back to their defaults, and Intake and Shoot back to All games.`))
+                return;
               setNotice(null);
               onChange(resetGame(bindings, game));
             }}

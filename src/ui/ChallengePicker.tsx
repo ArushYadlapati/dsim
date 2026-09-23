@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { serverCaps } from '../net/api';
 import type { ChallengeFormat } from '../net/protocol';
+import { useDialog } from './useDialog';
 
 export type { ChallengeFormat };
 
@@ -66,6 +67,9 @@ export function ChallengePicker({
   // meanwhile rather than hidden — appearing a beat late is fine, appearing out
   // of nowhere under a cursor that's already moving is not.
   const [caps, setCaps] = useState<string[] | null>(null);
+  // Escape is the ✕, and like the ✕ it does nothing while a challenge is being sent
+  const ref = useDialog(busy ? undefined : onClose);
+  const titleId = useId();
 
   useEffect(() => {
     let alive = true;
@@ -87,16 +91,21 @@ export function ChallengePicker({
   };
 
   return (
-    <div
-      className="ds-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Play a friend - @${username}`}
-      onClick={busy ? undefined : onClose}
-    >
-      <div className="ds-modal ds-chal" onClick={(e) => e.stopPropagation()}>
+    <div className="ds-modal-backdrop" role="presentation" onClick={busy ? undefined : onClose}>
+      {/* the dialog is the CARD, not the scrim, labelled by its visible title */}
+      <div
+        ref={ref}
+        className="ds-modal ds-chal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="ds-modal-h">
-          <span className="ds-panel-title">Play @{username}</span>
+          <h2 className="ds-dialog-title" id={titleId}>
+            Play @{username}
+          </h2>
           <button className="ds-btn ghost" onClick={onClose} aria-label="Close" disabled={!!busy}>
             ✕
           </button>

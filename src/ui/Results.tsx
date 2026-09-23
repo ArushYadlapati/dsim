@@ -14,6 +14,7 @@ import { recordBanner } from './recordBanner';
 import type { ResultBanner } from './recordBanner';
 import { seasonFor } from '../seasons';
 import { SupporterBadge } from './SupporterBadge';
+import { useDialog } from './useDialog';
 import type { Alliance, ScoreBreakdown } from '../types';
 
 /**
@@ -563,11 +564,9 @@ function AllianceHalf({
     </h3>
   );
   const num = (
-    <strong
-      className={`resx-total-num ${totalsActive ? 'landed' : ''}`}
-      aria-label={`${label}: ${total}`}
-      key="num"
-    >
+    // no aria-label: a `strong` has no role to carry one (06-19). The h3 beside it plus the
+    // number already read "Red, 123"; the outcome is announced once by the stage's live line.
+    <strong className={`resx-total-num ${totalsActive ? 'landed' : ''}`} key="num">
       {totalsActive ? total : '–'}
     </strong>
   );
@@ -720,7 +719,18 @@ export function Results({
   const [reporting, setReporting] = useState(false);
   const [scoreReporting, setScoreReporting] = useState(false);
   const [scoreReported, setScoreReported] = useState(false);
-  const red = hud.alliance === 'red' ? hud.score : hud.oppScore;
+  // THE REPORT LINKS STAY MOUNTED while their form is open (06-03): unmounting the element
+  // that had focus dropped a keyboard user on <body>. Closing a form hands focus back here.
+  const reportBtn = useRef<HTMLButtonElement>(null);
+  const scoreBtn = useRef<HTMLButtonElement>(null);
+  const scoreDone = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (scoreReported) scoreDone.current?.focus();
+  }, [scoreReported]);
+  // the stage is modal (17-08). No onClose: the results are answered by a button, and
+  // Escape stays free for the report forms nested inside.
+  const stageRef = useDialog();
+  const red =hud.alliance === 'red' ? hud.score : hud.oppScore;
   const blue = hud.alliance === 'blue' ? hud.score : hud.oppScore;
   /**
    * THE TOTALS SHOWN ARE THE SAVED ONES. Online, the server's finalized result is the score of
@@ -899,7 +909,10 @@ export function Results({
     <div
       className="resx-stage"
       onClick={skip}
+      ref={stageRef}
+      tabIndex={-1}
       role="dialog"
+      aria-modal="true"
       aria-label="Match results"
     >
       {phase !== 'wait' && (
@@ -907,6 +920,17 @@ export function Results({
           MATCH RESULTS
         </div>
       )}
+      {/* THE OUTCOME, said once (06-19). Mounted empty from the start: a live region has to
+          exist before the text lands in it, or the text is not announced. */}
+      <p className="ds-sr" aria-live="polite">
+        {doneVisible
+          ? solo
+            ? `Final score ${hud.alliance === 'red' ? redFinal : blueFinal}`
+            : winner === 'tie'
+              ? `Tie, ${redFinal} to ${blueFinal}`
+              : `${ALLIANCE_NAME[winner]} wins ${Math.max(redFinal, blueFinal)} to ${Math.min(redFinal, blueFinal)}`
+          : ''}
+      </p>
       {/* ⚠️ THE HEADER AND THE ACTIONS ROW LIVE INSIDE THE BODY GRID, in its centre column,
           because the two alliance halves run the FULL HEIGHT of the stage. A header band
           above them would push both panels down off the top edge, and the mockup this screen
@@ -1032,15 +1056,17 @@ export function Results({
                 the row is where REMATCH and MENU live — the two things every player reaches for
                 every match. A quiet link below keeps it available without putting it under a
                 thumb aiming for the exit. */}
-            {onReport && reportable && reportable.length > 0 && !reporting && (
+            {onReport && reportable && reportable.length > 0 && (
               <button
+                ref={reportBtn}
                 className="ds-linkbtn results-report resx-linkbtn"
+                aria-expanded={reporting}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setReporting(true);
+                  setReporting((v) => !v);
                 }}
               >
-                ⚑ Report a player
+                <span aria-hidden="true">⚑</span> Report a player
               </button>
             )}
             {/* ...and the SCORE itself. A separate action from reporting a player because it is a
@@ -1048,18 +1074,26 @@ export function Results({
                 misconduct and asking the reporter to name a culprit would be asking them to
                 invent one. Only offered on a match that actually SCORED (a record run has its own
                 number and no opponent to dispute it with). */}
-            {onReportScore && matchResult && !scoreReporting && !scoreReported && (
+            {onReportScore && matchResult && !scoreReported && (
               <button
+                ref={scoreBtn}
                 className="ds-linkbtn results-report resx-linkbtn"
+                aria-expanded={scoreReporting}
                 onClick={(e) => {
                   e.stopPropagation();
-                  setScoreReporting(true);
+                  setScoreReporting((v) => !v);
                 }}
               >
-                ⚖ Report a misscore
+                <span aria-hidden="true">⚖</span> Report a misscore
               </button>
             )}
-            {scoreReported && <p className="results-report-done resx-linkbtn">Misscore reported. A moderator will check the replay.</p>}
+            {/* the link is gone once the claim is filed (one per match), so the confirmation
+                takes the focus it would otherwise drop */}
+            {scoreReported && (
+              <p className="results-report-done resx-linkbtn" ref={scoreDone} tabIndex={-1} role="status">
+                Misscore reported. A moderator will check the replay.
+              </p>
+            )}
             {scoreReporting && onReportScore && (
               <ScoreReportDialog
                 onSubmit={(detail) => {
@@ -1067,14 +1101,20 @@ export function Results({
                   setScoreReported(true);
                   setScoreReporting(false);
                 }}
-                onClose={() => setScoreReporting(false)}
+                onClose={() => {
+                  setScoreReporting(false);
+                  scoreBtn.current?.focus();
+                }}
               />
             )}
             {reporting && onReport && reportable && (
               <ReportDialog
                 drivers={reportable}
                 onSubmit={(rid, reason, detail) => onReport(rid, reason, detail)}
-                onClose={() => setReporting(false)}
+                onClose={() => {
+                  setReporting(false);
+                  reportBtn.current?.focus();
+                }}
               />
             )}
             {/* AFTER the buttons, deliberately. The results screen is a good place for an ad —
@@ -1245,12 +1285,16 @@ function RecordResults({
   const duo = roster.length > 1;
   const modeLabel = `${duo ? 'DUO' : 'SOLO'} RECORD RUN`;
   const actionsRef = useFocusPrimaryAction(doneVisible);
+  const stageRef = useDialog();
 
   return (
     <div
       className="resx-stage"
       onClick={skip}
+      ref={stageRef}
+      tabIndex={-1}
       role="dialog"
+      aria-modal="true"
       aria-label="Run results"
     >
       {phase !== 'wait' && (
@@ -1258,6 +1302,9 @@ function RecordResults({
           RUN COMPLETE
         </div>
       )}
+      <p className="ds-sr" aria-live="polite">
+        {doneVisible ? `${cr ? 'Total' : 'Net score'} ${netScore}` : ''}
+      </p>
       {/* the header and the actions sit INSIDE the body grid here too — see the note at the
           other screen. One column, so they simply stack above and below the half. */}
       <div className="resx-body resx-body-solo">

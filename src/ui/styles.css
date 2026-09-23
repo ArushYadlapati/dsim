@@ -540,8 +540,12 @@ button {
   background: var(--purple);
 }
 
+/* GREEN IS SQUARE (design review 17-06): purple-vs-green at 10px is the whole motif, and a
+   colour-blind driver has only their luminance to go on. A shape difference carries it
+   without widening the timer panel; `MotifDots` in GameView gives the reader the words. */
 .motif-dot.green {
   background: var(--green);
+  border-radius: 0;
 }
 
 .status-wrap {
@@ -838,19 +842,25 @@ button {
 /* CARD — a small filled rectangle reading like a real referee's card, reusing the two
    fills `.chip.prompt`/`.chip.bad` already carry for these colours. */
 .card-icon {
-  display: inline-block;
+  display: inline-grid;
+  place-items: center;
   width: 12px;
   height: 16px;
   border-radius: var(--ds-round-sm);
   flex: none;
+  /* the Y / R letter inside (design review 17-06): yellow and red are not told apart by
+     hue alone. The inks are the two fills' own fixed inks, from `.chip.prompt`/`.chip.bad`. */
+  font: 700 var(--ds-t-xs) / 1 var(--ds-font-mono);
 }
 
 .card-icon.yellow {
   background: var(--ds-gold);
+  color: #1a1206;
 }
 
 .card-icon.red {
   background: var(--ds-red);
+  color: #2b0b0b;
 }
 
 .hopper {
@@ -1546,7 +1556,11 @@ button {
    the one heading in the app that looks like it belongs to no design system: every other
    one is `.ds-h1`/`.ds-h2` at -0.02em. The same rule covers `.net-overlay-card`'s
    "Connection lost" / "Reconnecting…", which were bare `h3`s for the same reason.
-   Compound with the container because a plain class loses to `.overlay-panel h2`. */
+   Compound with the container because a plain class loses to `.overlay-panel h2`.
+   AND BARE as well (design review 06-05): the class is the title contract for EVERY shell
+   dialog, `.ds-modal` included, and with only the compound form it matched nothing in the
+   claim dialog, whose `.rw-h` quietly restated the spec with its own line-height. */
+.ds-dialog-title,
 .overlay-panel h2.ds-dialog-title,
 .net-overlay-card h3.ds-dialog-title {
   font-size: var(--ds-t-xl);
@@ -3936,7 +3950,7 @@ input.admin-months {
   max-width: 68ch;
 }
 .legal-md .md-p { margin: 10px 0; }
-/* `##` renders as .md-h2 (the renderer downshifts a level so these sit under the
+/* `##` renders as .md-h2 (Legal passes baseLevel={1}, so `##` is a real h2 under the
    page's own .ds-h1) — give it real section weight and space above. */
 .legal-md .md-h2 {
   font-size: 16px;

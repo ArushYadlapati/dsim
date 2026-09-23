@@ -481,12 +481,14 @@ export function LanPanel({
             <div className="ds-opts two">
               <button
                 className={`ds-opt ${entryMode === 'host' ? 'on' : ''}`}
+                aria-pressed={entryMode === 'host'}
                 onClick={() => setEntryMode('host')}
               >
                 <span className="ot">Host room</span>
               </button>
               <button
                 className={`ds-opt ${entryMode === 'join' ? 'on' : ''}`}
+                aria-pressed={entryMode === 'join'}
                 onClick={() => setEntryMode('join')}
               >
                 <span className="ot">Join room</span>

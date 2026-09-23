@@ -296,7 +296,7 @@ export function AdminAnalytics() {
               onClick={() => setFilters((xs) => xs.filter((x) => x.dim !== f.dim))}
             >
               {DIM_LABELS[f.dim] ?? f.dim}: <b>{labelFor(f.dim, f.val)}</b> <span aria-hidden="true">✕</span>
-              <span className="an-sr">Remove this filter</span>
+              <span className="ds-sr">Remove this filter</span>
             </button>
           ))}
           <button type="button" className="ds-btn ghost small" onClick={() => setFilters([])}>
@@ -349,7 +349,7 @@ export function AdminAnalytics() {
 
           <section className="ds-panel">
             <div className="ds-panel-h">
-              <span className="ds-panel-title">Traffic</span>
+              <h2 className="ds-panel-title">Traffic</h2>
               <button
                 type="button"
                 className="ds-btn ghost small"
@@ -369,7 +369,7 @@ export function AdminAnalytics() {
             {Object.keys(DIM_LABELS).map((dim) => (
               <section key={dim} className="ds-panel an-panel">
                 <div className="ds-panel-h">
-                  <span className="ds-panel-title">{DIM_LABELS[dim]}</span>
+                  <h2 className="ds-panel-title">{DIM_LABELS[dim]}</h2>
                   <button
                     type="button"
                     className="ds-btn ghost small"
@@ -445,19 +445,19 @@ function Toolbar(props: {
       {props.rangeId === 'custom' && (
         <div className="an-dates">
           <label className="an-date">
-            <span className="an-sr">From</span>
+            <span className="ds-sr">From</span>
             <input type="date" className="ds-input" value={props.fromDay} max={props.toDay} onChange={(e) => props.setFromDay(e.target.value)} />
           </label>
           <span className="an-dash" aria-hidden="true">→</span>
           <label className="an-date">
-            <span className="an-sr">To</span>
+            <span className="ds-sr">To</span>
             <input type="date" className="ds-input" value={props.toDay} min={props.fromDay} onChange={(e) => props.setToDay(e.target.value)} />
           </label>
         </div>
       )}
 
       <label className="an-date">
-        <span className="an-sr">Game</span>
+        <span className="ds-sr">Game</span>
         <select className="ds-select" value={props.game} onChange={(e) => props.setGame(e.target.value)}>
           <option value="*">All games</option>
           {GAME_IDS.map((g) => (
@@ -503,7 +503,7 @@ function EventsPanel({
   return (
     <section className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Events</span>
+        <h2 className="ds-panel-title">Events</h2>
         <button
           type="button"
           className="ds-btn ghost small"
@@ -618,7 +618,7 @@ function ProductSection({ data }: { data: ProductReport }) {
       <div className="an-grid two">
         <section className="ds-panel an-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Matches played</span>
+            <h3 className="ds-panel-title">Matches played</h3>
             <span className="ds-count">{fmtExact(totalMatches)}</span>
           </div>
           <div className="ds-panel-body">
@@ -629,7 +629,7 @@ function ProductSection({ data }: { data: ProductReport }) {
 
         <section className="ds-panel an-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Matches by game</span>
+            <h3 className="ds-panel-title">Matches by game</h3>
           </div>
           <div className="ds-panel-body">
             <BarList rows={perGame} total={totalMatches} empty="No matches in this range." />
@@ -638,7 +638,7 @@ function ProductSection({ data }: { data: ProductReport }) {
 
         <section className="ds-panel an-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Physics</span>
+            <h3 className="ds-panel-title">Physics</h3>
           </div>
           <div className="ds-panel-body">
             <BarList rows={physics} total={totalMatches} empty="No matches in this range." />
@@ -647,7 +647,7 @@ function ProductSection({ data }: { data: ProductReport }) {
 
         <section className="ds-panel an-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Practice view</span>
+            <h3 className="ds-panel-title">Practice view</h3>
           </div>
           <div className="ds-panel-body">
             <BarList
@@ -660,7 +660,7 @@ function ProductSection({ data }: { data: ProductReport }) {
 
         <section className="ds-panel an-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Signups</span>
+            <h3 className="ds-panel-title">Signups</h3>
             <span className="ds-count">{fmtExact(totalSignups)}</span>
           </div>
           <div className="ds-panel-body">
@@ -670,7 +670,7 @@ function ProductSection({ data }: { data: ProductReport }) {
 
         <section className="ds-panel an-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Accounts that played</span>
+            <h3 className="ds-panel-title">Accounts that played</h3>
           </div>
           <div className="ds-panel-body">
             <Legend keys={['returning', 'new']} />
@@ -689,7 +689,7 @@ function ProductSection({ data }: { data: ProductReport }) {
 
         <section className="ds-panel an-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Ranked distribution</span>
+            <h3 className="ds-panel-title">Ranked distribution</h3>
           </div>
           <div className="ds-panel-body">
             <Columns
@@ -702,7 +702,7 @@ function ProductSection({ data }: { data: ProductReport }) {
 
         <section className="ds-panel an-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Replays stored</span>
+            <h3 className="ds-panel-title">Replays stored</h3>
             <span className="ds-count">{fmtBytes(data.replayBytes)}</span>
           </div>
           <div className="ds-panel-body">
@@ -712,7 +712,7 @@ function ProductSection({ data }: { data: ProductReport }) {
 
         <section className="ds-panel an-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Reports</span>
+            <h3 className="ds-panel-title">Reports</h3>
           </div>
           <div className="ds-panel-body">
             <Legend keys={['actioned', 'open']} />
@@ -731,7 +731,7 @@ function ProductSection({ data }: { data: ProductReport }) {
 
         <section className="ds-panel an-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Supporters</span>
+            <h3 className="ds-panel-title">Supporters</h3>
           </div>
           <div className="ds-panel-body">
             <Legend keys={['claimed', 'comped']} />
@@ -751,7 +751,7 @@ function ProductSection({ data }: { data: ProductReport }) {
 
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Concurrency</span>
+          <h3 className="ds-panel-title">Concurrency</h3>
           <button
             type="button"
             className="ds-btn ghost small"
@@ -787,7 +787,7 @@ function ProductSection({ data }: { data: ProductReport }) {
 
       <section className="ds-panel">
         <div className="ds-panel-h">
-          <span className="ds-panel-title">Retention</span>
+          <h3 className="ds-panel-title">Retention</h3>
           <button
             type="button"
             className="ds-btn ghost small"

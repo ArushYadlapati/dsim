@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { REPORT_DETAIL_MAX } from '../report';
 
 /**
@@ -29,10 +29,23 @@ export function ScoreReportDialog({
 }) {
   const [detail, setDetail] = useState('');
   const ready = detail.trim().length >= 12;
+  const id = useId();
 
   return (
-    <div className="ds-report">
-      <h3 className="ds-report-h">Report a misscore</h3>
+    // inline, like ReportDialog: focus goes into it on open (the textarea's autoFocus), Escape
+    // closes it, and the results screen hands focus back to the link that opened it (06-03)
+    <div
+      className="ds-report"
+      role="group"
+      aria-labelledby={`${id}-h`}
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape') return;
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }}
+    >
+      <h3 className="ds-report-h" id={`${id}-h`}>Report a misscore</h3>
       <p className="ds-hint" style={{ margin: 0 }}>
         Only for a score that changed the outcome. A moderator checks it against the replay.
       </p>
@@ -43,6 +56,7 @@ export function ScoreReportDialog({
         </span>
         <textarea
           className="ds-input"
+          autoFocus
           rows={3}
           maxLength={REPORT_DETAIL_MAX}
           value={detail}

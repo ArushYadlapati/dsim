@@ -1224,10 +1224,12 @@ export function seasonUnbound(b: ControlBindings, game: GameId): KeyAction[] {
 export function keyLabel(k: string): string {
   const special: Record<string, string> = {
     ' ': 'SPACE',
-    arrowleft: '◄',
-    arrowright: '►',
-    arrowup: '▲',
-    arrowdown: '▼',
+    // ←→↑↓, not ◄►▲▼: the geometric triangles render at about half the cap height in the mono
+    // face, visibly smaller than the letter caps beside them (design review 04-11)
+    arrowleft: '←',
+    arrowright: '→',
+    arrowup: '↑',
+    arrowdown: '↓',
     shift: 'SHIFT',
     control: 'CTRL',
     alt: 'ALT',
@@ -1236,6 +1238,20 @@ export function keyLabel(k: string): string {
     backspace: 'BKSP',
   };
   return special[k] ?? k.toUpperCase();
+}
+
+/** the SPOKEN name of a bound key — a keycap's accessible name. An arrow glyph is announced by
+ *  its Unicode name ("leftwards arrow") and BKSP as letters, so those few are spelled out. */
+export function keyName(k: string): string {
+  const spoken: Record<string, string> = {
+    arrowleft: 'Left arrow',
+    arrowright: 'Right arrow',
+    arrowup: 'Up arrow',
+    arrowdown: 'Down arrow',
+    backspace: 'Backspace',
+    control: 'Control',
+  };
+  return spoken[k] ?? keyLabel(k);
 }
 
 const PAD_BUTTON_LABELS = [

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { authClient } from '../lib/authClient';
 import { multiServer } from '../net/env';
 import { AuthPanel } from './AuthPanel';
@@ -21,6 +21,11 @@ function initialsOf(name: string): string {
  *
  * `handle` is the app's own mutable display name (see the old AccountButton doc)
  * — it must win over `user.name`, which never updates after sign-up.
+ *
+ * A DISCLOSURE, not an ARIA menu: the popover holds a listbox, a note and plain
+ * buttons, which `role="menu"` cannot contain (it owes `menuitem`s and arrow keys).
+ * The trigger carries `aria-expanded`/`aria-controls`; opening moves focus to the
+ * first control, Escape closes and hands focus back to the trigger.
  */
 export function ProfileMenu({
   handle,
@@ -42,6 +47,9 @@ export function ProfileMenu({
   const [open, setOpen] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const popId = useId();
 
   useEffect(() => {
     if (!open) return;
@@ -49,8 +57,11 @@ export function ProfileMenu({
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
     };
     const onEsc = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      btnRef.current?.focus();
     };
+    popRef.current?.querySelector<HTMLElement>('button, [href], [tabindex]:not([tabindex="-1"])')?.focus();
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onEsc);
     return () => {
@@ -70,16 +81,18 @@ export function ProfileMenu({
   return (
     <div className="ds-profile-root" ref={rootRef}>
       <button
+        ref={btnRef}
         className="ds-avatar-btn"
         onClick={() => setOpen((o) => !o)}
-        aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls={open ? popId : undefined}
+        aria-label={user ? `Account: ${label ?? '…'}` : 'Sign in'}
         title={user ? label ?? 'Account' : 'Sign in'}
       >
         <span className="ds-avatar">{initials ?? '?'}</span>
       </button>
       {open && (
-        <div className="ds-profile-pop" role="menu">
+        <div className="ds-profile-pop" id={popId} ref={popRef}>
           {user ? (
             <button
               className="ds-profile-id"

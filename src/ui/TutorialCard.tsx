@@ -50,14 +50,18 @@ export function TutorialCard({
   return (
     <div className="ds-tut" data-hud-band>
       <div className="ds-tut-body">
-        {/* the STEP COUNTER is its own line and it is `role="status"`, not the title: it is the
-            one part of this card that changes, and it changes about six times in a tutorial —
-            which is exactly the cadence a live region is for. Announcing the whole card on every
-            10 Hz poll would flood a screen reader. */}
-        <p className="ds-tut-step" role="status">
-          Step {view.index + 1} of {view.count}
-        </p>
-        <p className="ds-tut-title">{view.title}</p>
+        {/* ONE ATOMIC LIVE REGION: the counter AND the title, which change together once per
+            step — about six times a tutorial, the cadence a live region is for — so a screen
+            reader hears what to do next, not just that a step changed. The
+            hint and nudge stay OUT: the hint is rebuilt when a pad connects, and the whole card
+            on every 10 Hz poll would flood. Wears `ds-tut-body` itself so the column's gap
+            between its lines is unchanged. */}
+        <div className="ds-tut-body" role="status" aria-atomic="true">
+          <p className="ds-tut-step">
+            Step {view.index + 1} of {view.count}
+          </p>
+          <p className="ds-tut-title">{view.title}</p>
+        </div>
         <p className="ds-tut-hint">{view.hint}</p>
         {/* THE NUDGE, after the step's own `nudgeS`. It appears rather than replacing anything,
             and it never skips on its own — a tutorial that moved on while somebody was still

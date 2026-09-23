@@ -717,7 +717,7 @@ export function Menu({ settings, onChange }: Props) {
             panel's header action. */}
         <section className="ds-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Start from</span>
+            <h2 className="ds-panel-title">Start from</h2>
           </div>
           <div className="ds-panel-body stack">
             {savedRobots.length > 0 && (
@@ -730,26 +730,14 @@ export function Menu({ settings, onChange }: Props) {
                 </span>
                 <div className="ds-opts">
             {savedRobots.map((r, i) => (
-              <div
-                key={i}
+              // the card and its ✕ are SIBLINGS in a slot — a button nested inside a
+              // button-role card had no clean name and leaked its keypresses to the card
+              <div key={i} className="ds-opt-slot">
+              <button
                 className={`ds-opt ${sameRobot(spec, r) ? 'on' : ''}`}
-                role="button"
-                tabIndex={0}
+                aria-pressed={sameRobot(spec, r)}
                 onClick={() => applySpec({ ...r })}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') applySpec({ ...r });
-                }}
               >
-                <button
-                  className="ds-opt-del"
-                  title="Delete this robot"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    deleteSavedRobot(i);
-                  }}
-                >
-                  ✕
-                </button>
                 <span className="ot">{r.name || 'Unnamed'}</span>
                 <span className="od">
                   {r.teamNumber ? `${r.teamNumber} · ` : ''}
@@ -784,6 +772,15 @@ export function Menu({ settings, onChange }: Props) {
                     {CHAIN_MODE_LABELS[r.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE]}
                   </span>
                 )}
+              </button>
+              <button
+                className="ds-opt-del"
+                title="Delete this robot"
+                aria-label={`Delete ${r.name || 'Unnamed'}`}
+                onClick={() => deleteSavedRobot(i)}
+              >
+                ✕
+              </button>
               </div>
             ))}
                 </div>
@@ -800,6 +797,7 @@ export function Menu({ settings, onChange }: Props) {
                 // ruling a line between the two groups is what survives `.ds-opts` being an
                 // auto-fit grid: a divider "after the fourth card" lands mid-row the moment
                 // the grid reflows to three or five columns, but a per-card mark never lies.
+                aria-pressed={presetMatches(spec, p)}
                 className={`ds-opt ${presetMatches(spec, p) ? 'on' : ''} ${
                   i < realPresets ? 'real' : ''
                 }`}
@@ -869,7 +867,7 @@ export function Menu({ settings, onChange }: Props) {
             something rather than changing something. */}
         <section className="ds-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Build</span>
+            <h2 className="ds-panel-title">Build</h2>
             <button
               className="ds-btn small"
               disabled={alreadySaved || savedRobots.length >= MAX_SAVED_ROBOTS}
@@ -938,6 +936,7 @@ export function Menu({ settings, onChange }: Props) {
               {(Object.keys(DRIVETRAIN_LABELS) as DrivetrainType[]).map((d) => (
                 <button
                   key={d}
+                  aria-pressed={spec.drivetrain === d}
                   className={`ds-opt mini ${spec.drivetrain === d ? 'on' : ''}`}
                   onClick={() => setSpec({ drivetrain: d })}
                 >
@@ -957,6 +956,7 @@ export function Menu({ settings, onChange }: Props) {
                   max={maxRpm}
                   step={5}
                   value={spec.driveRpm}
+                  aria-valuetext={`${spec.driveRpm} rpm`}
                   style={rangeFill(spec.driveRpm, minRpm, maxRpm)}
                   onChange={(e) => setSpec({ driveRpm: Number(e.target.value) })}
                 />
@@ -973,6 +973,7 @@ export function Menu({ settings, onChange }: Props) {
                     max={maxTankRpm}
                     step={5}
                     value={tankRpmValue}
+                    aria-valuetext={`${tankRpmValue} rpm`}
                     style={rangeFill(tankRpmValue, minTankRpm, maxTankRpm)}
                     onChange={(e) => setSpec({ tankRpm: Number(e.target.value) })}
                   />
@@ -1033,6 +1034,7 @@ export function Menu({ settings, onChange }: Props) {
                       {CHAIN_SCORE_MODES.map((m) => (
                         <button
                           key={m}
+                          aria-pressed={(spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE) === m}
                           className={`ds-opt ${(spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE) === m ? 'on' : ''}`}
                           onClick={() => setSpec({ scoreMode: m })}
                         >
@@ -1053,6 +1055,7 @@ export function Menu({ settings, onChange }: Props) {
                         {CHAIN_TURRET_POSITIONS.map((m) => (
                           <button
                             key={m}
+                            aria-pressed={shooterMountOf(spec) === m}
                             className={`ds-opt mini ${shooterMountOf(spec) === m ? 'on' : ''}`}
                             onClick={() => setSpec({ shooterMount: m })}
                           >
@@ -1065,6 +1068,7 @@ export function Menu({ settings, onChange }: Props) {
                         {CHAIN_SHOOTER_MOUNTS.map((m) => (
                           <button
                             key={m}
+                            aria-pressed={shooterMountOf(spec) === m}
                             className={`ds-opt mini ${shooterMountOf(spec) === m ? 'on' : ''}`}
                             onClick={() => setSpec({ shooterMount: m })}
                           >
@@ -1083,6 +1087,7 @@ export function Menu({ settings, onChange }: Props) {
                     {(Object.keys(INTAKE_LABELS) as IntakeStyle[]).map((i) => (
                       <button
                         key={i}
+                        aria-pressed={spec.intake === i}
                         className={`ds-opt ${spec.intake === i ? 'on' : ''}`}
                         onClick={() => selectIntake(i)}
                       >
@@ -1105,6 +1110,7 @@ export function Menu({ settings, onChange }: Props) {
                       {CHAIN_INTAKE_MOUNTS.map((m) => (
                         <button
                           key={m}
+                          aria-pressed={intakeMountOf(spec) === m}
                           className={`ds-opt mini ${intakeMountOf(spec) === m ? 'on' : ''}`}
                           onClick={() => setSpec({ intakeMount: m })}
                         >
@@ -1126,6 +1132,7 @@ export function Menu({ settings, onChange }: Props) {
                       {CHAIN_CATALYST_TYPES.map((t) => (
                         <button
                           key={t}
+                          aria-pressed={(spec.catalystType ?? CHAIN_DEFAULT_CATALYST) === t}
                           className={`ds-opt ${(spec.catalystType ?? CHAIN_DEFAULT_CATALYST) === t ? 'on' : ''}`}
                           onClick={() => setSpec({ catalystType: t })}
                         >
@@ -1150,6 +1157,7 @@ export function Menu({ settings, onChange }: Props) {
                         {([null, 'fb', 'lr'] as const).map((axis) => (
                           <button
                             key={axis ?? 'fixed'}
+                            aria-pressed={catalystSwingOf(spec) === axis}
                             className={`ds-opt mini ${catalystSwingOf(spec) === axis ? 'on' : ''}`}
                             onClick={() => {
                               // moving to a pivot from a mount it cannot use takes the nearest one
@@ -1176,52 +1184,70 @@ export function Menu({ settings, onChange }: Props) {
                       </div>
                     )}
                     {/* Same 3x3 chassis map as the turret picker: where the mechanism is BOLTED. */}
-                    <div className="ds-opts three">
-                      {CHAIN_CATALYST_MOUNTS.map((m) => {
-                        // A cell is unavailable for three physical reasons, and the picker says
-                        // WHICH — coerceSpec would quietly relocate the mount otherwise, and a
-                        // button that moves your choice somewhere else without explaining is
-                        // worse than one that refuses.
-                        const railed = (spec.catalystType ?? CHAIN_DEFAULT_CATALYST) === 'rail';
-                        const swung = catalystSwingOf(spec);
-                        const noTrack = railed && !isEdgePos(m);
+                    {(() => {
+                      // A cell is unavailable for three physical reasons, and the picker says
+                      // WHICH — coerceSpec would quietly relocate the mount otherwise, and a
+                      // button that moves your choice somewhere else without explaining is
+                      // worse than one that refuses.
+                      const railed = (spec.catalystType ?? CHAIN_DEFAULT_CATALYST) === 'rail';
+                      const swung = catalystSwingOf(spec);
+                      const blockOf = (m: (typeof CHAIN_CATALYST_MOUNTS)[number]): string | undefined => {
+                        if (railed && !isEdgePos(m))
+                          return 'A rail needs a whole chassis side to run along. Corners and the centre have no span for a track';
+                        if (
+                          mountsClash(
+                            { pos: m, spansEdge: railed, swing: swung },
+                            { pos: shooterMountOf(spec), spansEdge: !isTurreted(spec.scoreMode) },
+                          )
+                        )
+                          return 'The shooter is mounted here';
                         // a pivot needs BOTH of its working ends reachable, which depends on the
                         // axis: a fore-aft arm wants a front and a back, a lateral one wants two
                         // flanks. And with no pivot at all, the middle reaches nothing.
-                        const noPivot = !!swung && !isSwingMount(m, swung);
-                        const noReach = !swung && m === 'center';
-                        const taken = mountsClash(
-                          { pos: m, spansEdge: railed, swing: swung },
-                          { pos: shooterMountOf(spec), spansEdge: !isTurreted(spec.scoreMode) },
-                        );
-                        const off = noTrack || taken || noPivot || noReach;
-                        return (
-                          <button
-                            key={m}
-                            className={`ds-opt mini ${catalystMountOf(spec) === m ? 'on' : ''}${off ? ' off' : ''}`}
-                            disabled={off}
-                            onClick={() => setSpec({ catalystMount: m })}
-                            title={
-                              noTrack
-                                ? 'A rail needs a whole chassis side to run along. Corners and the centre have no span for a track'
-                                : taken
-                                  ? 'The shooter is mounted here'
-                                  : noPivot
-                                    ? swung === 'lr'
-                                      ? 'A left-right swing pivots between the flanks. Bolt it to the centre line or an end'
-                                      : 'A front-back swing pivots between the ends. Bolt it to the centre line or a flank'
-                                    : noReach
-                                      ? 'Nothing reaches from the middle of a chassis. Turn on the swing arm to work from here'
-                                      : // an ENABLED cell gets none: its label already names
-                                        // the mount, and the swing picker above names the swing
-                                        undefined
-                            }
-                          >
-                            <span className="ot">{CHAIN_CATALYST_MOUNT_LABELS[m]}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
+                        if (swung && !isSwingMount(m, swung))
+                          return swung === 'lr'
+                            ? 'A left-right swing pivots between the flanks. Bolt it to the centre line or an end'
+                            : 'A front-back swing pivots between the ends. Bolt it to the centre line or a flank';
+                        if (!swung && m === 'center')
+                          return 'Nothing reaches from the middle of a chassis. Turn on the swing arm to work from here';
+                        // an ENABLED cell gets none: its label already names the mount, and the
+                        // swing picker above names the swing
+                        return undefined;
+                      };
+                      // THE REASONS ALSO PRINT UNDER THE MAP: a disabled cell's `title` never
+                      // reaches a keyboard (it cannot take focus) or a phone (no hover).
+                      const refused = new Map<string, string[]>();
+                      for (const m of CHAIN_CATALYST_MOUNTS) {
+                        const why = blockOf(m);
+                        if (why) refused.set(why, [...(refused.get(why) ?? []), CHAIN_CATALYST_MOUNT_LABELS[m]]);
+                      }
+                      return (
+                        <>
+                          <div className="ds-opts three">
+                            {CHAIN_CATALYST_MOUNTS.map((m) => {
+                              const why = blockOf(m);
+                              return (
+                                <button
+                                  key={m}
+                                  aria-pressed={catalystMountOf(spec) === m}
+                                  className={`ds-opt mini ${catalystMountOf(spec) === m ? 'on' : ''}${why ? ' off' : ''}`}
+                                  disabled={why !== undefined}
+                                  onClick={() => setSpec({ catalystMount: m })}
+                                  title={why}
+                                >
+                                  <span className="ot">{CHAIN_CATALYST_MOUNT_LABELS[m]}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {[...refused].map(([why, where]) => (
+                            <p className="ds-hint" key={why}>
+                              {where.join(', ')}: {why}
+                            </p>
+                          ))}
+                        </>
+                      );
+                    })()}
                     {(spec.catalystType ?? CHAIN_DEFAULT_CATALYST) === 'launcher' && (
                       <div className="ds-fields">
                         <label className="ds-field">
@@ -1235,6 +1261,7 @@ export function Menu({ settings, onChange }: Props) {
                             max={CHAIN_CATAPULT_RANGE_MAX}
                             step={5}
                             value={chainCatapultRange(spec)}
+                            aria-valuetext={`${chainCatapultRange(spec)} inches`}
                             style={rangeFill(chainCatapultRange(spec), CHAIN_CATAPULT_RANGE_MIN, CHAIN_CATAPULT_RANGE_MAX)}
                             onChange={(e) => setSpec({ catapultRange: Number(e.target.value) })}
                           />
@@ -1249,6 +1276,7 @@ export function Menu({ settings, onChange }: Props) {
                           {CATAPULT_DIRS.map((d) => (
                             <button
                               key={d.label}
+                              aria-pressed={(spec.catapultYaw ?? 0) === d.yaw}
                               className={`ds-opt mini ${(spec.catapultYaw ?? 0) === d.yaw ? 'on' : ''}${d.yaw === null ? ' off' : ''}`}
                               disabled={d.yaw === null}
                               onClick={() => d.yaw !== null && setSpec({ catapultYaw: d.yaw })}
@@ -1272,6 +1300,7 @@ export function Menu({ settings, onChange }: Props) {
                             max={180}
                             step={CHAIN_CATAPULT_YAW_STEP}
                             value={spec.catapultYaw ?? 0}
+                            aria-valuetext={`${spec.catapultYaw ?? 0} degrees`}
                             style={rangeFill(spec.catapultYaw ?? 0, -180, 180)}
                             onChange={(e) => setSpec({ catapultYaw: Number(e.target.value) })}
                           />
@@ -1295,6 +1324,7 @@ export function Menu({ settings, onChange }: Props) {
                       max={maxLength}
                       step={0.5}
                       value={spec.length}
+                      aria-valuetext={`${spec.length} inches`}
                       style={rangeFill(spec.length, minLength, maxLength)}
                       onChange={(e) => setSpec({ length: Number(e.target.value) })}
                     />
@@ -1310,6 +1340,7 @@ export function Menu({ settings, onChange }: Props) {
                       max={maxWidth}
                       step={0.5}
                       value={spec.width}
+                      aria-valuetext={`${spec.width} inches`}
                       style={rangeFill(spec.width, minWidth, maxWidth)}
                       onChange={(e) => setSpec({ width: Number(e.target.value) })}
                     />
@@ -1325,6 +1356,7 @@ export function Menu({ settings, onChange }: Props) {
                       max={maxMass}
                       step={1}
                       value={spec.massLb}
+                      aria-valuetext={`${spec.massLb} pounds`}
                       style={rangeFill(spec.massLb, minMass, maxMass)}
                       onChange={(e) => setSpec({ massLb: Number(e.target.value) })}
                     />
@@ -1342,6 +1374,7 @@ export function Menu({ settings, onChange }: Props) {
                         max={CHAIN_CLEARANCE_MAX}
                         step={0.1}
                         value={spec.groundClearance ?? CHAIN_CLEARANCE_DEFAULT}
+                        aria-valuetext={`${(spec.groundClearance ?? CHAIN_CLEARANCE_DEFAULT).toFixed(1)} inches`}
                         style={rangeFill(
                           spec.groundClearance ?? CHAIN_CLEARANCE_DEFAULT,
                           CHAIN_CLEARANCE_MIN,
@@ -1371,6 +1404,7 @@ export function Menu({ settings, onChange }: Props) {
                           max={storeMax}
                           step={1}
                           value={store}
+                          aria-valuetext={`${store} of ${storeMax} particles`}
                           style={rangeFill(store, CHAIN_STORAGE_MIN, storeMax)}
                           onChange={(e) => setSpec({ ballStorage: Number(e.target.value) })}
                         />
@@ -1390,7 +1424,7 @@ export function Menu({ settings, onChange }: Props) {
             `Builder` owns the frame and the host appended them after it. One place now. */}
         <section className="ds-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Look</span>
+            <h2 className="ds-panel-title">Look</h2>
           </div>
           <div className="ds-panel-body stack">
             <div className="ds-fields">
@@ -1406,7 +1440,7 @@ export function Menu({ settings, onChange }: Props) {
             ride `spec.assists` / `GameSettings`, so they save with the build. */}
         <section className="ds-panel">
           <div className="ds-panel-h">
-            <span className="ds-panel-title">Driving</span>
+            <h2 className="ds-panel-title">Driving</h2>
           </div>
           <div className="ds-panel-body stack">
             <OptRow<boolean>
@@ -1466,6 +1500,7 @@ export function Menu({ settings, onChange }: Props) {
                 max={100}
                 step={5}
                 value={settings.parkSpeedPct}
+                aria-valuetext={`${settings.parkSpeedPct} percent`}
                 style={rangeFill(settings.parkSpeedPct, 0, 100)}
                 onChange={(e) => set({ parkSpeedPct: Number(e.target.value) })}
               />

@@ -166,6 +166,7 @@ export function ReplayView({
   const [menuOpen, setMenuOpen] = useState(false);
   const [dataBytes, setDataBytes] = useState(0);
   const menuRoot = useRef<HTMLDivElement>(null);
+  const menuBtn = useRef<HTMLButtonElement>(null);
   const [playing, setPlaying] = useState(true);
   const [tick, setTick] = useState(0);
   const [total, setTotal] = useState(1);
@@ -577,7 +578,12 @@ export function ReplayView({
       if (!menuRoot.current?.contains(e.target as Node)) setMenuOpen(false);
     };
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setMenuOpen(false);
+      // a DISCLOSURE, not an ARIA menu (design review 09-10): Escape hands focus back to the
+      // trigger, so a keyboard user is not dropped on <body> when the options unmount
+      if (e.key === 'Escape') {
+        setMenuOpen(false);
+        menuBtn.current?.focus();
+      }
     };
     document.addEventListener('pointerdown', onDown);
     document.addEventListener('keydown', onKey);
@@ -1145,7 +1151,7 @@ export function ReplayView({
   return (
     <div className="ds-replay">
       <div className="ds-replay-top">
-        <button className="ds-btn ghost" onClick={onClose}>← Back</button>
+        <button className="ds-btn ghost" onClick={onClose}><span aria-hidden="true">←</span> Back</button>
         {/* THE SAVE STATUS LIVES IN THE HEADER, and that is not a cosmetic choice: a strip of
             its own above the transport row steals height from the canvas, which then re-fits
             to a shorter box and SQUASHES the field halfway through a recording. A background
@@ -1171,7 +1177,7 @@ export function ReplayView({
             <button className="ds-btn ghost" onClick={cancelRecording}>Cancel</button>
           </div>
         ) : (
-          <span className="ds-panel-title">Replay</span>
+          <h1 className="ds-panel-title">Replay</h1>
         )}
         {/* DOWNLOAD BELONGS HERE, not in the transport row below: it is an action on the
             replay, not on playback, and two ghost buttons wedged between the seek bar and the
@@ -1198,15 +1204,16 @@ export function ReplayView({
             <div className="ds-dl" ref={menuRoot}>
               <button
                 className={`ds-btn${menuOpen ? ' primary' : ''}`}
+                ref={menuBtn}
                 onClick={openMenu}
                 disabled={recording || saving}
-                aria-haspopup="menu"
                 aria-expanded={menuOpen}
+                aria-controls="ds-dl-pop"
               >
-                ↓ Download
+                <span aria-hidden="true">↓</span> Download
               </button>
               {menuOpen && (
-                <div className="ds-dl-pop" role="menu">
+                <div className="ds-dl-pop" id="ds-dl-pop" role="group" aria-label="Download options">
                   {/* Each option states its COST as well as its name — the formats differ by how
                       long they take and where they will play, and a menu of bare nouns hides
                       exactly the difference that decides which you want. */}
@@ -1266,7 +1273,6 @@ export function ReplayView({
                     <button
                       key={f.id}
                       className="ds-dl-opt"
-                      role="menuitem"
                       onClick={() => pick(() => void startCapture(f.id))}
                     >
                       <span className="dl-h">
@@ -1276,7 +1282,7 @@ export function ReplayView({
                       <span className="dl-d">{f.note}</span>
                     </button>
                   ))}
-                  <button className="ds-dl-opt" role="menuitem" onClick={() => pick(downloadData)}>
+                  <button className="ds-dl-opt" onClick={() => pick(downloadData)}>
                     <span className="dl-h">
                       Replay data
                       <em>{dataBytes ? `${Math.max(1, Math.round(dataBytes / 1024))} KB` : '.json'}</em>
@@ -1434,9 +1440,10 @@ export function ReplayView({
       {status === 'ready' && !recording && (
         <div className="ds-replay-controls">
           <button className="ds-btn primary" onClick={() => setPlay(!playing)}>
-            {playing ? '❚❚ Pause' : player.current?.done ? '▶ Play again' : '▶ Play'}
+            <span aria-hidden="true">{playing ? '❚❚' : '▶'}</span>{' '}
+            {playing ? 'Pause' : player.current?.done ? 'Play again' : 'Play'}
           </button>
-          <button className="ds-btn" onClick={rebuild}>⟲ Restart</button>
+          <button className="ds-btn" onClick={rebuild}><span aria-hidden="true">⟲</span> Restart</button>
           <input
             type="range"
             className="ds-replay-seek"
@@ -1483,8 +1490,9 @@ function FoulChip({ side, t, cost }: { side: 'red' | 'blue'; t: FoulTally; cost?
           {solo
             ? (cost as number) > 0 && <span className="pen-awarded">−{cost} from the score</span>
             : t.awarded > 0 && <span className="pen-awarded">+{t.awarded} awarded</span>}
-          {t.yellow > 0 && <span className="pen-card yellow">■ {t.yellow}</span>}
-          {t.red > 0 && <span className="pen-card red">■ {t.red}</span>}
+          {/* the card's NAME is on the chip, not just its colour (design review 09-02, WCAG 1.4.1) */}
+          {t.yellow > 0 && <span className="pen-card yellow"><span aria-hidden="true">■ {t.yellow} YC</span><span className="ds-sr">{t.yellow} yellow card{t.yellow > 1 ? 's' : ''}</span></span>}
+          {t.red > 0 && <span className="pen-card red"><span aria-hidden="true">■ {t.red} RC</span><span className="ds-sr">{t.red} red card{t.red > 1 ? 's' : ''}</span></span>}
         </>
       )}
     </span>

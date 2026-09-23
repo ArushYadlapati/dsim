@@ -31,7 +31,8 @@ function LegalPage({ title, sub, body }: { title: string; sub?: string; body: st
             16px, written twice. `.legal-md` still owns the DOCUMENT's own rhythm
             inside it; only the container padding is shared. */}
         <div className="ds-panel-body">
-          <Markdown text={body} className="md legal-md" />
+          {/* baseLevel 1: the body's `##` sections are h2 under this page's h1 */}
+          <Markdown text={body} className="md legal-md" baseLevel={1} />
         </div>
       </section>
     </>

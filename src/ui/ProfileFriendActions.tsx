@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { FriendsCtx } from './friendsContext';
+import { confirmBlock, confirmUnfriend } from './friendsContext';
 
 /**
  * Friend/block controls for a profile you're viewing (not your own). Rendered
@@ -64,10 +65,10 @@ export function ProfileFriendActions({
             Challenge
           </button>
         )}
-        <button className="ds-btn ghost" disabled={busy} onClick={() => run(() => friends.unfriend(username))}>
+        <button className="ds-btn ghost" disabled={busy} onClick={() => confirmUnfriend(username) && run(() => friends.unfriend(username))}>
           Unfriend
         </button>
-        <button className="ds-btn ghost" disabled={busy} onClick={() => run(() => friends.block(username))}>
+        <button className="ds-btn ghost" disabled={busy} onClick={() => confirmBlock(username) && run(() => friends.block(username))}>
           Block
         </button>
       </span>
@@ -105,7 +106,7 @@ export function ProfileFriendActions({
       <button className="ds-btn" disabled={busy} onClick={() => run(() => friends.add(username))}>
         Add friend
       </button>
-      <button className="ds-btn ghost" disabled={busy} onClick={() => run(() => friends.block(username))}>
+      <button className="ds-btn ghost" disabled={busy} onClick={() => confirmBlock(username) && run(() => friends.block(username))}>
         Block
       </button>
     </span>

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { adminEditStanding, adminFetchStanding, type AdminStanding as AdminStandingData } from '../net/api';
 import { adminFail } from './adminCopy';
+import { confirmed } from './adminBits';
 import {
   STANDING_MAX,
   lockRemaining,
@@ -127,9 +128,10 @@ export function StandingEditor({
           disabled={busy}
           onClick={() => {
             if (
-              !window.confirm(
-                `Clear every infraction on ${name}? Their standing goes back to ${STANDING_MAX}, ` +
-                  'any ranked lock is lifted, and none of it counts toward escalation again.',
+              !confirmed(
+                'Clear every infraction on',
+                name,
+                `Their standing goes back to ${STANDING_MAX}, any ranked lock is lifted, and none of it counts toward escalation again.`,
               )
             )
               return;

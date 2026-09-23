@@ -4,6 +4,7 @@ import { authClient } from '../lib/authClient';
 import { appUrl } from '../lib/authFlows';
 import { acceptTerms, fetchEntitlements } from '../net/api';
 import { gameServerConfigured } from '../net/env';
+import { useDialog } from './useDialog';
 
 /** the agreement sentence, with both documents linked. Shared with the sign-up
  *  checkbox so the two places that ask cannot end up asking different things.
@@ -26,6 +27,27 @@ export function TermsAgreement() {
       </a>
       .
     </>
+  );
+}
+
+/**
+ * THE BLOCKING GATES' DIALOG — this one and `UsernameGate`'s. A dialog that must be
+ * answered: no backdrop-close, no ✕, and `useDialog` gets no `onClose`, so Escape does
+ * nothing while Tab stays trapped inside (design review C07).
+ *
+ * ⚠️ ITS OWN COMPONENT BECAUSE `useDialog` RUNS ONCE, ON MOUNT. Each gate's hooks mount
+ * long before the gate decides to block (it returns its children until a fetch answers),
+ * so a `useDialog` in the gate itself would find no element and never look again.
+ * Mounting this only when the dialog shows gives the hook its element on its one run.
+ */
+export function GateDialog({ titleId, children }: { titleId: string; children: ReactNode }) {
+  const ref = useDialog();
+  return (
+    <div className="ds-modal-backdrop">
+      <div ref={ref} className="ds-modal" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -122,33 +144,34 @@ export function TermsGate({
   const updated = state === 'stale';
 
   return (
-    <div className="ds-modal-backdrop">
-      <div className="ds-modal">
-        <div className="ds-modal-h">
-          <span className="ds-panel-title">
-            {updated ? 'Our terms have changed' : 'Terms of Use'}
-          </span>
-        </div>
-        <p className="ds-hint">
-          {updated
-            ? `The Terms of Use and Privacy Policy were updated on ${LEGAL_UPDATED}. Accept the new version to carry on using your account.`
-            : 'Accepting these is part of having an account.'}
-        </p>
-        <p className="ds-hint">
-          <TermsAgreement />
-        </p>
-        <div className={`ds-form-hint${error ? ' err' : ''}`}>{error}</div>
-        {/* PRIMARY IS RIGHTMOST (ui-standard §6). Sign out is the way out rather than a
-            destructive action on anything, so it is `ghost`, not `danger`. */}
-        <div className="ds-actions">
-          <button className="ds-btn ghost" onClick={() => void authClient!.signOut()}>
-            Sign out
-          </button>
-          <button className="ds-btn primary" onClick={accept} disabled={busy}>
-            {busy ? 'Saving…' : 'Accept'}
-          </button>
-        </div>
+    <GateDialog titleId="ds-terms-gate-title">
+      <div className="ds-modal-h">
+        <h2 className="ds-dialog-title" id="ds-terms-gate-title">
+          {updated ? 'Our terms have changed' : 'Terms of Use'}
+        </h2>
       </div>
-    </div>
+      <p className="ds-hint">
+        {updated
+          ? `The Terms of Use and Privacy Policy were updated on ${LEGAL_UPDATED}. Accept the new version to carry on using your account.`
+          : 'Accepting these is part of having an account.'}
+      </p>
+      <p className="ds-hint">
+        <TermsAgreement />
+      </p>
+      <div className={`ds-form-hint${error ? ' err' : ''}`} role="alert">
+        {error}
+      </div>
+      {/* PRIMARY IS RIGHTMOST (ui-standard §6). Sign out is the way out rather than a
+          destructive action on anything, so it is `ghost`, not `danger`. */}
+      <div className="ds-actions">
+        <button className="ds-btn ghost" onClick={() => void authClient!.signOut()}>
+          Sign out
+        </button>
+        {/* autoFocus: the answer the dialog is asking for, so `useDialog` leaves it focused */}
+        <button className="ds-btn primary" onClick={accept} disabled={busy} autoFocus>
+          {busy ? 'Saving…' : 'Accept'}
+        </button>
+      </div>
+    </GateDialog>
   );
 }

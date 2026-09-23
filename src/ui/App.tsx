@@ -1,5 +1,6 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ComponentType } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { ComponentType, ReactNode } from 'react';
+import { useDialog } from './useDialog';
 import type { GameSettings } from '../game';
 import { loadSettings, saveSettings, switchGame, syncAudioMirrors } from '../settings';
 import {
@@ -413,6 +414,36 @@ function screenForNav(n: ShellNav): Screen {
   }
 }
 
+/**
+ * ONE SHELL DIALOG over the `.overlay` scrim (design review C07). Every start guard below is
+ * one of these, so the dialog semantics live in one place: the PANEL is the dialog (not the
+ * scrim), labelled by its visible title, and `useDialog` moves focus in, traps Tab and hands
+ * focus back. `onClose` is the SAME handler as the dialog's visible dismiss button; omit it
+ * for one that has to be answered, and Escape does nothing.
+ */
+function OverlayDialog({
+  title,
+  onClose,
+  children,
+}: {
+  title: ReactNode;
+  onClose?: () => void;
+  children: ReactNode;
+}) {
+  const ref = useDialog(onClose);
+  const titleId = useId();
+  return (
+    <div className="overlay">
+      <div ref={ref} className="overlay-panel" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+        <h2 className="ds-dialog-title" id={titleId}>
+          {title}
+        </h2>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export function App() {
   /* Whether the LAN entry points exist at all. Not a build constant any more: the
      server advertises it, so this flips once the shell's first presence poll lands
@@ -495,6 +526,10 @@ export function App() {
   // one-time "this simulation isn't realistic" disclaimer (shown the first time CR is
   // the selected game, on this device; dismissal persists in localStorage)
   const [showChainDisclaimer, setShowChainDisclaimer] = useState(false);
+  const dismissChainDisclaimer = (): void => {
+    markChainDisclaimerSeen();
+    setShowChainDisclaimer(false);
+  };
   /** an announcement is on screen — the claim dialog waits for it rather than stacking */
   const [annActive, setAnnActive] = useState(false);
   // launched from Controls: enter Free Drive with the mobile-layout editor already open
@@ -1398,6 +1433,8 @@ export function App() {
   // set when the player tries to start a new game while one is already in progress —
   // drives the "you have a game in progress" overlay (rejoin or abandon)
   const [blockedByActive, setBlockedByActive] = useState(false);
+  // which game it is, so the overlay can name it and say what leaving costs
+  const blockedKind = blockedByActive ? (loadActiveGame() ?? activeGame)?.kind : undefined;
   // set when a game start is refused because the active custom start pose is illegal
   // for the current chassis (block-and-warn instead of silently snapping at spawn)
   const [badStart, setBadStart] = useState(false);
@@ -1892,129 +1929,117 @@ export function App() {
       )}
       {/* one-time "this sim isn't realistic" disclaimer for Chain Reaction */}
       {showChainDisclaimer && (
-        <div className="overlay">
-          <div className="overlay-panel">
-            <h2 className="ds-dialog-title">About this simulation</h2>
-            <p className="ds-sub overlay-sub">
-              Chain Reaction is a game for the <b>Unofficial FTC Discord’s CAD Competition</b>.
-              This simulator is a rough, for-fun approximation of it. <b>The simulation is
-              not realistic</b>, so how robots drive, shoot, and score here shouldn’t drive your
-              CAD-competition design decisions. Build for the real game, not for this sim.
-            </p>
-            {/* SENTENCE CASE, and `.ds-dialog-actions` to drop the all-caps
-                tracking with it. These five are SHELL dialogs — the same surface
-                as Announcements' "Got it" and every `.ds-btn` around them — not
-                the match overlays in GameView, whose caps match the HUD they sit
-                on. Shipping `GOT IT` here beside `Got it` there was one word in
-                two casings in one shell. */}
-            <div className="overlay-buttons ds-dialog-actions">
-              <button
-                onClick={() => {
-                  markChainDisclaimerSeen();
-                  setShowChainDisclaimer(false);
-                }}
-              >
-                Got it
-              </button>
-            </div>
+        <OverlayDialog title="About this simulation" onClose={dismissChainDisclaimer}>
+          <p className="ds-sub overlay-sub">
+            Chain Reaction is a game for the <b>Unofficial FTC Discord’s CAD Competition</b>.
+            This simulator is a rough, for-fun approximation of it. <b>The simulation is
+            not realistic</b>, so how robots drive, shoot, and score here shouldn’t drive your
+            CAD-competition design decisions. Build for the real game, not for this sim.
+          </p>
+          {/* SENTENCE CASE, and `.ds-dialog-actions` to drop the all-caps
+              tracking with it. These five are SHELL dialogs — the same surface
+              as Announcements' "Got it" and every `.ds-btn` around them — not
+              the match overlays in GameView, whose caps match the HUD they sit
+              on. Shipping `GOT IT` here beside `Got it` there was one word in
+              two casings in one shell. */}
+          <div className="overlay-buttons ds-dialog-actions">
+            <button onClick={dismissChainDisclaimer}>Got it</button>
           </div>
-        </div>
+        </OverlayDialog>
       )}
       {/* the start guards live here, not on `modes`, because a start can also be
-          triggered from a lobby/queue screen that this shell doesn't render */}
+          triggered from a lobby/queue screen that this shell doesn't render.
+          NO `onClose`: both answers do something, and Escape must not pick one — least of
+          all the forfeit. The body names the game and what leaving it costs (design review
+          19-06): a ranked seat left mid-match is still rated, as a loss (`room.ts` `departed`). */}
       {blockedByActive && (
-        <div className="overlay">
-          <div className="overlay-panel">
-            <h2 className="ds-dialog-title">You’re already in a game</h2>
-            <div className="overlay-buttons ds-dialog-actions">
-              <button
-                onClick={() => {
-                  const ref = loadActiveGame();
-                  setBlockedByActive(false);
-                  if (ref) rejoinGame(ref);
-                  else setActiveGame(null);
-                }}
-              >
-                Rejoin
-              </button>
-              <button className="ghost" onClick={abandonActiveGame}>
-                Abandon
-              </button>
-            </div>
+        <OverlayDialog title="You’re already in a game">
+          <p className="ds-sub overlay-sub">
+            {blockedKind === 'ranked'
+              ? 'Your ranked match is still running. Leaving it counts as a loss.'
+              : blockedKind === 'record'
+                ? 'Your record run is still running. Leaving it ends the run.'
+                : 'Your custom room match is still running.'}
+          </p>
+          <div className="overlay-buttons ds-dialog-actions">
+            <button
+              onClick={() => {
+                const ref = loadActiveGame();
+                setBlockedByActive(false);
+                if (ref) rejoinGame(ref);
+                else setActiveGame(null);
+              }}
+            >
+              Rejoin match
+            </button>
+            <button className="ghost" onClick={abandonActiveGame}>
+              {blockedKind === 'ranked' ? 'Forfeit match' : blockedKind === 'record' ? 'Leave run' : 'Leave match'}
+            </button>
           </div>
-        </div>
+        </OverlayDialog>
       )}
       {/* the saved seat could not be reclaimed — see the refusal watcher in `rejoinGame`.
           One sentence on the menu, instead of the "connection lost" panel on a game screen
           for a match that no longer exists. */}
       {rejoinGone && (
-        <div className="overlay">
-          <div className="overlay-panel">
-            <h2 className="ds-dialog-title">That match is over</h2>
-            <p className="ds-sub overlay-sub">
-              It finished, or it was held open too long for you to get back into.
-            </p>
-            <div className="overlay-buttons ds-dialog-actions">
-              <button onClick={() => setRejoinGone(false)}>Got it</button>
-            </div>
+        <OverlayDialog title="That match is over" onClose={() => setRejoinGone(false)}>
+          <p className="ds-sub overlay-sub">
+            It finished, or it was held open too long for you to get back into.
+          </p>
+          <div className="overlay-buttons ds-dialog-actions">
+            <button onClick={() => setRejoinGone(false)}>Got it</button>
           </div>
-        </div>
+        </OverlayDialog>
       )}
       {badStart && (
-        <div className="overlay">
-          <div className="overlay-panel">
-            <h2 className="ds-dialog-title">Start position invalid</h2>
-            <p className="ds-sub overlay-sub">
-              Your saved start position isn’t legal for the selected chassis. Fix it (or pick a
-              preset) before starting.
-            </p>
-            <div className="overlay-buttons ds-dialog-actions">
-              <button
-                onClick={() => {
-                  setBadStart(false);
-                  navigate('configure', { sub: 'match' });
-                }}
-              >
-                Fix start position
-              </button>
-              <button className="ghost" onClick={() => setBadStart(false)}>
-                Cancel
-              </button>
-            </div>
+        <OverlayDialog title="Start position invalid" onClose={() => setBadStart(false)}>
+          <p className="ds-sub overlay-sub">
+            Your saved start position isn’t legal for the selected chassis. Fix it (or pick a
+            preset) before starting.
+          </p>
+          <div className="overlay-buttons ds-dialog-actions">
+            <button
+              onClick={() => {
+                setBadStart(false);
+                navigate('configure', { sub: 'match' });
+              }}
+            >
+              Fix start position
+            </button>
+            <button className="ghost" onClick={() => setBadStart(false)}>
+              Cancel
+            </button>
           </div>
-        </div>
+        </OverlayDialog>
       )}
       {startBlocked && (
-        <div className="overlay">
-          <div className="overlay-panel">
-            <h2 className="ds-dialog-title">{lockedOut ? 'Down for maintenance' : 'Server restarting soon'}</h2>
-            <p className="ds-sub overlay-sub">
-              {lockedOut
-                ? maintenanceLine(maintenance) ??
-                  'DSIM is down for maintenance. New games are paused.'
-                : 'Server is restarting shortly. New games are paused for a moment.'}
-            </p>
-            <div className="overlay-buttons ds-dialog-actions">
-              <button onClick={() => setStartBlocked(false)}>OK</button>
-            </div>
+        <OverlayDialog
+          title={lockedOut ? 'Down for maintenance' : 'Server restarting soon'}
+          onClose={() => setStartBlocked(false)}
+        >
+          <p className="ds-sub overlay-sub">
+            {lockedOut
+              ? maintenanceLine(maintenance) ??
+                'DSIM is down for maintenance. New games are paused.'
+              : 'Server is restarting shortly. New games are paused for a moment.'}
+          </p>
+          <div className="overlay-buttons ds-dialog-actions">
+            <button onClick={() => setStartBlocked(false)}>OK</button>
           </div>
-        </div>
+        </OverlayDialog>
       )}
       {pendingStart && (
-        <div className="overlay">
-          <div className="overlay-panel">
-            <h2 className="ds-dialog-title">Update required</h2>
-            <p className="ds-sub overlay-sub">
-              A newer version has shipped. Refresh to update before starting.
-            </p>
-            <div className="overlay-buttons ds-dialog-actions">
-              <button onClick={() => window.location.reload()}>Refresh &amp; update</button>
-              <button className="ghost" onClick={() => setPendingStart(null)}>
-                Not now
-              </button>
-            </div>
+        <OverlayDialog title="Update required" onClose={() => setPendingStart(null)}>
+          <p className="ds-sub overlay-sub">
+            A newer version has shipped. Refresh to update before starting.
+          </p>
+          <div className="overlay-buttons ds-dialog-actions">
+            <button onClick={() => window.location.reload()}>Refresh &amp; update</button>
+            <button className="ghost" onClick={() => setPendingStart(null)}>
+              Not now
+            </button>
           </div>
-        </div>
+        </OverlayDialog>
       )}
 
       {screen === 'configure' && (

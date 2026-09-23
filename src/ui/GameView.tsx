@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
+import { useDialog } from './useDialog';
 import {
   GameController,
   type GameSettings,
@@ -144,6 +146,48 @@ const DT_LABEL: Record<DrivetrainType, string> = {
   xdrive: 'X-Drive',
   butterfly: 'Butterfly',
 };
+
+/**
+ * THE MOTIF, which the whole DECODE match is scored against — never by hue alone (design
+ * review 17-06). A reader gets the sequence as words; a colour-blind driver gets a SHAPE,
+ * purple round and green square (`.motif-dot.green` in styles.css).
+ */
+function MotifDots({ motif, className }: { motif: readonly string[]; className?: string }) {
+  return (
+    <span className={className} role="img" aria-label={`Motif: ${motif.join(', ')}`}>
+      {motif.map((c, i) => (
+        <span key={i} className={`motif-dot ${c}`} />
+      ))}
+    </span>
+  );
+}
+
+/**
+ * ONE IN-MATCH OVERLAY as a dialog (design review C07): the card is the dialog, labelled by
+ * its title, and `useDialog` moves focus in and traps Tab. NO `onClose` for any of them —
+ * Escape already reaches `onExit` through the screen's own window listener (the same thing
+ * MENU / BACK TO MENU do), and a second handler here would exit twice.
+ */
+function MatchOverlay({
+  titleId,
+  scrim = 'overlay',
+  card = 'overlay-panel',
+  children,
+}: {
+  titleId: string;
+  scrim?: string;
+  card?: string;
+  children: ReactNode;
+}) {
+  const ref = useDialog();
+  return (
+    <div className={scrim}>
+      <div ref={ref} className={card} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 /** count an integer from `from` to `target` over `duration` ms once `active` flips
  * true (ease-out cubic). Used for the results score reveal (from 0) and the ELO
@@ -645,11 +689,11 @@ export function GameView({
           answer comes back from the controller (see `roomPhysicsLoading`). The words are the
           same either way, because it is the same wait for the same chunk. */}
       {(physicsLoading || roomPhysicsLoading) && (
-        <div className="overlay">
-          <div className="overlay-panel">
-            <p className="ds-loading">Loading 3D physics…</p>
-          </div>
-        </div>
+        <MatchOverlay titleId="gv-loading-title">
+          <p className="ds-loading" id="gv-loading-title">
+            Loading 3D physics…
+          </p>
+        </MatchOverlay>
       )}
       {coarsePointer && controllerRef.current && (
         <MobileControls
@@ -675,28 +719,26 @@ export function GameView({
         </div>
       )}
       {hud?.net && (hud.net.failed || hud.net.waitingFor === 'server') && (
-        <div className="net-overlay">
-          <div className="net-overlay-card">
-            {hud.net.failed ? (
-              <>
-                <h3 className="ds-dialog-title">Connection lost</h3>
-                <p>The server may have restarted. Refresh the page to reconnect.</p>
-                <div className="overlay-buttons">
-                  <button onClick={() => window.location.reload()}>REFRESH</button>
-                  <button className="ghost" onClick={onExit}>
-                    MENU
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="net-spinner" />
-                <h3 className="ds-dialog-title">Reconnecting…</h3>
-                <p>Your run keeps going.</p>
-              </>
-            )}
-          </div>
-        </div>
+        <MatchOverlay titleId="gv-net-title" scrim="net-overlay" card="net-overlay-card">
+          {hud.net.failed ? (
+            <>
+              <h3 className="ds-dialog-title" id="gv-net-title">Connection lost</h3>
+              <p>The server may have restarted. Refresh the page to reconnect.</p>
+              <div className="overlay-buttons">
+                <button onClick={() => window.location.reload()}>REFRESH</button>
+                <button className="ghost" onClick={onExit}>
+                  MENU
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="net-spinner" />
+              <h3 className="ds-dialog-title" id="gv-net-title">Reconnecting…</h3>
+              <p>Your run keeps going.</p>
+            </>
+          )}
+        </MatchOverlay>
       )}
       {hud && (
         <Hud
@@ -723,7 +765,7 @@ export function GameView({
           visual reads it. See `GameController.refreshHudInsets` for what is NOT marked and why. */}
       <div className="game-buttons" data-hud-band>
         <button className="game-btn" onClick={onExit} title="Menu (Esc)">
-          ◄ MENU
+          <span aria-hidden="true">◄</span> MENU
         </button>
         {/* RESET is a LOCAL rebuild — meaningless (and desyncing) in lockstep, so
             solo only. In multiplayer use REMATCH on the results screen (host). */}
@@ -733,7 +775,7 @@ export function GameView({
             onClick={() => controllerRef.current?.restart()}
             title="Restart"
           >
-            ⟲ RESET
+            <span aria-hidden="true">⟲</span> RESET
           </button>
         )}
         {/* CO-OP (duo record): restarting is a VOTE — the run belongs to both
@@ -750,14 +792,14 @@ export function GameView({
                 : 'Vote to restart. Everyone still connected has to agree'
             }
           >
-            ⟲ REMATCH {hud.rematch.votes}/{hud.rematch.need}
+            <span aria-hidden="true">⟲</span> REMATCH {hud.rematch.votes}/{hud.rematch.need}
           </button>
         )}
         {/* a SOLO record run is server-hosted, so RESET's local rebuild is unsafe
             here; this starts a whole fresh run instead (new room, new seed). */}
         {session && onRestartRun && !hud?.rematch?.need && (
           <button className="game-btn" onClick={onRestartRun}>
-            ⟲ NEW RUN
+            <span aria-hidden="true">⟲</span> NEW RUN
           </button>
         )}
         {/* FREE CAM's own on-field affordance (owner, 2026-09-21): the camera has no keyboard
@@ -766,7 +808,7 @@ export function GameView({
             preference — a scene that failed to mount or fell back to 2D has nothing to reset. */}
         {scene3d && cameraPref === 'free' && (
           <button className="game-btn" onClick={requestFreeCamReset} title="Double-click the field to do the same">
-            ⟲ RESET VIEW
+            <span aria-hidden="true">⟲</span> RESET VIEW
           </button>
         )}
         {/* THE IN-GAMEPLAY PLACEMENT, LAST on this line — after RESET, and after
@@ -782,44 +824,40 @@ export function GameView({
         <SponsorGameChip />
       </div>
       {hud?.phase === 'pre' && hud.countdown === null && !session && (
-        <div className="overlay">
-          <div className="overlay-panel">
-            <h2>{hud.alliance.toUpperCase()} ALLIANCE</h2>
-            {hud.game === 'decode' && (
-              <p>
-                MOTIF{' '}
-                {hud.motif.map((c, i) => (
-                  <span key={i} className={`motif-dot ${c}`} />
-                ))}
-              </p>
-            )}
-            {!coarsePointer && (
-              <p className="big">
-                Press {keyLabel(effBindings.keys.start[0] ?? 'enter')} or{' '}
-                {padBindLabel(padBinds(effBindings.pad, 'start')[0] ?? [9])} to start
-              </p>
-            )}
-            {/* `.overlay-buttons`, not `.ds-cta`: every other button in every
-                `.overlay-panel` — including the net overlay's REFRESH/MENU a few
-                lines up — is that one, and `.ds-cta.ghost` grounds on `--ds-line`,
-                which is the wrong edge for a card floating on a dark scrim. */}
-            {coarsePointer && (
-              <div className="overlay-buttons stack">
-                <button onClick={() => controllerRef.current?.startMatch()}>START MATCH</button>
-                <button className="ghost" onClick={onExit}>
-                  BACK TO MENU
-                </button>
-              </div>
-            )}
-            {/* KEYBOARD ONLY. A phone has just been handed START MATCH and BACK TO
-                MENU precisely because it has no keys to press. */}
-            {!coarsePointer && (
-              <p className="ds-hint">
-                Esc · menu &nbsp;·&nbsp; {keyLabel(effBindings.keys.restart[0] ?? '?')} · restart
-              </p>
-            )}
-          </div>
-        </div>
+        <MatchOverlay titleId="gv-pre-title">
+          <h2 id="gv-pre-title">{hud.alliance.toUpperCase()} ALLIANCE</h2>
+          {hud.game === 'decode' && (
+            <p>
+              {/* the dots' own label says "Motif", so the visible word is not read twice */}
+              <span aria-hidden="true">MOTIF</span> <MotifDots motif={hud.motif} />
+            </p>
+          )}
+          {!coarsePointer && (
+            <p className="big">
+              Press {keyLabel(effBindings.keys.start[0] ?? 'enter')} or{' '}
+              {padBindLabel(padBinds(effBindings.pad, 'start')[0] ?? [9])} to start
+            </p>
+          )}
+          {/* `.overlay-buttons`, not `.ds-cta`: every other button in every
+              `.overlay-panel` — including the net overlay's REFRESH/MENU a few
+              lines up — is that one, and `.ds-cta.ghost` grounds on `--ds-line`,
+              which is the wrong edge for a card floating on a dark scrim. */}
+          {coarsePointer && (
+            <div className="overlay-buttons stack">
+              <button onClick={() => controllerRef.current?.startMatch()}>START MATCH</button>
+              <button className="ghost" onClick={onExit}>
+                BACK TO MENU
+              </button>
+            </div>
+          )}
+          {/* KEYBOARD ONLY. A phone has just been handed START MATCH and BACK TO
+              MENU precisely because it has no keys to press. */}
+          {!coarsePointer && (
+            <p className="ds-hint">
+              Esc · menu &nbsp;·&nbsp; {keyLabel(effBindings.keys.restart[0] ?? '?')} · restart
+            </p>
+          )}
+        </MatchOverlay>
       )}
       {intro && hud?.phase === 'pre' && (
         <RankedIntro players={intro} viewAlliance={hud.alliance} />
@@ -942,7 +980,7 @@ function Hud({
         <GameScoreBar hud={hud} />
       ) : hud.mode === 'match' ? (
         <div className="scorebar" data-hud-band>
-          <div className={`score-panel red ${hud.alliance === 'red' ? 'mine' : ''}`}>
+          <div className={`score-panel red ${hud.alliance === 'red' ? 'mine' : ''}`} role="group" aria-label="Red alliance score">
             {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
             <span className="panel-score">{redScore}</span>
           </div>
@@ -953,15 +991,9 @@ function Hud({
               {timer.label}
             </span>
             <span className="timer-time">{timer.time}</span>
-            {dec && (
-              <span className="timer-motif">
-                {hud.motif.map((c, i) => (
-                  <span key={i} className={`motif-dot ${c}`} />
-                ))}
-              </span>
-            )}
+            {dec && <MotifDots className="timer-motif" motif={hud.motif} />}
           </div>
-          <div className={`score-panel blue ${hud.alliance === 'blue' ? 'mine' : ''}`}>
+          <div className={`score-panel blue ${hud.alliance === 'blue' ? 'mine' : ''}`} role="group" aria-label="Blue alliance score">
             {hud.alliance === 'blue' && <span className="you-tag">YOU</span>}
             <span className="panel-score">{blueScore}</span>
           </div>
@@ -970,13 +1002,7 @@ function Hud({
         <div className="scorebar" data-hud-band>
           <div className="timer-panel">
             <span className="timer-phase">FREE DRIVE</span>
-            {dec && (
-              <span className="timer-motif">
-                {hud.motif.map((c, i) => (
-                  <span key={i} className={`motif-dot ${c}`} />
-                ))}
-              </span>
-            )}
+            {dec && <MotifDots className="timer-motif" motif={hud.motif} />}
           </div>
         </div>
       )}
@@ -1110,7 +1136,11 @@ function Hud({
                   role="img"
                   aria-label={`${hud.card === 'red' ? 'Red' : 'Yellow'} card issued.`}
                   title={hud.card === 'red' ? 'Red card' : 'Yellow card'}
-                />
+                >
+                  {/* a LETTER as well as the fill (design review 17-06): yellow and red must not
+                      be told apart by hue alone */}
+                  {hud.card === 'red' ? 'R' : 'Y'}
+                </span>
               )}
             </div>
           )}
@@ -1171,10 +1201,10 @@ function Hud({
             )}
             {hud.net?.desync && (
               <span className="chip desync" role="status">
-                ⚠ DESYNC
+                <span aria-hidden="true">⚠</span> DESYNC
               </span>
             )}
-            {hud.net?.server && <span className="chip on">🌐 {hud.net.server}</span>}
+            {hud.net?.server && <span className="chip on"><span aria-hidden="true">🌐</span> {hud.net.server}</span>}
           </div>
         </div>
       )}

@@ -56,9 +56,21 @@ export interface FriendsCtx extends FriendsApi {
   game: GameId;
   toasts: FriendToast[];
   dismissToast: (id: number) => void;
+  /** hold the expiry clock while the stack is hovered or holds focus (WCAG 2.2.1) */
+  pauseToasts: (paused: boolean) => void;
 }
 
 const Ctx = createContext<FriendsCtx | null>(null);
+
+/** The two friend actions that cut a tie, asked about BY NAME (the `confirmed()` shape the
+ * admin console uses, kept here because non-admin code does not import adminBits). Block
+ * also says what it DOES, because nothing else on screen does any more. */
+export const confirmUnfriend = (username: string): boolean =>
+  window.confirm(`Unfriend @${username}? You can send them a request again later.`);
+export const confirmBlock = (username: string): boolean =>
+  window.confirm(
+    `Block @${username}? They can no longer challenge you or see you online, and any friendship between you ends.`,
+  );
 
 /** the number of toasts kept on screen at once — a challenge storm shouldn't
  * bury the page */
@@ -193,6 +205,7 @@ export function FriendsProvider({
 
   // ---- notification toasts: diff each poll for genuinely new arrivals --------
   const [toasts, setToasts] = useState<FriendToast[]>([]);
+  const [toastsPaused, pauseToasts] = useState(false);
   const nextId = useRef(0);
   /**
    * What has already been announced, and WHEN it was last seen on the server.
@@ -280,16 +293,21 @@ export function FriendsProvider({
   }, [api.ready, api.data]);
 
   // auto-expire toasts; a single timer scans the queue so we never leak per-toast
-  // timeouts when a burst arrives
+  // timeouts when a burst arrives. PAUSED while the pointer is over the stack or focus
+  // is inside it: a toast carries Accept/Join, and expiring the one a keyboard user has
+  // tabbed into dropped their focus on <body>. Resuming restarts the full window.
   useEffect(() => {
-    if (toasts.length === 0) return;
+    if (toasts.length === 0 || toastsPaused) return;
     const t = window.setTimeout(() => {
       setToasts((cur) => cur.slice(1)); // drop the oldest
     }, TOAST_MS);
     return () => window.clearTimeout(t);
-  }, [toasts]);
+  }, [toasts, toastsPaused]);
+  // a toast dismissed under the pointer/focus unmounts without a blur or mouseleave, which
+  // would leave the stack paused forever; any change in the stack re-arms the timer
+  useEffect(() => pauseToasts(false), [toasts.length]);
 
-  const value: FriendsCtx = { ...api, openChallenge, challenge, game, toasts, dismissToast };
+  const value: FriendsCtx = { ...api, openChallenge, challenge, game, toasts, dismissToast, pauseToasts };
   return (
     <Ctx.Provider value={value}>
       {children}
@@ -327,10 +345,22 @@ export function FriendToasts({
   onJoinInvite: (invite: RoomInvite) => void;
 }) {
   const friends = useFriendsCtx();
-  const { toasts, dismissToast } = friends;
-  if (toasts.length === 0) return null;
+  const { toasts, dismissToast, pauseToasts } = friends;
+  // ALWAYS MOUNTED, even empty: a live region has to exist before content is injected
+  // into it, so one that mounts WITH its first toast never announces that toast.
   return (
-    <div className="fr-toasts" role="region" aria-label="Friend notifications">
+    <div
+      className="fr-toasts"
+      role="region"
+      aria-label="Friend notifications"
+      aria-live="polite"
+      onMouseEnter={() => pauseToasts(true)}
+      onMouseLeave={() => pauseToasts(false)}
+      onFocus={() => pauseToasts(true)}
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) pauseToasts(false);
+      }}
+    >
       {toasts.map((t) => (
         <div className="fr-toast" key={t.id}>
           <button

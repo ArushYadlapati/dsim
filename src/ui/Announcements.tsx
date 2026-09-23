@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Announcement, AnnouncementKind } from '../net/api';
 import { useAnnouncements } from '../net/announcements';
 import { Markdown } from './markdown';
+import { useDialog } from './useDialog';
 
 /**
  * Shows unseen announcements once, the first time a player opens the app after one
@@ -61,11 +62,13 @@ function CinematicReveal({
   muted: boolean;
   onContinue: () => void;
 }): JSX.Element {
+  // Escape → CONTINUE, plus focus in / Tab trap / focus restore (design review C07)
+  const ref = useDialog(onContinue);
   useEffect(() => {
     if (!muted) playRevealCue();
-    // allow Enter/Space/Esc to advance
+    // allow Enter/Space to advance too (Escape is `useDialog`'s, above)
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') {
+      if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         onContinue();
       }
@@ -75,7 +78,14 @@ function CinematicReveal({
   }, [muted, onContinue]);
 
   return (
-    <div className={`ann-cinema ${ann.kind}`} role="dialog" aria-label={`${KIND_LABEL[ann.kind]}: ${ann.title}`}>
+    <div
+      ref={ref}
+      className={`ann-cinema ${ann.kind}`}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${KIND_LABEL[ann.kind]}: ${ann.title}`}
+      tabIndex={-1}
+    >
       <div className="ann-cinema-glow" aria-hidden />
       <div className="ann-cinema-inner">
         <p className="ann-cinema-eyebrow">
@@ -86,7 +96,7 @@ function CinematicReveal({
         <div className="ann-cinema-rule" aria-hidden>
           <span />
         </div>
-        <button className="ann-cinema-btn" onClick={onContinue} autoFocus>
+        <button className="ann-cinema-btn" onClick={onContinue}>
           CONTINUE
         </button>
       </div>
@@ -96,12 +106,14 @@ function CinematicReveal({
 
 /** the "What's New" modal listing all unseen announcements */
 function WhatsNew({ items, onClose }: { items: Announcement[]; onClose: () => void }): JSX.Element {
+  // Escape → "Got it", plus focus in / Tab trap / focus restore (design review C07)
+  const ref = useDialog(onClose);
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       // Enter on a focused control (a link in the notes) must activate IT, not dismiss the dialog
       const onControl =
         e.target instanceof Element && e.target.closest('a, button, input, textarea, select') !== null;
-      if (e.key === 'Escape' || (e.key === 'Enter' && !onControl)) {
+      if (e.key === 'Enter' && !onControl) {
         e.preventDefault();
         onClose();
       }
@@ -112,7 +124,15 @@ function WhatsNew({ items, onClose }: { items: Announcement[]; onClose: () => vo
 
   return (
     <div className="overlay ann-overlay" onClick={onClose}>
-      <div className="ann-panel" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="What’s new">
+      <div
+        ref={ref}
+        className="ann-panel"
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="What’s new"
+        tabIndex={-1}
+      >
         <div className="ann-scroll">
           {items.map((a) => (
             <article key={a.id} className={`ann-item ${a.kind}`}>
@@ -127,7 +147,8 @@ function WhatsNew({ items, onClose }: { items: Announcement[]; onClose: () => vo
           ))}
         </div>
         <div className="ann-actions">
-          <button className="ds-btn" onClick={onClose}>
+          {/* focus HERE, not on the first link in the notes — Enter must dismiss */}
+          <button className="ds-btn" onClick={onClose} autoFocus>
             Got it
           </button>
         </div>

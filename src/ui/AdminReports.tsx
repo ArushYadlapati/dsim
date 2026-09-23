@@ -236,7 +236,7 @@ function ReportedRow({
             <div className="ds-loading">Loading…</div>
           ) : (
             <>
-              <h4 className="adm-h3">Reports</h4>
+              <h3 className="adm-h3">Reports</h3>
               <div className="adm-report-list">
                 {detail.reports.map((r) => (
                   <div className="adm-report-item" key={r.id}>
@@ -269,10 +269,10 @@ function ReportedRow({
                   been charged for three abandons and had no way to say the room crashed. The
                   editor is the same component the Moderation tab's user search opens, so
                   there is one standing panel in the console rather than two that drift. */}
-              <h4 className="adm-h3">What the server saw</h4>
+              <h3 className="adm-h3">What the server saw</h3>
               <StandingEditor userId={u.userId} handleHint={u.handle} />
 
-              <h4 className="adm-h3">Their recent matches</h4>
+              <h3 className="adm-h3">Their recent matches</h3>
               {detail.matches.length === 0 ? (
                 <p className="ds-hint">No matches on record for this player.</p>
               ) : (

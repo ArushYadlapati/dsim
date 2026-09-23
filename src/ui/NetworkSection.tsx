@@ -39,7 +39,7 @@ export function NetworkSection() {
   return (
     <section className="ds-panel">
       <div className="ds-panel-h">
-        <span className="ds-panel-title">Prediction</span>
+        <h2 className="ds-panel-title">Prediction</h2>
       </div>
       <div className="ds-panel-body stack">
         <OptRow<PredictionPref>
