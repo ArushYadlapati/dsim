@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { gameServerConfigured } from '../net/env';
 import { fetchProfile, updateHandle, updateUsername } from '../net/api';
-import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
+import { UsernameInput, useUsernameCheck, usernameHintClass } from './UsernameField';
 
 /*
  * THE NAME YOU ARE SHOWN BY — the display name every board prints and the unique @username a
@@ -170,7 +170,7 @@ export function Username({ userId }: { userId: string }) {
           // it used to be spelled out a second time here, one edit away from
           // disagreeing with the rule the checker actually enforces
           (dirty || !current) && (
-            <span style={{ color: usernameHintColor(check.status) }}>{check.message}</span>
+            <span className={`ds-form-hint ${usernameHintClass(check.status)}`}>{check.message}</span>
           )
         )}
       </p>

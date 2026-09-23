@@ -70,16 +70,31 @@ uses most and drops the near-duplicates around it.
 - **Panel body padding is `--ds-s-4`, always**, applied by a class. It is currently inlined
   as `style={{ padding: 16 }}` in several files; those are bugs, not style.
 
-## 3. Type — six sizes, four weights
+## 3. Type — seven sizes, two display clamps, seven weights
 
 ```css
---ds-t-xs: 11px;  /* eyebrows, mono labels, tick marks    */
---ds-t-sm: 12px;  /* hints, sub-lines, table meta         */
---ds-t-md: 13px;  /* body — the default                   */
---ds-t-lg: 15px;  /* panel titles, emphasis               */
---ds-t-xl: 20px;  /* h2                                   */
---ds-t-2xl: 28px; /* h1                                   */
+--ds-t-xs: 11px;       /* eyebrows, mono labels, tick marks — the FLOOR, HUD included */
+--ds-t-sm: 12px;       /* hints, sub-lines, table meta                               */
+--ds-t-md: 13px;       /* body — the default                                         */
+--ds-t-control: 14px;  /* buttons, inputs, tabs, table cells, Markdown body          */
+--ds-t-lg: 15px;       /* panel titles, emphasis                                     */
+--ds-t-xl: 20px;       /* dialog titles, sub-heads                                   */
+--ds-t-2xl: 28px;      /* badge glyphs, reward headings                              */
+--ds-t-h2: clamp(19px, 2.4vw, 24px);  /* .ds-h2                                      */
+--ds-t-h1: clamp(26px, 4vw, 38px);    /* .ds-h1, .ds-title h1                        */
+
+--ds-lh-tight: 1;      /* single-line UI           */
+--ds-lh-heading: 1.2;  /* wrapped display type     */
+--ds-lh-prose: 1.45;   /* paragraphs               */
+--ds-lh-long: 1.65;    /* legal/Markdown at 68ch   */
+
+--ds-track-tight: -0.015em; /* display headings    */
+--ds-track-caps: 0.06em;    /* uppercase labels    */
 ```
+
+Amended 2026-09-22 (design review C42) to match the code: 14px was the real control size
+(110 live uses) and the h1/h2 rendered 38/24, not the 28/20 this table used to claim.
+Nothing renders below `--ds-t-xs`: the 8–10px HUD and eyebrow labels were raised to it.
 
 - **Weights: 400, 500, 600, 700, 750, 800, 900 — and no eighth.** Both families are
   VARIABLE cuts, which `shell.css:164` documents, so half-steps like 750 are real type
@@ -95,7 +110,8 @@ uses most and drops the near-duplicates around it.
   declaration, thirteen rules silently set nothing for months. Grep a token before using it.
 - **Prefer the longhands.** `font:` shorthand also resets `font-family` and `line-height`,
   which is how that bug stayed invisible.
-- **Line height: 1 for single-line UI, 1.45 for prose.** No other values.
+- **Line height comes from a `--ds-lh-*` token.** `uiaudit` ratchets the literals that remain.
+- **Big numbers are mono with tabular figures** (`.ds-num`, DESIGN.md Digits-Are-Mono).
 
 ## 4. Radius and borders
 

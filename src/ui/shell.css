@@ -56,13 +56,12 @@
      that cleared AA on dark (4.7:1) but not on light (4.2:1). */
   --ds-accent-soft-mut: #2f6455;
 
-  /* ---- secondary + categorical accents (chips, icon containers, terrain) ---- */
-  --ds-blush: #fdd9c0;
-  --ds-sage: #d6e4c0;
-  --ds-lavender: #c9c3f0;
-  --ds-sky: #b6dcf0;
-  /* readable ink for the sky family — the pastel itself is a FILL, never type */
-  --ds-sky-ink: #0e6f8e;
+  /* STAFF (the admin ◆ badge). A saturated cyan, off every other job: not alliance blue
+     (it sat on the blue alliance half and vanished), not the owner's accent, not the
+     supporter's gold. INVERTS with its ink like --ds-accent, so it stays saturated on both
+     panels (5.7:1 on white, 7.3:1 on the dark panel as an object). */
+  --ds-staff: #0e6f8e;
+  --ds-staff-ink: #ffffff;
 
   --ds-you: rgba(54, 103, 88, 0.1);
 
@@ -79,18 +78,35 @@
   --ds-s-5: 24px;
   --ds-s-6: 32px;
   --ds-s-7: 48px;
-  /* TYPE — six steps, §3. The codebase had eighteen, including six fractional ones. */
+  /* TYPE — §3. The codebase had eighteen, including six fractional ones. `--ds-t-xs` is the
+     FLOOR everywhere, the in-match HUD included; nothing renders below 11px.
+     `--ds-t-control` is the size every button, input, tab and table cell already used as a
+     literal (the live audit counted it 110 times, off a scale that jumped 13→15), and the
+     two display clamps are what `.ds-h1`/`.ds-h2` actually render — the scale follows the
+     code rather than pretending h1 is 28px. */
   --ds-t-xs: 11px;
   --ds-t-sm: 12px;
   --ds-t-md: 13px;
+  --ds-t-control: 14px;
   --ds-t-lg: 15px;
   --ds-t-xl: 20px;
   --ds-t-2xl: 28px;
+  --ds-t-h2: clamp(19px, 2.4vw, 24px);
+  --ds-t-h1: clamp(26px, 4vw, 38px);
+  /* LINE HEIGHT — tight for single-line UI, heading for wrapped display type, prose for
+     paragraphs, long for legal/Markdown reading at a 68ch measure. */
+  --ds-lh-tight: 1;
+  --ds-lh-heading: 1.2;
+  --ds-lh-prose: 1.45;
+  --ds-lh-long: 1.65;
+  /* TRACKING — display headings tighten, uppercase labels open up. Only the values that
+     repeated became tokens; a one-off stays a one-off. */
+  --ds-track-tight: -0.015em;
+  --ds-track-caps: 0.06em;
   --ds-round-sm: 4px;
   --ds-round: 8px;
   --ds-round-md: 12px;
   --ds-round-lg: 16px;
-  --ds-round-xl: 24px;
   --ds-round-full: 9999px;
 
   /* ---- elevation: low-blur, high-opacity, offset to the bottom-right ---- */
@@ -110,7 +126,7 @@
      token below is a FILL: at 11.5-12px they all land near 3:1 on the light floor,
      under the 4.5:1 body-text bar. Need the same hue as type? Use its `-ink`
      sibling. Do NOT darken these — src/render/ paints --ds-red/--ds-blue on the
-     dark field and .score-panel gradients depend on their exact values.
+     dark field.
      Enforced by `node scripts/contrast.mjs`. */
   --ds-red: #ff4d4d;
   --ds-blue: #3d8bff;
@@ -143,13 +159,26 @@
   --ds-red-chip-ink: #ffffff;
   --ds-blue-chip-ink: #ffffff;
 
-  /* PROVISIONAL/medal gold (Leaderboard placement). A fill with fixed dark ink, so it
-     does NOT invert — same category as the alliance chips. Gold as TYPE is 1.98:1 on
-     the light panel; use --ds-warn there, which is the same idea, themed. */
+  /* ---- THE THREE REWARD HUES — one job each, all CATEGORY 2 (fills with fixed ink) ----
+       --ds-gold          SUPPORTER. Paid for. The ♥ badge and its membership surfaces.
+       --ds-podium-*      PLACED. A ranked podium, and a WORLD RECORD on the results stage.
+       --ds-award         EARNED from the season ledger: the award hexagon, a title chip,
+                          the record-holder ribbon, the claim dialog's record tier.
+     Two golds 5° apart used to sit side by side with the WR banner in the SUPPORTER one, so
+     the loudest achievement on the stage wore the membership colour. Keep them apart.
+     Gold as TYPE is 1.98:1 on the light panel; use --ds-warn there, which is themed.
+     (Legacy non-reward uses of --ds-gold — the CR action prompt, the catalyst pip, the
+     provisional-standing strip, the season cinema — predate this split; they are listed in
+     the 2026-09-22 design review for a move to --ds-warn.) */
   --ds-gold: #f5a623;
   --ds-gold-ink: #04222a;
   /* THE SEASON-AWARD BADGE. CATEGORY 2 (a fill with fixed ink), so it is declared HERE
      ONLY and does NOT invert — exactly like --ds-gold above and for the same reason.
+     THE SAME HEX AS --ds-purple, deliberately: it was a second, paler violet (#a78bfa,
+     2.7:1 on the light panel — under 1.4.11's 3:1 for a meaningful glyph). One purple
+     now; the award keeps its own NAME because its job (a fill under --ds-award-ink) is not
+     the artifact's. 3.4:1 on the light panel, 4.1:1 on the dark one, and it wears the
+     --ds-mut rim like every other mark in the family.
      ⚠️ GOLD/SILVER/BRONZE WAS THE OBVIOUS ANSWER AND IS THE TRAP: gold already means
      SUPPORTER, and silver and bronze are desaturated BY DEFINITION, which is precisely
      the failure docs/area/accounts.md records (a lavender pastel cleared `contrast`,
@@ -158,7 +187,7 @@
      on both grounds, it is one pair rather than three, and it extends to a fourth rank
      for free. The badge is distinguished from ★ owner / ◆ admin / ♥ supporter by SHAPE
      as well (a hexagon), which that guide also requires. */
-  --ds-award: #a78bfa;
+  --ds-award: #a96bff;
   --ds-award-ink: #2a1065;
   /* THE RANKED PODIUM (0048) — gold / silver / bronze, on the podium badge and an act
      podium title. CATEGORY 2 like --ds-award above: fills with ONE fixed dark ink, declared
@@ -188,7 +217,9 @@
      These carry a 1px stroke and NO block shadow (an offset block on a dark field
      reads as a stray highlight, not as depth). The stroke is what separates the card
      from the field, so it gets its OWN token: `--ds-line` is tuned against the card
-     BEHIND it, but --ds-hud-line must read against BOTH the card and the field. */
+     BEHIND it, but --ds-hud-line must read against BOTH the card and the field.
+     Equal to --ds-line in light by measurement, not by definition (dark differs), so it
+     stays a literal: retuning a card stroke must not move the HUD edge. */
   --ds-hud: rgba(255, 255, 255, 0.94);
   --ds-hud-soft: rgba(255, 255, 255, 0.86);
   --ds-hud-line: #c0c9c4;
@@ -198,15 +229,33 @@
      hardcoded dark and never themes, so NEITHER DO THESE. They are deliberately absent
      from the dark block below; do not "complete" the set.
      `-accent` is the DARK palette's mint on purpose: the canvas is a dark ground, so
-     the on-field family borrows the values tuned for one (7.9:1 on the intro scrim). */
+     the on-field family borrows the values tuned for one (7.9:1 on the intro scrim).
+     LITERALS, NOT var(): --ds-on-field equals light --ds-bg and -accent equals dark
+     --ds-accent, but a var() here would theme with the page, which is the one thing this
+     family must not do. Retune them by hand. */
   --ds-on-field: #f9faf7;
   --ds-on-field-dim: #b9beb8;
   --ds-on-field-accent: #5fb597;
+  --ds-on-field-accent-ink: #10241b; /* ink ON an --ds-on-field-accent fill (6.6:1); category 3 too */
   /* the full-screen RESULTS SCREEN's own backdrop (`src/ui/Results.tsx`) — a broadcast
      scoreboard, same doctrine as the field: fixed, deliberately absent from the dark
      block below. Its own shade (not `--ds-mat`'s exact value, which is a TS constant in
      `src/config.ts`, not a CSS token) so it stays a token the design system actually owns. */
   --ds-stage-bg: #14171c;
+  /* SCRIMS — the dark veils laid over the field or the app behind a dialog. Category 3 like
+     the stage: dark in BOTH themes, so they live here only. --ds-scrim is the light veil (an
+     overlay the field should still show through), --ds-scrim-strong the modal one. Six
+     unrelated near-black rgba literals did this job before. */
+  --ds-scrim: rgba(10, 12, 16, 0.55);
+  --ds-scrim-strong: rgba(8, 10, 14, 0.72);
+  /* CATEGORICAL DATA FILLS (the admin charts). Fixed, not themed, and chosen inside the
+     luminance band where one value clears 1.4.11's 3:1 against BOTH the white and the dark
+     panel, so a stacked bar keeps its relative weights when the theme flips. No alliance
+     red/blue, no text tokens as fills. Checked in both themes by `npm run contrast`. */
+  --ds-viz-1: #1f9e89;
+  --ds-viz-2: #9061f9;
+  --ds-viz-3: #d97706;
+  --ds-viz-4: #d6409f;
 
   /* Jakarta = the friendly workhorse; Grotesk = labels + technical data (scores,
      timers, keycaps). Both are VARIABLE cuts, so `font-weight: 750` is real. */
@@ -224,7 +273,7 @@
 
    THE RULE (Phase 6 §5, restated): a token whose job is "readable against
    the surface" INVERTS. A token whose job is "a fill with fixed ink" does
-   NOT. So --ds-ink/-mut/-accent/-warn/-danger/-sky-ink/-ok-ink/-line/
+   NOT. So --ds-ink/-mut/-accent/-warn/-danger/-staff/-ok-ink/-line/
    -line-strong all flip; --ds-red/-blue/-green/-red-chip/-blue-chip do
    not (white on #d32020 is 5.25:1 whatever is behind the chip).
 
@@ -278,8 +327,14 @@
      the pre-redesign --amber: it only became burnt amber to survive the light floor. */
   --ds-warn: #e0a437;
   --ds-danger: #f2857f;
-  --ds-sky-ink: #6ec8e8;
-  --ds-ok-ink: #4ec27f;
+  /* staff inverts WITH its ink, like the accent: a deep cyan disc would be 2.4:1 on the
+     dark panel, a blob rather than a badge */
+  --ds-staff: #6ec8e8;
+  --ds-staff-ink: #0f1214;
+  /* YELLOWER than the dark accent on purpose. At #4ec27f it sat a few degrees of hue off
+     --ds-accent #5fb597, so a WIN chip beside a RANKED chip read as one colour — and
+     Status Green exists precisely so ok is never mistaken for the brand. */
+  --ds-ok-ink: #7bd35a;
   --ds-red-ink: #ff9d96;
   --ds-blue-ink: #8cb8ff;
   --ds-purple-ink: #bf8fff;
@@ -290,14 +345,6 @@
   /* A 7%-black inset on a #1a2026 tile is invisible; the recessed input needs a
      real well. Tokenized so the four sites stay in sync. */
   --ds-inset: rgba(0, 0, 0, 0.35);
-
-  /* The pastels are FILLS THAT CARRY DARK INK. Left bright, they'd be four glowing
-     rectangles on a dark page, so each gets a tinted-dark sibling in the same spirit
-     as --ds-accent-soft. Their ink (--ds-ink) inverts with them. */
-  --ds-blush: #4a3428;
-  --ds-sage: #333f27;
-  --ds-lavender: #34305c;
-  --ds-sky: #21414f;
 
   /* HUD cards = --ds-panel over the field, mirroring light mode (where the card #fff
      also sits one step above its floor). The card is only ~1.4:1 on the field by fill,
@@ -318,38 +365,6 @@
      below it, so both read this one number (see `.ds-bar`). */
   --ds-bar-h: 63px;
   --ds-inset: rgba(25, 28, 27, 0.07);
-}
-
-/* Retheme the LEGACY in-match HUD (styles.css) by overriding ITS tokens — loaded
-   after styles.css so these win, re-tinting every token-driven HUD rule at once.
-
-   These are ALIASES, not values. Each one forwards to the --ds-* token that owns the
-   same job, so the HUD follows the theme with no second palette to keep in sync. (The
-   `var()` resolves on :root, where the dark block also lands, so the alias picks up
-   the dark value.) The only reason the bridge still exists is that styles.css has ~90
-   uses of these names; new rules should reach for --ds-* directly.
-
-   `--amber` was the old signal accent (16 uses: timer warnings, focus rings, results,
-   elo flashes) and forwards to --ds-accent, which inverts. It must never carry a fixed
-   hue: on the light panel a bright amber is ~2:1.
-
-   ---- THE ONE THING THAT DOES NOT THEME ----
-   Text painted straight onto the field canvas, which is hardcoded `#14161a` in
-   render/renderer.ts. `--text` here is charcoal in light mode and would vanish on the
-   field, so those rules (countdown digits, joystick, ranked-intro eyebrow/VS) use
-   --ds-on-field / --ds-on-field-dim instead. Grep for them before adding canvas text. */
-:root {
-  --bg: var(--ds-bg);
-  --panel: var(--ds-panel);
-  --panel-2: var(--ds-tile);
-  --border: var(--ds-line);
-  --text: var(--ds-ink);
-  --muted: var(--ds-mut);
-  --red: var(--ds-red);
-  --blue: var(--ds-blue);
-  --green: var(--ds-green);
-  --purple: var(--ds-purple);
-  --amber: var(--ds-accent);
 }
 
 /* ---- app surface + top bar ------------------------------------------- */
@@ -611,7 +626,7 @@
 }
 .ds-profile-label {
   font-family: var(--ds-font-mono);
-  font-size: 10px;
+  font-size: var(--ds-t-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -707,11 +722,22 @@
   background: var(--ds-panel);
   border-color: var(--ds-line);
 }
+/* SELECTED, the whole vocabulary (one place, so a new control picks from it instead of
+   inventing a sixth):
+   - LATCHED NAV — "you are here": soft fill + accent edge, flat. `.ds-rail-btn.on` and
+     `.ds-subnav-btn.on` are the SAME treatment; the rail's block shadow made two adjacent
+     columns read as two different components.
+   - OPTION CARD — a pick in a grid of cards (`.ds-opt.on`, OptRow): the same soft fill +
+     edge, plus the keycap's accent-edge shadow because the card is a pressable.
+   - SEGMENTED — one of N inline (`.ds-seg.on`, `.ds-dl-seg button.on`,
+     `.ds-startpos-tab.on`): solid accent fill, accent-ink.
+   - TAB STRIP — `.ds-tab.on`: accent ink + underline.
+   "Recommended" (`.ds-tile.primary`) is NOT a selection and so takes none of these: an
+   accent edge and kicker on the ordinary tile fill. */
 .ds-rail-btn.on {
   background: var(--ds-accent-soft);
   border-color: var(--ds-accent);
   color: var(--ds-accent-soft-ink);
-  box-shadow: var(--ds-block-sm);
 }
 
 /* ---- friends panel ----------------------------------------------------
@@ -840,7 +866,7 @@
 .fr-toggle-label {
   font-size: var(--ds-t-xs);
   font-weight: 700;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
 }
 .fr-toggle:hover {
   color: var(--ds-ink);
@@ -858,7 +884,7 @@
   border-radius: var(--ds-round-full);
   background: var(--ds-accent);
   color: var(--ds-accent-ink);
-  font-size: 10px;
+  font-size: var(--ds-t-xs);
   font-weight: 800;
   line-height: 16px;
   text-align: center;
@@ -870,17 +896,17 @@
 }
 .fr-title {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--ds-t-control);
   font-weight: 800;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
   text-transform: uppercase;
   color: var(--ds-ink);
 }
 .fr-collapse {
   margin-left: auto;
   font: inherit;
-  font-size: 14px;
-  line-height: 1;
+  font-size: var(--ds-t-control);
+  line-height: var(--ds-lh-tight);
   padding: var(--ds-s-1) var(--ds-s-2);
   border: 1px solid transparent;
   border-radius: var(--ds-round-sm);
@@ -1073,7 +1099,7 @@
   padding: var(--ds-s-1) var(--ds-s-2);
   font-size: 12px;
   color: var(--ds-mut);
-  line-height: 1.45;
+  line-height: var(--ds-lh-prose);
 }
 /* the two coloured variants of the shared base above. This is NOT the duplicate-selector
    bug `uiaudit` looks for — a base group plus per-variant overrides is the normal shape,
@@ -1175,8 +1201,10 @@
 .ds-home-title {
   font-size: clamp(44px, 7vw, 64px);
   font-weight: 800;
-  letter-spacing: -0.02em;
-  line-height: 1.05;
+  letter-spacing: var(--ds-track-tight);
+  /* the one display size in the app (the home wordmark), deliberately off the type scale;
+     its line-height is still the single-line 1 */
+  line-height: var(--ds-lh-tight);
   margin: 0 0 var(--ds-s-4);
 }
 /* game switcher (DECODE / Chain Reaction) — centered under the title */
@@ -1276,13 +1304,16 @@
   border-color: color-mix(in srgb, var(--ds-accent) 50%, var(--ds-line));
   transform: translateY(1px);
 }
+.ds-lobby-row:active:not(:disabled) {
+  transform: translateY(2px);
+}
 .ds-lobby-row:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
 .ds-lobby-row .ll-code {
   font-weight: 800;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
   font-variant-numeric: tabular-nums;
 }
 .ds-lobby-row .ll-game {
@@ -1324,7 +1355,7 @@
   border: 1px solid var(--ds-line);
   background: var(--ds-panel);
   color: var(--ds-ink);
-  font-size: 14px;
+  font-size: var(--ds-t-control);
   font-weight: 700;
   letter-spacing: 0.01em;
   text-decoration: none;
@@ -1374,7 +1405,7 @@
 .ds-menu-btn .mh {
   font-family: var(--ds-font-mono);
   font-size: 12px;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
   color: var(--ds-mut);
 }
 .ds-menu-btn:hover {
@@ -1392,8 +1423,11 @@
   border-color: transparent;
   box-shadow: var(--ds-edge);
 }
+/* SOLID ink, not an alpha mix: 74% accent-ink over the light accent blended to 4.40:1, under
+   AA, and contrast.mjs cannot see an alpha-mixed colour. The size and the mono face already
+   make it the sub-line. */
 .ds-menu-btn.primary .mh {
-  color: color-mix(in srgb, var(--ds-accent-ink) 74%, transparent);
+  color: var(--ds-accent-ink);
 }
 .ds-menu-btn.primary:hover {
   background: color-mix(in srgb, var(--ds-accent) 88%, white);
@@ -1432,7 +1466,7 @@
   cursor: pointer;
 }
 .ds-subnav-btn .sl {
-  font-size: 14px;
+  font-size: var(--ds-t-control);
   font-weight: 700;
 }
 .ds-subnav-btn:hover {
@@ -1464,7 +1498,7 @@
 }
 .ds-tab {
   font: inherit;
-  font-size: 14px;
+  font-size: var(--ds-t-control);
   font-weight: 700;
   padding: 8px 14px;
   border: 0;
@@ -1567,7 +1601,7 @@ button.ds-chip {
   display: inline-block;
   text-align: center;
   text-decoration: none;
-  font-size: 14px;
+  font-size: var(--ds-t-control);
   font-weight: 600;
   padding: 8px 16px;
   border-radius: var(--ds-round);
@@ -1649,6 +1683,20 @@ button.ds-key:focus-visible {
   outline: 2px solid var(--ds-accent);
   outline-offset: 2px;
 }
+/* the same house ring for controls that were written after the list above and fell back
+   to the UA ring: the friends panel (the `⋯` menu is the only way to Unfriend/Block), the
+   lobby browser rows and a chip that is a button (the room code's copy). `.ds-lan-url`
+   takes it in styles.css. */
+.fr-toggle:focus-visible,
+.fr-collapse:focus-visible,
+.fr-fold > summary:focus-visible,
+.fr-who:focus-visible,
+.fr-menu > summary:focus-visible,
+.ds-lobby-row:focus-visible,
+button.ds-chip:focus-visible {
+  outline: 2px solid var(--ds-accent);
+  outline-offset: 2px;
+}
 
 /* ---- page headings --------------------------------------------------- */
 /* `.overlay-panel` is a flex column with `gap: 14px`, and a margin on a flex item
@@ -1671,16 +1719,16 @@ button.ds-key:focus-visible {
   margin-top: var(--ds-s-5);
 }
 .ds-h1 {
-  font-size: clamp(26px, 4vw, 38px);
+  font-size: var(--ds-t-h1);
   font-weight: 800;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--ds-track-tight);
   margin: 0 0 8px;
   text-wrap: balance;
 }
 .ds-h2 {
-  font-size: clamp(19px, 2.4vw, 24px);
+  font-size: var(--ds-t-h2);
   font-weight: 800;
-  letter-spacing: -0.015em;
+  letter-spacing: var(--ds-track-tight);
   margin: 0 0 8px;
 }
 /* MatchStrategy's mode/countdown line and Lobby's room-code line. Deliberately NOT
@@ -1843,21 +1891,22 @@ button.ds-key:focus-visible {
   color: var(--ds-mut);
   margin-top: 3px;
 }
+/* RECOMMENDED, not selected: a solid accent fill here read as the current pick beside four
+   plain tiles (the same fill IS "selected" on a segmented control). The recommendation is an
+   accent edge + accent-edge block and an accent kicker, on the ordinary tile fill. */
 .ds-tile.primary {
-  background: var(--ds-accent);
-  color: var(--ds-accent-ink);
-  border-color: transparent;
+  border-color: var(--ds-accent);
   box-shadow: 4px 4px 0 var(--ds-accent-edge);
 }
 .ds-tile.primary:hover {
+  border-color: var(--ds-accent);
   box-shadow: 5px 5px 0 var(--ds-accent-edge);
 }
 .ds-tile.primary:active {
   box-shadow: 1px 1px 0 var(--ds-accent-edge);
 }
-.ds-tile.primary .k,
-.ds-tile.primary .d {
-  color: color-mix(in srgb, var(--ds-accent-ink) 72%, transparent);
+.ds-tile.primary .k {
+  color: var(--ds-accent);
 }
 .ds-tile:disabled .t {
   color: var(--ds-mut);
@@ -2043,6 +2092,10 @@ button.ds-key:focus-visible {
 .ds-field > .cap .val.over {
   color: var(--ds-danger);
 }
+/* a muted channel's volume: still shown, visibly not in effect */
+.ds-field > .cap .val.muted {
+  color: var(--ds-mut);
+}
 .ds-acct-email {
   font-weight: 700;
   color: var(--ds-ink);
@@ -2053,7 +2106,6 @@ button.ds-key:focus-visible {
   gap: var(--ds-s-1);
 }
 .ds-acct-uuid {
-  cursor: pointer;
   font-size: var(--ds-t-sm);
   word-break: break-all;
   color: var(--ds-mut);
@@ -2411,7 +2463,7 @@ button.ds-key:focus-visible {
 .ds-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 14px;
+  font-size: var(--ds-t-control);
 }
 .ds-table th,
 .ds-table td {
@@ -2420,7 +2472,7 @@ button.ds-key:focus-visible {
 }
 .ds-table th {
   font-family: var(--ds-font-mono);
-  font-size: 10px;
+  font-size: var(--ds-t-xs);
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--ds-mut);
@@ -2471,7 +2523,7 @@ button.ds-key:focus-visible {
 }
 .ds-dt {
   font-family: var(--ds-font-mono);
-  font-size: 10px;
+  font-size: var(--ds-t-xs);
   letter-spacing: 0.04em;
   padding: 2px 8px;
   border-radius: var(--ds-round-sm);
@@ -2533,9 +2585,6 @@ button.ds-key:focus-visible {
 }
 .mh-type.ranked {
   color: var(--ds-accent);
-}
-.mh-type.custom {
-  opacity: 0.85;
 }
 .mh-players {
   display: inline-flex;
@@ -2734,7 +2783,7 @@ button.ds-key:focus-visible {
   font-size: 22px;
   font-weight: 800;
   color: var(--ds-accent);
-  letter-spacing: -0.5px;
+  letter-spacing: var(--ds-track-tight);
 }
 .lb-standing-badge {
   flex: none;
@@ -2756,7 +2805,7 @@ button.ds-key:focus-visible {
 }
 .lb-standing-text {
   color: var(--ds-ink);
-  font-size: 14px;
+  font-size: var(--ds-t-control);
 }
 .lb-standing-text strong {
   color: var(--ds-accent);
@@ -2811,7 +2860,7 @@ tr.lb-you > td {
 }
 .lb-robot .tw {
   color: var(--ds-accent);
-  font-size: 10px;
+  font-size: var(--ds-t-xs);
 }
 tr.lb-detail td {
   background: var(--ds-bg);
@@ -2825,7 +2874,7 @@ tr.lb-detail td {
 }
 .lb-config-name {
   font-weight: 700;
-  font-size: 14px;
+  font-size: var(--ds-t-control);
 }
 .lb-config .ds-stats {
   grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
@@ -2842,22 +2891,23 @@ tr.lb-detail td {
   margin-bottom: 0;
 }
 .ds-empty {
-  padding: 30px 20px;
+  padding: var(--ds-s-6) var(--ds-s-5);
   text-align: center;
   color: var(--ds-mut);
-  font-size: 14px;
+  font-size: var(--ds-t-control);
 }
 .ds-empty .big {
-  font-size: 16px;
+  font-size: var(--ds-t-lg);
   color: var(--ds-ink-dim);
-  margin-bottom: 6px;
+  margin-bottom: var(--ds-s-2);
 }
+/* the SAME padding as .ds-empty (ui-standard §6: the panel must not jump when data lands) */
 .ds-loading {
-  padding: 30px 20px;
+  padding: var(--ds-s-6) var(--ds-s-5);
   text-align: center;
   color: var(--ds-mut);
   font-family: var(--ds-font-mono);
-  font-size: 13px;
+  font-size: var(--ds-t-md);
 }
 
 /* ---- replay viewer --------------------------------------------------- */
@@ -2873,15 +2923,15 @@ tr.lb-detail td {
    The replay plays fine; only the final number may be a point or two off, so this
    sits back rather than shouting. */
 .ds-replay-drift {
-  margin: 0 auto 8px;
+  margin: 0 auto var(--ds-s-2);
   max-width: 640px;
-  padding: 8px 12px;
+  padding: var(--ds-s-2) var(--ds-s-3);
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
   background: var(--ds-tile);
   color: var(--ds-mut);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: var(--ds-t-md);
+  line-height: var(--ds-lh-prose);
   text-align: center;
 }
 
@@ -2915,6 +2965,7 @@ tr.lb-detail td {
   font-variant-numeric: tabular-nums;
 }
 .ds-replay-score .rs-num {
+  /* 22px: display size for the live score, deliberately off the chrome scale (like .lb-standing-rank) */
   font-size: 22px;
   font-weight: 700;
   color: var(--ds-ink);
@@ -2922,9 +2973,9 @@ tr.lb-detail td {
   text-align: center;
 }
 .ds-replay-score .rs-side {
-  font-size: 12px;
+  font-size: var(--ds-t-sm);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
 }
 /* -ink siblings: these are TEXT, and the raw fills fail AA as type */
 .ds-replay-score .rs-side.red {
@@ -2934,9 +2985,9 @@ tr.lb-detail td {
   color: var(--ds-blue-ink);
 }
 .ds-replay-score .rs-mid {
-  font-size: 12px;
+  font-size: var(--ds-t-sm);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
   color: var(--ds-mut);
   min-width: 5ch;
   text-align: center;
@@ -2982,7 +3033,7 @@ tr.lb-detail td {
 .ds-replay-time {
   font-family: var(--ds-font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 13px;
+  font-size: var(--ds-t-md);
   color: var(--ds-mut);
   width: 44px;
   text-align: right;
@@ -3067,7 +3118,7 @@ tr.lb-detail td {
 .as-cap {
   font-size: var(--ds-t-xs);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
   text-transform: uppercase;
   color: var(--ds-mut);
 }
@@ -3099,7 +3150,7 @@ tr.lb-detail td {
   grid-column: 1 / -1;
   margin: 0;
   font-size: var(--ds-t-xs);
-  line-height: 1.5;
+  line-height: var(--ds-lh-prose);
   color: var(--ds-mut);
 }
 .as-status {
@@ -3111,7 +3162,7 @@ tr.lb-detail td {
   margin: 4px 0 0;
   font-size: var(--ds-t-xs);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
   text-transform: uppercase;
   color: var(--ds-mut);
 }
@@ -3176,7 +3227,7 @@ tr.lb-detail td {
 }
 .pen-side {
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
 }
 /* -ink siblings: these are TYPE on a bar surface, and the raw fills fail AA as text */
 .pen-side.red {
@@ -3236,7 +3287,7 @@ tr.lb-detail td {
   margin: 8px 0 0;
   font-size: var(--ds-t-xs);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
   text-transform: uppercase;
   color: var(--ds-mut);
 }
@@ -3248,7 +3299,7 @@ tr.lb-detail td {
 .rr-cap {
   font-size: var(--ds-t-xs);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
   text-transform: uppercase;
   color: var(--ds-mut);
 }
@@ -3274,7 +3325,7 @@ tr.lb-detail td {
   border-radius: var(--ds-round-sm);
   background: var(--ds-panel);
   color: var(--ds-ink);
-  font: 500 var(--ds-t-xs) / 1.4 var(--ds-font-ui);
+  font: 500 var(--ds-t-xs) / var(--ds-lh-prose) var(--ds-font-ui);
   text-align: left;
   cursor: pointer;
 }
@@ -3289,7 +3340,7 @@ tr.lb-detail td {
 }
 .rr-side {
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
 }
 .rr-side.red {
   color: var(--ds-red-ink);
@@ -3382,13 +3433,13 @@ tr.lb-detail td {
   border-radius: var(--ds-round-sm);
   background: var(--ds-panel);
   color: var(--ds-ink);
-  font: 600 var(--ds-t-md) / 1.2 var(--ds-font-mono);
+  font: 600 var(--ds-t-md) / var(--ds-lh-heading) var(--ds-font-mono);
 }
 .rr-field.wide {
   grid-column: 1 / -1;
 }
 .rr-field.wide input {
-  font: 400 var(--ds-t-sm) / 1.4 var(--ds-font-ui);
+  font: 400 var(--ds-t-sm) / var(--ds-lh-prose) var(--ds-font-ui);
 }
 .rr-field.red input:focus-visible {
   outline: 2px solid var(--ds-red-ink);
@@ -3408,7 +3459,7 @@ tr.lb-detail td {
 .rr-note {
   margin: 0;
   font-size: var(--ds-t-xs);
-  line-height: 1.5;
+  line-height: var(--ds-lh-prose);
   color: var(--ds-mut);
 }
 .rr-status {
@@ -3483,14 +3534,14 @@ tr.lb-detail td {
 }
 .ds-dl-pop {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + var(--ds-s-2));
   right: 0;
   z-index: 20;
   width: min(340px, calc(100vw - 36px));
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px;
+  gap: var(--ds-s-2);
+  padding: var(--ds-s-2);
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
   background: var(--ds-panel);
@@ -3503,7 +3554,7 @@ tr.lb-detail td {
   flex-direction: column;
   gap: 4px;
   width: 100%;
-  padding: 10px 12px;
+  padding: var(--ds-s-2) var(--ds-s-3);
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
   background: var(--ds-panel);
@@ -3540,21 +3591,21 @@ tr.lb-detail td {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  font-size: 14px;
+  font-size: var(--ds-t-control);
   font-weight: 700;
 }
 /* the format/size chip — mono so a KB figure and a file extension line up down the menu */
 .ds-dl-opt .dl-h em {
   font-family: var(--ds-font-mono);
   font-style: normal;
-  font-size: 11px;
+  font-size: var(--ds-t-xs);
   font-weight: 500;
   letter-spacing: 0.04em;
   color: var(--ds-mut);
 }
 .ds-dl-opt .dl-d {
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-prose);
   color: var(--ds-mut);
 }
 /* ---- the export menu's two PICKERS (view, camera) ---------------------
@@ -3573,7 +3624,7 @@ tr.lb-detail td {
   font-family: var(--ds-font-mono);
   font-size: var(--ds-t-xs);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
   color: var(--ds-mut);
 }
 .ds-dl-seg {
@@ -3619,8 +3670,8 @@ tr.lb-detail td {
   margin: 0;
   padding-top: 8px;
   border-top: 1px solid var(--ds-line);
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-prose);
   color: var(--ds-mut);
 }
 
@@ -3652,9 +3703,9 @@ tr.lb-detail td {
   }
 }
 .rec-label {
-  font-size: 12px;
+  font-size: var(--ds-t-sm);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
   text-transform: uppercase;
   color: var(--ds-ink);
 }
@@ -3662,7 +3713,7 @@ tr.lb-detail td {
   flex: 1;
   min-width: 120px;
   height: 6px;
-  border-radius: 3px;
+  border-radius: var(--ds-round-sm);
   background: var(--ds-line);
   overflow: hidden;
 }
@@ -3674,7 +3725,7 @@ tr.lb-detail td {
 .rec-eta {
   font-family: var(--ds-font-mono);
   font-variant-numeric: tabular-nums;
-  font-size: 13px;
+  font-size: var(--ds-t-md);
   color: var(--ds-mut);
 }
 /* THE BACKGROUND SAVE reports itself in the header rather than in a row of its own, because
@@ -3684,7 +3735,7 @@ tr.lb-detail td {
 .ds-replay-saving {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--ds-s-2);
   min-width: 0;
 }
 .ds-replay-saving .rec-track {
@@ -3700,8 +3751,8 @@ tr.lb-detail td {
 .ds-replay-rec .rec-note {
   flex-basis: 100%;
   margin: 0;
-  font-size: 12px;
-  line-height: 1.45;
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-prose);
   color: var(--ds-mut);
 }
 
@@ -3710,7 +3761,7 @@ tr.lb-detail td {
   position: fixed;
   inset: 0;
   z-index: 100;
-  background: rgba(6, 10, 15, 0.68);
+  background: var(--ds-scrim-strong);
   display: grid;
   place-items: center;
   padding: 20px;
@@ -3727,10 +3778,9 @@ tr.lb-detail td {
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round-md);
   padding: 20px;
-  /* a hard block, not a realistic blur. An alpha-black block on the dark scrim is
-     ~invisible in dark mode, so point it at --ds-line-soft (which IS the block-shadow
-     token and inverts with the theme) rather than a literal ink alpha. */
-  box-shadow: 6px 6px 0 var(--ds-line-soft);
+  /* THE block shadow, not a bespoke 6px one: --ds-line-soft inverts with the theme, so it
+     stays visible on the dark scrim where an alpha-black block would not. */
+  box-shadow: var(--ds-block);
 }
 .ds-modal-h {
   display: flex;
@@ -3751,12 +3801,15 @@ tr.lb-detail td {
   font-size: 12px;
   color: var(--ds-mut);
 }
-/* RECESSED: carved into the surface it sits on (DESIGN.md "Input Fields") */
+/* RECESSED: carved into the surface it sits on (DESIGN.md "Input Fields"). The recess is
+   the inset shadow, not the fill: a `--ds-tile` fill read as a DISABLED field in light theme
+   (an empty Team name looked greyed out), so the fill is the panel's and the border + inset
+   carry the control. */
 .ds-input {
   font: inherit;
-  font-size: 14px;
+  font-size: var(--ds-t-control);
   color: var(--ds-ink);
-  background: var(--ds-tile);
+  background: var(--ds-panel);
   border: 1px solid var(--ds-line-strong); /* 1.4.11: the border IS the control (tile-on-panel is 1.16:1) */
   border-radius: var(--ds-round);
   padding: 8px 12px;
@@ -3776,26 +3829,45 @@ tr.lb-detail td {
   color: var(--ds-mut);
   min-height: 1em;
 }
+/* the verdict colours, as classes (`usernameHintClass`) rather than an inline style.
+   --ds-ok-ink, not --ds-ok: the latter is a fill (3.25:1 as 12px type on the panel) */
+.ds-form-hint.ok {
+  color: var(--ds-ok-ink);
+}
+/* a verdict inside a `.ds-hint` sentence (ProfileName) takes the colour only, not the
+   `.ds-hint .ok/.err` " · " lead-in, which dangles when it is the first thing on the line */
+.ds-hint .ds-form-hint::before {
+  content: none;
+}
+/* the other way in (Google, or the copy-link fallback): full width, under the form */
+.ds-form-alt {
+  width: 100%;
+}
+.ds-form-hint > .ds-form-alt {
+  margin-top: var(--ds-s-2);
+}
 /* username input with a fixed @ prefix */
 .ds-username-input {
   display: flex;
   align-items: stretch;
-  border: 1px solid var(--ds-line);
+  /* the same 1.4.11 edge as `.ds-input`: this wrapper IS the field's border */
+  border: 1px solid var(--ds-line-strong);
   border-radius: var(--ds-round);
-  background: var(--ds-tile);
+  background: var(--ds-panel);
   box-shadow: inset 0 2px 0 var(--ds-inset);
   overflow: hidden;
 }
 .ds-username-input:focus-within {
   outline: 2px solid var(--ds-accent);
   outline-offset: 1px;
+  border-color: transparent;
 }
 .ds-username-input .at {
   display: flex;
   align-items: center;
   padding: 0 4px 0 12px;
   color: var(--ds-mut);
-  font-size: 14px;
+  font-size: var(--ds-t-control);
 }
 .ds-username-input .ds-input {
   border: none;
@@ -3871,7 +3943,7 @@ tr.lb-detail td {
   background: color-mix(in srgb, var(--ds-warn) 10%, var(--ds-panel));
   color: var(--ds-ink);
   font-size: var(--ds-t-md);
-  line-height: 1.45;
+  line-height: var(--ds-lh-prose);
 }
 /* the sentence takes the slack so both buttons stay hard right at any width */
 .ds-verifybar-text {
@@ -3906,9 +3978,8 @@ tr.lb-detail td {
   /* same reason as `.ds-app`: its centered `.ds-console-in` must not slide when a
      lobby/queue screen grows past the viewport */
   overflow-y: scroll;
-  background:
-    radial-gradient(1100px 460px at 50% -8%, color-mix(in srgb, var(--ds-accent) 10%, transparent), transparent),
-    var(--ds-bg);
+  /* flat: an accent wash behind the page was atmosphere, and DESIGN.md is flat by default */
+  background: var(--ds-bg);
   color: var(--ds-ink);
   font-family: var(--ds-font-ui);
 }
@@ -3983,9 +4054,6 @@ tr.lb-detail td {
 .ds-head .ds-back {
   margin-bottom: 0;
 }
-.ds-head .ds-mark {
-  font-size: 17px;
-}
 .ds-head-spacer {
   margin-left: auto;
 }
@@ -3999,9 +4067,9 @@ tr.lb-detail td {
    which is how it survived. Only the margin differs: `.ds-h1` reserves space for a
    `.ds-sub`, and the console pages always render one. */
 .ds-title h1 {
-  font-size: clamp(26px, 4vw, 38px);
+  font-size: var(--ds-t-h1);
   font-weight: 800;
-  letter-spacing: -0.02em;
+  letter-spacing: var(--ds-track-tight);
   margin: 0;
 }
 .ds-title .accent {
@@ -4112,7 +4180,7 @@ tr.lb-detail td {
 /* a lighter in-section subheading (e.g. the CR "Scoring archetype" groups) */
 .ds-subh {
   font-family: var(--ds-font-mono);
-  font-size: 10px;
+  font-size: var(--ds-t-xs);
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--ds-mut);
@@ -4235,7 +4303,7 @@ tr.lb-detail td {
   height: 24px;
   display: grid;
   place-items: center;
-  border-radius: 6px;
+  border-radius: var(--ds-round-sm);
   border: 1px solid transparent;
   background: transparent;
   color: var(--ds-mut);
@@ -4370,7 +4438,7 @@ tr.lb-detail td {
   color: var(--ds-mut);
 }
 .contrib-name {
-  font-size: 14px;
+  font-size: var(--ds-t-control);
   font-weight: 700;
   color: var(--ds-ink);
 }
@@ -4418,7 +4486,7 @@ tr.lb-detail td {
 }
 
 .ds-opt .ot {
-  font-size: 14px;
+  font-size: var(--ds-t-control);
   font-weight: 700;
 }
 .ds-opt .od {
@@ -4440,7 +4508,7 @@ tr.lb-detail td {
 .ds-opt .oz {
   margin-top: 3px;
   align-self: flex-start;
-  font-size: 10px;
+  font-size: var(--ds-t-xs);
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -4528,9 +4596,9 @@ tr.lb-detail td {
 .ds-note {
   display: block;
   font-family: var(--ds-font-mono);
-  font-size: 10px;
+  font-size: var(--ds-t-xs);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--ds-track-caps);
   color: var(--ds-mut);
 }
 
@@ -4577,10 +4645,12 @@ tr.lb-detail td {
   font-size: 12px;
   color: var(--ds-mut);
 }
+/* a READOUT (12%, 1.0 · linear): ink, not accent — accent means "you can press this", and
+   a slider's value is not a link */
 .ds-field > .cap .val {
   font-family: var(--ds-font-mono);
   font-variant-numeric: tabular-nums;
-  color: var(--ds-accent);
+  color: var(--ds-ink);
   font-weight: 600;
 }
 /* ---- chunky sliders -------------------------------------------------
@@ -4669,7 +4739,9 @@ input[type='range'].ds-range:disabled {
   gap: 18px;
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
-  background: linear-gradient(160deg, var(--ds-tile), var(--ds-panel));
+  /* flat panel, like every other card. The tile→panel sheen read as chrome in light and
+     vanished in dark (<1.1:1), decoration only one theme could see. */
+  background: var(--ds-panel);
   padding: 18px;
   box-shadow: var(--ds-block);
 }
@@ -4684,9 +4756,7 @@ input[type='range'].ds-range:disabled {
 .ds-hero-view {
   display: grid;
   place-items: center;
-  background:
-    radial-gradient(120% 120% at 50% 0%, color-mix(in srgb, var(--ds-accent) 8%, transparent), transparent),
-    var(--ds-bg);
+  background: var(--ds-bg);
   border: 1px solid var(--ds-line-soft);
   border-radius: var(--ds-round);
   min-height: 150px;
@@ -4878,11 +4948,11 @@ button.bb-cell:focus-visible {
   font-size: 24px;
   font-weight: 800;
   letter-spacing: -0.01em;
-  line-height: 1.2;
+  line-height: var(--ds-lh-heading);
 }
 .ds-hero-name .cust {
   font-family: var(--ds-font-mono);
-  font-size: 10px;
+  font-size: var(--ds-t-xs);
   font-weight: 700;
   letter-spacing: 0.12em;
   color: var(--ds-accent-ink);
@@ -4926,10 +4996,21 @@ button.bb-cell:focus-visible {
   font-weight: 700;
   color: var(--ds-ink);
 }
+/* DIGITS ARE MONO (DESIGN.md): a big number is set in the mono face with tabular figures, so
+   a ticking score does not jitter and "big number" has one face. `.ds-num` is the utility for
+   new markup; the three hand-styled displays that predate it are enrolled by selector rather
+   than by touching their JSX. Size and weight stay with each rule. */
+.ds-num,
+.lb-standing-rank,
+.ds-replay-score .rs-num,
+.adm-stat b {
+  font-family: var(--ds-font-mono);
+  font-variant-numeric: tabular-nums;
+}
 .ds-stat .sl {
   display: block;
   font-family: var(--ds-font-mono);
-  font-size: 10px;
+  font-size: var(--ds-t-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--ds-mut);
@@ -5063,7 +5144,7 @@ button.bb-cell:focus-visible {
     padding: var(--ds-s-0) var(--ds-s-1);
     /* SINGLE-LINE UI, so line-height 1 (§3). Inherited 1.5 leading put a three-row wrap at
        96.5px inside a 96px box and clipped the last row of chips by half a pixel. */
-    line-height: 1;
+    line-height: var(--ds-lh-tight);
     /* nine offset shadows in a tight wrap is noise; the border carries the chip */
     box-shadow: none;
   }
@@ -5397,7 +5478,7 @@ a.ds-cta {
 .ds-hint {
   color: var(--ds-mut);
   font-size: 12px;
-  line-height: 1.45;
+  line-height: var(--ds-lh-prose);
   margin: 0;
 }
 
@@ -5514,12 +5595,6 @@ button.ds-key:hover {
 button.ds-key:active {
   transform: translateY(3px);
   box-shadow: 0 0 0 var(--ds-line);
-}
-.ds-key.on,
-.ds-key.selected {
-  border-color: var(--ds-accent);
-  color: var(--ds-accent);
-  box-shadow: inset 0 0 0 1px var(--ds-accent);
 }
 .ds-key.capturing {
   border-color: var(--ds-accent);
@@ -5706,7 +5781,8 @@ button.ds-key:active {
   gap: 6px;
   border: 1px solid var(--ds-line);
   border-radius: var(--ds-round);
-  background: linear-gradient(160deg, var(--ds-tile), var(--ds-panel));
+  background: var(--ds-panel); /* flat, with the block edge every card carries — see .ds-hero */
+  box-shadow: var(--ds-block);
   padding: 22px;
 }
 .ds-dl-plat {
@@ -5840,7 +5916,7 @@ button.ds-key:active {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font: 600 10px/1.2 var(--ds-font-ui, inherit);
+  font: 600 var(--ds-t-xs)/var(--ds-lh-heading) var(--ds-font-ui);
   color: var(--ds-ink-dim);
   text-transform: uppercase;
   letter-spacing: 0.03em;
@@ -5872,7 +5948,7 @@ button.ds-key:active {
   font-family: inherit;
   font-weight: 600;
   font-size: 12px;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-ink-dim);
   cursor: pointer;
   user-select: none;
@@ -5900,7 +5976,7 @@ button.ds-key:active {
   font-family: inherit;
   font-weight: 700;
   font-size: 12px;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   letter-spacing: 0.04em;
   text-transform: uppercase;
   cursor: pointer;
@@ -5913,8 +5989,8 @@ button.ds-key:active {
   font-family: inherit;
   font-weight: 700;
   font-size: 11px;
-  line-height: 1;
-  letter-spacing: 0.06em;
+  line-height: var(--ds-lh-tight);
+  letter-spacing: var(--ds-track-caps);
   color: var(--ds-mut);
   text-transform: uppercase;
 }
@@ -5941,7 +6017,7 @@ button.ds-key:active {
   top: 2px;
   right: 4px;
   font-size: 13px;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-mut);
   padding: 1px 2px;
   border-radius: var(--ds-round-sm);
@@ -6019,7 +6095,7 @@ button.ds-key:active {
   flex-direction: column;
   gap: 8px;
   color: var(--ds-ink-dim);
-  font-size: 14px;
+  font-size: var(--ds-t-control);
 }
 .ds-perks li {
   display: flex;
@@ -6050,8 +6126,8 @@ button.ds-key:active {
    the text-safe siblings, and this is status text on a panel. */
 .ds-claim-msg {
   margin-top: 10px;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: var(--ds-t-control);
+  line-height: var(--ds-lh-prose);
 }
 .ds-claim-msg.ok { color: var(--ds-ok-ink); }
 .ds-claim-msg.err { color: var(--ds-red-ink); }
@@ -6101,9 +6177,7 @@ button.ds-key:active {
    The label/number distinction is carried by WEIGHT on these surfaces, since a
    second tinted ink would be another pair to keep above AA for no real gain. */
 .ds-menu-btn.primary .ds-qcount,
-.ds-menu-btn.primary .ds-qcount b,
-.ds-tile.primary .ds-qcount,
-.ds-tile.primary .ds-qcount b {
+.ds-menu-btn.primary .ds-qcount b {
   color: var(--ds-accent-ink);
 }
 .ds-rail-btn.on .ds-qcount {
@@ -6376,7 +6450,7 @@ button.ds-key:active {
   border: 1px solid color-mix(in srgb, var(--ds-red) 40%, var(--ds-line));
 }
 .ds-standing-cap {
-  font: 700 10px/1 var(--ds-font-mono);
+  font: 700 var(--ds-t-xs)/1 var(--ds-font-mono);
   letter-spacing: 0.12em;
   color: var(--ds-mut);
 }
@@ -6412,10 +6486,7 @@ button.ds-key:active {
 }
 .ds-standing-cost { font: 600 11px/1.4 var(--ds-font-mono); }
 
-/* the standing pill in the moderation queue — the server's own read on a reported player,
-   next to what other players claim about them */
-.adm-pill.standing { color: var(--ds-red-ink); background: color-mix(in srgb, var(--ds-red) 14%, var(--ds-panel)); }
-.adm-pill.standing.ok { color: var(--ds-ok-ink); background: color-mix(in srgb, var(--ds-ok) 14%, var(--ds-panel)); }
+/* the standing pill in the moderation queue is `.adm-pill.ok|warn|danger` (styles.css), by tier */
 
 /* REPORT a player — the post-match dialog. Lives inside the results panel, which is itself
    a scroll container on a phone, so this only has to size itself sanely. */
@@ -6517,7 +6588,7 @@ button.ds-key:active {
   color: var(--ds-ink);
 }
 .ds-report-cap {
-  font: 700 10px/1 var(--ds-font-mono);
+  font: 700 var(--ds-t-xs)/1 var(--ds-font-mono);
   letter-spacing: 0.12em;
   color: var(--ds-mut);
 }
@@ -6604,7 +6675,7 @@ button.ds-key:active {
   margin: 6px 0 0;
   color: var(--ds-ink);
   font-size: 12px;
-  line-height: 1.45;
+  line-height: var(--ds-lh-prose);
   /* a reporter's free text is UNTRUSTED input rendered in a moderator's browser. React
      escapes it, and this stops a wall of characters from breaking the row's layout. */
   overflow-wrap: anywhere;
@@ -6670,7 +6741,7 @@ button.ds-key:active {
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
 }
 /* THE THEME SWAP. Both cuts are in the DOM at the same reserved size (the <img>
    carries width/height attributes computed from the artwork's real 1735x438, so
@@ -6838,7 +6909,7 @@ button.ds-key:active {
   font-family: inherit;
   font-size: var(--ds-t-sm);
   font-weight: 500;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   display: inline-flex;
   align-items: center;
   gap: var(--ds-s-1);
@@ -6889,7 +6960,7 @@ button.ds-key:active {
 .an-tile-value {
   font-size: var(--ds-t-xl);
   font-weight: 750;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   font-variant-numeric: tabular-nums;
   color: var(--ds-ink);
 }
@@ -6911,8 +6982,9 @@ button.ds-key:active {
 .an-delta.up {
   color: var(--ds-ok-ink);
 }
+/* --ds-danger, not --ds-red-ink: red is alliance identity, and a falling metric is an error state */
 .an-delta.down {
-  color: var(--ds-red-ink);
+  color: var(--ds-danger);
 }
 
 /* ---- the time series ---- */
@@ -6952,7 +7024,7 @@ button.ds-key:active {
 /* DASHED, not merely a second hue. Two solid lines are told apart by colour alone,
    which is the one channel a reader may not have. */
 .an-line.visitors {
-  stroke: var(--ds-purple-ink);
+  stroke: var(--ds-viz-2);
   stroke-dasharray: 4 3;
 }
 .an-cursor {
@@ -6992,6 +7064,10 @@ button.ds-key:active {
 }
 .an-key.visitors {
   color: var(--ds-purple-ink);
+}
+/* the dash matches the chart line; the label stays text ink (viz-2 only clears 3:1) */
+.an-key.visitors::before {
+  background: var(--ds-viz-2);
 }
 .an-readout {
   margin: 0;
@@ -7248,7 +7324,7 @@ button.ds-key:active {
   font-family: var(--ds-font-ui);
   font-size: var(--ds-t-sm);
   font-weight: 600;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-mut);
   white-space: nowrap;
   pointer-events: none;
@@ -7280,7 +7356,7 @@ button.ds-key:active {
   border-radius: var(--ds-round-sm);
   font-family: var(--ds-font-mono);
   font-size: var(--ds-t-md);
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-ink);
   white-space: pre;
   overflow: hidden;
@@ -7305,7 +7381,7 @@ button.ds-key:active {
   font-family: var(--ds-font-mono);
   font-size: var(--ds-t-md);
   font-weight: 700;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-ink);
   cursor: pointer;
 }
@@ -7354,7 +7430,7 @@ button.ds-key:active {
   font-family: var(--ds-font-ui);
   font-size: var(--ds-t-sm);
   font-weight: 600;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-mut);
 }
 
@@ -7377,11 +7453,16 @@ button.ds-key:active {
   vertical-align: middle;
   color: var(--ds-award-ink);
 }
+/* the --ds-mut RIM is on EVERY hexagon, not only the metals: it is what bounds the family's
+   silhouettes on the panel (1.4.11), and the plain violet one went without it at 2.7:1 */
 .award-badge svg {
   display: block;
   width: 100%;
   height: 100%;
   fill: var(--ds-award);
+  stroke: var(--ds-mut);
+  stroke-width: 1.2;
+  stroke-linejoin: round;
 }
 /* the numeral sits ON the hexagon, so it is absolutely placed rather than laid out —
    a flex sibling would push the shape aside instead of labelling it */
@@ -7394,12 +7475,13 @@ button.ds-key:active {
   font-family: var(--ds-font-mono);
   font-size: 0.62em;
   font-weight: 800;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-award-ink);
 }
+/* 1em: the family's one base size — see `.sup-badge.sup-sm` */
 .award-badge.award-sm {
-  width: 1.05em;
-  height: 1.05em;
+  width: 1em;
+  height: 1em;
   margin-left: 0.42em;
 }
 /* ...except in a flex name row that already spaces its children with `gap`, where the
@@ -7431,7 +7513,7 @@ button.ds-key:active {
 .award-text {
   font-family: var(--ds-font-ui);
   font-size: var(--ds-t-md);
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-ink);
 }
 
@@ -7462,16 +7544,19 @@ button.ds-key:active {
   align-self: center;
   vertical-align: middle;
   padding: 0 6px;
-  border-radius: var(--ds-round-sm);
+  /* full pill, like every badge (DESIGN.md Shapes) — it was the one square-cornered mark */
+  border-radius: var(--ds-round-full);
   font-family: var(--ds-font-mono);
-  /* 11px, one step under `.lb-at`: a title is quieter than the @handle, which is quieter
-     than the name. Set as a length rather than an `em` because this chip appears in rows at
-     two different name sizes and an em would make it two different chips. */
-  font-size: 11px;
+  /* --ds-t-xs, one step under `.lb-at`: a title is quieter than the @handle, which is quieter
+     than the name. A length rather than an `em` because this chip appears in rows at two
+     different name sizes and an em would make it two different chips. */
+  font-size: var(--ds-t-xs);
   font-weight: 700;
   line-height: 18px;
   color: var(--ds-award-ink);
   background: var(--ds-award);
+  /* the family's --ds-mut rim, as an inset ring so it adds no width */
+  box-shadow: inset 0 0 0 1px var(--ds-mut);
 }
 /* ...in a flex name row that already spaces its children with `gap`; the same exception
    `.award-badge` needs, kept here so the two stay in step. */
@@ -7488,15 +7573,8 @@ button.ds-key:active {
 
 /* ── AN ACT PODIUM TITLE (`AwardBadge`, `awardPodiumTier`) ──────────────────────────────────
    The most prestigious title the ledger mints wears the podium's metal instead of the award
-   violet. The `--ds-mut` rim is what keeps silver visible on the light panel (~1.9:1 by fill
+   violet. The `--ds-mut` rim (on every hexagon, above) is what keeps silver visible on the light panel (~1.9:1 by fill
    alone) — the lavender-pastel lesson in docs/area/accounts.md. */
-.award-badge.podium-gold svg,
-.award-badge.podium-silver svg,
-.award-badge.podium-bronze svg {
-  stroke: var(--ds-mut);
-  stroke-width: 1.2;
-  stroke-linejoin: round;
-}
 .award-badge.podium-gold svg {
   fill: var(--ds-podium-gold);
 }
@@ -7540,8 +7618,9 @@ button.ds-key:active {
   position: relative;
   display: inline-flex;
   flex: 0 0 auto;
-  width: 1.1em;
-  height: 1.1em;
+  /* 1em: the family's one base size — see `.sup-badge.sup-sm` */
+  width: 1em;
+  height: 1em;
 }
 /* ...except where the row already spaces its children with `gap` */
 .lb-name > .badge-mark,
@@ -7593,7 +7672,7 @@ button.ds-key:active {
   font-family: var(--ds-font-mono);
   font-size: 0.6em;
   font-weight: 800;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-podium-ink);
 }
 /* THE COUNTER. Beside a name it TRAILS the glyph as `×2` — a pip on a 16px crest covers the
@@ -7602,7 +7681,7 @@ button.ds-key:active {
   font-family: var(--ds-font-mono);
   font-size: 0.72em;
   font-weight: 800;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-ink-dim);
 }
 /* ...and at the large sizes it is a corner PIP: a fixed dark disc with light ink (the stage
@@ -7698,7 +7777,7 @@ button.ds-key:active {
   font-size: var(--ds-t-xs);
   font-weight: 700;
   letter-spacing: 0.08em;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   text-transform: uppercase;
   color: var(--ds-ink-dim);
 }
@@ -7716,7 +7795,7 @@ button.ds-key:active {
   margin: 0;
   font-size: var(--ds-t-sm);
   font-weight: 700;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-ink-dim);
 }
 /* the TYPE is `.ds-dialog-title`'s (styles.css); this owns only the card's own layout, and
@@ -7739,7 +7818,7 @@ button.ds-key:active {
   padding: 0;
   list-style: none;
   font-size: var(--ds-t-md);
-  line-height: 1.45;
+  line-height: var(--ds-lh-prose);
   color: var(--ds-ink);
 }
 /* WHAT IS IN IT — recessed, like the builder's own lists, so the card's claim reads as the
@@ -7772,8 +7851,8 @@ button.ds-key:active {
   font-family: var(--ds-font-mono);
   font-size: var(--ds-t-xs);
   font-weight: 700;
-  letter-spacing: 0.06em;
-  line-height: 1;
+  letter-spacing: var(--ds-track-caps);
+  line-height: var(--ds-lh-tight);
   text-transform: uppercase;
   color: var(--ds-mut);
 }
@@ -7782,7 +7861,7 @@ button.ds-key:active {
   flex-direction: column;
   gap: var(--ds-s-1);
   font-size: var(--ds-t-md);
-  line-height: 1.45;
+  line-height: var(--ds-lh-prose);
   color: var(--ds-ink);
 }
 .rw-item-sub {
@@ -7842,7 +7921,7 @@ button.ds-key:active {
 .appr-name {
   font-size: var(--ds-t-lg);
   font-weight: 700;
-  line-height: 1;
+  line-height: var(--ds-lh-tight);
   color: var(--ds-ink);
 }
 /* rewards waiting: the award hue as an EDGE, the device the ranked-standing strip uses */

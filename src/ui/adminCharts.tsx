@@ -330,8 +330,8 @@ export interface Column {
   parts: { key: string; value: number }[];
 }
 
-/** the four series colours, in order. Tokens, so both themes follow. */
-const SERIES = ['var(--ds-accent)', 'var(--ds-blue-ink)', 'var(--ds-purple-ink)', 'var(--ds-warn)'];
+/** the four series colours, in order: the --ds-viz-* set, no alliance or status hue, each >=3:1 on the panel in both themes */
+const SERIES = ['var(--ds-viz-1)', 'var(--ds-viz-2)', 'var(--ds-viz-3)', 'var(--ds-viz-4)'];
 
 /**
  * A STACKED COLUMN CHART — matches per day by kind, signups, reports, replays.

@@ -12,7 +12,7 @@
  * A HUD card floating over the field, so it follows `styles.css`'s rules rather than the page
  * chrome's: the FILL is `--ds-hud` (the themed panel) and the EDGE is `--ds-hud-line`, never
  * `--ds-line` — a dark card on the dark field is only ~1.4:1 by fill, so the edge is what
- * identifies it (CLAUDE.md's theming note). Ink is `--text` / `--muted`, which the 3D view's
+ * identifies it (CLAUDE.md's theming note). Ink is `--ds-ink` / `--ds-mut`, which the 3D view's
  * scrim block redefines inside `[data-hud-band]` to the on-field pair; using `--ds-on-field`
  * directly would be white ink on a light card in the 2D light theme.
  *
@@ -73,16 +73,16 @@
   font-family: var(--ds-font-ui);
   font-size: var(--ds-t-lg);
   font-weight: 700;
-  line-height: 1.2;
-  color: var(--text);
+  line-height: var(--ds-lh-heading);
+  color: var(--ds-ink);
 }
 
 .ds-tut-hint {
   margin: 0;
   font-family: var(--ds-font-ui);
   font-size: var(--ds-t-sm);
-  line-height: 1.35;
-  color: var(--muted);
+  line-height: var(--ds-lh-prose);
+  color: var(--ds-mut);
 }
 
 /* the nudge APPEARS, so it must not move the card: the card is bottom-anchored and grows upward,
@@ -106,7 +106,7 @@
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-sm);
   background: transparent;
-  color: var(--muted);
+  color: var(--ds-mut);
   font-family: var(--ds-font-ui);
   font-size: var(--ds-t-xs);
   font-weight: 700;
@@ -121,7 +121,7 @@
 }
 
 .ds-tut-btn:hover {
-  color: var(--text);
+  color: var(--ds-ink);
   transform: translateY(-1px);
   box-shadow: 0 2px 0 var(--ds-hud-line);
 }
@@ -166,7 +166,7 @@
   flex: 1 1 auto;
   min-width: 0;
   font-size: var(--ds-t-sm);
-  color: var(--ds-mut);
+  color: var(--ds-ink-dim);
 }
 
 /*

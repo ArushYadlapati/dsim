@@ -11,35 +11,24 @@
  * `src/ui`, and it sits at a hard baseline of 0).
  *
  * ── WHICH SURFACE THIS IS ─────────────────────────────────────────────────────────────────
- * The DARK HUD over the field, not the page chrome — so it follows `styles.css`'s rules and
- * CLAUDE.md's third token category: its ground is the CANVAS, so it takes `--ds-hud` /
- * `--ds-hud-line` / `--ds-on-field*`, which do not invert with the theme, rather than
- * `--ds-panel` / `--ds-ink`, which do. A dark card is only ~1.4:1 on the dark field by FILL,
- * so the EDGE is what identifies it: `--ds-hud-line`, never `--ds-line`.
+ * A HUD CARD over the field, like every other in-match card: fill `--ds-hud`, edge
+ * `--ds-hud-line`, and the THEMED inks (`--ds-ink` / `--ds-mut` / `--ds-accent` + `-ink`).
+ * ⚠️ NOT the `--ds-on-field*` family. `--ds-hud` INVERTS — it is a near-white card in the light
+ * theme — and on-field ink on it was ~1.05:1. The card only goes dark inside
+ * `.game-root.view-3d .status-wrap` (styles.css), and that follows a LIVE 3D SCENE, not the
+ * physics mode: a 3D-physics room shown in the 2D view draws this panel on the light card. The
+ * scrim block redefines every themed ink used here, so the same rules read in both places
+ * (`npm run contrast`: the prediction-panel pairs). A dark card is only ~1.4:1 on the dark
+ * field by FILL, so the EDGE is what identifies it: `--ds-hud-line`, never `--ds-line`.
  */
-
-/*
- * THE INK FOR TEXT SITTING ON `--ds-on-field-accent`.
- *
- * CLAUDE.md's rule: a colour that is both a fill and a text colour will fail one of the two, so
- * it gets split into a `-ink` sibling. `--ds-on-field-accent` had no sibling, and the one place
- * that fills with it (`.mobile-edit-bar button.primary`) hardcodes this exact value inline. Same
- * value, named — it does NOT invert with the theme, because its ground is the field, which is
- * hardcoded dark (CLAUDE.md's third token category). Declared here rather than in `shell.css`
- * only because another lane is editing that file this week; it belongs beside the other `-ink`
- * tokens the next time someone is in there, and `.mobile-edit-bar` can then stop repeating it.
- */
-:root {
-  --ds-on-field-accent-ink: #10241b;
-}
 
 .pred-panel {
   background: var(--ds-hud);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-md);
-  padding: 8px;
-  width: 260px;
-  margin-top: 4px;
+  padding: var(--ds-s-2);
+  width: 260px; /* one-off: the width of the three option buttons at --ds-t-xs */
+  margin-top: var(--ds-s-1);
   font-variant-numeric: tabular-nums;
 }
 
@@ -47,33 +36,33 @@
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  font-size: 10px;
+  font-size: var(--ds-t-xs);
   letter-spacing: 0.6px;
-  color: var(--muted);
-  margin-bottom: 4px;
+  color: var(--ds-mut);
+  margin-bottom: var(--ds-s-1);
 }
 
 /* what is ACTUALLY running, which is not always what the pref says (`auto` resolves, and the
    slip rule can step Full down mid-match) — so it is stated, not implied by a pressed button */
 .pred-mode {
-  color: var(--ds-on-field);
+  color: var(--ds-ink);
   font-weight: 600;
 }
 
 .pred-opts {
   display: flex;
-  gap: 4px;
+  gap: var(--ds-s-1);
 }
 
 .pred-opt {
   flex: 1;
   background: transparent;
-  color: var(--ds-on-field-dim);
+  color: var(--ds-mut);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-sm);
-  padding: 4px;
+  padding: var(--ds-s-1);
   font-family: var(--ds-font-ui);
-  font-size: 11px;
+  font-size: var(--ds-t-xs);
   font-weight: 600;
   cursor: pointer;
   /* a PRESSABLE moves by transform, never by a border or a margin that appears on hover —
@@ -82,31 +71,30 @@
 }
 
 .pred-opt:hover {
-  color: var(--ds-on-field);
+  color: var(--ds-ink);
   transform: translateY(-1px);
 }
 
 /* the app suppresses the UA ring app-wide, so without this the picker is invisible to a
-   keyboard (ui-standard §1.3). `--ds-on-field`, not `--ds-ink`: this panel's ground is the
-   dark HUD over the canvas, which does not invert (CLAUDE.md's third token category). An
-   `outline` never moves the box, so `shiftaudit` stays green. */
+   keyboard (ui-standard §1.3). `--ds-accent`, the app's focus-ring colour, which the 3D scrim
+   swaps for the on-field mint. An `outline` never moves the box, so `shiftaudit` stays green. */
 .pred-opt:focus-visible {
-  outline: 2px solid var(--ds-on-field);
+  outline: 2px solid var(--ds-accent);
   outline-offset: 2px;
 }
 
 .pred-opt.on {
-  background: var(--ds-on-field-accent);
-  border-color: var(--ds-on-field-accent);
-  /* the accent is a FILL here, so its ink is the dark field behind everything else — a
-     colour that is both a fill and a text colour fails one of the two (CLAUDE.md) */
-  color: var(--ds-on-field-accent-ink);
+  background: var(--ds-accent);
+  border-color: var(--ds-accent);
+  /* the accent is a FILL here, so it takes its `-ink` sibling — a colour that is both a fill
+     and a text colour fails one of the two (CLAUDE.md) */
+  color: var(--ds-accent-ink);
 }
 
 .pred-foot {
-  font-size: 10px;
-  color: var(--muted);
-  margin-top: 4px;
+  font-size: var(--ds-t-xs);
+  color: var(--ds-mut);
+  margin-top: var(--ds-s-1);
 }
 
 @media (prefers-reduced-motion: reduce) {

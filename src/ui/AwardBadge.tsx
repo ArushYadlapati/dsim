@@ -13,11 +13,13 @@ import { awardBadgeRank, awardPodiumTier, awardShortText, awardTitleText, type A
  * SHAPE AND HUE, decided 2026-09-21 (`docs/rewards-round2-plan.md` §8.3):
  *  · a HEXAGON, because ★ ◆ ♥ are taken and the silhouette has to be unmistakable at 12 px
  *    next to all three;
- *  · ONE saturated violet (`--ds-award`) with the RANK as a numeral, rather than
- *    gold/silver/bronze — gold already means supporter, and silver and bronze are
- *    desaturated by definition, which is the exact failure `docs/area/accounts.md` records.
- *    One hue is also one `contrast.mjs` pair instead of three, and it extends to a fourth
- *    rank for free.
+ *  · ONE saturated violet (`--ds-award`, the same hex as `--ds-purple`) with the RANK as a
+ *    numeral, for a season award.
+ *  · WHAT SHIPPED SINCE: an ACT PODIUM title wears the podium metals (`--ds-podium-*`, 0048),
+ *    which the owner asked for by name, and the metals' low fill contrast is answered by the
+ *    `--ds-mut` RIM every hexagon carries, violet included. `--ds-gold` (supporter) is still
+ *    never used here: the three reward hues have one job each, listed in shell.css under
+ *    "THE THREE REWARD HUES".
  *
  * INLINE SVG for the hexagon, for the reason `SupporterBadge`'s own note gives: a text
  * glyph's size and position inside the disc are decided by the FONT's metrics, it is drawn

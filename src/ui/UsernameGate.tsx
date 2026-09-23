@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { authClient } from '../lib/authClient';
 import { gameServerConfigured } from '../net/env';
 import { fetchProfile, updateUsername } from '../net/api';
-import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
+import { UsernameInput, useUsernameCheck, usernameHintClass } from './UsernameField';
 import { trackEvent } from '../analytics';
 import { GateDialog } from './TermsGate';
 
@@ -114,11 +114,10 @@ export function UsernameGate({ suspended = false, children }: { suspended?: bool
         </label>
         {/* a failed save is an alert; the checker's verdicts are polite live text */}
         <div
-          className={`ds-form-hint${err ? ' err' : ''}`}
+          className={`ds-form-hint ${err ? 'err' : usernameHintClass(check.status)}`}
           id="ds-uname-gate-hint"
           role={err ? 'alert' : undefined}
           aria-live={err ? undefined : 'polite'}
-          style={err ? undefined : { color: usernameHintColor(check.status) }}
         >
           {err || check.message}
         </div>

@@ -64,6 +64,16 @@ export function fieldScreenBottom(camera: Camera, bounds: FieldBounds): number {
 const BAR_MAX_W = 760;
 
 const FONT = 'system-ui, sans-serif';
+/**
+ * The plate under both burned-in elements, and the dimmed ink for its secondary labels. 0.94, not
+ * the 0.86 it was: a 3D export puts the plate over a LIT scene, and at 0.86 over a light ground
+ * the alliance labels dropped to ~3.3:1. `scripts/contrast.mjs` asserts these over the light
+ * backdrop (its replay-overlay pairs), so change the two together.
+ */
+const PLATE = 'rgba(18,21,26,0.94)';
+const PLATE_DIM_INK = 'rgba(229,231,235,0.62)';
+/** alliance TEXT on the plate is the label shade, never the raw fill (docs/area/ui.md) */
+const allianceInk = (a: Alliance): string => (a === 'red' ? COLORS.redLabel : COLORS.blueLabel);
 const mmss = (sec: number): string => {
   const s = Math.max(0, Math.ceil(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
@@ -238,12 +248,12 @@ function drawSponsorMark(ctx: CanvasRenderingContext2D, w: number): void {
   const x = w - PAD - boxW;
   const y = PAD;
 
-  ctx.fillStyle = 'rgba(18,21,26,0.86)';
+  ctx.fillStyle = PLATE;
   chip(ctx, x, y, boxW, boxH, 8);
 
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(229,231,235,0.62)';
+  ctx.fillStyle = PLATE_DIM_INK;
   ctx.font = `700 ${MARK_LABEL_H - 2}px ${FONT}`;
   ctx.fillText(MARK_LABEL, x + boxW / 2, y + MARK_PAD + MARK_LABEL_H / 2);
 
@@ -294,7 +304,7 @@ export function drawReplayHud(
 
   // a dark plate so the type reads over whatever the field happens to be behind it. The field
   // is hardcoded dark (see the THEME note in CLAUDE.md), so this never themes either.
-  ctx.fillStyle = 'rgba(18,21,26,0.86)';
+  ctx.fillStyle = PLATE;
   chip(ctx, barX, y, barW, BAR_H, 10);
 
   ctx.textBaseline = 'middle';
@@ -305,7 +315,7 @@ export function drawReplayHud(
   const side = (alliance: Alliance, x: number, align: 'left' | 'right'): void => {
     const dir = align === 'left' ? 1 : -1;
     ctx.textAlign = align;
-    ctx.fillStyle = alliance === 'red' ? COLORS.red : COLORS.blue;
+    ctx.fillStyle = allianceInk(alliance);
     ctx.font = labelFont;
     ctx.fillText(alliance.toUpperCase(), x, midY - BAR_H * 0.19);
     ctx.font = scoreFont;
@@ -322,7 +332,7 @@ export function drawReplayHud(
 
   // the middle: what phase it is and how long is left in it — or the result, once there is one
   ctx.textAlign = 'center';
-  ctx.fillStyle = done ? COLORS.white : 'rgba(229,231,235,0.62)';
+  ctx.fillStyle = done ? COLORS.white : PLATE_DIM_INK;
   ctx.font = labelFont;
   ctx.fillText(labels.phase, w / 2, midY - BAR_H * 0.19);
   if (labels.clock) {
@@ -333,7 +343,7 @@ export function drawReplayHud(
     ctx.font = `700 ${Math.round(BAR_H * 0.24)}px ${FONT}`;
     const r = m.scores.red.total;
     const b = m.scores.blue.total;
-    ctx.fillStyle = r === b ? COLORS.white : r > b ? COLORS.red : COLORS.blue;
+    ctx.fillStyle = r === b ? COLORS.white : allianceInk(r > b ? 'red' : 'blue');
     ctx.fillText(labels.result, w / 2, midY + BAR_H * 0.16);
   }
 

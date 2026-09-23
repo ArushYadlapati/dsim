@@ -269,9 +269,9 @@ export function AdminUser({
             )}
             {u.role && <span className={`adm-pill role ${u.role}`}>{u.role}</span>}
             {u.supporter && <span className="adm-pill">supporter</span>}
-            {suspendedUntil !== null && <span className="adm-pill queued">suspended</span>}
+            {suspendedUntil !== null && <span className="adm-pill danger">suspended</span>}
             {!u.known && (
-              <span className="adm-pill standing" title="No profiles row exists for this account id">
+              <span className="adm-pill" title="No profiles row exists for this account id">
                 no profile row
               </span>
             )}
@@ -697,7 +697,7 @@ export function AdminUser({
                   ) : (
                     <span className="ds-muted"> · no transaction id</span>
                   )}
-                  {p.refundedAt && <span className="adm-pill queued">charged back</span>}
+                  {p.refundedAt && <span className="adm-pill danger">charged back</span>}
                 </span>
                 <span className="ds-muted">
                   <When at={p.claimedAt} />

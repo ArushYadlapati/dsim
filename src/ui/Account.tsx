@@ -411,11 +411,9 @@ function Identity() {
           <div className="ds-acct-id">
             <p className="ds-hint">Account ID</p>
             <div className="ds-field-row">
-              <code
-                className="ds-acct-uuid"
-                title="Click to copy"
-                onClick={copyId}
-              >
+              {/* not clickable: the Copy button beside it is the control (a click-only
+                  <code> was mouse-only) */}
+              <code className="ds-acct-uuid">
                 {user.id}
               </code>
               <button

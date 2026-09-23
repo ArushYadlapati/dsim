@@ -61,7 +61,8 @@ const BASELINE = {
   // so the space between a status line and the buttons above it was the gap PLUS a number
   // somebody typed; §2's "one owner per gap" now holds there. The rest became `.adm-sub`,
   // `.adm-gap` and `.adm-sec`.
-  'inline-spacing': 5,
+  // 5 → 4, 2026-09-22: design review wave 3.
+  'inline-spacing': 4,
   'fractional-font-size': 0,
   'banned-font-weight': 0,
   // 155 → 152, 2026-09-19: the three HUD read-outs became one. `.ping-graph`'s `8px 10px`
@@ -83,7 +84,10 @@ const BASELINE = {
   // went with them.
   // 144 → 143, 2026-09-22: the Controls overhaul. `.ds-keys` spaced its keycaps `6px` apart; it
   // is `--ds-s-2`, the within-a-row step, now that the rows are a grid the keycaps can wrap in.
-  'off-grid-gap': 143,
+  // 143 → 133, 2026-09-22: design review wave 3. 141 on arrival (two went elsewhere in the
+  // wave); the typography pass took eight more — `.ds-empty`/`.ds-loading`'s shared 30px 20px,
+  // the replay export menu's 10px pads, `.legal-warn`, `.ann-item-head`, `.ds-replay-saving`.
+  'off-grid-gap': 133,
   // measured 2026-09-16, when these three rules were written. §4's own ruling ("10px … rounds
   // to --ds-round-md") was executed in the same commit, which is why radius starts at 17 and
   // not the 31 first measured. The other two start where they stand: paying them down needs a
@@ -91,12 +95,27 @@ const BASELINE = {
   // being able to grow back.
   // 46 → 45, 2026-09-22: `.ds-home-lead`'s `15px` went with the home page's lead sentence,
   // removed once the homepage no longer needed a line saying DSIM is "2D".
-  'off-scale-font-size': 45,
+  // 45 → 13, 2026-09-22: design review 14-06/07/08. The scale was amended to the code: 14px is
+  // `--ds-t-control` (17 control/body literals became the token), the h1/h2 clamps are
+  // `--ds-t-h1`/`--ds-t-h2`, and every 10px chrome label moved UP to `--ds-t-xs`, the floor.
+  // What is left is display type (16/18/19/22/24) and the standing gauge's SVG user units.
+  'off-scale-font-size': 13,
   // 14 → 13, 2026-09-19: `.perf-readout`'s `border-radius: 6px` went with the `?perf=1` line.
   // 13 → 12, 2026-09-22: `.net-overlay-card`'s `14px` is `--ds-round-lg`, which is what it was
   // approximating — it sat beside `.overlay-panel`, which already used the token.
-  'literal-radius': 12,
+  // 12 → 9, 2026-09-22: `.rec-track`'s 3px and `.md-code`'s 5px are `--ds-round-sm` (and one
+  // went elsewhere in the wave).
+  'literal-radius': 9,
   'shadow-sprawl': 14,
+  // measured 2026-09-22 (design review 13-11), when the rule was written. The scrims among them
+  // (styles.css .overlay/.net-overlay and friends) have --ds-scrim / --ds-scrim-strong waiting.
+  // 29 → 26, 2026-09-22: design review wave 3.
+  'raw-colour': 26,
+  // measured 2026-09-22 (design review 14-12), when the rule and the --ds-lh-* tokens landed.
+  // 78 on the day; the value-identical ones (1, 1.2, 1.45) and the off-standard 1.5 became
+  // tokens in the same commit, leaving the odd values (1.02, 1.3, 1.35, 16px …) and the `/n`
+  // inside `font:` shorthands.
+  'literal-line-height': 33,
   'stale-component-index': 0,
 };
 
@@ -226,7 +245,9 @@ for (const f of css) {
 // 12 distinct sizes actually rendering, with 19/64/10px each appearing on exactly one page.
 // That is the drift the scale exists to prevent, and the reason it went unnoticed is that
 // the rule enforcing it was never written.
-const TYPE_SCALE = new Set([11, 12, 13, 15, 20, 28]);
+// 14 is `--ds-t-control` (design review 14-07): every button, input and table cell used it,
+// so the scale was amended to sanction it rather than ratchet against its own core controls.
+const TYPE_SCALE = new Set([11, 12, 13, 14, 15, 20, 28]);
 /**
  * SCOPED TO THE CHROME. `styles.css` is the in-match overlay drawn over the dark field
  * canvas, and it is a different surface with different needs — its 160px countdown digits
@@ -274,6 +295,42 @@ for (const f of css) {
     });
   }
   for (const [decl, at] of seen) hit('shadow-sprawl', at.f, at.i + 1, decl);
+}
+
+// ── 5e. raw colour literals ──────────────────────────────────────────────────
+// A hex/rgb/hsl literal outside a custom-property DEFINITION is a colour that does not theme
+// and that contrast.mjs cannot see. Defining a token (`--x: #…`) is where literals belong, in
+// the :root blocks or a scoped re-definition like the 3D scrim, so those lines are exempt.
+// Comments are stripped first: a hex in prose is documentation, not paint.
+for (const f of css) {
+  let inComment = false;
+  read(f).forEach((l, i) => {
+    let code = l;
+    if (inComment) {
+      const end = code.indexOf('*/');
+      if (end === -1) return;
+      code = code.slice(end + 2);
+      inComment = false;
+    }
+    code = code.replace(/\/\*.*?\*\//g, '');
+    const open = code.indexOf('/*');
+    if (open !== -1) { code = code.slice(0, open); inComment = true; }
+    if (/^\s*--[a-zA-Z0-9-]+\s*:/.test(code)) return;
+    if (/#[0-9a-fA-F]{3,8}\b|\b(rgba?|hsla?)\(/.test(code)) hit('raw-colour', f, i + 1, l);
+  });
+}
+
+// ── 5f. literal line-heights ────────────────────────────────────────────────
+// §3 once said "1 or 1.45, no other values" and nothing checked it, so seventeen values
+// accumulated (1.02, 1.05, 1.1, 1.3, 1.35, 1.5, 1.55, 16px …). The --ds-lh-* tokens name the
+// four the design actually uses; a bare number in `line-height:` or after the `/` of a `font:`
+// shorthand is a finding. `0` (an icon's collapsed line box), `normal`, `inherit` and var() are not.
+for (const f of css) {
+  read(f).forEach((l, i) => {
+    const code = l.replace(/\/\*.*?\*\//g, '');
+    if (/(?:^|[\s;{])line-height:\s*[0-9.]+(px|em|rem|%)?\s*(;|}|$)/.test(code) && !/line-height:\s*0\s*(;|}|$)/.test(code)) hit('literal-line-height', f, i + 1, l);
+    else if (/(?:^|[\s;{])font:[^;]*\/\s*[0-9.]+(px|em)?\s/.test(code)) hit('literal-line-height', f, i + 1, l);
+  });
 }
 
 // ── 6. the 4px grid ──────────────────────────────────────────────────────────
@@ -333,9 +390,11 @@ const DESC = {
   'fractional-font-size': 'fractional font-size; the scale has six whole steps',
   'banned-font-weight': 'weight outside the seven the variable cuts actually use',
   'off-grid-gap': 'gap/padding off the 4px grid',
-  'off-scale-font-size': 'font-size outside the six-step scale (§3)',
+  'off-scale-font-size': 'font-size outside the type scale (§3)',
   'literal-radius': 'literal border-radius; §4 says use a --ds-round token',
   'shadow-sprawl': 'distinct box-shadow declarations; DESIGN.md commits to ONE depth model',
+  'raw-colour': 'hex/rgb/hsl literal outside a --token definition; it neither themes nor is contrast-checked',
+  'literal-line-height': 'literal line-height; use a --ds-lh-* token (§3)',
   'stale-component-index': 'docs/ui-components.md is out of date with the CSS',
 };
 

@@ -25466,5 +25466,18 @@ const dumperSetup = (): RobotSetup => {
   }
 }
 
+// COLORS.backdrop* is the canvas letterbox and must be the page floor, per theme, or the field
+// sits in a visible frame. It is a TS copy of a CSS token, so it is checked, not trusted
+// (design review 13-14).
+{
+  const shell = readFileSync('src/ui/shell.css', 'utf8');
+  const bg = [...shell.matchAll(/--ds-bg:\s*(#[0-9a-fA-F]{6})/g)].map((m) => m[1].toLowerCase());
+  check(
+    'theme: COLORS.backdrop / backdropDark match --ds-bg in light and dark',
+    bg.length === 2 && bg[0] === COLORS.backdrop.toLowerCase() && bg[1] === COLORS.backdropDark.toLowerCase(),
+    `css ${bg.join(',')} vs ${COLORS.backdrop},${COLORS.backdropDark}`,
+  );
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

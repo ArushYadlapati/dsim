@@ -1095,7 +1095,7 @@ function Hud({
                   a gauge, a lever — and every text/emoji chip that used to sit beside them was
                   relocated by the owner's own pass over this corner (`HUD-RELOCATION.md`, which
                   names a destination per chip):
-                    · 🌐 server, SPEC <n>, ⚠ DESYNC → the bottom-right `.net-corner`, below;
+                    · SERVER <region>, SPEC <n>, ⚠ DESYNC → the bottom-right `.net-corner`, below;
                     · WAITING · <name>, FOULS, PIN / CONTROL 5+ → pinned lines in the event log
                       (`GamePinnedNotice` / `eventlog-pinned`), because each is a call to action
                       rather than a standing fact;
@@ -1193,7 +1193,7 @@ function Hud({
                 noise, and the moment worth surfacing is the one where it stops being zero. */}
             {hud.spectators > 0 && (
               <span
-                className="chip on"
+                className="chip"
                 title={`${hud.spectators} ${hud.spectators === 1 ? 'person is' : 'people are'} watching this match live`}
               >
                 SPEC {hud.spectators}
@@ -1204,7 +1204,8 @@ function Hud({
                 <span aria-hidden="true">⚠</span> DESYNC
               </span>
             )}
-            {hud.net?.server && <span className="chip on"><span aria-hidden="true">🌐</span> {hud.net.server}</span>}
+            {/* plain `.chip`, like SPEC: both are neutral facts, and `.chip.on` is the ready/ok green */}
+            {hud.net?.server && <span className="chip">SERVER {hud.net.server}</span>}
           </div>
         </div>
       )}

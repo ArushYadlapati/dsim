@@ -4,7 +4,7 @@ import { describeAuthError, requestEmailVerification, requestPasswordReset } fro
 import { isEmbeddedBrowser } from '../lib/browserEnv';
 import { acceptTerms, updateUsername } from '../net/api';
 import { TermsAgreement } from './TermsGate';
-import { UsernameInput, useUsernameCheck, usernameHintColor } from './UsernameField';
+import { UsernameInput, useUsernameCheck, usernameHintClass } from './UsernameField';
 import { useDialog } from './useDialog';
 
 /** which of the three forms the modal is showing */
@@ -241,10 +241,9 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
                     <UsernameInput value={username} onChange={setUsername} hintId={UNAME_HINT_ID} status={uname.status} />
                   </label>
                   <span
-                    className="ds-form-hint"
+                    className={`ds-form-hint ${usernameHintClass(uname.status)}`}
                     id={UNAME_HINT_ID}
                     aria-live="polite"
-                    style={{ color: usernameHintColor(uname.status) }}
                   >
                     {uname.message}
                   </span>
@@ -305,20 +304,19 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
               </button>
             </form>
             {embedded ? (
-              <div className="ds-form-hint" style={{ minHeight: 0 }}>
+              <div className="ds-form-hint">
                 Google sign-in doesn’t work in this app’s in-app browser. Open this page in
                 Safari or Chrome to continue with Google, or use email above.
                 <button
                   type="button"
-                  className="ds-btn"
-                  style={{ width: '100%', marginTop: 8 }}
+                  className="ds-btn ds-form-alt"
                   onClick={copyLink}
                 >
                   {copied ? 'Link copied. Paste it in your browser' : 'Copy link'}
                 </button>
               </div>
             ) : (
-              <button className="ds-btn" style={{ width: '100%' }} onClick={google}>Continue with Google</button>
+              <button className="ds-btn ds-form-alt" onClick={google}>Continue with Google</button>
             )}
             <div className="ds-form-switch">
               {mode === 'in' ? (

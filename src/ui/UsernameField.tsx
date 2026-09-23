@@ -85,12 +85,12 @@ export function usernameBad(status: UsernameStatus): boolean {
   return status === 'invalid' || status === 'blocked' || status === 'taken' || status === 'error';
 }
 
-/** colour for the status hint TEXT. --ds-ok-ink, not --ds-ok: the latter is a fill
- *  (3.25:1 as 12px type on the light panel). --ds-danger is already a text token. */
-export function usernameHintColor(status: UsernameStatus): string | undefined {
-  if (status === 'available') return 'var(--ds-ok-ink)';
-  if (usernameBad(status)) return 'var(--ds-danger)';
-  return undefined;
+/** the status hint's verdict class, `.ds-form-hint.ok` / `.err` (the colours live in
+ *  shell.css, not in a JS switch over tokens). Empty while there is no verdict. */
+export function usernameHintClass(status: UsernameStatus): '' | 'ok' | 'err' {
+  if (status === 'available') return 'ok';
+  if (usernameBad(status)) return 'err';
+  return '';
 }
 
 /** a bare username `<input>` with a live @-prefix; the parent owns validation via

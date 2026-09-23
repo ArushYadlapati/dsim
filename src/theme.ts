@@ -47,6 +47,9 @@ export function resolveTheme(pref: ThemePref): ResolvedTheme {
 /** stamp the resolved theme on <html>; also drives the mobile browser chrome */
 export function applyTheme(resolved: ResolvedTheme): void {
   document.documentElement.dataset.theme = resolved;
+  // index.html ships one theme-color per OS scheme (right before JS runs); once the app's own
+  // theme is known, BOTH follow it, so an explicit Dark on a light-OS phone gets a dark toolbar.
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.setAttribute('content', THEME_BG[resolved]));
 }
 
 /**

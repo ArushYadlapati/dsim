@@ -156,7 +156,6 @@ const themedPairs = (t) => {
     ['--ds-warn on bg', t('--ds-warn'), bg, AA],
     ['--ds-danger on bg', t('--ds-danger'), bg, AA],
     ['--ds-danger on panel', t('--ds-danger'), panel, AA], // .ds-btn.danger (Admin)
-    ['--ds-sky-ink on bg', t('--ds-sky-ink'), bg, AA],
     ['--ds-ok-ink on bg', t('--ds-ok-ink'), bg, AA],
     ['--ds-ok-ink on tile', t('--ds-ok-ink'), tile, AA],
     ['--ds-red-ink on bg', t('--ds-red-ink'), bg, AA],
@@ -192,12 +191,6 @@ const themedPairs = (t) => {
     ['qcount on --ds-accent (PLAY primary)', t('--ds-accent-ink'), t('--ds-accent'), AA],
     ['qcount label on --ds-accent-soft (rail selected)', t('--ds-accent-soft-mut'), t('--ds-accent-soft'), AA],
     ['qcount number on --ds-accent-soft (rail selected)', t('--ds-accent-soft-ink'), t('--ds-accent-soft'), AA],
-
-    // pastels are fills that carry --ds-ink; they get tinted-dark siblings in dark mode
-    ['--ds-ink on --ds-blush', t('--ds-ink'), t('--ds-blush'), AA],
-    ['--ds-ink on --ds-sage', t('--ds-ink'), t('--ds-sage'), AA],
-    ['--ds-ink on --ds-lavender', t('--ds-ink'), t('--ds-lavender'), AA],
-    ['--ds-ink on --ds-sky', t('--ds-ink'), t('--ds-sky'), AA],
 
     // FRIENDS PANEL — its ground is --ds-bar (like the nav rail), not bg/panel,
     // so these pairs are genuinely new even where the same token is checked above.
@@ -371,7 +364,15 @@ const serverPairs = (t) => {
     // fills INVERT between themes, so checking them in each theme is the whole
     // point: the assertion is that the PAIR stays legible, not that the hex does.
     ['SupporterBadge owner glyph', t('--ds-accent-ink'), t('--ds-accent'), AA],
-    ['SupporterBadge admin glyph', '#ffffff', t('--ds-blue-chip'), AA],
+    ['SupporterBadge admin glyph', t('--ds-staff-ink'), t('--ds-staff'), AA],
+    // a 12px disc is a meaningful graphic: each badge FILL has to read against the panel
+    ['SupporterBadge admin disc on the panel (1.4.11)', t('--ds-staff'), panel, NON_TEXT],
+    ['AwardBadge hexagon on the panel (1.4.11)', t('--ds-award'), panel, NON_TEXT],
+    // on the results roster's alliance halves every badge wears an --ds-on-field ring
+    ['Badge ring on the red roster half (1.4.11)', t('--ds-on-field'), t('--ds-red-chip'), NON_TEXT],
+    ['Badge ring on the blue roster half (1.4.11)', t('--ds-on-field'), t('--ds-blue-chip'), NON_TEXT],
+    // .resx-winbanner.gold, the WORLD RECORD banner, is the podium gold
+    ['Results WORLD RECORD banner', t('--ds-podium-ink'), t('--ds-podium-gold'), AA],
     // The SEASON-AWARD badge (0045). Like gold it does NOT invert, so one pair covers
     // both themes; the rank numeral is the glyph, and it is what has to stay readable.
     ['AwardBadge rank numeral', t('--ds-award-ink'), t('--ds-award'), AA],
@@ -424,8 +425,154 @@ const serverPairs = (t) => {
     ['.ds-standing-blurb on tile', t('--ds-mut'), tile, AA],
     ['.ds-standing-name on tile', t('--ds-ink'), tile, AA],
     ['.ds-standing-lock', t('--ds-red-ink'), composite(t('--ds-red'), 0.12, panel), AA],
-    ['.adm-pill.standing', t('--ds-red-ink'), composite(t('--ds-red'), 0.14, panel), AA],
-    ['.adm-pill.standing.ok', t('--ds-ok-ink'), composite(t('--ds-ok'), 0.14, panel), AA],
+    // admin pills are text + edge on the recessed tile, one ink per MEANING
+    ['.adm-pill.danger on tile', t('--ds-danger'), tile, AA],
+    ['.adm-pill.warn on tile', t('--ds-warn'), tile, AA],
+    ['.adm-pill.ok on tile', t('--ds-ok-ink'), tile, AA],
+    ['.adm-pill.queued on tile', t('--ds-accent'), tile, AA],
+    ['.adm-pill.role.admin on tile', t('--ds-staff'), tile, AA],
+    // chart series marks (1.4.11) — adminCharts SERIES and .an-line.visitors
+    ['--ds-viz-1 on panel (1.4.11)', t('--ds-viz-1'), panel, NON_TEXT],
+    ['--ds-viz-2 on panel (1.4.11)', t('--ds-viz-2'), panel, NON_TEXT],
+    ['--ds-viz-3 on panel (1.4.11)', t('--ds-viz-3'), panel, NON_TEXT],
+    ['--ds-viz-4 on panel (1.4.11)', t('--ds-viz-4'), panel, NON_TEXT],
+    // .ds-tut-offer: 12% accent over the page; the sub line must be --ds-ink-dim, not an opacity
+    ['.ds-tut-offer-sub', t('--ds-ink-dim'), composite(t('--ds-accent'), 0.12, bg), AA],
+  ];
+};
+
+/* ---------- design review 2026-09-22, wave 3: focus rings, field edges, selection ---------- */
+/** Pairs added by the colour wave. Each is a colour that had shipped untested — two of them
+ *  as alpha mixes this file cannot see, which is why they are solid tokens now. */
+const reviewW3Pairs = (t) => {
+  const panel = t('--ds-panel');
+  const tile = t('--ds-tile');
+  return [
+    // focus rings on the results stage: the link buttons ring in on-field on the fixed-dark
+    // stage, the sign-in offer in its own chip ink on the alliance fill (1.4.11)
+    ['Results stage .resx-linkbtn focus ring (1.4.11)', t('--ds-on-field'), t('--ds-stage-bg'), NON_TEXT],
+    ['Results sign-in focus ring on red (1.4.11)', t('--ds-red-chip-ink'), t('--ds-red-chip'), NON_TEXT],
+    ['Results sign-in focus ring on blue (1.4.11)', t('--ds-blue-chip-ink'), t('--ds-blue-chip'), NON_TEXT],
+    // the house ring on the controls that fell back to the UA ring (friends, lobby rows, ...)
+    ['House focus ring on the panel (1.4.11)', t('--ds-accent'), panel, NON_TEXT],
+    // .ds-input / .ds-username-input: the border IS the control, now on a panel fill
+    ['.ds-input / .ds-username-input border on the panel (1.4.11)', t('--ds-line-strong'), panel, NON_TEXT],
+    ['.ds-input text on its panel fill', t('--ds-ink'), panel, AA],
+    // home primary keycap sub-line: solid accent-ink (was a 74% alpha mix, 4.40:1 in light)
+    ['.ds-menu-btn.primary .mh', t('--ds-accent-ink'), t('--ds-accent'), AA],
+    // the recommended tile's kicker, on the ordinary tile fill
+    ['.ds-tile.primary .k on the tile', t('--ds-accent'), tile, AA],
+    // .ds-field readouts: ink (was accent), and the muted channel's value
+    ['.ds-field .cap .val readout', t('--ds-ink'), panel, AA],
+    ['.ds-field .cap .val.muted', t('--ds-mut'), panel, AA],
+    // latched nav / option card selected ink on the soft fill
+    ['selected (soft) ink on --ds-accent-soft', t('--ds-accent-soft-ink'), t('--ds-accent-soft'), AA],
+    ['selected (soft) edge vs the panel (1.4.11)', t('--ds-accent'), panel, NON_TEXT],
+  ];
+};
+
+/* ---------- design review 2026-09-22, wave 3: in-match surfaces (3D scrim, prediction panel,
+   server notice, touch pad, score bar, replay video) ---------- */
+/**
+ * THE 3D SCRIM IS READ FROM styles.css, NOT RETYPED HERE. `.game-root.view-3d …` redefines the
+ * HUD's themed inks to fixed on-field values inside a dark scrim; before these pairs existed the
+ * light theme's DARK inks (warn, red-ink, ok-ink, accent) rode onto that scrim at ~3:1 and "ALL
+ * PASS" never looked. Parsing the block means a new token added there is resolved the same way
+ * the browser would, and a value edited there is measured here.
+ */
+const stylesCss = readFileSync(join(root, 'src/ui/styles.css'), 'utf8');
+const SCRIM = (() => {
+  const m = stylesCss.match(/\.game-root\.view-3d \.eventlog \{([\s\S]*?)\n\}/);
+  if (!m) throw new Error('could not find the 3D scrim block (.game-root.view-3d …) in styles.css');
+  const out = {};
+  for (const [, k, v] of m[1].matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/g)) out[k] = v.trim();
+  return out;
+})();
+/** a token as it resolves INSIDE the scrim: the scrim's own value first, then the theme's */
+const scrimGetter = (t) => {
+  const g = (name) => {
+    const v = SCRIM[name] ?? t(name);
+    const ref = v.match(/^var\((--[a-z0-9-]+)\)$/);
+    return ref ? g(ref[1]) : v;
+  };
+  return g;
+};
+/* The replay video's plate and dimmed ink — literals in `src/ui/replayOverlay.ts` (PLATE,
+   PLATE_DIM_INK); a canvas colour, so there is no token to read. Change the two together. */
+const REPLAY_PLATE = ['#12151a', 0.94];
+const REPLAY_DIM_INK = ['#e5e7eb', 0.62];
+/* the touch pad's ghosted (auto-assist) button fill, `.mobile-btn.auto` in styles.css */
+const PAD_AUTO_FILL = ['#1c2027', 0.3];
+
+const reviewW3HudPairs = (t) => {
+  const s = scrimGetter(t);
+  const over = (token, ground) => {
+    const [c, a] = rgba(s(token));
+    return composite(c, a, ground);
+  };
+  const card = over('--ds-hud', TILE3D);
+  const soft = over('--ds-hud-soft', TILE3D);
+  // the worst case: the scrim over a LIGHT backdrop showing through behind the field
+  const cardLit = over('--ds-hud', BACKDROP);
+  const [tc, ta] = rgba(s('--ds-tile'));
+  const well = composite(tc, ta, card);
+  const themedCard = hudCard(t, '--ds-hud');
+  const plate = composite(REPLAY_PLATE[0], REPLAY_PLATE[1], BACKDROP);
+  const padAuto = composite(PAD_AUTO_FILL[0], PAD_AUTO_FILL[1], TILE3D);
+  return [
+    // 3D scrim over the 3D mat — every themed ink a banded card uses
+    ['3D scrim .timer-time / .chip ink', s('--ds-ink'), card, AA],
+    ['3D scrim .timer-phase / .breakdown-row', s('--ds-mut'), soft, AA],
+    ['3D scrim .timer-panel.warning (END GAME)', s('--ds-warn'), card, AA],
+    ['3D scrim .timer-panel.urgent / .chip.desync', s('--ds-red-ink'), card, AA],
+    ['3D scrim .perf-ping.ok / .chip.on', s('--ds-ok-ink'), card, AA],
+    ['3D scrim .breakdown-row span.warn (PIN)', s('--ds-warn'), soft, AA],
+    ['3D scrim .eventlog-line', s('--ds-ink-dim'), soft, AA],
+    ['3D scrim .eventlog-pinned', s('--ds-warn'), soft, AA],
+    ['3D scrim .eventlog-pinned.bad', s('--ds-red-ink'), soft, AA],
+    ['3D scrim .chip.off in its well', s('--ds-mut'), well, AA],
+    ['3D scrim .hopper-pip ring (1.4.11)', s('--ds-mut'), card, NON_TEXT],
+    ['3D scrim .hopper-pip.next marker (1.4.11)', s('--ds-ink'), card, NON_TEXT],
+    ['3D scrim .ds-tut-step counter', s('--ds-accent'), card, AA],
+    ['3D scrim .ds-tut-nudge', s('--ds-warn'), card, AA],
+    ['3D scrim tutorial focus ring (1.4.11)', s('--ds-accent'), card, NON_TEXT],
+    ['3D scrim .ds-tut-btn.primary', s('--ds-accent-ink'), s('--ds-accent'), AA],
+    ['3D scrim over a light backdrop: accent', s('--ds-accent'), cardLit, AA],
+    ['3D scrim over a light backdrop: warn', s('--ds-warn'), cardLit, AA],
+    ['3D scrim over a light backdrop: ok-ink', s('--ds-ok-ink'), cardLit, AA],
+    ['3D scrim over a light backdrop: red-ink', s('--ds-red-ink'), cardLit, AA],
+    ['3D scrim over a light backdrop: muted', s('--ds-mut'), cardLit, AA],
+
+    // the prediction panel: themed inks on the themed card (a 3D room in the 2D view) …
+    ['.pred-mode on the themed HUD card', t('--ds-ink'), themedCard, AA],
+    ['.pred-opt / .pred-head on the themed HUD card', t('--ds-mut'), themedCard, AA],
+    ['.pred-opt focus ring on the themed HUD card (1.4.11)', t('--ds-accent'), themedCard, NON_TEXT],
+    ['.pred-opt.on', t('--ds-accent-ink'), t('--ds-accent'), AA],
+    // … and the same rules inside the 3D scrim
+    ['3D scrim .pred-mode', s('--ds-ink'), card, AA],
+    ['3D scrim .pred-opt / .pred-head', s('--ds-mut'), card, AA],
+    ['3D scrim .pred-opt.on', s('--ds-accent-ink'), s('--ds-accent'), AA],
+
+    // the admin server notice (fixed-ink fills; floats over the match and the shell)
+    ['.server-notice (info)', t('--ds-gold-ink'), t('--ds-gold'), AA],
+    ['.server-notice.urgent', t('--ds-red-chip-ink'), t('--ds-red-chip'), AA],
+
+    // the touch pad: the joystick label is FULL opacity now, on both field grounds
+    ['.mobile-joystick-label on the 3D mat', t('--ds-on-field-dim'), TILE3D, AA],
+    ['.mobile-btn.auto label (ghosted fill over the 3D mat)', t('--ds-on-field'), padAuto, AA],
+    ['.mobile-btn.shoot.auto label', t('--ds-on-field-accent'), padAuto, AA],
+    ['.mobile-btn.park.auto label', t('--ds-on-field-dim'), padAuto, AA],
+    ['.mobile-btn ring on the 3D mat (1.4.11)', t('--ds-on-field-dim'), TILE3D, NON_TEXT],
+    ['.mobile-edit-bar primary', t('--ds-on-field-accent-ink'), t('--ds-on-field-accent'), AA],
+
+    // the live score bar: flat chip fills, children inherit the chip ink at full strength
+    ['.score-panel.red .bb-tip / .you-tag', t('--ds-red-chip-ink'), t('--ds-red-chip'), AA],
+    ['.score-panel.blue .bb-tip / .you-tag', t('--ds-blue-chip-ink'), t('--ds-blue-chip'), AA],
+
+    // the replay video scoreboard, plate over a LIGHT ground (a 3D export over a lit scene)
+    ['replay video RED label / RED WINS', LABEL_RED, plate, AA],
+    ['replay video BLUE label / BLUE WINS', LABEL_BLUE, plate, AA],
+    ['replay video dimmed phase label', composite(REPLAY_DIM_INK[0], REPLAY_DIM_INK[1], plate), plate, AA],
   ];
 };
 
@@ -470,7 +617,7 @@ const checkCardIdentifiable = (themeName, t, card) => {
 for (const [themeName, table] of [['light', LIGHT], ['dark', DARK]]) {
   const t = getter(table, themeName);
   if (listOnly) console.log(`\n--- ${themeName.toUpperCase()} ---`);
-  for (const group of [themedPairs, hudPairs, serverPairs]) {
+  for (const group of [themedPairs, hudPairs, serverPairs, reviewW3Pairs, reviewW3HudPairs]) {
     for (const [label, ink, ground, floor] of group(t)) {
       check(`[${themeName}] ${label}`, ink, ground, floor);
     }

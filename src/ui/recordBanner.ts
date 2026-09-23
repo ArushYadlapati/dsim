@@ -40,12 +40,12 @@ export interface ResultBanner {
  * record run whose rank has not arrived yet — hence a parameter and not `info === null`.
  */
 export function recordBanner(info: RecordRankInfo | null, practice: boolean): ResultBanner {
-  // GOLD is the system's one medal token and its comment says it is a FILL, which is exactly
-  // how it is used here. A personal best takes the ordinary banner: it is the player's own
+  // `gold` is the PODIUM gold (`--ds-podium-gold`, the placement family), not `--ds-gold`,
+  // which means SUPPORTER — see "THE THREE REWARD HUES" in shell.css. A personal best takes the ordinary banner: it is the player's own
   // best, not the board's, and spending the loudest treatment on it leaves nothing for a WR.
   if (practice) return { text: 'PRACTICE', tone: 'quiet' };
   if (!info) return { text: '' };
-  // no glyph: the GOLD fill is already the loudest treatment on the stage and an emoji beside
+  // no glyph: the podium-gold fill is already the loudest treatment on the stage and an emoji beside
   // it says the same thing twice, in a face that is not the UI's.
   if (info.isWR) return { text: 'WORLD RECORD', tone: 'gold' };
   if (info.isPB) return { text: '★ PERSONAL BEST' };

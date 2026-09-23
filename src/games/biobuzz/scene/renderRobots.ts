@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Alliance, RobotSpec, RobotState, World } from '../../../types';
-import { chassisFill, INTAKE_RAIL_T } from '../../../config';
+import { chassisFill, COLORS, INTAKE_RAIL_T } from '../../../config';
 import { accentFill, clampCosmetics } from '../../../cosmetics';
 import { starPoints } from '../../../render/drawRobot';
 import { robotsEnabled } from '../../../sim/match';
@@ -203,7 +203,8 @@ function cast<T extends THREE.Object3D>(o: T): T {
   return o;
 }
 
-const RED = '#ef4444';
+/** the shared alliance red, so a 3D robot matches the 2D view of the same match */
+const RED = COLORS.red;
 /** the one BIOBUZZ blue, not the shared `C.COLORS.blue` (`#3b82f6`, a DECODE/CR UI token at
  * OKLCH hue 259.8°). Owner bug 12, 2026-09-19 — `draw.ts`'s `ELEMENT_FILL` header has the
  * measurement and the reason the CAD's own rib colour was NOT taken. */

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Alliance, RobotSpec, RobotState, StartCat, StartPose, World } from '../types';
-import { FIELD_HALF } from '../config';
+import { COLORS, FIELD_HALF } from '../config';
 import { useAds } from '../ads/AdsProvider';
 import { createWorld, DEFAULT_ASSISTS } from '../sim/spawn';
 import { drawField } from '../render/drawField';
@@ -145,12 +145,15 @@ export function StartPositionEditor({
 
     // legality ring over the footprint + a heading handle
     const corners = footprintCorners(spec, { x: pose.x, y: pose.y }, robot.heading);
-    const col = legality.legal ? '#37d67a' : '#ff4d4d';
+    // drawn ON the field, so the canvas palette (COLORS), not a themed token
+    const col = legality.legal ? COLORS.green : COLORS.red;
     ctx.beginPath();
     corners.forEach((c, i) => (i ? ctx.lineTo(c.x, c.y) : ctx.moveTo(c.x, c.y)));
     ctx.closePath();
-    ctx.fillStyle = legality.legal ? 'rgba(55,214,122,0.16)' : 'rgba(255,77,77,0.22)';
+    ctx.fillStyle = col;
+    ctx.globalAlpha = legality.legal ? 0.16 : 0.22;
     ctx.fill();
+    ctx.globalAlpha = 1;
     ctx.strokeStyle = col;
     ctx.lineWidth = 1.2;
     ctx.stroke();
@@ -167,7 +170,7 @@ export function StartPositionEditor({
     ctx.stroke();
     ctx.beginPath();
     ctx.arc(hx, hy, 3.2, 0, Math.PI * 2);
-    ctx.fillStyle = '#0d1720';
+    ctx.fillStyle = COLORS.mat;
     ctx.fill();
     ctx.strokeStyle = col;
     ctx.lineWidth = 1.4;

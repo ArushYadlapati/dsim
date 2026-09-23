@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Alliance, RobotSpec, RobotState, StartCat, StartPose, World } from '../types';
 import { DEFAULT_ASSISTS } from '../sim/spawn';
+import { COLORS } from '../config';
 import { CHAIN_MODULE } from '../games/chain';
 import {
   CHAIN_HALF_X,
@@ -185,7 +186,8 @@ export function ChainStartEditor({
      * AABB is. So drawing the rotated rect is not decoration over a different test; it
      * IS the tested shape.
      */
-    const col = legality.legal ? '#37d67a' : '#ff4d4d';
+    // drawn ON the field, so the canvas palette (COLORS), not a themed token
+    const col = legality.legal ? COLORS.green : COLORS.red;
     const hRad = robot.heading;
     const mx = spec.length / 2 + 0.5;
     const my = spec.width / 2 + 0.5;
@@ -194,8 +196,10 @@ export function ChainStartEditor({
     ctx.rotate(hRad);
     ctx.beginPath();
     ctx.rect(-mx, -my, mx * 2, my * 2);
-    ctx.fillStyle = legality.legal ? 'rgba(55,214,122,0.16)' : 'rgba(255,77,77,0.22)';
+    ctx.fillStyle = col;
+    ctx.globalAlpha = legality.legal ? 0.16 : 0.22;
     ctx.fill();
+    ctx.globalAlpha = 1;
     ctx.strokeStyle = col;
     ctx.lineWidth = 1.2;
     ctx.stroke();
@@ -213,7 +217,7 @@ export function ChainStartEditor({
     ctx.stroke();
     ctx.beginPath();
     ctx.arc(hx, hy, 3.2, 0, Math.PI * 2);
-    ctx.fillStyle = '#0d1720';
+    ctx.fillStyle = COLORS.mat;
     ctx.fill();
     ctx.strokeStyle = col;
     ctx.lineWidth = 1.4;

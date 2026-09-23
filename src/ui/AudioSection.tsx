@@ -31,7 +31,7 @@ function VolumeRow({
     <label className="ds-field">
       <span className="cap">
         {label}{' '}
-        <span className="val" style={muted ? { color: 'var(--ds-mut)' } : undefined}>
+        <span className={`val${muted ? ' muted' : ''}`}>
           {pct}%
         </span>
       </span>

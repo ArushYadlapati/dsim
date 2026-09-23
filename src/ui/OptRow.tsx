@@ -78,7 +78,8 @@ export function OptRow<T extends string | number | boolean>({
     <div className="ds-field">
       <span className="cap">
         {label}
-        {hint && <span className="val">{hint}</span>}
+        {/* prose, so it stays in the caption's muted UI face — `.val` is for mono readouts */}
+        {hint && <span>{hint}</span>}
       </span>
       {grid}
     </div>

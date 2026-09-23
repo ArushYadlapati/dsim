@@ -28,6 +28,8 @@ import { AccountName, When, ago, confirmed, downloadCsv } from './adminBits';
  * a grudge — and a queue sorted only on volume rewards whoever clicks hardest.
  */
 const GAME_LABEL: Record<string, string> = Object.fromEntries(SEASONS.map((s) => [s.key, s.name]));
+/** what a standing tier MEANS as a pill; every tier below warning is `danger` */
+const STANDING_PILL: Record<string, string> = { good: 'ok', warning: 'warn' };
 
 /**
  * How a replay is opened from here.
@@ -211,14 +213,14 @@ function ReportedRow({
         <span className="adm-report-counts">
           {/* OPEN is the number a moderator is working through; TOTAL is the history. Both,
               because a player with 1 open and 40 reviewed is a different problem. */}
-          {u.open > 0 && <span className="adm-pill queued">{u.open} open</span>}
+          {u.open > 0 && <span className="adm-pill warn">{u.open} open</span>}
           <span className="adm-pill">{u.total} total</span>
           <span className="adm-pill">{u.reporters} reporter{u.reporters === 1 ? '' : 's'}</span>
           {/* STANDING is the corroborating half. Reports are what other players CLAIM; this
               is what the server itself watched them do — a full standing next to twelve
               reports reads very differently from a collapsed one. */}
           {typeof u.standing === 'number' && u.standing < STANDING_MAX && (
-            <span className={`adm-pill standing${tierOf(u.standing).key === 'good' ? ' ok' : ''}`}>
+            <span className={`adm-pill ${STANDING_PILL[tierOf(u.standing).key] ?? 'danger'}`}>
               {tierOf(u.standing).name} {u.standing}
             </span>
           )}
@@ -385,7 +387,7 @@ function ScoreReportQueue({
               />
               <span className="adm-pill">{GAME_LABEL[r.game] ?? r.game}</span>
               {r.reporterRejected > 0 && (
-                <span className="adm-pill standing">
+                <span className="adm-pill warn">
                   {r.reporterRejected} of {r.reporterFiled} rejected
                 </span>
               )}

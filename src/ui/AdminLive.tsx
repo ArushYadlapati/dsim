@@ -461,7 +461,7 @@ function MaintenancePanel() {
         <b role="heading" aria-level={3}>
           Maintenance lockdown
         </b>
-        <span className={`adm-pill ${biting ? 'queued' : ''}`}>
+        <span className={`adm-pill ${biting ? 'danger' : live ? 'warn' : ''}`}>
           {biting ? 'LOCKED — only admins can start' : live ? 'SCHEDULED' : 'Off'}
         </span>
       </div>

@@ -2914,7 +2914,8 @@ export const ALIGNMENT_ROTATIONAL_SPEED = 3.0; // rad/s
 
 // ------------------------------------------------------------ rendering ----
 export const COLORS = {
-  /** letterbox around the field — tracks `--ds-bg` in shell.css, per THEME.
+  /** letterbox around the field — tracks `--ds-bg` in shell.css, per THEME (scripts/smoke.ts
+   * asserts the pair, so a retune of one without the other fails `npm test`).
    * The field mat NEVER themes: the board reads as a physical object sitting on
    * the floor, and its outline keeps it separated even when the floor goes dark
    * (`backdropDark` #20262c vs `mat` #23262b is only 1.03:1 on fill alone). */
