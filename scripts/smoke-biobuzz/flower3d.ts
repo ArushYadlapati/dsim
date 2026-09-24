@@ -11,6 +11,7 @@ import { retrieveFromFlower, bbFlowerAtIntakeMouth } from '../../src/games/biobu
 import { BB_INTAKE_KINDS, type BbIntakeKind } from '../../src/games/biobuzz/mechs';
 import { PHYS_ALLOWED_ERROR, PHYS_LENGTH_UNIT } from '../../src/config';
 import {
+  BB3_FLOWER_NECTAR_SORT_D,
   BB3_FLOWER_CAGE_SEGMENTS,
   BB3_FLOWER_CAGE_T,
   BB3_FLOWER_RING_SEGMENTS,
@@ -157,10 +158,19 @@ export function flower3dChecks(check: Check): void {
       `[smoke-bb flower3d] a lone ${kind} dropped at the top ring settles at centre ${centre.toFixed(3)} ` +
         `(spans ${el.z.toFixed(3)}..${(el.z + 2 * r).toFixed(3)}), ${lateral.toFixed(3)} off the axis`,
     );
+    // ⚠️ A NECTAR no longer reaches the tiles (owner, 2026-09-24): the middle ring's NECTAR lip
+    // (`BB3_FLOWER_NECTAR_SORT_D`) seats it with its centre `sqrt(r² − (d/2)²)` over the plate's
+    // top face, clear of the retrieval opening. A POLLEN never meets the lip and still falls.
+    const want =
+      kind === 'pollen'
+        ? r
+        : FLOWER_RING_Z.mid[1] + Math.sqrt(BB_NECTAR_R * BB_NECTAR_R - (BB3_FLOWER_NECTAR_SORT_D / 2) ** 2);
     check(
-      `a dropped ${kind} falls to the TILES inside the bottom bore — both kinds clear all three plates`,
-      Math.abs(centre - r) < 0.3,
-      `centre ${centre.toFixed(3)}, expected ~${r}`,
+      kind === 'pollen'
+        ? 'a dropped pollen falls to the TILES inside the bottom bore — it clears all three plates'
+        : '⚠️ a dropped nectar SEATS on the middle ring, above the retrieval opening (G418), not on the tiles',
+      Math.abs(centre - want) < 0.3 && (kind === 'pollen' || el.z > BB_FLOWER_RETRIEVE_Z[1] - 0.1),
+      `centre ${centre.toFixed(3)}, expected ~${want.toFixed(3)}; bottom ${el.z.toFixed(3)} vs the opening's top ${BB_FLOWER_RETRIEVE_Z[1]}`,
     );
     check(
       `a dropped ${kind} is in the FLOWER's derived stack`,
@@ -208,32 +218,18 @@ export function flower3dChecks(check: Check): void {
         stack.length === row.kinds.length && zs.every((z, i) => i === 0 || z >= zs[i - 1] - 1e-6),
         `${stack.length}/${row.kinds.length}, z [${zs.map((z) => z.toFixed(2)).join(', ')}]`,
       );
-      if (ri < 2) {
-        check(
-          `${row.what}: the MODEL and the real column agree on owner, bonus and count`,
-          model.owner === real.owner && model.bonusAlliance === real.bonusAlliance && model.inVolume === real.inVolume,
-          `model ${model.owner}/${model.bonusAlliance}/${model.inVolume} vs real ${real.owner}/${real.bonusAlliance}/${real.inVolume}`,
-        );
-      } else {
-        /**
-         * ⚠️ THE ONE ROW WHERE THEY DIVERGE, PINNED AS A MEASUREMENT. A lone NECTAR tops out at
-         * 3.60 on the tiles against a scoring floor of 3.904, so by the real geometry it does not
-         * score; the 2D model seats it ON the middle ring at 3.904…7.504 and it always does. The
-         * divergence is 0.30 in and it is worth 2 + 5 points and an ownership.
-         *
-         * `score.ts` reads `flowerScore`, so BOTH pipelines score it the model's way and a 2D and
-         * a 3D match are worth the same — which is the plan's "one scoring, one HUD, two physics"
-         * and the reason this is a measurement rather than a bug. Changing it is an owner ruling
-         * (the 2026-09-12 sorter ruling is what would be overturned), and this check is what will
-         * fail the day somebody does.
-         */
-        check(
-          'a lone NECTAR is where the 2D MODEL and the real tube disagree — measured, not fudged',
-          model.inVolume === 1 && real.inVolume === 0,
-          `model ${model.inVolume} in volume (seated on the middle ring), real ${real.inVolume} ` +
-            `(tops out at ${(zs[0] + BB_NECTAR_R).toFixed(3)} against a floor of ${BB_FLOWER_MID_Z})`,
-        );
-      }
+      /**
+       * EVERY ROW AGREES NOW, the lone NECTAR included. It used to be the one divergence, pinned
+       * as a measurement: the NECTAR fell to the tiles and topped out at 3.60 against a scoring
+       * floor of 3.904, where the 2D model seats it on the middle ring. The owner's ruling
+       * (2026-09-24: a NECTAR at the bottom "droops too low" and a ramp could pull it out) gave
+       * the 3D middle ring its NECTAR lip, so both pipelines seat it on that ring.
+       */
+      check(
+        `${row.what}: the MODEL and the real column agree on owner, bonus and count`,
+        model.owner === real.owner && model.bonusAlliance === real.bonusAlliance && model.inVolume === real.inVolume,
+        `model ${model.owner}/${model.bonusAlliance}/${model.inVolume} vs real ${real.owner}/${real.bonusAlliance}/${real.inVolume}`,
+      );
     }
   }
 
@@ -875,26 +871,31 @@ export function flower3dChecks(check: Check): void {
     /**
      * G418's INTENT, asked of the real bodies: a NECTAR cannot leave through the bottom.
      *
-     * ⚠️ **AND THE THING THAT STOPS IT IS THE FLOOR, NOT THE RIM.** Seating a 3.6-in sphere in
-     * the 3.222-in lower bore would put its centre `sqrt(1.8² − 1.611²)` = 0.803 above the
-     * plate's top face (0.354), i.e. its BOTTOM at −0.643 — below the tiles. So the tiles catch
-     * it first and it settles at bottom 0 with its equator wedged in the bore. Either way it is
-     * not through: it never reaches a height from which there is anywhere further down to go,
-     * and `flowerRetrieve3d` refuses it on G418.B's POLLEN-only gate. Worth writing down because
-     * "the lower bore stops a NECTAR" is true of the INTENT and not of the contact.
+     * ⚠️ **THE MIDDLE RING HOLDS IT, AND THE LOWER ONE NEVER HAD.** Seating a 3.6-in sphere in
+     * the 3.222-in lower bore would put its centre `sqrt(1.8² − 1.611²)` = 0.803 above that
+     * plate's top face (0.354), its BOTTOM at −0.643, under the tiles. So before the middle ring's
+     * NECTAR lip it came to rest ON THE TILES, in the retrieval opening, where a deployed ramp's
+     * blade lifted it out over a 0.354-in lip (owner, 2026-09-24). It now stays on the middle
+     * ring, all of it above the opening's top (`BB_FLOWER_RETRIEVE_Z[1]`), in every tube.
      */
     {
       const seatInBore = BB_FLOWER_LOW_Z + Math.sqrt(BB_NECTAR_R * BB_NECTAR_R - (BB_FLOWER_LOW_HOLE / 2) ** 2);
-      const w = mkWorld3d('free', 980);
-      w.balls.length = 0;
-      const el = drop(w, F, 'nectar', 1);
-      for (let t = 0; t < 600; t++) step3d(w, 1 / 60, new Map());
-      const centre = el.z + BB_NECTAR_R;
+      const rows: string[] = [];
+      let ok = true;
+      for (let i = 0; i < BB_FLOWERS.length; i++) {
+        const w = mkWorld3d('free', 980 + i);
+        w.balls.length = 0;
+        const el = drop(w, i, 'nectar', 1);
+        for (let t = 0; t < 600; t++) step3d(w, 1 / 60, new Map());
+        if (!(el.z >= BB_FLOWER_RETRIEVE_Z[1] - 0.1) || w.biobuzz!.flowers[i].stack[0] !== 1) ok = false;
+        rows.push(`F${i} bottom ${el.z.toFixed(3)}`);
+        disposeEngineFor(w);
+      }
       check(
-        'a NECTAR is still stopped at the bottom of the tube — it never passes the lower bore (G418)',
-        el.z >= -PHYS_ALLOWED_ERROR * PHYS_LENGTH_UNIT && centre < BB_FLOWER_RETRIEVE_Z[1],
-        `bottom ${el.z.toFixed(4)}, centre ${centre.toFixed(4)}; a bore seat would want centre ${seatInBore.toFixed(3)} ` +
-          `(bottom ${(seatInBore - BB_NECTAR_R).toFixed(3)}, under the tiles), so the FLOOR is the stop`,
+        '⚠️ a NECTAR is held on the MIDDLE ring, above the retrieval opening, in all four tubes (G418)',
+        ok,
+        `${rows.join(' · ')} against the opening's top ${BB_FLOWER_RETRIEVE_Z[1]}; the lower bore alone would ` +
+          `seat it at bottom ${(seatInBore - BB_NECTAR_R).toFixed(3)}, under the tiles`,
       );
     }
   }
@@ -1554,6 +1555,76 @@ function flowerScatterChecks(check: Check): void {
       rows.every((r) => r.times[0] <= 150),
       rows.map((r) => `${r.name}=${r.times[0]}t`).join(', '),
     );
+    /**
+     * ⚠️ AND A NECTAR STAYS PUT, IN AND OUT (owner, 2026-09-24: "It is possible to use the ramp to
+     * take it out, which is not allowed and does not happen in real life"). Before the middle
+     * ring's NECTAR lip a NECTAR sat on the TILES in the retrieval opening; driving in lifted it
+     * onto the blade (bottom 0.43) and BACKING OUT dragged it clear of the flower, re-tagged
+     * `ground` 2–5 in off the axis — no hopper involved, which is why a forward drive-in counting
+     * `taken` could never see it. Measured the same way here: drive in with the stick held for
+     * four seconds, then reverse for two.
+     *
+     * DROPPED in from the top ring the way a Box Tube places one, not staged: `stageColumn` sets
+     * elements on the tiles, below the lip, which is the old wrong resting place. The pollen-under
+     * row is the POSITIVE half: the ramp still takes the POLLEN under a held NECTAR.
+     */
+    {
+      const inOut = (i: number, stick: number, lat: number, angDeg: number, pollenUnder: boolean) => {
+        const w = mkWorld3d('free', 950 + i, {
+          intakeMount: 'front',
+          drivetrain: 'mecanum',
+          bbMech: { launcher: null, lift: null, intake: { kind: 'ramp' } } as unknown as RobotSpec['bbMech'],
+        });
+        w.balls.length = 0;
+        const f = BB_FLOWERS[i];
+        if (pollenUnder) drop(w, i, 'pollen', 2);
+        for (let t = 0; t < 60; t++) step3d(w, 1 / 60, new Map());
+        drop(w, i, 'nectar', 1);
+        for (let t = 0; t < 200; t++) step3d(w, 1 / 60, new Map());
+        const r = w.robots[0];
+        r.hopper.length = 0;
+        r.lastIntakeAt = -99;
+        const n = FLOWER_MOUTH[f.wall];
+        const foot = bbFootprint(r.spec).front;
+        r.pos = { x: f.x + n.x * (foot + 16) - n.y * lat, y: f.y + n.y * (foot + 16) + n.x * lat };
+        r.heading = Math.atan2(-n.y, -n.x) + (angDeg * Math.PI) / 180;
+        r.vel = { x: 0, y: 0 };
+        r.angVel = 0;
+        step3d(w, 1 / 60, new Map([[0, cmd({ bbRamp: true })]]));
+        for (let t = 0; t < Math.round(BB_RAMP_DEPLOY_S * 60) + 3; t++) step3d(w, 1 / 60, new Map());
+        const go = (s: number) => new Map([[0, cmd({ driveY: s, leftDrive: s, rightDrive: s, intake: true })]]);
+        const el = w.balls.find((b) => b.id === 1)!;
+        let worstOff = 0;
+        let lowest = Infinity;
+        for (let t = 0; t < 360; t++) {
+          step3d(w, 1 / 60, go(t < 240 ? stick : -stick));
+          worstOff = Math.max(worstOff, Math.hypot(el.pos.x - f.x, el.pos.y - f.y));
+          lowest = Math.min(lowest, el.z);
+        }
+        const res = { kind: el.state.kind, worstOff, lowest, hopper: r.hopper.length };
+        disposeEngineFor(w);
+        return res;
+      };
+      const runs = [
+        inOut(0, 0.6, 0, 0, false),
+        inOut(0, 1.0, 0, 0, false),
+        inOut(1, 1.0, 2, 8, false),
+        inOut(2, 0.35, -1, -4, false),
+        inOut(3, 0.8, 1, 3, false),
+      ];
+      const under = inOut(2, 1.0, 1, 0, true);
+      check(
+        '⚠️ ramp 3d: driving in and BACKING OUT never moves a NECTAR held in a FLOWER (G418.B)',
+        runs.every((q) => q.kind === 'element' && q.worstOff < 0.5 && q.lowest > BB_FLOWER_RETRIEVE_Z[1] - 0.1),
+        runs.map((q, k) => `run${k}: ${q.kind}, off axis ${q.worstOff.toFixed(2)}, lowest bottom ${q.lowest.toFixed(2)}`).join(' · '),
+      );
+      check(
+        'ramp 3d: ...while the POLLEN under a held NECTAR is still taken, and the NECTAR still stays',
+        under.hopper === 1 && under.kind === 'element' && under.worstOff < 0.5,
+        `hopper ${under.hopper}, NECTAR ${under.kind}, off axis ${under.worstOff.toFixed(2)}`,
+      );
+    }
+
     // THE DRAIN: one 8-POLLEN column, emptied without letting go of the stick.
     const drain = driveIn(0, 0.6, 0, 0, P(8), 7, 8, 600);
     const gaps = drain.times.map((t, k) => (k === 0 ? t : t - drain.times[k - 1]));

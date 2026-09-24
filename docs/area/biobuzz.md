@@ -106,7 +106,13 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
   cuboids `length × width × heightIn` (yaw-only, z free; `RobotState.z` = chassis BOTTOM height,
   0 while driving); elements are spheres with CCD when fast; `held`/`stock` have no body; an
   `element` in a flower FALLS and seats where the real bores let it (`flowerTube.ts`, Day 2) —
-  it is not parked at a computed height and it is not a fixed body. The hive tray is a JOINTED
+  it is not parked at a computed height and it is not a fixed body. ⚠️ **A NECTAR SEATS ON
+  THE MIDDLE RING** (owner, 2026-09-24): the CAD's 3.896 middle bore passes a 3.6 NECTAR, which
+  then sat on the tiles in the retrieval opening, where a ramp dragged it out backing away. The
+  middle ring carries a NECTAR-only lip (`BB3_FLOWER_NECTAR_SORT_D` 3.4, `buildNectarSorter3d`,
+  `GROUP_NECTAR` / `GROUP_NECTAR_SORTER` in `sim3d/groups.ts`). POLLEN never meets it, and the
+  pocket filler excludes the NECTAR bit as well as the element bit. The FLOWER3D lane drives a
+  ramp in and back out against it in all four tubes. The hive tray is a JOINTED
   DYNAMIC body — a real see-saw on a revolute joint, held at each stop by a DETENT
   (`applyHiveTilt` / `hiveDetentHold`) rather than driven to an angle; `hiveTiltAngle`
   (`sim3d/tilt.ts`) reads `hive.angle` back off the body. `BB3_HIVE_DYNAMIC` is **`true`**

@@ -24,3 +24,33 @@ const GROUP_RAMP_BIT = 0x0008;
 export const GROUP_RAMP = (((GROUP_RAMP_BIT << 16) | 0xffff) >>> 0) as number;
 /** a FLOWER's ring plates: ordinary membership, and they meet everything but a ramp. */
 export const GROUP_FLOWER_RING = (((0xffff << 16) | (0xffff & ~GROUP_RAMP_BIT)) >>> 0) as number;
+
+/**
+ * THE FIFTH BIT: A NECTAR, AND THE ONE LIP ONLY A NECTAR MEETS (owner, 2026-09-24: "the nectar
+ * droops too low when put in the flower and it is at the bottom. It is possible to use the ramp
+ * to take it out, which is not allowed and does not happen in real life").
+ *
+ * The CAD's middle bore is 3.896 in and a NECTAR is 3.6, so in the measured tube a NECTAR fell to
+ * the TILES, into the retrieval opening, where a ramp's blade lifts it over the 0.354-in lower
+ * plate. G418 says the FLOWER is built to "only allow POLLEN (not NECTAR) to be removed from the
+ * bottom of the middle ring", i.e. the real middle ring holds a NECTAR, and the 2D model's sorter
+ * ruling (owner, 2026-09-12) always seated one there. `flowerTube.ts`'s `buildNectarSorter3d`
+ * adds that ring's missing lip, and these groups keep it a NECTAR's business alone: a POLLEN's
+ * measured fit through the tube is unchanged.
+ *
+ * | collider       | memberships        | filter                     |
+ * |----------------|--------------------|----------------------------|
+ * | POLLEN         | ELEMENT            | everything                 |
+ * | NECTAR         | ELEMENT + NECTAR   | everything                 |
+ * | nectar sorter  | NECTAR             | NECTAR                     |
+ * | pocket filler  | everything         | everything but ELEMENT and NECTAR (`bodies.ts`) |
+ *
+ * A robot is on the default groups and so still meets the sorter, but the sorter sits inside the
+ * middle bore, 3.9 in up an enclosed tube, where no chassis part reaches.
+ */
+export const GROUP_ELEMENT_BIT = 0x0004;
+export const GROUP_NECTAR_BIT = 0x0010;
+/** a NECTAR's collider: an element (so everything that meets an element meets it) AND a NECTAR */
+export const GROUP_NECTAR = ((((GROUP_ELEMENT_BIT | GROUP_NECTAR_BIT) << 16) | 0xffff) >>> 0) as number;
+/** the middle ring's NECTAR lip: it meets a NECTAR and nothing else carrying other bits */
+export const GROUP_NECTAR_SORTER = (((GROUP_NECTAR_BIT << 16) | GROUP_NECTAR_BIT) >>> 0) as number;

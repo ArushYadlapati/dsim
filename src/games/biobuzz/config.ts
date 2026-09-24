@@ -457,9 +457,10 @@ export const BB_FLOWER_TOP_Z = FLOWER_RING_Z.top[1];
  * ⚠️ **THE CAD'S MIDDLE BORE DOES NOT SORT.** `BB_FLOWER_MID_HOLE` measures 3.896 and a NECTAR
  * is 3.6, so the real plate passes one — which the 2D pipeline's own sorter ruling (owner,
  * 2026-09-12: "a NECTAR cannot pass the middle ring and SEATS on it") says it does not. The
- * ruling is a GAMEPLAY decision and it stands for the 2D model; the 3D tube is real geometry and
- * does what the geometry does. See `BB_FLOWER_LOW_HOLE` for which ring actually sorts, and
- * `docs/biobuzz/field-cad-audit.md` §11 for the measurement and the consequence.
+ * ruling is a GAMEPLAY decision and it stands for the 2D model. The 3D tube used the geometry
+ * as measured, so a NECTAR fell to the tiles and a ramp could drag it out; since 2026-09-24 it
+ * adds the lip the real ring must have (`BB3_FLOWER_NECTAR_SORT_D`), and both pipelines seat a
+ * NECTAR here. `docs/biobuzz/field-cad-audit.md` §11 has the measurement.
  */
 export const BB_FLOWER_MID_Z = FLOWER_RING_Z.mid[0];
 
@@ -481,9 +482,10 @@ export const BB_FLOWER_RETRIEVE_Z: readonly [number, number] = FLOWER_RETRIEVAL_
  * bores; a 3.6-in NECTAR passes the top (4.171) and the middle (3.896) and is stopped by the
  * lower (3.222). So the manual's INTENT survives — "POLLEN out of the bottom and nothing else"
  * (G418), because a nectar clears neither the lower bore nor the 3.55-in retrieval opening — but
- * the ring that delivers it is the bottom one, and a nectar dropped into a real FLOWER falls to
- * the bottom of the tube rather than seating half way up it. Measured, not assumed, and NOT
- * fudged to match the 2D model: see `BB_FLOWER_MID_Z`.
+ * the ring that delivers it is the bottom one, and by these numbers alone a nectar falls to the
+ * bottom of the tube. That put it on the tiles in the retrieval opening, where a ramp could drag
+ * it out, so the 3D middle ring carries a NECTAR-only lip (`BB3_FLOWER_NECTAR_SORT_D`, owner
+ * 2026-09-24) and seats it there, as G418 and the 2D model both have it. See `BB_FLOWER_MID_Z`.
  */
 export const BB_FLOWER_MID_HOLE = FLOWER_RING_D.mid;
 export const BB_FLOWER_LOW_HOLE = FLOWER_RING_D.lower;
@@ -3860,6 +3862,25 @@ export const BB3_FLOWER_CAGE_SEGMENTS = 12;
  *
 */
 export const BB3_FLOWER_CAGE_T = 0.125;
+
+/**
+ * THE MIDDLE RING'S NECTAR LIP — the bore diameter (in) a NECTAR meets at the middle plate, and
+ * only a NECTAR (`GROUP_NECTAR_SORTER`, `sim3d/groups.ts`).
+ *
+ * The CAD's middle bore is 3.896 and passes a 3.6-in NECTAR, so in the measured tube a NECTAR fell
+ * to the tiles, sat in the retrieval opening, and a deployed ramp lifted it out over the 0.354-in
+ * lower plate (owner, 2026-09-24: "not allowed and does not happen in real life"). G418 describes
+ * a FLOWER that only lets POLLEN out "from the bottom of the middle ring", and the 2D model's
+ * sorter ruling (owner, 2026-09-12) has always seated a NECTAR on that ring. This is the lip that
+ * does it in 3D.
+ *
+ * 3.4 is between the two elements with room on both sides: 0.6 in over a 2.8 POLLEN (which never
+ * meets it anyway), 0.2 under a 3.6 NECTAR. A NECTAR resting on it has its centre at 5.85 and its
+ * bottom at 4.05, inside the scoring volume (from `BB_FLOWER_MID_Z`, 3.904), so a lone NECTAR now
+ * scores in 3D as it always did in 2D (`docs/biobuzz/field-cad-audit.md` §11.3). It is drawn by
+ * nothing: 0.25 in inside a 3.9-in bore, behind the HIPS pipes, is not a gap a player can see.
+ */
+export const BB3_FLOWER_NECTAR_SORT_D = 3.4;
 
 /**
  * ⚠️ **HOW FAR OFF THE BORE AXIS A PLACED ELEMENT'S CENTRE IS SCATTERED (in)** — owner report:

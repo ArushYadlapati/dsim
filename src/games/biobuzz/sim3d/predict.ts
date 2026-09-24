@@ -38,6 +38,7 @@ import {
 } from './bodies';
 import { hiveTiltAngle } from './hive3d';
 import { hyp3, QUAT_IDENTITY, round4, tiltQuatX, yawQuat, yawOfQuat } from './math3';
+import { GROUP_NECTAR } from './groups';
 
 /**
  * BIOBUZZ 3D — CLIENT-SIDE PREDICTION WORLDS (Day 2, `docs/biobuzz/plan-3d.md` §5).
@@ -723,7 +724,7 @@ function makeElementBody(
       .setFriction(ELEMENT_FRICTION)
       .setRestitution(ELEMENT_RESTITUTION)
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max)
-      .setCollisionGroups(GROUP_ELEMENT),
+      .setCollisionGroups(b.color === 'red' || b.color === 'blue' ? GROUP_NECTAR : GROUP_ELEMENT),
     body,
   );
   return body;

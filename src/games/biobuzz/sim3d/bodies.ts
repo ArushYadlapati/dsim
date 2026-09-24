@@ -58,7 +58,7 @@ import { bbIntakeKindOf } from '../mechs';
 import { EDGE_ANGLE, type BbEdge } from '../mounts';
 import { cadCellBox, cadStatics, cadTrayHulls, cadTrayRiders } from './fieldColliders';
 import { buildFlowerTubes3d } from './flowerTube';
-import { GROUP_RAMP } from './groups';
+import { GROUP_ELEMENT_BIT, GROUP_NECTAR_BIT, GROUP_RAMP } from './groups';
 import { pitchQuatY, quatMul, tiltQuatX, yawQuat, type Quat } from './math3';
 
 /**
@@ -293,14 +293,15 @@ export const GROUP_FRAME = (GROUP_FRAME_BIT << 16) | (0xffff & ~GROUP_TRAY_BIT);
  * `0xFFFF`, and the SIM3D lane's conservation/containment run is what proves it rather than this
  * paragraph.
  */
-const GROUP_ELEMENT_BIT = 0x0004;
 /** an ELEMENT's collider: it is the ONLY thing carrying this bit, and it meets everything. */
 export const GROUP_ELEMENT = (GROUP_ELEMENT_BIT << 16) | 0xffff;
 /** the intake POCKET FILLER: ordinary membership, and it meets everything but an element.
  * `>>> 0` because `0xffff << 16` is NEGATIVE as a signed 32-bit int, and `collisionGroups()`
  * reads back unsigned — the value Rapier stores is the same either way, but a check comparing
  * the two would be comparing -5 against 4294967291. */
-export const GROUP_POCKET = (((0xffff << 16) | (0xffff & ~GROUP_ELEMENT_BIT)) >>> 0) as number;
+// ...and NOT a NECTAR either: a NECTAR carries its own bit as well (`groups.ts`, the flower's
+// middle-ring lip), and a filter that cleared only the element bit would meet it through that one.
+export const GROUP_POCKET = (((0xffff << 16) | (0xffff & ~(GROUP_ELEMENT_BIT | GROUP_NECTAR_BIT))) >>> 0) as number;
 
 /**
  * THE HIVE FRAME IS A REAL COLLIDER AGAIN (2026-09-18 CAD round 2).

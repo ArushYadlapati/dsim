@@ -9,11 +9,12 @@ import {
   BB_NECTAR_R,
   BB3_FLOWER_CAGE_SEGMENTS,
   BB3_FLOWER_CAGE_T,
+  BB3_FLOWER_NECTAR_SORT_D,
   BB3_FLOWER_RING_SEGMENTS,
 } from '../config';
 
 import { cadFlowerRings, type FieldFlowerRing } from './fieldColliders';
-import { GROUP_FLOWER_RING } from './groups';
+import { GROUP_FLOWER_RING, GROUP_NECTAR_SORTER } from './groups';
 
 /**
  * BIOBUZZ 3D PHYSICS — THE FLOWER TUBE (Day 2, `docs/biobuzz/plan-3d.md` §3.7).
@@ -43,8 +44,13 @@ import { GROUP_FLOWER_RING } from './groups';
  * nectar clears neither the 3.222 bore nor the 3.550-in retrieval opening — but the ring that
  * delivers it is the BOTTOM one, not the middle one. The 2D pipeline's sorter ruling (owner,
  * 2026-09-12: a nectar seats on the MIDDLE ring) is a gameplay decision and it stands for that
- * model; nothing here is fudged to agree with it. See `config.ts`'s `BB_FLOWER_MID_HOLE` and
- * `docs/biobuzz/field-cad-audit.md` §11.
+ * model. See `config.ts`'s `BB_FLOWER_MID_HOLE` and `docs/biobuzz/field-cad-audit.md` §11.
+ *
+ * ⚠️ **AND THEN THE MIDDLE RING GOT A NECTAR LIP (owner, 2026-09-24).** A NECTAR on the tiles
+ * sits in the retrieval opening, and a deployed ramp's blade lifted it and dragged it out on the
+ * way back — G418.B's "POLLEN only" broken by physics, not by the gate. `buildNectarSorter3d`
+ * adds a lip inside the middle bore that only a NECTAR meets (`groups.ts`), so a NECTAR seats
+ * on the middle ring as the manual describes and the 2D model always had it. POLLEN is untouched.
  *
  * ── WHY A TRIMESH AND NOT A COMPOUND OF WEDGES ──────────────────────────────────────────────
  * A ring is genuinely non-convex, so it is either one trimesh or a fan of convex boxes. The
@@ -189,8 +195,71 @@ export function buildFlowerTubes3d(
       built++;
     }
     built += buildFlowerCage3d(RAPIER, world3d, body, rings, friction);
+    built += buildNectarSorter3d(RAPIER, world3d, body, rings, friction);
   }
   return built;
+}
+
+/**
+ * THE MIDDLE RING'S NECTAR LIP: an annulus inside the middle plate's own bore, spanning the plate's
+ * own z band, from `BB3_FLOWER_NECTAR_SORT_D` out to the CAD bore. It is in
+ * `GROUP_NECTAR_SORTER`, so a POLLEN passes through it as if it were not there and a NECTAR comes
+ * to rest on it. See the constant for why the real ring needs it, and `groups.ts` for the pairing.
+ *
+ * INSCRIBED, like the plates and for their reason: it SORTS, so its hole may be a hair small and
+ * never a hair large. At `BB3_FLOWER_RING_SEGMENTS` rays the faces sit 0.15 % inside the
+ * nominal radius, 0.003 in on a 1.7-in radius.
+ */
+export function buildNectarSorter3d(
+  RAPIER: Rapier3d,
+  world3d: InstanceType<Rapier3d['World']>,
+  body: InstanceType<Rapier3d['RigidBody']>,
+  rings: readonly FieldFlowerRing[],
+  friction: number,
+): number {
+  const mid = rings.find((r) => r.id === 'mid');
+  if (!mid) return 0;
+  const [cx, cy] = mid.bore;
+  const [zLo, zHi] = mid.z;
+  const rIn = BB3_FLOWER_NECTAR_SORT_D / 2;
+  const rOut = mid.hole;
+  // no lip at all rather than an inside-out one, if the CAD bore ever shrinks past the sorter
+  if (!(rOut > rIn)) return 0;
+  const n = BB3_FLOWER_RING_SEGMENTS;
+  const verts: number[] = [];
+  for (let k = 0; k < n; k++) {
+    // `dsin`/`dcos` only — the source guard scans this directory.
+    const a = (k * 2 * Math.PI) / n;
+    const ux = dcos(a);
+    const uy = dsin(a);
+    verts.push(cx + ux * rIn, cy + uy * rIn, zLo); // 0 inner bottom
+    verts.push(cx + ux * rIn, cy + uy * rIn, zHi); // 1 inner top
+    verts.push(cx + ux * rOut, cy + uy * rOut, zLo); // 2 outer bottom
+    verts.push(cx + ux * rOut, cy + uy * rOut, zHi); // 3 outer top
+  }
+  const idx: number[] = [];
+  for (let k = 0; k < n; k++) {
+    const j = (k + 1) % n;
+    const IB = (q: number) => 4 * q;
+    const IT = (q: number) => 4 * q + 1;
+    const OB = (q: number) => 4 * q + 2;
+    const OT = (q: number) => 4 * q + 3;
+    idx.push(IT(k), OT(k), OT(j), IT(k), OT(j), IT(j)); // top face (+z outward)
+    idx.push(IB(k), OB(j), OB(k), IB(k), IB(j), OB(j)); // bottom face (−z outward)
+    idx.push(IB(k), IT(k), IT(j), IB(k), IT(j), IB(j)); // the inner wall, normals INTO the tube
+    idx.push(OB(k), OB(j), OT(j), OB(k), OT(j), OT(k)); // the outer wall, against the plate
+  }
+  const desc = RAPIER.ColliderDesc.trimesh(
+    new Float32Array(verts),
+    new Uint32Array(idx),
+    RAPIER.TriMeshFlags.FIX_INTERNAL_EDGES,
+  );
+  if (!desc) return 0;
+  world3d.createCollider(
+    desc.setFriction(friction).setRestitution(0).setCollisionGroups(GROUP_NECTAR_SORTER),
+    body,
+  );
+  return 1;
 }
 
 /** the CAGE's own radius (in) — the MIDDLE plate's bore, which is the tightest aperture every
