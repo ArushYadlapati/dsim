@@ -164,10 +164,8 @@ export const PerfHud = memo(function PerfHud({
               v={`${stats.reconciles} fixes${stats.correctionIn === null ? '' : ` · ${stats.correctionIn.toFixed(2)} in`}`}
             />
           )}
-          {/* the prediction READ-OUT, not the control — the picker is its own panel below this
-              one, because a control cannot live on a `pointer-events: none` card. It says what
-              is RUNNING, which Auto and the step-down rule can make differ from the pressed
-              button, so the picker itself does not have to. */}
+          {/* what prediction is RUNNING, which Auto and the step-down rule can make differ from
+              the stored setting. The setting itself is Configure › Network. */}
           {pred && (
             <Row
               k="PREDICT"

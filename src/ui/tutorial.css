@@ -2,7 +2,7 @@
  * THE TUTORIAL STEP CARD (roadmap item 6; `src/ui/TutorialCard.tsx`).
  *
  * ── WHY ITS OWN FILE ──────────────────────────────────────────────────────────
- * The same reason `predict.css` has one: `styles.css` and `shell.css` are ONE cascade and both
+ * `styles.css` and `shell.css` are ONE cascade and both
  * are large and actively edited, so a handful of additive `.ds-tut*` rules in a file of their
  * own merge without a conflict and are exactly as scoped. Nothing here re-declares a selector
  * either of them owns — `npm run uiaudit`'s duplicate-selector rule proves that across every

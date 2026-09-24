@@ -1649,7 +1649,6 @@ button.ds-key,
 .game-btn,
 .overlay-buttons button,
 .sponsor-chip,
-.pred-opt,
 .ann-cinema-btn {
   box-shadow: 0 3px 0 var(--cap-edge, var(--ds-line));
   transition:
@@ -1672,7 +1671,6 @@ button.ds-key,
   .game-btn:where(:not(:disabled)):hover,
   .overlay-buttons button:where(:not(:disabled)):hover,
   .sponsor-chip:hover,
-  .pred-opt:where(:not(:disabled)):hover,
   .ann-cinema-btn:where(:not(:disabled)):hover {
     transform: translateY(1px);
     box-shadow: 0 2px 0 var(--cap-edge, var(--ds-line));
@@ -1691,7 +1689,6 @@ button.ds-key:where(:not(:disabled)):active,
 .game-btn:where(:not(:disabled)):active,
 .overlay-buttons button:where(:not(:disabled)):active,
 .sponsor-chip:active,
-.pred-opt:where(:not(:disabled)):active,
 .ann-cinema-btn:where(:not(:disabled)):active {
   transform: translateY(3px);
   box-shadow: 0 0 0 var(--cap-edge, var(--ds-line));
@@ -6119,7 +6116,6 @@ a.ds-cta {
       .game-btn,
       .overlay-buttons button,
       .sponsor-chip,
-      .pred-opt,
       .ann-cinema-btn,
       .ds-tile,
       .ds-opt,

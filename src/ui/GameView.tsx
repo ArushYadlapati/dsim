@@ -34,13 +34,6 @@ import { getCameraPref, subscribeCameraPref, subscribeViewPref, type CameraPref 
 import { requestFreeCamReset } from '../games/biobuzz/graphics/freeCam';
 import { resumePadNav, suspendPadNav } from '../input/padNav';
 import { setPadMenuHandler } from './PadNavLayer';
-import {
-  PREDICTION_BLURBS,
-  PREDICTION_LABELS,
-  PREDICTION_PREFS,
-  setPredictionPref,
-  type PredictionPref,
-} from '../net/predictionPref';
 
 /**
  * ── WHERE THE CONNECTION CHIP AND THE PING GRAPH WENT ──────────────────────────────────────
@@ -56,56 +49,6 @@ import {
  * not be opened. Rather than re-enable them, the graph moved to the `graphs` level of the
  * display setting, which is what the owner asked for and costs the HUD no click target at all.
  */
-
-/**
- * THE IN-MATCH PREDICTION CONTROL (`docs/biobuzz/plan-3d.md` §5).
- *
- * ── WHY IT LIVES IN THE CONNECTION PANEL ──────────────────────────────────────────────────
- * The plan asks for the setting "in the Controls section and the in-match menu". This game has
- * no pause menu — MENU leaves the match — and the one in-match surface that already OPENS, is
- * already about the netcode, and is already only shown online is the panel behind the
- * connection chip. Prediction is what the client does about the latency that panel is measuring,
- * so the ping graph and this are two halves of one answer: the graph says how bad the link is,
- * this says what to do about it, and the foot line says what the last reconcile actually cost.
- *
- * It renders only for a 3D-physics room, because that is the only place the setting changes
- * anything (`hud.prediction` is null everywhere else), and only at the `detailed` and `graphs`
- * display levels (owner, 2026-09-23: not needed in simple mode at all).
- *
- * ── ONE ROW, NO READ-OUT ──────────────────────────────────────────────────────────────────
- * It is the buttons and nothing else. What is actually running (Auto resolved, or stepped
- * down) and what reconciling costs are the PREDICT and SYNC rows of `PerfHud` directly above,
- * which are on at every level this panel is. A step-down posts its own event-log line.
- */
-function PredictionPanel({
-  pref,
-  onPick,
-}: {
-  pref: PredictionPref;
-  onPick: (p: PredictionPref) => void;
-}) {
-  return (
-    /* `role="group"` + `aria-pressed`, not a radiogroup: these are TOGGLES sharing one
-       setting, and `.on` is the only thing that says which is chosen. The group's label is
-       what gives "Auto" its context; the PREDICT word beside the buttons is decorative. */
-    <div className="pred-panel" role="group" aria-label="Prediction">
-      <span className="pred-k" aria-hidden="true">
-        PREDICT
-      </span>
-      {PREDICTION_PREFS.map((p) => (
-        <button
-          key={p}
-          className={`pred-opt ${pref === p ? 'on' : ''}`}
-          title={PREDICTION_BLURBS[p]}
-          aria-pressed={pref === p}
-          onClick={() => onPick(p)}
-        >
-          {PREDICTION_LABELS[p]}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 /** top-right drive power-draw gauge: how much current the flywheel spin-up + intake
  * are pulling off the drive motors right now (0 → POWER_DRAW_MAX). Bar on top (fills
@@ -1049,7 +992,7 @@ function Hud({
          *
          * It used to be on `.status-wrap`, which also holds whatever is stacked UNDER the
          * chips — and a band's rect is what `GameController.refreshHudInsets` reserves for the
-         * 3D camera. So opening the old ping graph, or the prediction panel, grew the band and
+         * 3D camera. So opening the old ping graph, or the old prediction panel, grew the band and
          * reframed the field; `.breakdown-row`'s own note records what that looks like
          * (measured: a 25px inset change visibly jumped the field). The chips are the part that
          * actually covers the corner, so they are the part that is measured, and the read-out
@@ -1186,17 +1129,6 @@ function Hud({
           {/* a phone gets the `simple` line at most: frame rate and ping fit the gutter, and the
               detailed rows and graphs do not (the review's own suggestion, 05-05). */}
           <PerfHud level={coarsePointer && perfLevel !== 'off' ? 'simple' : perfLevel} stats={perfStats} />
-          {/* THE PREDICTION PICKER, whenever the setting would do something (a 3D-physics room
-              and nothing else, `hud.prediction` is null everywhere it is inert).
-              It used to be behind the connection chip's click, which means it was never
-              reachable: that click never landed (see the top of this file). It is a CONTROL, so
-              it is not part of the read-out above: a `pointer-events: none` card cannot hold
-              one. Shown at the `detailed` and `graphs` levels only, beside the rows that say
-              what it is doing; Configure › Network holds the same setting for everyone else.
-              Fine pointer only: a phone's read-out is capped at `simple` anyway. */}
-          {!coarsePointer && hud.prediction && (perfLevel === 'detailed' || perfLevel === 'graphs') && (
-            <PredictionPanel pref={hud.prediction.pref} onPick={setPredictionPref} />
-          )}
           {/* DESYNC, on a phone, at the foot of this cluster: the bottom-right corner is the
               thumb pad's. It is the one net chip that is a state rather than a fact (see the
               corner below); WATCHING and SERVER stay desktop-only. */}
