@@ -2,8 +2,8 @@
 
 **State: pushed on `alpha` (11870a1).** `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. `npm test`: every check passes except the known load flake `FULL reconciles 40 ticks inside PREDICT_FULL_BUDGET_MS`. It measures 9–10 ms with 12 test processes running and 4 ms alone. It was 3 ms alone before the predicted-mouth change below, so it now flakes more often.
 
-**⚠️ Two things still to do, both need the owner:**
-- **The alpha game server has NOT been redeployed.** `./scripts/fly-deploy.sh --alpha` stopped at `flyctl` with no access token. The NECTAR lip is 3D server physics, so until `flyctl auth login` is run and the deploy repeated, online 3D matches still let a ramp pull a NECTAR out.
+**⚠️ One thing still to do, and it needs the owner:**
+- **DONE: the alpha game server is redeployed** from 7cb1b34 (health ok, one machine, shared-cpu-2x iad). The first attempt failed because the flyctl login had passed its 30-day expiry.
 - **The desktop Google pop-up ships only with a new desktop release.** `electron/main.cjs` and `preload.cjs` live inside the installed app. The site half is on Vercel already, and older shells keep the in-window redirect.
 
 What landed:
