@@ -23,11 +23,25 @@ export type KeyAction =
   | 'bbNectar'
   | 'bbRamp'
   | 'bbPass'
+  | 'viewToggle'
+  | 'cameraCycle'
+  | 'eyeUp'
+  | 'eyeDown'
   | 'driveMode'
   | 'flipFront'
   | 'park'
   | 'start'
   | 'restart';
+
+/**
+ * THE VIEW KEYS — keyboard only, and not in `PadAction`. They move the CAMERA, not the robot:
+ * no `RobotCommand` bit, and the sim never reads them. `graphics/viewKey.ts` listens for them
+ * and reads their binds through `setViewBindings`. They were hard-coded there (`t`, `c`, `i`,
+ * `o`) and absent from Controls, and `c` also placed POLLEN, so one press did both (owner,
+ * 2026-09-24). Only BIOBUZZ has a 3D view, so only BIOBUZZ uses them.
+ */
+export const VIEW_ACTIONS = ['viewToggle', 'cameraCycle', 'eyeUp', 'eyeDown'] as const;
+export type ViewAction = (typeof VIEW_ACTIONS)[number];
 
 export type PadAction =
   | 'fire'
@@ -203,6 +217,10 @@ export const ACTION_GAMES: Readonly<Record<KeyAction, readonly GameId[]>> = {
   bbNectar: ['biobuzz'],
   bbRamp: ['biobuzz'],
   bbPass: ['biobuzz'],
+  viewToggle: ['biobuzz'],
+  cameraCycle: ['biobuzz'],
+  eyeUp: ['biobuzz'],
+  eyeDown: ['biobuzz'],
   driveMode: ALL,
   flipFront: ALL,
   park: ALL,
@@ -320,6 +338,10 @@ export const KEY_ACTIONS: KeyAction[] = [
   'bbNectar',
   'bbRamp',
   'bbPass',
+  'viewToggle',
+  'cameraCycle',
+  'eyeUp',
+  'eyeDown',
   'driveMode',
   'flipFront',
   'park',
@@ -419,6 +441,13 @@ export const DEFAULT_BINDINGS: ControlBindings = {
     // BIOBUZZ: PASS to your partner — launch the held element at a field POINT rather than at
     // your own hive. Shares 'v' with Chain Reaction's catapult throw; see the role table above.
     bbPass: ['v'],
+    // THE VIEW KEYS (`VIEW_ACTIONS`). T flips 2D and 3D, and I / O raise and lower the eye —
+    // the keys they always had. The CAMERA moved off C, which is Place POLLEN, onto L: next to
+    // I and O, and free in every game. Not U: the bindings smoke lane uses it as a free key.
+    viewToggle: ['t'],
+    cameraCycle: ['l'],
+    eyeUp: ['i'],
+    eyeDown: ['o'],
     // BUTTERFLY: drop the other wheel set. 'b' for butterfly; free on the default map.
     driveMode: ['b'],
     flipFront: ['f'],
@@ -580,11 +609,22 @@ export function mergeBindings(saved: unknown): ControlBindings {
   const s = saved as { keys?: unknown; pad?: unknown };
   if (typeof s.keys === 'object' && s.keys !== null) {
     const keys = s.keys as Record<string, unknown>;
+    const fresh: KeyAction[] = [];
     for (const a of KEY_ACTIONS) {
       const v = keys[a];
       if (Array.isArray(v) && v.every((k) => typeof k === 'string' && k !== 'escape')) {
         out.keys[a] = v.map((k: string) => k.toLowerCase()).slice(0, BIND_SLOTS_MAX);
+      } else if (!(a in keys)) {
+        fresh.push(a);
       }
+    }
+    // AN ACTION NEWER THAN THE BLOB takes its default only where no bind the player MADE holds
+    // it. BIOBUZZ's Deploy ramp used to default to L, the camera's key now: a player still on
+    // that map keeps L on the ramp, and the camera starts unbound (a red dot on BIOBUZZ).
+    for (const a of fresh) {
+      out.keys[a] = out.keys[a].filter(
+        (k) => !KEY_ACTIONS.some((o) => o !== a && !fresh.includes(o) && actionsConflict(o, a) && out.keys[o].includes(k)),
+      );
     }
   }
   if (typeof s.pad === 'object' && s.pad !== null) {
@@ -1025,6 +1065,75 @@ export function removePadBind(b: ControlBindings, action: PadAction, slot: numbe
 //    not take a key from one: the edit is REFUSED (`sharedKeyHolder` / `sharedPadHolder` say
 //    which control holds it, for the screen to tell the player) instead of stealing a drive key
 //    in one season, or in all of them from a screen that says it is editing one.
+
+// ---- CONFLICTS: ASKED BEFORE AN EDIT, SO NOTHING IS STOLEN ------------------------------
+// The screen asks these BEFORE it assigns, and refuses a bind that is already taken, rather
+// than letting `assignKey` take it from the other action (owner, 2026-09-24: binding a key
+// that another function uses "shouldn't unbind the other one"). The steal code in the assign
+// helpers is still there, and still pinned by `npm test`, but it only runs once one of these
+// has said the bind is free, so there is nothing left for it to take.
+
+/** who already holds a bind. `game` is the season whose override holds it, or null for main. */
+export interface BindConflict {
+  action: KeyAction;
+  game: GameId | null;
+}
+
+/**
+ * THE ACTION ALREADY ON `key`, as seen from where `action` is being edited — `game` null is All
+ * games, the main map. Main is checked against every action that shares a game with `action`
+ * (`actionsConflict`), and then against each season's effective map where `action` is synced,
+ * which is how a main bind would collide with a season's own Intake or Shoot. Inside one season,
+ * its effective map is the whole answer. The same action on another slot is not a conflict.
+ */
+export function keyConflict(
+  b: ControlBindings,
+  game: GameId | null,
+  action: KeyAction,
+  key: string,
+): BindConflict | null {
+  const inGame = (g: GameId): BindConflict | null => {
+    const eff = effectiveBindings(b, g);
+    const a = keyActionsFor(g).find((o) => o !== action && eff.keys[o].includes(key));
+    return a ? { action: a, game: g } : null;
+  };
+  if (game) return inGame(game);
+  const main = KEY_ACTIONS.find((o) => o !== action && actionsConflict(o, action) && b.keys[o].includes(key));
+  if (main) return { action: main, game: null };
+  for (const g of GAME_IDS) {
+    if (!actionUsedBy(action, g) || keyDesynced(b, g, action)) continue;
+    const c = inGame(g);
+    if (c) return c;
+  }
+  return null;
+}
+
+/** the pad twin of `keyConflict`, EXACT like every pad rule: a single is held by that single, a
+ *  combo by the identical combo, and RT on Shoot does not conflict with an RT + D-UP combo. */
+export function padConflict(
+  b: ControlBindings,
+  game: GameId | null,
+  action: PadAction,
+  chord: PadChord,
+): BindConflict | null {
+  const combo = chord.length > 1 ? normalizeChord(chord) : null;
+  const holds = (pad: PadBindings, a: PadAction): boolean =>
+    combo ? pad.combos[a].some((c) => chordKey(c) === chordKey(combo)) : pad.buttons[a].includes(chord[0]);
+  const inGame = (g: GameId): BindConflict | null => {
+    const eff = effectiveBindings(b, g);
+    const a = padActionsFor(g).find((o) => o !== action && holds(eff.pad, o));
+    return a ? { action: a, game: g } : null;
+  };
+  if (game) return inGame(game);
+  const main = PAD_ACTIONS.find((o) => o !== action && actionsConflict(o, action) && holds(b.pad, o));
+  if (main) return { action: main, game: null };
+  for (const g of GAME_IDS) {
+    if (!actionUsedBy(action, g) || padDesynced(b, g, action)) continue;
+    const c = inGame(g);
+    if (c) return c;
+  }
+  return null;
+}
 
 /** the SHARED control that holds `key` in main, if any — what a season scope may not take */
 export function sharedKeyHolder(b: ControlBindings, key: string): KeyAction | null {

@@ -213,6 +213,9 @@ import { normalizePath, refHost, screenBucket, utmOf } from '../src/pageviews';
 import type { RobotSetup } from '../src/sim/spawn';
 import {
   DEFAULT_BINDINGS,
+  VIEW_ACTIONS,
+  keyConflict,
+  padConflict,
   KEY_ACTIONS,
   PAD_ACTIONS,
   mergeBindings,
@@ -256,7 +259,7 @@ import {
   seasonUnbound,
   removePadBindInGame,
 } from '../src/input/bindings';
-import { ACTION_LABELS, ALL_GAMES_PANELS, seasonPanel } from '../src/ui/controlsLayout';
+import { ACTION_LABELS, ALL_GAMES_PANELS, seasonPanels } from '../src/ui/controlsLayout';
 import {
   TOUCH_OTHER_ACTIONS,
   allTouchButtons,
@@ -24506,21 +24509,34 @@ const dumperSetup = (): RobotSetup => {
     J(allPads),
   );
   check(
-    'layout: a season panel is exactly that season’s own actions, keyboard and pad in one order',
+    'layout: a season’s cards are exactly that season’s own actions, each once, keyboard and pad in one order',
     GAME_IDS.every((g) => {
-      const p = seasonPanel(g);
-      const padOrder = p.pads.map((a) => p.keys.indexOf(a));
+      const ps = seasonPanels(g);
+      const keys = ps.flatMap((p) => p.keys);
+      const pads = ps.flatMap((p) => p.pads);
       return (
-        J([...p.keys].sort()) === J(seasonKeyActions(g).sort()) &&
-        J([...p.pads].sort()) === J(seasonPadActions(g).sort()) &&
-        padOrder.every((i, n) => i >= 0 && (n === 0 || i > padOrder[n - 1]))
+        new Set(keys).size === keys.length &&
+        J([...keys].sort()) === J(seasonKeyActions(g).sort()) &&
+        J([...pads].sort()) === J(seasonPadActions(g).sort()) &&
+        ps.every((p) => {
+          const padOrder = p.pads.map((a) => p.keys.indexOf(a));
+          return padOrder.every((i, n) => i >= 0 && (n === 0 || i > padOrder[n - 1]));
+        })
       );
     }),
   );
   check(
+    'layout: BIOBUZZ lists its camera keys on a keyboard-only "3D view" card, and no other season has one',
+    J(seasonPanels('biobuzz').map((p) => p.id)) === J(['mechanisms', 'view']) &&
+      J(seasonPanels('biobuzz')[1].keys) === J(VIEW_ACTIONS) &&
+      seasonPanels('biobuzz')[1].pads.length === 0 &&
+      GAME_IDS.filter((g) => g !== 'biobuzz').every((g) => seasonPanels(g).length === 1),
+    J(seasonPanels('biobuzz').map((p) => [p.id, p.keys])),
+  );
+  check(
     'layout: every season-only action is listed by exactly the one season that has it',
     KEY_ACTIONS.filter(actionIsSeasonOnly).every(
-      (a) => GAME_IDS.filter((g) => seasonPanel(g).keys.includes(a)).length === 1 && !allKeys.includes(a),
+      (a) => GAME_IDS.filter((g) => seasonPanels(g).some((p) => p.keys.includes(a))).length === 1 && !allKeys.includes(a),
     ),
   );
   check('layout: every action has a name', KEY_ACTIONS.every((a) => (ACTION_LABELS[a] ?? '').trim().length > 0));
@@ -25709,6 +25725,117 @@ const dumperSetup = (): RobotSetup => {
     'theme: COLORS.backdrop / backdropDark match --ds-bg in light and dark',
     bg.length === 2 && bg[0] === COLORS.backdrop.toLowerCase() && bg[1] === COLORS.backdropDark.toLowerCase(),
     `css ${bg.join(',')} vs ${COLORS.backdrop},${COLORS.backdropDark}`,
+  );
+}
+
+
+// CONTROLS: A TAKEN BIND IS REFUSED, NOT STOLEN, AND THE 3D VIEW KEYS ARE BINDINGS (owner,
+// 2026-09-24): "There are some controls that are not even in the controls menu, like pressing c
+// to change view in 3d. ... when binding a key to a key that is overlapping with a different
+// function, it shouldn't unbind the other one. Instead, it should show a conflict error."
+{
+  const J = (v: unknown): string => JSON.stringify(v);
+  const d = cloneBindings(DEFAULT_BINDINGS);
+
+  // -- the view keys are actions, BIOBUZZ-only, keyboard-only, and off Place POLLEN's C
+  check(
+    'view keys: T, L, I and O by default, and the camera is no longer on C',
+    J(VIEW_ACTIONS.map((a) => d.keys[a])) === J([['t'], ['l'], ['i'], ['o']]) && !d.keys.cameraCycle.includes('c'),
+    J(VIEW_ACTIONS.map((a) => d.keys[a])),
+  );
+  check(
+    'view keys: BIOBUZZ-only season actions with no pad action',
+    VIEW_ACTIONS.every(
+      (a) => J(ACTION_GAMES[a]) === J(['biobuzz']) && actionIsSeasonOnly(a) && !(PAD_ACTIONS as string[]).includes(a),
+    ),
+  );
+  check(
+    'view keys: no default BIOBUZZ key does two things (the C clash is gone)',
+    (() => {
+      const seen = new Map<string, string>();
+      for (const a of keyActionsFor('biobuzz')) for (const k of d.keys[a]) {
+        if (seen.has(k)) return false;
+        seen.set(k, a);
+      }
+      return true;
+    })(),
+  );
+  const viewSrc = readFileSync('src/games/biobuzz/graphics/viewKey.ts', 'utf8');
+  const sceneSrc = readFileSync('src/games/biobuzz/scene/renderScene.ts', 'utf8');
+  check(
+    'view keys: neither listener names a literal key any more — both read the binds',
+    !/toLowerCase\(\) !== 't'/.test(viewSrc) &&
+      /viewActionOf\(e\) === 'viewToggle'/.test(viewSrc) &&
+      /switch \(viewActionOf\(e\)\)/.test(sceneSrc) &&
+      !/case 'c':/.test(sceneSrc),
+  );
+
+  // -- the load migration: a new action does not take a key the player already put elsewhere
+  const oldRamp = mergeBindings({ keys: { bbRamp: ['l'] } });
+  check(
+    'view keys: a stored map with Deploy ramp on L keeps it, and the camera starts unbound',
+    J(oldRamp.keys.bbRamp) === J(['l']) && J(oldRamp.keys.cameraCycle) === J([]) && J(oldRamp.keys.viewToggle) === J(['t']),
+    J({ ramp: oldRamp.keys.bbRamp, cam: oldRamp.keys.cameraCycle }),
+  );
+  check(
+    'view keys: ...a key held only in ANOTHER game does not block the default',
+    J(mergeBindings({ keys: { fling: ['l'] } }).keys.cameraCycle) === J(['l']),
+  );
+  check(
+    'view keys: ...and a stored camera bind is kept as it is, even the old C',
+    J(mergeBindings({ keys: { cameraCycle: ['c'] } }).keys.cameraCycle) === J(['c']),
+  );
+
+  // -- the conflict query
+  check(
+    'conflict: C for the camera (BIOBUZZ scope) is taken by Place POLLEN',
+    J(keyConflict(d, 'biobuzz', 'cameraCycle', 'c')) === J({ action: 'bbPlace', game: 'biobuzz' }),
+  );
+  check(
+    'conflict: ...and a free key, or the key the action already has, is not a conflict',
+    keyConflict(d, 'biobuzz', 'cameraCycle', 'm') === null && keyConflict(d, 'biobuzz', 'cameraCycle', 'l') === null,
+  );
+  check(
+    'conflict: a season scope sees a shared drive key',
+    J(keyConflict(d, 'biobuzz', 'bbPlace', 'w')) === J({ action: 'driveUp', game: 'biobuzz' }),
+  );
+  check(
+    'conflict: All games — Shoot on C collides with the season actions C reaches',
+    keyConflict(d, null, 'fire', 'c') !== null && ['catalyst', 'bbPlace'].includes(keyConflict(d, null, 'fire', 'c')!.action),
+    J(keyConflict(d, null, 'fire', 'c')),
+  );
+  check(
+    'conflict: ...but two actions no game uses together never conflict (Catalyst on N is fine)',
+    keyConflict(d, 'chain', 'catalyst', 'n') === null,
+  );
+  const ovr = assignKeyInGame(d, 'biobuzz', 'fire', 0, 'm');
+  check(
+    'conflict: a main edit sees a season’s own override (Intake on M, where BIOBUZZ Shoot has M)',
+    J(keyConflict(ovr, null, 'intake', 'm')) === J({ action: 'fire', game: 'biobuzz' }),
+  );
+  check(
+    'conflict: pad singles and combos are exact — RT is Shoot, RT + D-UP is free',
+    J(padConflict(d, null, 'intake', [7])) === J({ action: 'fire', game: null }) &&
+      padConflict(d, null, 'intake', [7, 12]) === null,
+  );
+  check(
+    'conflict: the pad in a season scope — LB is Place POLLEN in BIOBUZZ, free for nothing else there',
+    J(padConflict(d, 'biobuzz', 'bbRamp', [4])) === J({ action: 'bbPlace', game: 'biobuzz' }),
+  );
+
+  // -- the screen asks before it assigns, and says who has it
+  const cs = readFileSync('src/ui/ControlsSection.tsx', 'utf8');
+  check(
+    '⚠️ controls screen: a key capture asks keyConflict FIRST and returns armed on a conflict',
+    /const taken = keyConflict\(b, g, capture\.action, k\);\s*if \(taken\) \{[\s\S]{0,200}?return;\s*\}\s*onChangeRef\.current\(/.test(cs),
+  );
+  check(
+    '⚠️ controls screen: ...and a pad capture the same way',
+    /const taken = padConflict\(b, game, action, sorted\);\s*if \(taken\) \{[\s\S]{0,800}?return false;\s*\}\s*onChangeRef\.current\(/.test(cs),
+  );
+  check(
+    'controls screen: the old "Took C from …" steal notice is gone',
+    !/lossNotice|Took \$\{label\} from/.test(cs),
   );
 }
 

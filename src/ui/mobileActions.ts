@@ -258,6 +258,13 @@ export const TOUCH_OTHER_ACTIONS: Readonly<Record<string, string>> = {
   // pre-match overlay panel (`GameView`), RESET is one of the two top-left `.game-btn`s.
   start: 'pre-match overlay button',
   restart: 'RESET button',
+  // the 3D view keys (`VIEW_ACTIONS`) move the camera, not the robot. The view toggle is the
+  // 2D/3D chip on the touch overlay (`MobileControls`); the camera and its eye height are set in
+  // Configure ▸ Graphics (Camera, Your height), which a finger reaches between matches.
+  viewToggle: '2D / 3D chip',
+  cameraCycle: 'Graphics ▸ Camera',
+  eyeUp: 'Graphics ▸ Your height',
+  eyeDown: 'Graphics ▸ Your height',
 };
 
 /** every button `game` could show, in thumb order — the shared ones interleaved with its own

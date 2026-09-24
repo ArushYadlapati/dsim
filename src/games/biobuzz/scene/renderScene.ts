@@ -29,7 +29,7 @@ import {
   type GraphicsTier,
 } from '../graphics/settings';
 import { applyFirstGuess, createQualityGovernor, probeAdapter, type QualityGovernor } from '../graphics/auto';
-import { installViewKey } from '../graphics/viewKey';
+import { installViewKey, viewActionOf } from '../graphics/viewKey';
 import { buildBiobuzzField, updateBiobuzzField, type BbFieldHandles } from './renderField';
 import { buildBiobuzzElements, setElementDetail, setElementShadows, updateBiobuzzElements, type BbElements } from './renderElements';
 import { loadElementGeometries } from './renderElementsGlb';
@@ -719,30 +719,25 @@ class BiobuzzScene implements GameScene {
    * is torn down the moment the view becomes 2D and there is then nothing left listening to take
    * it back. That was this file's own note on Day 2 and it is what Day 3 fixed.
    *
-   * The rest stay here, on `window`, rather than going through `src/input/bindings.ts` — a
-   * `KeyAction` there is read by `InputManager` into a `RobotCommand` and acted on by
-   * `GameController`, which is another lane's file, and it would also mean a `ControlsSection`
-   * row and a settings migration for a key whose only effect is on a renderer that may not be
-   * mounted. `i` and `o` are unbound in `DEFAULT_BINDINGS`; `c` is Chain Reaction's CATALYST,
-   * which BIOBUZZ has no mechanism for, so it is free here too.
+   * The rest stay here, on `window`, because they act on this scene's cameras. Their KEYS are
+   * bindings (`VIEW_ACTIONS`), with rows in Controls: they were hard-coded, and `c` fired the
+   * camera AND Place POLLEN on one press (owner, 2026-09-24). The camera's default is L now.
    */
   private bindKeys(): void {
     if (typeof window === 'undefined') return;
     const onKey = (e: KeyboardEvent): void => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const t = e.target as HTMLElement | null;
-      // typing in a chat box, a team-name field or a rebind capture is never a camera command
-      if (t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName))) return;
-      switch (e.key.toLowerCase()) {
-        case 'c': {
+      // the player's binds, read through the one reader (`graphics/viewKey.ts`), which also
+      // ignores a modifier and typing in a chat box, a team-name field or a rebind capture
+      switch (viewActionOf(e)) {
+        case 'cameraCycle': {
           const i = CAMERA_PREFS.indexOf(this.cameraPref);
           setCameraPref(CAMERA_PREFS[(i + 1) % CAMERA_PREFS.length]);
           break;
         }
-        case 'i':
+        case 'eyeUp':
           this.cameras.nudgeEye(1);
           break;
-        case 'o':
+        case 'eyeDown':
           this.cameras.nudgeEye(-1);
           break;
         default:
