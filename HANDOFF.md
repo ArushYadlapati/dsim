@@ -1,4 +1,60 @@
-# HANDOFF — 2026-09-23g (3D HUD sponsor logo follows the scrim; records Watch column)
+# HANDOFF — 2026-09-24 (integration check: 23h + the parallel BIOBUZZ-builder session)
+
+**State: green, UNCOMMITTED** (both sessions' work is still in the tree). `build`, `uiaudit` (after
+`uiindex`), `docaudit` pass; full `shiftaudit` 650 state changes, **0 shifts**; `npm test` 2/5036
+failures, both known perf flakes (`PREDICT_FULL_BUDGET`, 2v2 `step3d` p95).
+
+- The parallel session left no entry. Its work: BIOBUZZ builder reordered FRAME → INTAKE →
+  LAUNCHER → FLOWER SCORING; the refused-cell hint lines under `BbChassisMap` are gone (hover
+  title only), and the twin-turret captions carry the glyph; the pass-target picker moved out of
+  the builder into a new `GameModule.DrivingRows` slot (end of the Driving panel, `BiobuzzDrivingSlot`);
+  presets became a sideways `.ds-opts.robots.strip`.
+- **Fixed:** that strip's `scroll-snap-type` was 23h's 4 shifts. Chrome re-snaps to the snapped
+  card's TRANSFORMED box, so a hover/press on preset 0 scrolled the strip and slid every other card
+  1-2px. `scroll-padding` fixed the hover case but not `:active`, so snap is removed (comment in
+  shell.css). Also a stale "My Robot builder" comment on `.ds-passpick`.
+- **Presets strip scrollbar** (owner): invisible at rest, a thin `--ds-line-strong` thumb on
+  hover/focus (colour only, so 0 shifts). "There is more" is an EDGE FADE (`mask-image` driven by
+  `animation-timeline: scroll(self inline)` over `@property --strip-fade-l/r`). Behind
+  `@supports`, so Firefox keeps its plain bar. Verified in Electron in both themes: right fade at
+  rest, both mid-scroll, left at the end. Not checked: a width where every preset fits (no fade
+  expected, because the timeline is inactive). If testers miss the fade, arrow buttons are next.
+- Checked, no conflict: the strip's 260px columns vs 23h's `minmax(260px)` grid (strip rule
+  outranks); `Marquee` in preset cards (no picture, fits); `DrivingRows` gets the same props as `Builder`.
+
+## Next
+- Commit both sessions by hunk (Menu.tsx and shell.css hold both).
+
+## 2026-09-23h (robot cards + pinned hero: bigger picture, marquee, faster entry)
+
+**State: green, UNCOMMITTED.** `build`, `uiaudit`, `docaudit`, `bundleaudit` pass; `npm test`
+fails only the known BIOBUZZ perf flakes (a different timing check each run under load). A
+PARALLEL SESSION is editing the same tree (Builder.tsx, HudSlots.tsx, PassPicker.tsx, biobuzz
+index.ts, adding-a-game.md, AND parts of Menu.tsx/shell.css — the presets `.strip`). Stage by hunk.
+
+- **Cards** (`RobotCard.tsx`, shell.css robot-card block): every SAVED robot, every game, has a
+  96px picture as the LEFT COLUMN; name, team, build line to its right. BIOBUZZ's `savedThumb`
+  draws its 2D schematic when there is no 3D render; other games get `preview2d` (Menu.tsx).
+  Grid `minmax(260px,1fr)` (220 measured worse: 90px text column at 1100).
+- **Marquee** (`src/ui/Marquee.tsx`): `DriverName` moved out of Results.tsx unchanged; CSS renamed
+  `.resx-name-*` → `.ds-marquee*`, now in shell.css. Two passes, NOT infinite (WCAG 2.2.2; user
+  picked this). Used for card name/team and the hero name/team.
+- **Hero**: picture column `minmax(200px,30%)`, 160px box; pins from **860px** tall (was 721).
+- **Entry lag, measured** (offscreen Electron, cold, long tasks >50ms, `scratch/perf.cjs`):
+  DECODE 64 → 0 ms (was 276 with the new card pictures) — `RobotPreview` builds ONE template world
+  per document instead of `createWorld` (G304 search, ~30ms) per picture. BIOBUZZ 3D ~210 → ~140
+  ms: thumbnail batch on `requestIdleCallback`, one capture per slice, after `scene.ready()`;
+  `renderPreview.ts` warms shaders with `compileAsync` before its loop draws. Chunk prefetch was
+  measured: no gain, not added. Floor left is context + PMREM setup; sharing the turntable's
+  context for thumbnails is the next lever (ponytail note in Preview3D.tsx).
+- ~~`shiftaudit` shows 4 shifts on /configure/robot, from the presets `.strip` snap~~ — fixed
+  2026-09-24 (snap removed).
+
+## Next
+- Commit these files by hunk (Menu.tsx and shell.css hold both sessions' work).
+- Owner check on a real screen: hero picture size, card density at 1100/1440.
+
+## 2026-09-23g (3D HUD sponsor logo follows the scrim; records Watch column)
 
 **State: green, pushed to `alpha`.** `build`, `uiaudit`, `contrast`, `docaudit` pass; `npm test` fails
 only the known BIOBUZZ perf flakes (2v2 ROOM tick ratio 1.23–1.25 vs 1.2 under load; flips between runs).
