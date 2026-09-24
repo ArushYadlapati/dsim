@@ -116,14 +116,27 @@ export const PerfHud = memo(function PerfHud({
        numbers — changing four times a second — would be announced four times a second. A
        group is a read-out a screen reader can go and read, and says nothing on its own. */
     <div className="perf-hud" role="group" aria-label="Performance">
+      {/* THE SIMPLE LINE: frame rate, the 1% low (a stutter, as a frame rate a player already
+          reads), and the ping with its jitter, which is what makes a ping bad. */}
       <div className="perf-head">
-        <span className="perf-fps">{Math.round(stats.fps)} fps</span>
+        <span className="perf-stat">
+          {Math.round(stats.fps)}
+          <span className="perf-u"> fps</span>
+        </span>
+        {stats.p99 > 0 && (
+          <span className="perf-stat">
+            {Math.round(1000 / stats.p99)}
+            <span className="perf-u"> 1% low</span>
+          </span>
+        )}
         {ping !== null && (
-          <span className={`perf-ping ${qualityClass(net!.quality)}`}>
+          <span className={`perf-stat perf-ping ${qualityClass(net!.quality)}`}>
             {/* the dot's colour IS the quality, so the word has to exist for anyone not seeing it */}
             <span className="perf-dot" aria-hidden />
             {net!.quality && <span className="ds-sr">{net!.quality} connection, </span>}
-            {ping} ms
+            {ping}
+            {net!.jitterMs !== null && <span className="perf-u">±{net!.jitterMs}</span>}
+            <span className="perf-u">ms</span>
           </span>
         )}
       </div>
@@ -143,15 +156,8 @@ export const PerfHud = memo(function PerfHud({
             v={`${stats.view3d ? '3D' : '2D'} · ${stats.physics.toUpperCase()} physics`}
           />
           <Row k="SIZE" v={`${stats.width}×${stats.height} @${stats.dpr.toFixed(stats.dpr % 1 ? 1 : 0)}×`} />
-          {net && (
-            <Row
-              k="LINK"
-              v={
-                `${net.jitterMs === null ? '' : `±${net.jitterMs} ms · `}` +
-                `${net.snapHz === null ? '—' : `${net.snapHz} Hz`}`
-              }
-            />
-          )}
+          {/* jitter is on the line above, beside the ping it qualifies */}
+          {net && <Row k="LINK" v={net.snapHz === null ? '—' : `${net.snapHz} Hz updates`} />}
           {stats.interpMs !== null && (
             <Row
               k="DELAY"

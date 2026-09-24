@@ -382,12 +382,18 @@ four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow no
   itself into two thumb columns against the live viewport and reads a stored position only once
   the player has dragged that control. In LANDSCAPE the score bar and the breakdown chips are in
   the left and right gutters, and the packer treats both as obstacles.
-- **ONE performance read-out**, `PerfHud` in the top-right under the status chips, driven by
-  `GameSettings.perfDisplay` alone (off · simple · detailed · graphs, default simple = fps +
-  ping). It is NOT interactive and NOT a `[data-hud-band]`: a band reserves an edge and the 3D
+- **ONE performance read-out**, `PerfHud`, bottom-right above the net chips on a desktop (the
+  top-right cluster on a phone, where the bottom-right is the thumb pad), driven by
+  `GameSettings.perfDisplay` alone (off · simple · detailed · graphs, default simple = fps,
+  1% low, ping ± jitter). It used to hang under the top-right chip column and moved with each
+  game's column height. It is NOT interactive and NOT a `[data-hud-band]`: a band reserves an edge and the 3D
   camera reframes the field around it, so a diagnostic carrying one would change the shot it
   was turned on to measure. Its three ancestors each drew their own corner box and two of them
   landed on something — `?perf=1` over MENU/RESET, the 3D overlay over the event log.
+- **A 3D match opens on the loading screen, never on the 2D field.** `GameController.sceneLoading`
+  is true until the first scene mounts; the 2D pass draws nothing meanwhile and `LoadingScreen`
+  (GameView) covers the field and HUD. First load only: a mid-match 2D → 3D switch keeps the 2D
+  view until the scene lands.
 - **`data-hud-band` goes on the thing that covers the field, not on its wrapper.** It is on
   `.status-row` (the chips), not on `.status-wrap`, so a panel stacked under the chips cannot
   grow the reserved inset mid-match.

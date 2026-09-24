@@ -700,6 +700,8 @@ export class GameController {
   private tutorial: TutorialRunner | null = null;
   /** told to the view (GameView's loading panel) whenever `physicsPending` flips. */
   private readonly onPhysicsPending: ((pending: boolean) => void) | null;
+  /** told to the view whenever `sceneLoading` flips — the same panel, for the renderer. */
+  private readonly onSceneLoading: ((loading: boolean) => void) | null;
 
   /**
    * THE 3D PHYSICS CHUNK IS STILL LOADING, SO NOTHING MAY BE STEPPED YET.
@@ -737,6 +739,19 @@ export class GameController {
   /** the live 3D scene, or null on the 2D view / no scene module / a failed load. Owned
    * entirely by this controller — created and disposed here, never by GameView. */
   private scene: GameScene | null = null;
+  /**
+   * A 3D SCENE IS WANTED AND STILL LOADING (the Three.js chunk, then the factory's own assets).
+   *
+   * The 2D pass used to draw the whole field for the length of that load, so a 3D match opened
+   * on a flash of the 2D render. While this is true the 2D canvas is left blank and the view
+   * shows its loading panel instead. Solo also holds stepping, like `physicsPending`, so a
+   * practice countdown does not run behind the panel; a room keeps following the server.
+   *
+   * FIRST LOAD ONLY (`sceneEverShown`). A player who switches 2D → 3D mid-match keeps the 2D
+   * view they were driving on until the scene lands, rather than a blank screen over a live match.
+   */
+  private sceneLoading = false;
+  private sceneEverShown = false;
   /** bumped on every teardown so a `factory()`/`render()` that resolves AFTER the view
    * has switched away, or after a second load started (rapid toggling), is dropped
    * instead of replacing the scene the current state actually wants. */
@@ -829,6 +844,8 @@ export class GameController {
        * `GameView` builds the controller inside an async `boot()`, never during a render.
        */
       onPhysicsPending?: (pending: boolean) => void;
+      /** the 3D VIEW is loading (see `sceneLoading`). Same calling rules as `onPhysicsPending`. */
+      onSceneLoading?: (loading: boolean) => void;
       /**
        * RUN THE TUTORIAL (roadmap item 6) — this game's `GameModule.tutorial`, handed in by
        * `GameView` so the controller never has to decide whether a run is a lesson.
@@ -846,6 +863,7 @@ export class GameController {
     this.sceneHost = opts?.sceneHost ?? null;
     this.hudHost = opts?.hudHost ?? null;
     this.onPhysicsPending = opts?.onPhysicsPending ?? null;
+    this.onSceneLoading = opts?.onSceneLoading ?? null;
     // which game this controller builds its INITIAL world for. A networked
     // session's game is authoritative (from matchStart); solo uses the setting.
     // Once running, STEP/DRAW/HUD resolve from this.world.game (this.mod).
@@ -1271,6 +1289,7 @@ export class GameController {
     if (this.scene) return; // already showing one
     const host = this.sceneHost!;
     const epoch = ++this.sceneEpoch;
+    if (!this.sceneEverShown) this.setSceneLoading(true);
     (async () => {
       const factory = await sceneFn();
       // Auto's preset line, the slip line and an HDRI failure go to the event log, like
@@ -1297,8 +1316,11 @@ export class GameController {
       this.scene = scene;
       // the 2D overlay projects labels and auto paths through the scene's camera from here on
       this.renderer.setScene(scene);
+      this.sceneEverShown = true;
+      this.setSceneLoading(false);
     })().catch((err: unknown) => {
-      if (epoch !== this.sceneEpoch) return;
+      if (epoch !== this.sceneEpoch || this.disposed) return;
+      this.setSceneLoading(false);
       // ONE console warning, per plan §4.7 ("a rejected renderer import() falls back to the
       // 2D view") — never a blank canvas, and never anything the 2D game screen shows.
       // eslint-disable-next-line no-console
@@ -1310,6 +1332,8 @@ export class GameController {
    * threw). Bumps the epoch FIRST so an in-flight `syncScene()` load cannot land after. */
   private teardownScene(): void {
     this.sceneEpoch++;
+    // an in-flight load is abandoned by the epoch bump, so nothing else would clear this
+    if (this.sceneLoading && !this.disposed) this.setSceneLoading(false);
     if (!this.scene) return;
     const scene = this.scene;
     this.scene = null;
@@ -1626,7 +1650,11 @@ export class GameController {
     }
     // a live scene draws the field/robots/balls beneath this canvas — the 2D pass then
     // stays transparent and draws only its cheap overlay (name labels), never the field.
-    this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId, !!this.scene, this.driverName);
+    // While the scene is still LOADING it draws nothing: the view's loading panel covers it.
+    if (this.sceneLoading) {
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    } else this.renderer.render(this.ctx, world, this.lastCmd, this.localRobotId, !!this.scene, this.driverName);
     this.renderTimes.push(performance.now() - drawT0);
     this.sampleFrame(dtMs);
     this.raf = requestAnimationFrame(this.loop);
@@ -1666,6 +1694,9 @@ export class GameController {
    * prediction is fighting the server or agreeing with it */
   private reconciles = 0;
   private sampleFrame(dtMs: number): void {
+    // a gap this long is a hidden tab (rAF paused), not a frame. Kept, it read as a 0 fps
+    // "1% low" and a multi-second WORST for the whole 4 s window after the player came back.
+    if (dtMs > 1000) return;
     this.frames.push(dtMs);
   }
 
@@ -1727,8 +1758,9 @@ export class GameController {
 
   /** solo stepping: local keypress start/restart, one local command per tick */
   private stepSolo(cmd: RobotCommand): void {
-    // nothing may be stepped until the 3D wasm is in hand — see `physicsPending`
-    if (this.physicsPending) {
+    // nothing may be stepped until the 3D wasm is in hand — see `physicsPending` — and a
+    // practice does not start behind the 3D view's loading panel (`sceneLoading`)
+    if (this.physicsPending || this.sceneLoading) {
       this.acc = 0;
       return;
     }
@@ -2089,6 +2121,13 @@ export class GameController {
   private setPhysicsPending(pending: boolean): void {
     this.physicsPending = pending;
     this.onPhysicsPending?.(pending);
+  }
+
+  /** the same for the 3D view's latch */
+  private setSceneLoading(loading: boolean): void {
+    if (this.sceneLoading === loading) return;
+    this.sceneLoading = loading;
+    this.onSceneLoading?.(loading);
   }
 
   /**

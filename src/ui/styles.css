@@ -627,11 +627,11 @@ button {
    event log) and `.ping-graph*` + `.chip.net-quality.clickable` (a graph behind a click
    that never landed — `.hud` is `pointer-events: none`).
 
-   WHERE IT SITS, and why it cannot cover the messages: it is the last child of
-   `.status-wrap`, the TOP-RIGHT cluster, in flow under the chips. The event log is
-   `top: 52px; left: 14px` — the opposite corner — so there is no width at which the two
-   meet. It is NOT inside `[data-hud-band]` (that attribute moved to the chip row), so a
-   3D camera never reframes the field around it.
+   WHERE IT SITS: on a desktop, the top of `.net-corner`, the BOTTOM-RIGHT cluster, above
+   the connection chips. It used to be the last child of `.status-wrap` (top-right), where it
+   hung under whatever column of chips the game drew and moved with its height. On a phone
+   that corner is the thumb pad's, so there it stays in `.status-wrap` at the simple level.
+   Neither place is inside `[data-hud-band]`, so a 3D camera never reframes the field around it.
 
    TOKENS: a card floating on the field, so `--ds-hud` / `--ds-hud-line` and the `--ds-ink` /
    `--ds-mut` pair that `.game-root.view-3d .status-wrap` redefines for a lit 3D background.
@@ -659,27 +659,34 @@ button {
   line-height: var(--ds-lh-tight);
 }
 
-/* the ALWAYS-ON line: frame rate, and the ping when there is a server. */
+/* the ALWAYS-ON line: frame rate, 1% low, and the ping ± jitter when there is a server.
+   It WRAPS (each stat is `nowrap`) rather than overflow on a phone's narrow cluster. */
 .perf-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: var(--ds-s-2);
+  column-gap: var(--ds-s-3);
+  row-gap: var(--ds-s-1);
   font-size: var(--ds-t-sm);
   font-weight: 700;
   color: var(--ds-ink);
 }
 
-.perf-fps {
+.perf-stat {
   white-space: nowrap;
+}
+
+/* the unit and the jitter: the same line, a step quieter than the figure it qualifies */
+.perf-u {
+  font-weight: 400;
+  color: var(--ds-mut);
 }
 
 .perf-ping {
   display: inline-flex;
   align-items: center;
   gap: var(--ds-s-1);
-  white-space: nowrap;
-  color: var(--ds-mut);
 }
 
 /* the quality bucket, as the dot the connection chip used to carry. `-ink` tokens: this is
@@ -1574,6 +1581,102 @@ button {
   background: var(--ds-scrim);
   backdrop-filter: blur(3px);
   z-index: 20;
+}
+
+/* THE 3D LOADING SCREEN (`LoadingScreen` in GameView). OPAQUE and over the HUD (the
+   countdown is z-30, the results stage z-40), because what it hides is a frame of the 2D
+   field and a HUD floating over nothing. The ground is the results screen's fixed stage, so
+   the inks are the on-field family, which does not theme either. */
+.game-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 35;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--ds-s-4);
+  background: var(--ds-stage-bg);
+  color: var(--ds-on-field);
+}
+
+.game-loading-card {
+  width: min(320px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-2);
+}
+
+.game-loading-game {
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-xs);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--ds-on-field-dim);
+}
+
+.game-loading-title {
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-t-xl);
+  font-weight: 700;
+  line-height: var(--ds-lh-heading);
+}
+
+/* an INDETERMINATE bar: the chunks report no progress, so a fill that pretended to know
+   the fraction would be a guess */
+.game-loading-bar {
+  position: relative;
+  height: 4px;
+  margin: var(--ds-s-1) 0;
+  overflow: hidden;
+  border-radius: var(--ds-round-full);
+  box-shadow: inset 0 0 0 1px var(--ds-on-field-dim);
+}
+
+.game-loading-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: var(--ds-on-field-accent);
+  animation: game-loading-sweep 1.1s ease-in-out infinite;
+}
+
+@keyframes game-loading-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+.game-loading-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-s-1);
+  font-family: var(--ds-font-mono);
+  font-size: var(--ds-t-sm);
+}
+
+.game-loading-steps li {
+  display: flex;
+  justify-content: space-between;
+  color: var(--ds-on-field-dim);
+}
+
+.game-loading-steps li.done > span:last-child {
+  color: var(--ds-on-field-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* a sweep that stops is a bar that looks stuck, so it holds still, centred, instead */
+  .game-loading-bar > span {
+    animation: none;
+    left: 30%;
+  }
 }
 
 /* a card on the dark scrim. The scrim is dark in BOTH themes (it dims the field), so

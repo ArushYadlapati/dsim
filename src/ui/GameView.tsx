@@ -30,7 +30,7 @@ import { seasonFor } from '../seasons';
 import { useCoarsePointer } from './useCoarsePointer';
 import type { Alliance, DrivetrainType } from '../types';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
-import { getCameraPref, subscribeCameraPref, subscribeViewPref, type CameraPref } from '../games/biobuzz/graphics/store';
+import { getCameraPref, getViewPref, subscribeCameraPref, subscribeViewPref, type CameraPref } from '../games/biobuzz/graphics/store';
 import { requestFreeCamReset } from '../games/biobuzz/graphics/freeCam';
 import { resumePadNav, suspendPadNav } from '../input/padNav';
 import { setPadMenuHandler } from './PadNavLayer';
@@ -119,6 +119,45 @@ function MatchOverlay({
     <div className={scrim}>
       <div ref={ref} className={card} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}>
         {children}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * THE 3D LOADING SCREEN — the physics chunk and the 3D view, each with its own line.
+ *
+ * Opaque, over the HUD, on the fixed dark stage (`--ds-stage-bg`, the results screen's ground),
+ * because what it replaces is a frame of the 2D field and a HUD with nothing under it. Not a
+ * dialog: there is nothing to answer, and Esc still leaves the match. `role="status"` so a step
+ * finishing is announced.
+ */
+function LoadingScreen({ game, physics, view }: { game: string; physics: boolean; view: boolean }) {
+  // a step is listed once it has been waited on, and stays listed (as Ready) after. A 2D-physics
+  // practice on the 3D view never waits on physics, and a room on the 2D view never waits on a
+  // view, so neither gets a line claiming something it did not do.
+  const seen = useRef({ physics, view });
+  seen.current.physics ||= physics;
+  seen.current.view ||= view;
+  const steps: { k: string; busy: boolean }[] = [];
+  if (seen.current.physics) steps.push({ k: '3D physics', busy: physics });
+  if (seen.current.view) steps.push({ k: '3D view', busy: view });
+  return (
+    <div className="game-loading" role="status">
+      <div className="game-loading-card">
+        <div className="game-loading-game">{game}</div>
+        <div className="game-loading-title">Getting the field ready</div>
+        <div className="game-loading-bar" aria-hidden="true">
+          <span />
+        </div>
+        <ul className="game-loading-steps">
+          {steps.map((st) => (
+            <li key={st.k} className={st.busy ? 'busy' : 'done'}>
+              <span>{st.k}</span>
+              <span>{st.busy ? 'Loading…' : 'Ready'}</span>
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );
@@ -324,6 +363,9 @@ export function GameView({
    * single flag two owners write.
    */
   const [roomPhysicsLoading, setRoomPhysicsLoading] = useState(false);
+  /** the 3D VIEW is still loading (`GameController.sceneLoading`). Starts true when a solo 3D
+   * practice is about to load the physics, so the view step shows as pending from frame one. */
+  const [sceneLoading, setSceneLoading] = useState(physicsLoading && getViewPref() === '3d');
 
   /**
    * WAS THIS SCREEN OPENED TO RUN THE TUTORIAL? Frozen at mount, like `perf` and `editingLayout`
@@ -388,6 +430,8 @@ export function GameView({
       }
       if (cancelled) return;
       setPhysicsLoading(false);
+      // the controller reports the view from here on; a 2D fallback or a 2D view has none
+      setSceneLoading(false);
 
       const controller = new GameController(canvas, effectiveSettings, session, {
         sceneHost,
@@ -397,6 +441,9 @@ export function GameView({
         // `cancelled` guards the unmount race: the load can settle after the effect tore down.
         onPhysicsPending: (pending) => {
           if (!cancelled) setRoomPhysicsLoading(pending);
+        },
+        onSceneLoading: (loading) => {
+          if (!cancelled) setSceneLoading(loading);
         },
         // THE TUTORIAL, when this screen was opened to run one and the game HAS one. A game with
         // no `tutorial` slot gets `undefined` and plays an ordinary free drive, which is the
@@ -620,15 +667,16 @@ export function GameView({
           aria-label={`${seasonFor(hud?.game ?? 'decode').name} field, top-down view. Match state is announced in the event log.`}
         />
       </div>
-      {/* ONE PANEL, TWO OWNERS. Solo decides for itself before the controller exists; a room's
-          answer comes back from the controller (see `roomPhysicsLoading`). The words are the
-          same either way, because it is the same wait for the same chunk. */}
-      {(physicsLoading || roomPhysicsLoading) && (
-        <MatchOverlay titleId="gv-loading-title">
-          <p className="ds-loading" id="gv-loading-title">
-            Loading 3D physics…
-          </p>
-        </MatchOverlay>
+      {/* THE LOADING SCREEN. Physics has two owners: solo decides before the controller
+          exists, a room's answer comes back from the controller (`roomPhysicsLoading`). The
+          view is always the controller's. It covers the field and the HUD, so a 3D match no
+          longer opens on a flash of the 2D render. */}
+      {(physicsLoading || roomPhysicsLoading || sceneLoading) && (
+        <LoadingScreen
+          game={seasonFor(hud?.game ?? settings.game).name}
+          physics={physicsLoading || roomPhysicsLoading}
+          view={sceneLoading}
+        />
       )}
       {coarsePointer && controllerRef.current && (
         <MobileControls
@@ -1124,9 +1172,10 @@ function Hud({
               {hud.chain.endgame === 'ascended' ? 'ASCENDED' : 'PARKED'}
             </div>
           )}
-          {/* a phone gets the `simple` line at most: frame rate and ping fit the gutter, and the
-              detailed rows and graphs do not (the review's own suggestion, 05-05). */}
-          <PerfHud level={coarsePointer && perfLevel !== 'off' ? 'simple' : perfLevel} stats={perfStats} />
+          {/* a phone gets the `simple` line at most, HERE: frame rate and ping fit the gutter,
+              the detailed rows and graphs do not (the review's own suggestion, 05-05), and the
+              bottom-right corner a desktop uses is the thumb pad's. */}
+          {coarsePointer && <PerfHud level={perfLevel === 'off' ? 'off' : 'simple'} stats={perfStats} />}
           {/* DESYNC, on a phone, at the foot of this cluster: the bottom-right corner is the
               thumb pad's. It is the one net chip that is a state rather than a fact (see the
               corner below); WATCHING and SERVER stay desktop-only. */}
@@ -1158,23 +1207,30 @@ function Hud({
           that chip is on `PerfHud` now — a bare `hud.net` would mount an empty corner.
           Fine pointer only: on a phone this corner is the thumb pad's, and DESYNC moved up into
           the status cluster above. */}
-      {!coarsePointer && (hud.spectators > 0 || !!hud.net?.desync || !!hud.net?.server) && (
+      {/* THE PERFORMANCE READ-OUT sits here on a desktop, above the net chips. It used to hang
+          under the top-right chip column, so it moved with every game's column height (under
+          BIOBUZZ's storage pips it floated a third of the way down the edge). This corner is
+          anchored to the bottom and holds only the connection chips it belongs with. */}
+      {!coarsePointer && (
         <div className="net-corner">
-          <div className="net-corner-row">
-            {/* who is watching. Shown only when somebody IS: a standing "0 watching" is
-                noise, and the moment worth surfacing is the one where it stops being zero. */}
-            {hud.spectators > 0 && (
-              // the WORD, not SPEC plus a `title` nobody could hover (`.hud` is pointer-events: none)
-              <span className="chip">WATCHING {hud.spectators}</span>
-            )}
-            {hud.net?.desync && (
-              <span className="chip desync" role="status">
-                <span aria-hidden="true">⚠</span> DESYNC
-              </span>
-            )}
-            {/* plain `.chip`, like SPEC: both are neutral facts, and `.chip.on` is the ready/ok green */}
-            {hud.net?.server && <span className="chip">SERVER {hud.net.server}</span>}
-          </div>
+          <PerfHud level={perfLevel} stats={perfStats} />
+          {(hud.spectators > 0 || !!hud.net?.desync || !!hud.net?.server) && (
+            <div className="net-corner-row">
+              {/* who is watching. Shown only when somebody IS: a standing "0 watching" is
+                  noise, and the moment worth surfacing is the one where it stops being zero. */}
+              {hud.spectators > 0 && (
+                // the WORD, not SPEC plus a `title` nobody could hover (`.hud` is pointer-events: none)
+                <span className="chip">WATCHING {hud.spectators}</span>
+              )}
+              {hud.net?.desync && (
+                <span className="chip desync" role="status">
+                  <span aria-hidden="true">⚠</span> DESYNC
+                </span>
+              )}
+              {/* plain `.chip`, like SPEC: both are neutral facts, and `.chip.on` is the ready/ok green */}
+              {hud.net?.server && <span className="chip">SERVER {hud.net.server}</span>}
+            </div>
+          )}
         </div>
       )}
 

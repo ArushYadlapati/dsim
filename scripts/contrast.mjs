@@ -330,6 +330,11 @@ const hudPairs = (t) => {
     ['Results stage title/body text', t('--ds-on-field'), t('--ds-stage-bg'), AA],
     ['Results stage muted text (eyebrow/category/note)', t('--ds-on-field-dim'), t('--ds-stage-bg'), AA],
     ['Results stage accent note (saved/recorded)', t('--ds-on-field-accent'), t('--ds-stage-bg'), AA],
+    // the 3D LOADING SCREEN (`.game-loading`, GameView) stands on the same stage
+    ['.game-loading title', t('--ds-on-field'), t('--ds-stage-bg'), AA],
+    ['.game-loading step names / season eyebrow', t('--ds-on-field-dim'), t('--ds-stage-bg'), AA],
+    ['.game-loading step "Ready"', t('--ds-on-field-accent'), t('--ds-stage-bg'), AA],
+    ['.game-loading-bar track edge (1.4.11)', t('--ds-on-field-dim'), t('--ds-stage-bg'), NON_TEXT],
     // the WINNER/TIE banner flips the relationship (fixed light fill, dark ink) rather
     // than reusing the app's inverting --ds-panel/--ds-ink pair
     ['Results .resx-winbanner ink', t('--ds-stage-bg'), t('--ds-on-field'), AA],
