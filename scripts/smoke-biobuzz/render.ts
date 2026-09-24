@@ -241,7 +241,8 @@ import { bbCoerce } from './harness';
 import { bbSpecKey } from '../../src/games/biobuzz/specKey';
 import { SHOT, SHOT_ARC_MAX, shotArc, solveShotPath } from '../../src/games/biobuzz/shotPath';
 import { drawBiobuzzShotPath } from '../../src/games/biobuzz/drawShot';
-import { CAMERA_PREFS, getCameraPref, resolveSceneCamera } from '../../src/games/biobuzz/graphics/store';
+import { CAMERA_PREFS, getCameraPref, getViewPref, resolveSceneCamera } from '../../src/games/biobuzz/graphics/store';
+import { VIEW_KEY } from '../../src/storageKeys';
 import {
   bindFreeCamCustom,
   clampFreeCam,
@@ -1448,6 +1449,26 @@ export function renderChecks(check: Check): void {
       'the camera preference defaults to auto (no localStorage in Node ⇒ never throws)',
       getCameraPref() === 'auto',
     );
+    // THE VIEW DEFAULTS TO 3D (owner, 2026-09-23), for devices that had stored '2d' too: the key
+    // moved to `.v2`, so a stored `decodesim.view` no longer counts. A stored `.v2` pick still wins.
+    {
+      const g = globalThis as { localStorage?: unknown };
+      const had = Object.prototype.hasOwnProperty.call(g, 'localStorage');
+      const prev = g.localStorage;
+      const mem = new Map<string, string>();
+      g.localStorage = { getItem: (k: string) => mem.get(k) ?? null, setItem: (k: string, v: string) => void mem.set(k, v) };
+      try {
+        check('the view preference defaults to 3D with nothing stored', getViewPref() === '3d');
+        mem.set('decodesim.view', '2d');
+        check('a 2D pick under the old view key is ignored (everyone starts on 3D once)', VIEW_KEY !== 'decodesim.view' && getViewPref() === '3d');
+        mem.set(VIEW_KEY, '2d');
+        check('a 2D pick under the current view key is kept', getViewPref() === '2d');
+      } finally {
+        if (had) g.localStorage = prev;
+        else delete g.localStorage;
+      }
+      check('the view preference is 3D when storage is unavailable', getViewPref() === '3d');
+    }
     check(
       'every non-auto camera preference is a real SceneCamera',
       CAMERA_PREFS[0] === 'auto' &&

@@ -78,7 +78,7 @@ import { useCoarsePointer } from './useCoarsePointer';
  * §4.4 asks for it "beside Audio and Visual" and the reason it is beside rather than inside is
  * the one this file's settings share and the others do not: NONE of it is `GameSettings`.
  * Audio volumes and the assists sync to Postgres per account; every control here writes
- * `localStorage['decodesim.graphics']` (or `decodesim.view`/`decodesim.camera`) and stays on
+ * `localStorage['decodesim.graphics']` (or `decodesim.view.v2`/`decodesim.camera`) and stays on
  * this machine, because a shadow resolution is a fact about the GPU in front of you. Mixing the
  * two in one panel would make "does this follow me to the other computer?" unanswerable by
  * looking at the screen.

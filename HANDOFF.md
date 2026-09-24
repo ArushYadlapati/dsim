@@ -1,4 +1,17 @@
-# HANDOFF — 2026-09-23c (Controls status in the card title; Practice card on Match)
+# HANDOFF — 2026-09-23d (3D view is the default for everyone)
+
+**State: green, pushed on `alpha`.** `npm test` 5025 checks all pass, `build` and `docaudit` pass.
+
+- **The graphics view defaults to 3D.** `getViewPref` (`src/games/biobuzz/graphics/store.ts`)
+  returns `'3d'` when nothing is stored. To reset players who had stored `'2d'`, `VIEW_KEY` moved
+  from `decodesim.view` to `decodesim.view.v2`. The old key is no longer read, so every device
+  starts on 3D once and can switch back to 2D. A device without WebGL still falls back on its own
+  (`renderScene` stores `'2d'`). Checks are in `scripts/smoke-biobuzz/render.ts` beside the camera default.
+- **Fixed the `lan guide` clone-command check** (`scripts/smoke.ts` 8243): the two 0x08 bytes are `` again.
+- **Next:** this reaches production when alpha is promoted to `main`. It is client-only, so no
+  server deploy is needed. The old `decodesim.view` value stays in browsers, unread.
+
+# 2026-09-23c (Controls status in the card title; Practice card on Match)
 
 **State: green, committed and pushed on `alpha` (205adb9, 54fc0fd, fa62da7).** `build`, `server:check`, `uiaudit` (after
 `uiindex`), `contrast` and `docaudit` pass. `npm test`: 5021 checks. The failures are the known

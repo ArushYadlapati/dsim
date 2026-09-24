@@ -8240,7 +8240,7 @@ function pushContest(A: Partial<RobotSpec>, B: Partial<RobotSpec>, seconds = 3):
     // the four commands, and that the clone URL is not a second copy of the repo address
     check(
       'lan guide: the clone command is built from LINKS.repo, not a hardcoded URL',
-      lan.includes('git clone ${LINKS.repo}') && /import \{[^}]*LINKS[^}]*\} from '\.\.\/seasons'/.test(lan),
+      lan.includes('git clone ${LINKS.repo}') && /import \{[^}]*\bLINKS\b[^}]*\} from '\.\.\/seasons'/.test(lan),
     );
     check(
       'lan guide: the printed command is the one package.json actually defines',

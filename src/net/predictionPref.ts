@@ -5,7 +5,7 @@
  * How much work this machine does to render its OWN robot ahead of the authoritative snapshot
  * in a 3D-physics room. It is a property of the MACHINE, not of the account — the whole point
  * of the setting is that a Chromebook and a desktop answer it differently — so it lives beside
- * `decodesim.view` and `decodesim.theme` in localStorage rather than in `GameSettings`, which
+ * `decodesim.view.v2` and `decodesim.theme` in localStorage rather than in `GameSettings`, which
  * syncs to Postgres per account. Same shape as `graphics/store.ts`, deliberately: read it
  * without React, subscribe for in-tab changes, never throw.
  *
