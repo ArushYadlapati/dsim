@@ -349,9 +349,10 @@ four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow no
   glyphs onto the light backdrop and onto a 3D background. Category 3 (their ground is the
   canvas), so they do not theme.
 - ⚠️ **`.hud` IS `pointer-events: none`** so the canvas keeps a drag. Anything in it meant to
-  be clicked re-enables them ON ITSELF (`.game-btn`, `.sponsor-chip`, `.mobile-btn`,
-  `.pred-panel`). The connection chip did not, for months: its `onClick` opened a ping graph
-  and the click never arrived. **Before adding a control to the HUD, add the rule.**
+  be clicked re-enables them ON ITSELF (`.game-btn`, `.sponsor-chip`, `.mobile-btn`).
+  The connection chip did not, for months: its `onClick` opened a ping graph and the click never
+  arrived. The in-match prediction picker had the same bug and was removed (2026-09-23); the
+  setting lives in Configure › Network only. **Before adding a control to the HUD, add the rule.**
 - ⚠️ **THE TOUCH PAD'S BUTTON SET IS DERIVED FROM `ACTION_GAMES`** (`src/ui/mobileActions.ts`
   + each game's `src/games/<id>/mobile.ts`), and `npm test` asserts the coverage per game: every
   action a season uses is either a button, a stick, on-screen chrome, or a written entry in
@@ -511,8 +512,8 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   HUD rules above, and a step card is up for the whole of a step. `data-hud-band` is load-bearing:
   `GameController.refreshHudInsets` measures it so the 3D camera reframes the field above it, and
   `.game-root.view-3d [data-hud-band]` is what gives it the fixed dark scrim a lit 3D background
-  needs. Its CSS is `src/ui/tutorial.css`, imported from `main.tsx` for the reason
-  `predict.css` is.
+  needs. Its CSS is `src/ui/tutorial.css`, imported last from `main.tsx`
+  as its own file so its additive rules merge without conflicts.
 - **Surfaces**: the first-run card on the Modes page (hidden once THIS game's flag is set), and a
   permanent "{Season} tutorial" row with a Start button in Controls ▸ All games, running the
   ACTIVE season's tutorial — which is where somebody who skipped it, or who has just rebound half

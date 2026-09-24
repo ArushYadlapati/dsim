@@ -130,7 +130,7 @@ future session read it.
   **CLAUDE.md is inside its token budget** — a RATCHET like `uiaudit`'s, only ever going down, so
   this file cannot grow back to the 43k it was. Run after moving a rule, renaming a directory, or
   adding a top-level module. Same rule as `contrast`: deliberately NOT in `npm test`.
-- `npm run contrast` — WCAG audit of the palette (`scripts/contrast.mjs`, 389 checks, light +
+- `npm run contrast` — WCAG audit of the palette (`scripts/contrast.mjs`, 375 checks, light +
   dark, no deps). Run after ANY colour/token edit. Not wired into `npm test` on purpose: a red
   `npm test` must keep meaning "physics broke".
 - `npm run dbtest` — **database + payments verification** (`scripts/dbtest.ts`). Boots

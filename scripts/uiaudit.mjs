@@ -383,7 +383,7 @@ for (const f of css) {
 }
 
 // ── 6b. shell rules live in shell.css ────────────────────────────────────────
-// styles.css is the in-match sheet (predict/tutorial.css own their surfaces). A `.ds-*` rule
+// styles.css is the in-match sheet (tutorial.css owns its surface). A `.ds-*` rule
 // anywhere else is a shell rule in the wrong file, where a grep of shell.css never finds it.
 for (const f of css.filter((x) => !/shell\.css$/.test(x))) {
   read(f).forEach((l, i) => {

@@ -223,7 +223,7 @@ button {
    separate a dark card from a bright 3D background.
    --------------------------------------------------------------------------- */
 /* `.status-wrap` and `.net-corner` are named as well as the bands. `data-hud-band` sits on the
-   CHIP ROW inside `.status-wrap` (see GameView), so the read-out and the prediction panel
+   CHIP ROW inside `.status-wrap` (see GameView), so the read-out
    stacked under the chips would otherwise go without the scrim; `.net-corner` carries no band
    at all, on purpose, because its width follows the spectator count. */
 /* `.eventlog` too: in 2D it sits in the themed letterbox, but a 3D scene fills the viewport, so
