@@ -196,10 +196,14 @@ export function sim3dChecks(check: Check): void {
   // before the biobuzz clamp (`coerceBiobuzzSpec`, `BB3_HEIGHT_MIN`..`BB3_HEIGHT_MAX`) ever
   // saw it. `bbCoerce` is the exact chokepoint a real spec goes through.
   {
-    const kept = bbCoerce({ heightIn: 29 });
-    check('heightIn: 29 (in range) survives coerceSpec into the biobuzz clamp', kept.heightIn === 29, `got ${kept.heightIn}`);
-    const clamped = bbCoerce({ heightIn: 40 });
-    check('heightIn: 40 (over BB3_HEIGHT_MAX) clamps to 29', clamped.heightIn === 29, `got ${clamped.heightIn}`);
+    const kept = bbCoerce({ heightIn: 16 });
+    check('heightIn: 16 (in range) survives coerceSpec into the biobuzz clamp', kept.heightIn === 16, `got ${kept.heightIn}`);
+    const clamped = bbCoerce({ heightIn: 29 });
+    check(
+      `heightIn: 29 (over BB3_HEIGHT_MAX) clamps to ${BB3_HEIGHT_MAX}`,
+      clamped.heightIn === BB3_HEIGHT_MAX,
+      `got ${clamped.heightIn}`,
+    );
     const absent = bbCoerce({});
     check(
       'heightIn: absent stays absent (BB3_HEIGHT_DEFAULT applies downstream)',
@@ -1821,8 +1825,8 @@ export function sim3dChecks(check: Check): void {
       `18in final y=${y18.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}`,
     );
     check(
-      'height: a 29-in (legal max) robot CLEARS the down cell -- the CAD tray puts its floor at ' +
-        `BB_HIVE_BOTTOM_Z ${BB_HIVE_BOTTOM_Z}, above BB3_HEIGHT_MAX (${BB3_HEIGHT_MAX})`,
+      'height: a 29-in (R105.A max) robot CLEARS the down cell -- the CAD tray puts its floor at ' +
+        `BB_HIVE_BOTTOM_Z ${BB_HIVE_BOTTOM_Z}, above R105.A's 29`,
       y29 > bracket.y + 5,
       `29in final y=${y29.toFixed(2)}, bracket y=${bracket.y.toFixed(2)}, clearance z=${bracket.z.toFixed(2)}`,
     );
@@ -1849,11 +1853,11 @@ export function sim3dChecks(check: Check): void {
       // ...and the CONTROL: the same box at the height a legal robot's own drawn roof reaches
       // finds nothing, which is the drive-under the two checks above measure.
       const hit = anyFixedAt(legacyRoof - 1.5);
-      const clear = anyFixedAt(BB3_HEIGHT_MAX - 1.5);
+      const clear = anyFixedAt(29 - 1.5);
       check(
-        'height: the down-cell clearance collider is REAL — a chassis-sized box at the old prism roof overlaps it, and the same box at BB3_HEIGHT_MAX does not',
+        'height: the down-cell clearance collider is REAL — a chassis-sized box at the old prism roof overlaps it, and the same box at R105.A’s 29 in does not',
         hit && !clear,
-        `at ${legacyRoof.toFixed(2)}in hit=${hit}, at ${BB3_HEIGHT_MAX}in hit=${clear}`,
+        `at ${legacyRoof.toFixed(2)}in hit=${hit}, at 29in hit=${clear}`,
       );
       disposeEngineFor(w);
     }

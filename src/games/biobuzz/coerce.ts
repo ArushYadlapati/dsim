@@ -198,7 +198,7 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
 
   // 5) HEIGHT (3D physics, Day 1 seam — `docs/biobuzz/plan-3d.md`). Independent of every field
   // above it, so it can run last without affecting their order. Present and finite ⇒ clamped to
-  // R105.A's vertical envelope; anything else (absent, a string, NaN, Infinity off a spoofed
+  // `BB3_HEIGHT_MIN..MAX`, the builder slider's own range; anything else (absent, a string, NaN, Infinity off a spoofed
   // wire spec) is DROPPED rather than clamped to a boundary that would look like a deliberate
   // choice nobody made. The 2D pipeline never reads this field either way.
   //

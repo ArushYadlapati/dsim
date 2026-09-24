@@ -17,7 +17,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SIM_DT } from '../../src/config';
-import type { RobotCommand, World } from '../../src/types';
+import type { RobotCommand, RobotSpec, World } from '../../src/types';
 import { worldHash } from '../../src/net/checksum';
 import { localizeCommand } from '../../src/net/protocol';
 import { startMatch } from '../../src/sim/match';
@@ -491,7 +491,9 @@ export function aiChecks(check: Check): void {
      * a carry-across in the shared `coerceSpec`), so the declaration is read structurally and this
      * is what proves the rule binds the day the field lands rather than becoming decoration.
      */
-    const declared = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, heightIn: 29, stowHeightIn: 22 } as never);
+    // RAW, not coerced: the coercer caps the height at BB3_HEIGHT_MAX (18), which pulls any stow
+    // under the cube, so only a spec that skipped it (a spoofed wire spec) can still be refused
+    const declared = { ...BB_DEFAULT_SPEC, heightIn: 29, stowHeightIn: 22 } as never as RobotSpec;
     check(
       'a DECLARED stow over the cube is refused by R102',
       bbStowHeightIn(declared) === 22 && !bbStowLegal(declared),
@@ -502,10 +504,10 @@ export function aiChecks(check: Check): void {
       BIOBUZZ_SIM.startLegal!(declared, 'blue', null) === false &&
         BIOBUZZ_SIM.startLegal!(tall, 'blue', null) === true,
     );
-    const over = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, heightIn: 20, stowHeightIn: 40 } as never);
+    const over = coerceBiobuzzSpec({ ...BB_DEFAULT_SPEC, heightIn: 16, stowHeightIn: 40 } as never);
     check(
       'a declared stow TALLER than the deployed height is normalized down to it',
-      bbStowHeightIn(over) === 20,
+      bbStowHeightIn(over) === 16,
       String(bbStowHeightIn(over)),
     );
 

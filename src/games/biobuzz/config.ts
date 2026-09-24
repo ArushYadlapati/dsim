@@ -3253,11 +3253,16 @@ export const BB3_HEIGHT_MIN = 12;
  * matters to the sim, not to the picture — which is why it is a number here and not a mast.
  */
 export const BB3_HEIGHT_DEFAULT = 14;
-/** `RobotSpec.heightIn` ceiling (in) — R105.A's 29-in EXPANDED sizing volume: "a 18 in. by 24
- * in. by 29 in. tall sizing volume when fully expanded", where the manual fixes the 29 as the
- * vertical dimension (see `BB_PRISM`'s header for why the other two are not fixed to an axis
- * the same way). */
-export const BB3_HEIGHT_MAX = 29;
+/**
+ * `RobotSpec.heightIn` ceiling (in), the robot's TOTAL height — the builder's slider and the
+ * coercer both stop here, so they can never disagree.
+ *
+ * ⚠️ **18, NOT R105.A's 29** (owner, 2026-09-24: "height should not go up that high … total can
+ * be like 18 inches"). The manual allows 29 in fully expanded, but no mechanism here stands
+ * above the dumper's 12.85, so a 29-in dial described a robot nobody could see. 18 is also
+ * R102's starting cube (`BB3_STOW_MAX`), so the builder no longer offers a stow height.
+ */
+export const BB3_HEIGHT_MAX = 18;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3D PHYSICS — DAY 1 SIM CONSTANTS (`docs/biobuzz/plan-3d.md` §10/§13.1), appended below the
@@ -3346,7 +3351,7 @@ export const BB3_HIVE_CELL = { w: HIVE.CELL_W, d: HIVE.CELL_D, h: HIVE.CELL_H };
 export const BB3_HIVE_CELL_WALL = 0.25;
 
 /** perimeter wall collider height (in) — APPROX, tall enough that nothing legal on this field
- * clears it (a robot tops out at `BB3_HEIGHT_MAX` 29 in). */
+ * clears it (R105.A lets a robot stand 29 in). */
 export const BB3_WALL_H = 40;
 
 /** one element's mass (lb) — APPROX until a set is weighed (owner action; plan §3.6). */
@@ -4068,7 +4073,8 @@ export const PREDICT_MAX_TICKS = 40;
 // ─────────────────────────────────────────────────────────────────────────────
 // R102: THE STARTING CUBE, AND THE DEPLOY LATCH (Day 3, `docs/biobuzz/plan-3d.md` §3.3)
 //
-// `BB3_HEIGHT_MAX` above is R105.A's EXPANDED 29 in. R102 is the other half of the same pair:
+// R105.A allows 29 in EXPANDED (the dial stops at `BB3_HEIGHT_MAX`, 18, so a coerced build
+// never reaches the fold below; the rule still refuses a raw spec). R102 is the other half:
 // the STARTING CONFIGURATION is an 18-inch cube, so a build that stands taller than 18 in has
 // to fold to get under it and unfold once the match starts. Nothing in the 2D pipeline has ever
 // asked; the 3D robot is a cuboid `length × width × heightIn`, so the day the height became

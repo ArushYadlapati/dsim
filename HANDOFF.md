@@ -1,3 +1,14 @@
+# HANDOFF — 2026-09-24f (BIOBUZZ height dial capped at 18 in)
+
+**State: committed and pushed on `alpha`.** `build`, `server:check`, `docaudit` pass; `npm test` all pass (the `PREDICT_FULL_BUDGET_MS` timing flake failed once and passed on a rerun).
+
+- **Owner:** the height slider went to 29 in, which was too tall. `heightIn` is the robot's TOTAL height, not the chassis.
+- `BB3_HEIGHT_MAX` 29 → **18**. The builder slider and `coerceBiobuzzSpec` both read it, so they cannot disagree. The AI roster (15–17 in) was already under it.
+- 18 is R102's starting cube, so no coerced build folds any more. The builder's **stow height slider and the R102 note are removed**. The fold rule itself (`bbStowHeightIn`/`bbStowLegal`/`bbHeightNow`, the deploy-edge rebuild) is untouched and still refuses a raw spec off the wire. The 3D preview's "Stowed" toggle is also untouched; it can no longer appear.
+- Saved builds over 18 in are clamped to 18 on load.
+- Nothing about physics changed. The owner prefers height to be cosmetic eventually, but asked for only the cap for now.
+- Tests: the `heightIn` coerce checks use 16/29; the 29-in hive drive-under checks now say R105.A's 29 (raw spec) instead of `BB3_HEIGHT_MAX`; the declared-stow refusal uses an uncoerced spec.
+
 # HANDOFF — 2026-09-24e (custom-room games are saved, so their replays can be watched)
 
 **State: committed and pushed on `alpha`, alpha game server deployed.** `dbtest` all pass, `server:check` and `build` pass. `npm test` has 5 failures out of 5047, all timing checks (`PREDICT_FULL_BUDGET` ×3, the Auto probe, 2v2 `step3d` p95). The parallel session's stargazer/badge SVG work is committed separately ("Badges: every disc badge is one 128×128 SVG…"). ⚠️ **Production still needs a Fly deploy from `main`** once this reaches main.

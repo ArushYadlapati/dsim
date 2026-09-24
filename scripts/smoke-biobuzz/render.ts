@@ -195,8 +195,10 @@ import {
   BB_TURRET_PITCH_MIN,
   BB_TURRET_PLATE_TOP_Z,
   BB3_HEIGHT_DEFAULT,
+  BB3_HEIGHT_MAX,
   BB3_HEIGHT_MIN,
   BB3_MOUTH_SLOT_Z,
+  BB3_STOW_MAX,
 } from '../../src/games/biobuzz/config';
 // ⚠️ THE ONE PLACE IN THIS LANE THAT REACHES INTO `scene/`, AND THE ONLY SCRIPT THAT IMPORTS
 // `three`. The chunk-boundary rules this file enforces are about `src/`; a Node smoke script is
@@ -4249,16 +4251,15 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
 
       // ── THE HEIGHT PAIR (R102 / R105.A) ──────────────────────────────────────────────────
       check(
-        'the builder has a heightIn dial over R105.A\u2019s own 12..29 range',
+        'the builder has a heightIn dial over BB3_HEIGHT_MIN..MAX (the coercer\u2019s own range)',
         builderSrc.includes('heightIn: Number(e.target.value)') &&
           builderSrc.includes('min={BB3_HEIGHT_MIN}') &&
           builderSrc.includes('max={BB3_HEIGHT_MAX}'),
       );
       check(
-        '...and a stow declaration that appears ONLY over the 18-in cube',
-        builderSrc.includes('stowHeightIn: Number(e.target.value)') &&
-          builderSrc.includes('const folds = deployed > BB3_STOW_MAX;') &&
-          builderSrc.includes('{folds && ('),
+        '...and no stow declaration: the dial stops at the 18-in cube, so nothing has to fold',
+        BB3_HEIGHT_MAX <= BB3_STOW_MAX && !builderSrc.includes('stowHeightIn'),
+        `BB3_HEIGHT_MAX ${BB3_HEIGHT_MAX}, BB3_STOW_MAX ${BB3_STOW_MAX}`,
       );
       // the preview's stow toggle is the SAME resolver the rule reads, expressed as a spec whose
       // height IS the stow height — which is what makes the group rebuild for free

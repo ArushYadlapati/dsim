@@ -260,7 +260,7 @@ export interface RobotSpec {
   bbPassPreset?: string;
   /**
    * BIOBUZZ 3D PHYSICS ONLY (Day 1 seam, `docs/biobuzz/plan-3d.md` §2.4/§3.3): the robot's
-   * height in inches (12..29, absent 18) — see `BB3_HEIGHT_MIN`/`_DEFAULT`/`_MAX` in
+   * height in inches (12..18, absent 14) — see `BB3_HEIGHT_MIN`/`_DEFAULT`/`_MAX` in
    * `src/games/biobuzz/config.ts`, R105.A's vertical dimension of the expansion prism. The 2D
    * pipeline ignores it entirely; `sim3d/robot3d.ts` extrudes the chassis collider to it.
    * Clamped (and dropped when not a finite number) in `coerceBiobuzzSpec`.
