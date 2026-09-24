@@ -9,6 +9,46 @@
 - Checks: dbtest "versus/ranked|custom|bots" block. net3d "a finished bot room reaches persistence, tagged bots:true" replaces a vacuous check that stopped at tick 700.
 - Rule in `docs/area/accounts.md` ("EVERY CUSTOM GAME IS KEPT").
 
+# HANDOFF — 2026-09-23 (branch `fix/discord-frame-ancestors`: the activity was forbidden from being framed)
+
+**READ FIRST if you are on `fix/discord-frame-ancestors`.** Three files, rebased onto
+`origin/alpha` @ `838fd2b7`. Pushed, and **PR #82 into `alpha` is OPEN**. Alpha has moved
+under this branch several times; `vercel.json` and `docs/deploy.md` have never been touched
+upstream, so every rebase has collided on this log alone and nothing else.
+
+**What was wrong.** PR #41 (the Discord Activity) merged into alpha on 2026-09-21 (`eae5b98`). Two
+days BEFORE that, `f993507` gave `vercel.json` `X-Frame-Options: DENY` and `frame-ancestors 'none'`,
+because the one-click consent controls were frameable. Both are correct in isolation and they
+cannot both stand: **a Discord Activity IS an iframe.** The client is served through the proxy at
+`<app-id>.discordsays.com` and framed by the Discord client, so `'none'` forbids the whole
+activity. Verified live on 2026-09-21: `alpha.playdsim.com` was serving both headers, and
+`www.playdsim.com` was not (f993507 has not reached `main`). The two changes were never seen
+together because the last real-embed test predates the headers, and nothing in this repo loads
+that surface — no audit, no smoke lane, no gate. It fails silently inside Discord.
+
+**The fix.** `frame-ancestors` is an ALLOWLIST instead of `'none'`: `'self'` plus `discord.com`,
+`*.discord.com` (canary, ptb) and `*.discordsays.com` (the proxy origin and any nesting inside
+it). Every other origin is still refused, so the consent controls keep the protection f993507
+gave them. `X-Frame-Options` is REMOVED rather than kept: it has no allowlist, `ALLOW-FROM` is
+dead, so `DENY` is all it can say and anything honouring it over the CSP blocks the activity. A
+browser new enough to run DSIM supports `frame-ancestors`, so nothing real loses cover. The rule
+is written into `docs/deploy.md` §2, because `vercel.json` is strict JSON and cannot hold a
+comment — without it the next security pass resets this to `'none'` and kills the activity again.
+
+- **Verified:** the exact directive was served by a local server and driven in a real browser.
+  A framer NOT on the allowlist never ran the child (blocked); the same directive with the framer
+  appended ran it. So it parses and enforces as intended. `docaudit` ALL PASS. No other gate is
+  affected: no CSS, no source, no sim.
+- ⚠️ **Still unverified, and only a launch can settle it:** whether Discord's proxy FORWARDS the
+  origin's headers to the browser at all. If it does, this is the fix. If it strips them, this is
+  inert and harmless, and the embed was never blocked by them. Either way the header is now
+  correct. **Nobody has yet launched the activity in a real Discord client since the merge.**
+- **Next:** commit, push to the fork, PR into `alpha`. Vercel rebuilds `alpha` on merge, so the
+  header ships with that build; no Fly deploy is involved (the alpha game server already answers
+  `/api/lobbies`, checked 2026-09-21). Then create a Discord app, map `/` to `alpha.playdsim.com`
+  and `/gs` to `dsim-alpha.fly.dev`, and launch it from a voice channel.
+---
+
 # 2026-09-24d (NECTAR lip, predicted mouth, FOV + driver view, desktop Google pop-up)
 
 **State: pushed on `alpha` (11870a1).** `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. `npm test`: every check passes except the known load flake `FULL reconciles 40 ticks inside PREDICT_FULL_BUDGET_MS`. It measures 9–10 ms with 12 test processes running and 4 ms alone. It was 3 ms alone before the predicted-mouth change below, so it now flakes more often.
