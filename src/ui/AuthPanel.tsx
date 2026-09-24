@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { authClient } from '../lib/authClient';
 import { describeAuthError, requestEmailVerification, requestPasswordReset } from '../lib/authFlows';
 import { isEmbeddedBrowser } from '../lib/browserEnv';
+import { desktop, type DesktopBridge } from '../desktop';
+import { SITE_URL } from '../seo';
 import { acceptTerms, updateUsername } from '../net/api';
 import { TermsAgreement } from './TermsGate';
 import { UsernameInput, useUsernameCheck, usernameHintClass } from './UsernameField';
@@ -174,10 +176,49 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
 
   const google = async () => {
     setError('');
+    const bridge = desktop();
+    if (bridge?.oauth) {
+      await googleInPopup(bridge.oauth);
+      return;
+    }
     try {
       await client.signIn.social({ provider: 'google', callbackURL: window.location.href });
     } catch (err) {
       // same reason as `submit` — the raw SDK message is not this app's voice
+      setError(describeAuthError(err, 'Couldn’t start Google sign-in. Try again in a moment.'));
+    }
+  };
+
+  /**
+   * THE DESKTOP APP SIGNS IN WITH GOOGLE IN A POP-UP WINDOW (owner, 2026-09-24: the Google screen
+   * took over the app window). Neon Auth hands back the provider URL instead of redirecting
+   * (`disableRedirect`), the shell opens it in a child window that shares this app's cookies
+   * (`dsim:oauth`), and the verifier it returns is exchanged for the session by the same page
+   * load a web redirect ends in. The callback is on the SITE even in the bundled offline copy,
+   * whose `file://` address is not a URL Neon Auth will send anyone back to; the shell closes the
+   * pop-up before that page ever loads.
+   */
+  const googleInPopup = async (
+    oauth: NonNullable<DesktopBridge['oauth']>,
+  ): Promise<void> => {
+    const base = window.location.protocol === 'file:' ? SITE_URL : window.location.origin;
+    const callbackURL = `${base}/?dsim_oauth=1`;
+    try {
+      const r = (await client.signIn.social({ provider: 'google', callbackURL, disableRedirect: true })) as
+        | { data?: { url?: string }; url?: string }
+        | undefined;
+      const url = r?.data?.url ?? r?.url;
+      if (!url) throw new Error('no provider url');
+      const got = await oauth(url, callbackURL);
+      if (got.cancelled) return; // they closed the window: nothing to say
+      if (!got.verifier) {
+        setError('Google sign-in didn’t finish. Try again.');
+        return;
+      }
+      const back = new URL(window.location.href);
+      back.searchParams.set('neon_auth_session_verifier', got.verifier);
+      window.location.href = back.toString();
+    } catch (err) {
       setError(describeAuthError(err, 'Couldn’t start Google sign-in. Try again in a moment.'));
     }
   };

@@ -12,6 +12,12 @@ contextBridge.exposeInMainWorld('dsim', {
   setAutoCheck: (v) => ipcRenderer.invoke('dsim:setAuto', !!v),
   openDownload: () => ipcRenderer.invoke('dsim:openDownload'),
   /**
+   * GOOGLE SIGN-IN IN A POP-UP WINDOW (see `dsim:oauth` in main.cjs). Resolves `{ verifier }`,
+   * `{ error }` or `{ cancelled: true }`. Absent on an older desktop build, which keeps the
+   * in-window redirect.
+   */
+  oauth: (url, callback) => ipcRenderer.invoke('dsim:oauth', { url, callback }),
+  /**
    * HOST A LAN GAME (desktop only — the web app has no way to start a server, which is why
    * the Host panel is gated on `window.dsim` existing at all).
    *

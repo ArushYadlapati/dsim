@@ -55,6 +55,12 @@ export interface DesktopBridge {
    * whatever shell the player downloaded, and one older than this feature has a preload that
    * never defined it. Every caller checks `bridge.perf` first and says so rather than throwing.
    */
+  /**
+   * GOOGLE SIGN-IN IN A POP-UP WINDOW (`dsim:oauth`, electron/main.cjs). Opens `url`, closes the
+   * moment the flow redirects to `callback`, and hands back Neon Auth's session verifier.
+   * OPTIONAL for the reason `lan` is; without it the button keeps the in-window redirect.
+   */
+  oauth?(url: string, callback: string): Promise<{ verifier?: string; error?: string; cancelled?: boolean }>;
   perf?: {
     get(): Promise<DesktopPerfState>;
     setUnlimitedFps(v: boolean): Promise<DesktopPerfState>;

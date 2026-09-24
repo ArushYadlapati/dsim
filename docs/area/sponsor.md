@@ -65,3 +65,23 @@ any of this.
 
 ---
 
+
+## Desktop shell: Google sign-in is a pop-up window
+
+(owner, 2026-09-24: the Google screen took over the desktop app's window.) `AuthPanel`'s Google
+button, when `window.dsim.oauth` exists, asks Neon Auth for the provider URL with
+`disableRedirect`, and `dsim:oauth` (`electron/main.cjs`) opens it in a CHILD WINDOW that shares
+the app's cookie store. The pop-up is closed the moment the flow redirects to the callback (a URL
+on the SITE, `?dsim_oauth=1`, never loaded), and the `neon_auth_session_verifier` Neon Auth
+appended there is handed back. The app then reloads its own address with that verifier, which is
+the same exchange a returning web redirect ends in. Three things that look wrong and are not:
+- **Not a tab in the user's browser.** The session would be in that browser's cookie jar, and
+  this SDK has no one-time-token handoff to bring it back.
+- **The pop-up's user agent drops `Electron/…` and the app token; the main window's does not.**
+  Google refuses sign-in in a recognised embedded browser, and `src/ads/adsense.ts` reads
+  "Electron" in the main window's UA to know it is the desktop app.
+- **The callback is on the site even from the offline bundle** (`file://` is not an address Neon
+  Auth will redirect to).
+A shell older than this has no `oauth` and keeps the in-window redirect. ⚠️ **It ships with a
+DESKTOP RELEASE**: the site half deploys with Vercel, but `main.cjs` and `preload.cjs` are inside
+the installed app.

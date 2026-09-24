@@ -25839,5 +25839,41 @@ const dumperSetup = (): RobotSetup => {
   );
 }
 
+
+// DESKTOP GOOGLE SIGN-IN OPENS IN A POP-UP WINDOW, NOT IN THE APP'S OWN (owner, 2026-09-24: "clicking
+// on the log in with google button shows the google sign in screen on the app instead of opening
+// up a new tab on a browser or showing a pop up"). The flow itself needs a real Google account, so
+// what is pinned here is the wiring each half depends on.
+{
+  const main = readFileSync('electron/main.cjs', 'utf8');
+  const preload = readFileSync('electron/preload.cjs', 'utf8');
+  const panel = readFileSync('src/ui/AuthPanel.tsx', 'utf8');
+  check(
+    'desktop oauth: the shell opens a child window and hands back the session verifier at the callback',
+    /ipcMain\.handle\('dsim:oauth'/.test(main) &&
+      /new BrowserWindow\(\{[\s\S]{0,200}?parent,/.test(main) &&
+      /q\.get\('neon_auth_session_verifier'\)/.test(main) &&
+      /will-redirect', atCallback\)/.test(main),
+  );
+  check(
+    'desktop oauth: ...with "Electron" stripped from THAT window\'s user agent only (Google refuses embedded browsers; adsense reads it on the main window)',
+    /pop\.webContents\.setUserAgent\(ua\)/.test(main) && !/app\.userAgentFallback/.test(main),
+  );
+  check(
+    'desktop oauth: the preload exposes it',
+    /oauth: \(url, callback\) => ipcRenderer\.invoke\('dsim:oauth', \{ url, callback \}\)/.test(preload),
+  );
+  check(
+    'desktop oauth: the Google button takes the pop-up when the bridge has it, asking Neon Auth NOT to redirect',
+    /if \(bridge\?\.oauth\) \{\s*await googleInPopup\(bridge\.oauth\);/.test(panel) &&
+      /signIn\.social\(\{ provider: 'google', callbackURL, disableRedirect: true \}\)/.test(panel) &&
+      /searchParams\.set\('neon_auth_session_verifier', got\.verifier\)/.test(panel),
+  );
+  check(
+    "desktop oauth: ...and the callback is on the site even from the offline bundle's file:// page",
+    /window\.location\.protocol === 'file:' \? SITE_URL : window\.location\.origin/.test(panel),
+  );
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
 process.exit(failures === 0 ? 0 : 1);

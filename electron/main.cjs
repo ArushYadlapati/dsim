@@ -80,9 +80,9 @@ function createWindow() {
 
   // External links in the app all use target=_blank / window.open — send those to
   // the user's real browser instead of opening a chrome-less child window. We do
-  // NOT intercept same-window navigations: Google sign-in (signIn.social) is a
-  // full-page redirect to the provider and back, and blocking it would break
-  // in-app auth. Every external <a> uses _blank, so there's nothing else to catch.
+  // NOT intercept same-window navigations: an older site build still does Google
+  // sign-in as a full-page redirect, and blocking it would break auth there. A
+  // current one asks for a pop-up instead (`dsim:oauth` below).
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
@@ -315,6 +315,79 @@ ipcMain.handle('dsim:setAuto', (_e, v) => {
   return getAutoCheck();
 });
 ipcMain.handle('dsim:openDownload', () => shell.openExternal(`${SITE}/download`));
+
+/**
+ * GOOGLE SIGN-IN IN A POP-UP (owner, 2026-09-24: on the desktop app "clicking on the log in with
+ * google button shows the google sign in screen on the app instead of opening up a new tab on a
+ * browser or showing a pop up").
+ *
+ * The web flow is a full-page redirect, so in this window Google replaced the app. A tab in the
+ * user's own browser cannot be used: the session it would end with lives in THAT browser's cookie
+ * jar, and nothing hands it back. A child window here shares this app's session, so the renderer
+ * asks Neon Auth for the provider URL (`disableRedirect`), and this opens it. The moment the flow
+ * redirects to `callback` (a URL on the site, which is never loaded), the pop-up closes and the
+ * `neon_auth_session_verifier` Neon Auth appended is handed back: the renderer exchanges it for
+ * the session exactly as a returning web redirect does. Closing the pop-up resolves `null`.
+ *
+ * The pop-up's user agent drops the `Electron/…` and app tokens: Google refuses sign-in in what
+ * it recognises as an embedded browser. Only this window's; the site reads "Electron" in the main
+ * window's to know it is the desktop app.
+ */
+ipcMain.handle('dsim:oauth', (e, opts) => {
+  const url = opts && typeof opts.url === 'string' ? opts.url : '';
+  const callback = opts && typeof opts.callback === 'string' ? opts.callback : '';
+  if (!/^https:\/\//.test(url) || !/^https:\/\//.test(callback)) return Promise.resolve({ error: 'bad-request' });
+  return new Promise((resolve) => {
+    const parent = BrowserWindow.fromWebContents(e.sender) || undefined;
+    const pop = new BrowserWindow({
+      width: 500,
+      height: 700,
+      parent,
+      autoHideMenuBar: true,
+      title: 'Sign in with Google',
+      backgroundColor: '#ffffff',
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    const ua = pop.webContents
+      .getUserAgent()
+      .replace(/\s*Electron\/\S+/i, '')
+      .replace(new RegExp(`\\s*${app.getName().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/\\S+`, 'i'), '');
+    pop.webContents.setUserAgent(ua);
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      resolve(result);
+      if (!pop.isDestroyed()) pop.close();
+    };
+    const atCallback = (ev, target) => {
+      if (typeof target !== 'string' || !target.startsWith(callback)) return;
+      if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
+      let verifier = null;
+      let error = null;
+      try {
+        const q = new URL(target).searchParams;
+        verifier = q.get('neon_auth_session_verifier');
+        error = q.get('error');
+      } catch {
+        error = 'bad-callback';
+      }
+      finish(verifier ? { verifier } : { error: error || 'no-verifier' });
+    };
+    pop.webContents.on('will-redirect', atCallback);
+    pop.webContents.on('will-navigate', atCallback);
+    pop.webContents.on('did-navigate', (_ev, target) => atCallback(null, target));
+    // a link inside the provider's page ("Help", "Privacy") goes to the real browser
+    pop.webContents.setWindowOpenHandler(({ url: u }) => {
+      shell.openExternal(u);
+      return { action: 'deny' };
+    });
+    pop.on('closed', () => finish({ cancelled: true }));
+    pop.loadURL(url).catch(() => {
+      /* an aborted load is the callback being intercepted, not a failure */
+    });
+  });
+});
 
 /**
  * THE FRAME-RATE SWITCHES. Two facts, not one, because they can legitimately disagree:

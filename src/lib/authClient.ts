@@ -38,7 +38,8 @@ export interface AuthClient {
   getSession: () => Promise<{ data: { user: NeonAuthUser } | null }>;
   signIn: {
     email: (c: { email: string; password: string }) => Promise<unknown>;
-    social: (o: { provider: string; callbackURL?: string }) => Promise<unknown>;
+    /** `disableRedirect` returns the provider URL instead of navigating to it (the desktop pop-up) */
+    social: (o: { provider: string; callbackURL?: string; disableRedirect?: boolean }) => Promise<unknown>;
   };
   signUp: { email: (c: { email: string; password: string; name: string }) => Promise<unknown> };
   signOut: () => Promise<unknown>;
