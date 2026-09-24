@@ -173,7 +173,7 @@ import {
 } from '../src/config';
 import {
   CHASSIS_COLOR_KEYS, ACCENT_KEYS, DECAL_KEYS, PLATE_KEYS, COSMETIC_DEFAULTS,
-  TITLE_KEYS, TITLE_LABELS, titleLabel, cosmeticTier, stripUnentitledCosmetics,
+  cosmeticTier, stripUnentitledCosmetics,
 } from '../src/cosmetics';
 import {
   pointDepthInRobot,
@@ -276,27 +276,25 @@ import type { HudSnapshot } from '../src/game';
 import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
 import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
 import {
-  awardBadgeRank,
+  awardBadge,
   awardBoardWord,
+  awardKey,
   awardRankWord,
-  awardShortText,
-  awardTitleText,
-  awardTitleId,
+  awardSentence,
   compareAwards,
-  parseAwardTitleId,
-  awardPodiumTier,
   type AwardRow,
 } from '../src/awards';
 import {
   BADGE_EARN,
   BADGE_KEYS,
   BADGE_LABELS,
+  BADGE_TIER,
   MAX_EQUIPPED_BADGES,
   coerceEquippedBadges,
   podiumBadge,
   withBadgeEquipped,
 } from '../src/badges';
-import { compareGrants, rewardHeadline, rewardTitleText, rewardWhy, type RewardGrant } from '../src/rewards';
+import { compareGrants, grantCards, rewardHeadline, rewardWhy, type RewardGrant } from '../src/rewards';
 import {
   PAD_GLYPHS,
   PAD_MENU_BUTTON,
@@ -758,30 +756,8 @@ const slotCount = (w: World, a: 'red' | 'blue') =>
   );
 }
 
-// ---- LEDGER TITLES: every key is NAMED, and the reward's cosmetic is EXCLUSIVE -----------
+// ---- THE GITHUB STAR'S COSMETIC IS EXCLUSIVE ------------------------------------------------
 {
-  /**
-   * ⚠️ **A TITLE KEY IS NOT A LABEL, AND IT SHIPPED BEING USED AS ONE.** `TitlePicker` fell
-   * back to `id.replace(/^title:/, '')` for any title that was not a parseable season award,
-   * so `title:stargazer` — the only earnable title in the build — rendered as the lowercase
-   * slug `stargazer`, beside awards that read as proper sentences. `TITLE_LABELS` is the map
-   * that fixes it, and this is what stops the next key being added without one: the fallback
-   * still exists (a key from a newer build has to render as SOMETHING), so a missing label is
-   * silent, and silent is how the first one lasted.
-   */
-  check(
-    '⚠️ titles: EVERY TITLE_KEYS member has a display label — the fallback is a raw slug',
-    TITLE_KEYS.every((k) => (TITLE_LABELS[k] ?? '').length > 0),
-    TITLE_KEYS.filter((k) => !TITLE_LABELS[k]).join(',') || 'all labelled',
-  );
-  check(
-    '...and a label is not just the key with a capital — it is written for a person',
-    TITLE_KEYS.every((k) => TITLE_LABELS[k] !== k),
-  );
-  check('titles: titleLabel answers null for a season award, which renders through its own path',
-    titleLabel('title:s3:decode:elo1v1:1') === null && titleLabel('decal:star') === null);
-  check('titles: ...and for a key this build does not know', titleLabel('title:nope') === null);
-
   /**
    * ⚠️ **THE GITHUB STAR'S COSMETIC IS `earned`, NOT A SUPPORTER FILL GIVEN AWAY.** A star
    * is one click; granting one of the six premium chassis colours for it would price a Ko-fi
@@ -25196,9 +25172,9 @@ const dumperSetup = (): RobotSetup => {
   check('padnav: `set` truncates to the cap', oskReduce(oskInit(''), { t: 'set', value: 'abcdef' }, 4).value === 'abcd');
 }
 
-// ---- SEASON AWARD TITLES: the sentence, and the one word that is not relative ----
-// `src/awards.ts` turns an award row into words. The server owns the KEY (`awardTitleId`)
-// and the rows; this is the half a designer rewrites, which is exactly why the sentence is
+// ---- THE TROPHY CASE: the sentence, the badge it is drawn with, and the one word that is not relative ----
+// `src/awards.ts` turns an award row into words. The server owns the rows and dedupes them by
+// `awardKey`; this is the half a designer rewrites, which is exactly why the sentence is
 // rendered rather than stored — storing it would have frozen every past award's wording at
 // the moment it was minted.
 {
@@ -25209,8 +25185,8 @@ const dumperSetup = (): RobotSetup => {
 
   check(
     'awards: the full sentence is season · act/season · board rank',
-    awardTitleText(row()) === 'DECODE · Act 2 Season 3 · 1v1 Champion',
-    awardTitleText(row()),
+    awardSentence(row()) === 'DECODE · Act 2 Season 3 · 1v1 Champion',
+    awardSentence(row()),
   );
   check(
     'awards: ranks 1..3 are Champion / Finalist / Semifinalist (owner, 2026-09-21)',
@@ -25242,16 +25218,6 @@ const dumperSetup = (): RobotSetup => {
     'awards: an unknown drivetrain falls back to its own id rather than rendering undefined',
     awardBoardWord({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'hovercraft' }) === 'hovercraft Record',
   );
-  check(
-    'awards: the SHORT form drops the season, which is context on a chip',
-    awardShortText(row({ kind: 'record_overall', mode: 'duo', rank: 2 })) === 'Duo Record Finalist',
-    awardShortText(row({ kind: 'record_overall', mode: 'duo', rank: 2 })),
-  );
-  // the badge carries 1/2/3 and nothing else — a 12px hexagon cannot hold "#11"
-  check(
-    'awards: the badge rank clamps into 1..3',
-    awardBadgeRank({ rank: 1 }) === 1 && awardBadgeRank({ rank: 3 }) === 3 && awardBadgeRank({ rank: 11 }) === 3 && awardBadgeRank({ rank: 0 }) === 1,
-  );
   // newest season first, then the most impressive — the order you read your own trophies in
   const sorted = [
     row({ balanceVersion: 11, rank: 1 }),
@@ -25264,85 +25230,60 @@ const dumperSetup = (): RobotSetup => {
     sorted.map((a) => `${a.balanceVersion}/${a.rank}`).join(' '),
   );
   /**
-   * ⚠️ THE ID ROUND-TRIPS, WHICH IS WHAT MAKES THE LEADERBOARD CHIP FREE. A board prints
-   * the equipped title beside every name; the alternative to parsing the id is joining
-   * `season_awards` once per row on a query that already joins `profiles`. So the id
-   * carrying its own meaning is load-bearing, not a convenience, and this is the check
-   * that keeps the two functions in step.
+   * ⚠️ THE KEY IS WHAT DEDUPES THE TROPHY CASE (`trophyCase`, repo.ts): a placement the retired
+   * `season_awards` table and the award job both paid must produce ONE key, and two different
+   * placements must never share one — a collision would silently drop a row from somebody's
+   * trophy case.
    */
   {
-    for (const r of [
+    const slots = [
       row(),
-      row({ kind: 'record_overall', mode: 'duo', rank: 3 }),
-      row({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'butterfly', rank: 1 }),
-      row({ game: 'biobuzz', kind: 'ranked', mode: '2v2', rank: 2 }),
-    ]) {
-      const back = parseAwardTitleId(awardTitleId(r));
-      check(
-        `awards: the id round-trips — ${awardShortText(r)}`,
-        !!back &&
-          back.game === r.game &&
-          back.balanceVersion === r.balanceVersion &&
-          back.kind === r.kind &&
-          back.mode === r.mode &&
-          back.drivetrain === r.drivetrain &&
-          back.rank === r.rank,
-        `${awardTitleId(r)} -> ${JSON.stringify(back)}`,
-      );
-    }
-    // ⚠️ `act`/`seasonNo` are NOT in the key and cannot come back — they are denormalised
-    // on the row for the sentence. A parsed award is for `awardShortText`, never the full
-    // one, and the check says so rather than leaving the next caller to discover it.
-    const parsed = parseAwardTitleId(awardTitleId(row()))!;
-    check('⚠️ awards: a parsed id has NO act/season — those live on the row, not in the key', parsed.act === 0 && parsed.seasonNo === 0);
-    check(
-      'awards: a `title:` grant is not an award and parses to null (it is a registry key)',
-      parseAwardTitleId('title:stargazer') === null,
-    );
-    check(
-      'awards: malformed ids are refused rather than rendered',
-      parseAwardTitleId('award:decode:12:ranked:1v1') === null &&
-        parseAwardTitleId('award:decode:x:ranked:1v1:1') === null &&
-        parseAwardTitleId('award:decode:12:bogus:1v1:1') === null &&
-        parseAwardTitleId('award:decode:12:ranked:9v9:1') === null,
-    );
-    // a drivetrain belongs to exactly one kind, both ways round
-    check(
-      '⚠️ awards: a drivetrain on a non-drivetrain kind (and a drivetrain kind without one) are both refused',
-      parseAwardTitleId('award:decode:12:ranked:1v1:mecanum:1') === null &&
-        parseAwardTitleId('award:decode:12:record_drivetrain:solo:1') === null,
-    );
+      row({ rank: 2 }),
+      row({ mode: '2v2' }),
+      row({ balanceVersion: 13 }),
+      row({ game: 'biobuzz' }),
+      row({ kind: 'record_overall', mode: 'solo' }),
+      row({ kind: 'record_overall', mode: 'duo' }),
+      row({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'mecanum' }),
+      row({ kind: 'record_drivetrain', mode: 'solo', drivetrain: 'butterfly' }),
+      row({ kind: 'ranked_act', act: 2 }),
+      row({ kind: 'ranked_act', act: 3 }),
+    ];
+    const keys = slots.map(awardKey);
+    check('⚠️ awards: every distinct slot has a distinct key', new Set(keys).size === keys.length, keys.join(' '));
+    check('awards: the key ignores the denormalised act/season of a season award (a season is its balanceVersion)',
+      awardKey(row({ act: 9, seasonNo: 9 })) === awardKey(row()));
   }
+  // every trophy-case row is drawn with a badge that exists
+  check('awards: a ranked placement is drawn with its podium crest, a record one with the ribbon',
+    awardBadge({ kind: 'ranked_act', rank: 1 }) === 'ranked-gold' && awardBadge({ kind: 'ranked', rank: 2 }) === 'ranked-silver' &&
+      awardBadge({ kind: 'record_overall', rank: 3 }) === 'record-holder' && awardBadge({ kind: 'record_drivetrain', rank: 1 }) === 'record-holder');
+  check('awards: ...and a ranked rank past the podium still draws a real badge', BADGE_KEYS.includes(awardBadge({ kind: 'ranked', rank: 7 })));
 
   check(
     'awards: a BIOBUZZ award names BIOBUZZ, so the sentence follows the season registry',
-    awardTitleText(row({ game: 'biobuzz' })).startsWith('BIOBUZZ'),
-    awardTitleText(row({ game: 'biobuzz' })),
+    awardSentence(row({ game: 'biobuzz' })).startsWith('BIOBUZZ'),
+    awardSentence(row({ game: 'biobuzz' })),
   );
 }
 
-// ---- THE REWARD LEDGER (0048): act podium titles, badges, and the claim dialog's words ----
+// ---- THE REWARD LEDGER (0048): act podium awards, badges, and the claim dialog's words ----
 // The server mints grants as data (`reward_grants.items` / `.reason`); `src/rewards.ts` and
 // `src/badges.ts` are the client's half — the words, the counter rules, and the queue order.
 {
-  // ⚠️ AN ACT AWARD IS KEYED BY ITS ACT, and the id has to carry it: the chip beside a name
-  // names the act, and it is parsed off the id alone (no join) the way every title is.
+  // an ACT award is keyed by its act: its period is the act, not a season
   const act: AwardRow = { game: 'biobuzz', balanceVersion: 17, act: 2, seasonNo: 0, kind: 'ranked_act', mode: '1v1', drivetrain: null, rank: 2, score: 1843 };
-  const id = awardTitleId(act);
-  check('rewards: an act podium id carries the ACT, not a season', id === 'award:biobuzz:act2:ranked_act:1v1:2', id);
-  const back = parseAwardTitleId(id);
-  check('⚠️ rewards: ...and parses back WITH its act (a season award cannot, an act award must)',
-    !!back && back.kind === 'ranked_act' && back.act === 2 && back.rank === 2 && back.mode === '1v1', JSON.stringify(back));
-  check('rewards: the act sentence names the act and no season', awardTitleText(act) === 'BIOBUZZ · Act 2 · 1v1 Finalist', awardTitleText(act));
-  check('rewards: the chip form keeps the act, so it cannot read as a retired per-season title', awardShortText(back!) === 'Act 2 · 1v1 Finalist', awardShortText(back!));
-  check('rewards: an act podium title wears the metal of its placement',
-    awardPodiumTier({ kind: 'ranked_act', rank: 1 }) === 'gold' && awardPodiumTier({ kind: 'ranked_act', rank: 3 }) === 'bronze' && awardPodiumTier({ kind: 'record_overall', rank: 1 }) === null);
-  check('rewards: a malformed act id is refused', parseAwardTitleId('award:biobuzz:act:ranked_act:1v1:1') === null && parseAwardTitleId('award:biobuzz:act2:ranked_act:solo:1') === null);
-  // an OLDER client's parser reads `act2` as a number — NaN — and draws nothing: no chip, never a wrong one
-  check('rewards: an older parser would see a non-number version (graceful, not wrong)', !Number.isFinite(Number(id.split(':')[2])));
+  const id = awardKey(act);
+  check('rewards: an act podium key carries the ACT, not a season', id === 'award:biobuzz:act2:ranked_act:1v1:2', id);
+  check('rewards: the act sentence names the act and no season', awardSentence(act) === 'BIOBUZZ · Act 2 · 1v1 Finalist', awardSentence(act));
 
   // badges: the registry, the counter, the equip rule
-  check('⚠️ badges: every key has a label AND an earn sentence', BADGE_KEYS.every((k) => BADGE_LABELS[k]?.length > 0 && BADGE_EARN[k]?.length > 0));
+  check('⚠️ badges: every key has a label, an earn sentence AND an art tier', BADGE_KEYS.every((k) => BADGE_LABELS[k]?.length > 0 && BADGE_EARN[k]?.length > 0 && !!BADGE_TIER[k]));
+  /* ⚠️ THE GITHUB STAR IS A BADGE NOW (0049), not a title. The id is what 0049's SQL writes
+     into the star grant and `profiles.equipped_badges`; a rename here without a migration
+     would drop it from every account that holds it, silently (`coerceEquippedBadges`). */
+  check('⚠️ badges: `stargazer` is a badge, with its own disc art', BADGE_KEYS.includes('stargazer') && BADGE_TIER.stargazer === 'stargazer' && BADGE_LABELS.stargazer === 'Stargazer');
+  check('badges: a worn stargazer badge survives the wire', JSON.stringify(coerceEquippedBadges([{ id: 'stargazer', n: 1 }])) === JSON.stringify([{ id: 'stargazer', n: 1 }]));
   check('badges: podium placement → metal', podiumBadge(1) === 'ranked-gold' && podiumBadge(2) === 'ranked-silver' && podiumBadge(3) === 'ranked-bronze' && podiumBadge(4) === null);
   check('badges: the wire is read tolerantly — an unknown id, a bad count and a duplicate drop out',
     JSON.stringify(coerceEquippedBadges([{ id: 'ranked-gold', n: 2 }, { id: 'fake', n: 1 }, { id: 'record-holder', n: 0 }, { id: 'ranked-gold', n: 5 }, null])) === JSON.stringify([{ id: 'ranked-gold', n: 2 }]));
@@ -25358,15 +25299,21 @@ const dumperSetup = (): RobotSetup => {
   const ranked = g({});
   check('⚠️ rewards: WHY says the placement, the ladder and the period — "#2 in 1v1 ranked, BIOBUZZ Act 2."',
     rewardWhy(ranked)[0] === '#2 in 1v1 ranked, BIOBUZZ Act 2.' && rewardWhy(ranked)[1] === 'Final rating 1843.', rewardWhy(ranked).join(' | '));
-  check('rewards: the headline is the title\'s words', rewardHeadline(ranked) === '1v1 Finalist', rewardHeadline(ranked));
+  check('rewards: the headline is the placement in words', rewardHeadline(ranked) === '1v1 Finalist', rewardHeadline(ranked));
   const rec = g({ source: 'record_season', reason: { kind: 'record_season', game: 'decode', act: 1, seasonNo: 3, balanceVersion: 9,
     placements: [{ board: 'overall', rank: 1, score: 212 }, { board: 'mecanum', rank: 1, score: 212 }] } });
   check('rewards: a record award says each board it placed on', rewardWhy(rec).length === 2 && rewardWhy(rec)[1].startsWith('#1 on the Mecanum record board, DECODE Act 1 Season 3.'), rewardWhy(rec).join(' | '));
   check('rewards: ...and heads with its best placement', rewardHeadline(rec) === 'Record Champion', rewardHeadline(rec));
-  check('rewards: a record title reads with its season, filled from the grant', rewardTitleText('award:decode:9:record_overall:solo:1', rec.reason) === 'DECODE · Act 1 Season 3 · Record Champion',
-    rewardTitleText('award:decode:9:record_overall:solo:1', rec.reason));
-  const star = g({ source: 'stargazer', reason: { kind: 'stargazer' }, items: [{ kind: 'title', id: 'title:stargazer' }] });
-  check('rewards: a ledger reward heads with its title label', rewardHeadline(star) === 'Stargazer');
+  const star = g({ source: 'stargazer', reason: { kind: 'stargazer' }, items: [{ kind: 'badge', id: 'stargazer' }, { kind: 'cosmetic', id: 'decal:star' }] });
+  check('rewards: a non-competitive reward heads with its badge\'s name', rewardHeadline(star) === 'Stargazer', rewardHeadline(star));
+  /* ⚠️ ONE ITEM PER CARD (owner, 2026-09-24): the star gives a badge and a decal, and one
+     "Equip now" for both does not say which it wears — so each is its own card, badge first. */
+  check('⚠️ rewards: the star grant is TWO cards, badge then decal', grantCards(star).map((i) => `${i.kind}:${i.id}`).join() === 'badge:stargazer,cosmetic:decal:star',
+    grantCards(star).map((i) => `${i.kind}:${i.id}`).join());
+  check('rewards: ...a badge is carded before a cosmetic whatever order the grant lists them in',
+    grantCards(g({ items: [{ kind: 'cosmetic', id: 'decal:star' }, { kind: 'badge', id: 'ranked-gold' }] }))[0].kind === 'badge');
+  check('rewards: ...and an item this build does not know is not carded', grantCards(g({ items: [{ kind: 'badge', id: 'from-the-future' as never }] })).length === 0);
+  check('rewards: ...and one with no badge falls back to a plain word', rewardHeadline(g({ reason: { kind: 'other' }, items: [{ kind: 'cosmetic', id: 'decal:star' }] })) === 'Reward');
   // the queue: prestigious first, OLDEST first within a kind, so a backfilled counter counts up 1, 2, 3
   const q = [star, g({ id: 'late', reason: { kind: 'ranked_act', game: 'decode', act: 3, mode: '2v2', rank: 1, rating: 0 } }), rec, g({ id: 'early', reason: { kind: 'ranked_act', game: 'decode', act: 1, mode: '1v1', rank: 1, rating: 0 } })].sort(compareGrants);
   check('rewards: the queue shows the podium first, oldest act first, then records, then the rest',

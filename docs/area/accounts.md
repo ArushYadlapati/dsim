@@ -142,9 +142,9 @@ and nag them to link a Ko-fi account that will never pay). `getSupporter` return
 `LobbyPlayer.role` is **server-authored** exactly like `supporter` (a self-declared
 "owner" beside a driver's name is an impersonation primitive). UI: ONE
 `SupporterBadge` renders owner ★ > admin ◆ > supporter ♥ — exactly one, since staff are
-also `supporter: true`. All three, plus the `title:stargazer` ★ badge (`TitleChip`), are ONE
-128×128 SVG each drawn by `BadgeIcon` (disc and glyph in one coordinate space; a CSS disc
-holding a separate glyph drifted). **Badge colours must be SATURATED IN BOTH THEMES**: the audit
+also `supporter: true`. All three are ONE 128×128 SVG each drawn by `BadgeIcon` (disc and
+glyph in one coordinate space; a CSS disc holding a separate glyph drifted); the earned
+`stargazer` disc is drawn the same way, by `BadgeArt`. **Badge colours must be SATURATED IN BOTH THEMES**: the audit
 checks the glyph against its own fill, NOT the badge against the card behind it, so the
 lavender pastel (#34305c in dark) passed contrast while being invisible on the dark
 panel. Distinguish by SHAPE as well as hue.
@@ -175,50 +175,61 @@ Tests: covered in `npm run dbtest` (which prints its own count — an exact numb
 into this file goes stale the first time anyone adds a check, as the three that said 36 and
 ~61 had).
 
-**AND THE EQUIPPED TITLE GOES WITH IT (2026-09-22).** The badge rule above had spread to every
-surface; the TITLE had not — it rendered on the leaderboard alone, so the one thing the title
-picker promises ("shows beside your name") was true on exactly one screen out of nine. The
-one-of-two (an award hexagon for an id `parseAwardTitleId` recognises, the ledger chip
-otherwise) is now **`TitleMark` (`src/ui/TitleChip.tsx`)**, a component for the same reason the
-badge is one: a surface that simply omits the chip still compiles and still renders, only bare.
-`<SupporterBadge …/><TitleMark title={…}/>`, in that order, as siblings of the name element.
-Covered: both leaderboards, career, profile header, match history, friends + the request toast,
-the lobby roster, and the ranked strategy reveal (which printed no badge either).
-Server side, this is additive and backward compatible: `getProfile` projects `title` (one more
-column off the profile row the room join already reads), so `LobbyPlayer.title` is
-server-authored beside `supporter`/`role` and on the same terms — a title is something EARNED,
-so a self-declared one is a claim to have earned it. `sanitizePlayer` is an allowlist and
-`PlayerPatch` is a `Pick`, neither of which names it, so a client cannot put it on the wire.
-`MatchDriver` carries `supporter`/`role` for the results roster but deliberately **not**
-`title`: that row is one line with a marqueeing name, and a variable-width text chip takes its
-width from the name — see the note beside `.resx-roster-name` in `src/ui/styles.css`.
+**AND THE WORN BADGES GO WITH IT.** Every surface that prints a name prints
+`<SupporterBadge …/><BadgeMarks badges={…}/>`, in that order, as siblings of the name element:
+both leaderboards, career, profile header, match history, friends + the request toast, the
+lobby roster, the ranked strategy reveal and the Appearance preview. `BadgeMarks` is a component
+for the reason the status disc is one: a surface that omits it still compiles and still renders,
+only bare. `getProfile` projects `equipped_badges` (the profile row the room join already
+reads), so `LobbyPlayer.badges` is server-authored beside `supporter`/`role` — a badge is a claim
+to have won something. `sanitizePlayer` is an allowlist and `PlayerPatch` is a `Pick`, neither of
+which names it, so a client cannot put it on the wire. `MatchDriver` carries `supporter`/`role`
+for the results roster but deliberately **not** the badges: that row is one line with a
+marqueeing name — see the note beside `.resx-roster-name` in `src/ui/styles.css`.
 Two surfaces print no badge because they print no person: `DiscordLobbyList` (room codes and
 seat counts) and `ChallengePicker` (a `@username` in its own dialog title, reached from a
 friends row that already carries both).
 
+**TITLES ARE GONE (migration 0049, owner 2026-09-24): "titles are now essentially the same thing
+as badges … remove titles completely".** Every competitive grant had delivered a title AND a
+badge for one finish. 0049 stripped title items from `reward_grants`, turned the star's
+`title:stargazer` into the `stargazer` badge, moved whoever was WEARING a title onto its badge
+(if held, and if a slot was free), and nulled `profiles.title` — the column stays, unread.
+Which act or season a badge came from is its grant's `reason`, shown in the profile's trophy
+case (`AwardList`, each row drawn with `awardBadge`). ⚠️ **One Fly app serves every client**, so
+`/api/user/title` still answers (GET: nothing; POST: `null` only) and the reward routes still
+send `title: null, earnedTitles: []` (`RETIRED_TITLE_FIELDS`, `server/api.ts`) — an old client
+calls `earnedTitles.includes` unguarded. Remove both once no pre-0049 client can connect.
+
 **REWARDS — EVERY GRANT IS CLAIMED, NEVER SILENT (migration 0048, 2026-09-22).** Owner: "Titles
-should not ever silently get added UNLESS specified." Every title, badge and cosmetic an account
-is given is a row in `reward_grants`, unique on `(user_id, grant_key)` where the key names the
+should not ever silently get added UNLESS specified." Every badge and cosmetic an account is
+given is a row in `reward_grants`, unique on `(user_id, grant_key)` where the key names the
 reward and its period (`ranked:<game>:act<N>:<mode>`, `record:<game>:bv<N>`, `stargazer`).
-- **PENDING DELIVERS NOTHING.** A pending grant's title is not in `earnedTitles`, its badge is not
-  in `badgeCounts`, its cosmetic is not in `profiles.cosmetics`. `claimReward` applies it in one
-  transaction; `equip` also wears the first title and each badge. The claim dialog
+- **PENDING DELIVERS NOTHING.** A pending grant's badge is not in `badgeCounts` and its cosmetic
+  is not in `profiles.cosmetics`. `claimReward` applies it in one transaction. The claim dialog
   (`src/ui/RewardDialog.tsx`) is the only way in, mounted inside `AppShell` (never over a match),
   behind `TermsGate`/`UsernameGate` (its parents) and every other shell modal (`blocked`).
+- **ONE CARD PER ITEM** (owner, 2026-09-24): the star gives a badge AND a decal, and one "Equip
+  now" for both did not say which it wears. `grantCards` (`src/rewards.ts`) orders a grant's
+  items, badges first; each is a card with its own Claim / Equip now. The FIRST card's answer
+  claims the whole grant (`answerCard`, `rewardsStore.ts`, with `equip: false`); Equip now then
+  wears that card's item only (a badge via `/api/user/badges`, a decal on the active robot). The
+  claimed grant is held in `revealing` so its later cards still show once it leaves `pending`.
 - **`grantReward` IS THE ONE DOOR.** Silent is a per-source CODE flag (`REWARD_SOURCES`, off unless
   a row says so); the only silent source is `legacy`. `grantCosmetic` is now the inventory write a
   claim makes, not a grant path. A revoked grant keeps its row (`revoked_at`), so a re-star re-opens
   the same key as pending instead of minting a second grant.
-- **BADGES COUNT, TITLES DO NOT** (`src/badges.ts`). Four closed ids: `ranked-gold|silver|bronze`
-  (act podium) and `record-holder` (season records). The count is claimed, unrevoked grants carrying
-  the id. `profiles.equipped_badges` (`[{id,n}]`, at most 3) is a PROJECTION of that count, rewritten
-  only by `refreshEquippedBadges` on every claim, revoke and equip, and projected by `badgeCols` so
-  every name surface gets it free. `TitleMark` takes `badges` — pass it wherever a title shows.
+- **BADGES COUNT** (`src/badges.ts`). Five closed ids: `ranked-gold|silver|bronze` (act podium),
+  `record-holder` (season records) and `stargazer` (the GitHub star; revocable, never past 1). The
+  count is claimed, unrevoked grants carrying the id. `profiles.equipped_badges` (`[{id,n}]`, at
+  most 3 — the owner kept 3 when titles folded in) is a PROJECTION of that count, rewritten only by
+  `refreshEquippedBadges` on every claim, revoke and equip, and projected by `badgeCols` so every
+  name surface gets it free. No evolving art by count yet (owner, 2026-09-24: not now).
 - **THE CRITERIA** (`runRewardJob`, owner 2026-09-22). End of every ranked ACT: top 3 of each ladder
-  via `eloLeaderboard` (placed players, `user_id` last on ties) → an act title
-  (`award:<game>:act<N>:ranked_act:<mode>:<rank>`) + a podium badge. End of every SEASON: the SOLO
-  record board's overall top 3 and each drivetrain's #1 via `recordLeaderboard` (its `boardPhysics`
-  default) → one grant per player per season, a title per placement, ONE `record-holder` badge.
+  via `eloLeaderboard` (placed players, `user_id` last on ties) → a podium badge. End of every
+  SEASON: the SOLO record board's overall top 3 and each drivetrain's #1 via `recordLeaderboard`
+  (its `boardPhysics` default) → one grant per player per season, every placement on its
+  `reason`, ONE `record-holder` badge.
   **Act 0 is never paid**, ranked or records. Duo boards are out (`RECORD_AWARD_MODES`); adding
   `'duo'` there is the whole change.
 - **ONE JOB FOR THE BACKFILL AND THE ROLLOVER.** `runRewardJob` pays every CLOSED period not yet in
@@ -232,12 +243,16 @@ reward and its period (`ranked:<game>:act<N>:<mode>`, `record:<game>:bv<N>`, `st
   closed act's row except `chargeRatingForBehaviour`, which targets a player's most recent board).
   Season records are `records` rows stamped with `balance_version`. Each grant's `reason` now stores
   the rank and the rating or score it closed on.
-- **`season_awards` (0045) IS RETIRED**: nothing writes it; its titles stay wearable. A placement
-  both hold is one title (same id) and one trophy-case row (`trophyCase` dedupes).
-- **OLD CLIENTS** never call `/api/user/rewards`, so they never see a pending grant and keep working
-  on `/api/user/title` (claimed titles). An older server 404s the new routes, which the client reads
-  as "nothing pending". Tests: `npm run dbtest` (the job, Act 0, ties, per-drivetrain #1, pending →
-  claimed → equipped, the counter, silent, the cascade) and `npm test` (ids, words, queue order).
+- **`season_awards` (0045) IS RETIRED**: nothing writes it; its rows stay in the trophy case. A
+  placement both hold is one trophy-case row (`trophyCase` dedupes by `awardKey`).
+- **THE STAR**: `STARGAZER_ITEMS` (`repo.ts`) is the badge and `decal:star` on ONE grant, so they
+  arrive and leave together. The sweep's "already holds it" reads a live grant or the decal in the
+  inventory (the badge has no inventory entry). A revoke re-counts the worn badges, so the disc
+  comes off the name in the same transaction.
+- **OLD CLIENTS** never call `/api/user/rewards`, so they never see a pending grant. An older server
+  404s the new routes, which the client reads as "nothing pending". Tests: `npm run dbtest` (the
+  job, Act 0, ties, per-drivetrain #1, pending → claimed → equipped, the counter, silent, 0049,
+  the cascade) and `npm test` (keys, words, cards, queue order).
 
 **COSMETICS — TWO SEPARATE LEDGERS, DONE** (`docs/cosmetics-plan.md`). `chassisColor` /
 `accent` / `decal` / `plate` (`src/cosmetics.ts`) are four closed-set axes on `RobotSpec`;

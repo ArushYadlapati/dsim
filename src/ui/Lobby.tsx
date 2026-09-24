@@ -13,7 +13,7 @@ import { selectStart, switchCategory, saveStart, deleteSavedStart, indexCategory
 import { useRoleSwap, useDismissable } from './useRoleSwap';
 import { RoleSwapBar } from './RoleSwapBar';
 import { SupporterBadge } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
+import { BadgeMarks } from './BadgeMark';
 import { Menu } from './Menu';
 import { buildWords, teamLine } from './robotLabels';
 import { RobotCard } from './RobotCard';
@@ -941,7 +941,7 @@ export function Lobby({
                     {p.name}
                     {isMe ? ' (you)' : ''}
                     <SupporterBadge supporter={p.supporter} role={p.role} />
-                    <TitleMark title={p.title} badges={p.badges} />
+                    <BadgeMarks badges={p.badges} />
                   </span>
                   <span className="ptm">
                     {p.spec.name} · {p.teamNumber || '—'}

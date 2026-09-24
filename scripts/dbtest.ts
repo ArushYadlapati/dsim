@@ -3454,7 +3454,7 @@ async function main(): Promise<void> {
   }
 
 
-  // ---- SEASON AWARDS + TITLES (0045/0046) ------------------------------------------
+  // ---- SEASON AWARDS (0045) ------------------------------------------------------------
   /**
    * The checks `docs/rewards-round2-plan.md` §7 asks for by name. The one that matters
    * most is IDEMPOTENCY: a season roll is a thing an admin can press twice, and the whole
@@ -3472,7 +3472,7 @@ async function main(): Promise<void> {
     check('awards: ...and mints nothing', (await repo.userAwards('aw-1')).length === 0);
 
     // Mint a slot by hand. 0048 RETIRED this table — nothing writes it now — so what is under
-    // test HERE is that the rows it already holds keep their contract and stay wearable.
+    // test HERE is that the rows it already holds keep their contract and stay in the trophy case.
     const mint = async (rank: number, user: string) =>
       db.query(
         `insert into season_awards (game, balance_version, act, kind, mode, drivetrain, rank, user_id, score)
@@ -3499,20 +3499,10 @@ async function main(): Promise<void> {
     );
     check('⚠️ awards: a DUO rank decorates BOTH members, not whichever one inserted first', Number(duo.rows[0].n) === 2);
 
-    // titles: derived, and validated on write
-    const titles = await repo.earnedTitles('aw-1');
-    const rankedTitle = repo.awardTitleId({ game: GAME, balanceVersion: before.season, kind: 'ranked', mode: '1v1', drivetrain: null, rank: 1 });
-    check('titles: an award yields a title id', titles.includes(rankedTitle), titles.join(', '));
-    check('titles: setTitle accepts an earned one', (await repo.setTitle('aw-1', rankedTitle)) === true);
-    check('⚠️ titles: setTitle REFUSES an unearned one (0046 has no check constraint — this is the validation)',
-      (await repo.setTitle('aw-1', 'award:decode:999:ranked:1v1:1')) === false);
-    const held = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'aw-1'`);
-    check('titles: ...and the refusal did not overwrite the equipped one', held.rows[0].title === rankedTitle);
-    check('titles: null clears it', (await repo.setTitle('aw-1', null)) === true);
-    await repo.setTitle('aw-1', rankedTitle);
-    await repo.clearTitleIfEquipped('aw-1', rankedTitle);
-    const cleared = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'aw-1'`);
-    check('titles: clearTitleIfEquipped removes it when it matches', cleared.rows[0].title === null);
+    // a retired award stays on show: the trophy case reads it (titles, which it once made
+    // wearable, went in 0049)
+    const case1 = (await repo.getUserStats('aw-1', before.season, GAME)).awards ?? [];
+    check('awards: a retired award stays in the trophy case', case1.some((x) => x.kind === 'ranked' && x.rank === 1), JSON.stringify(case1));
 
     // the FK cascades — an award decorates a name, so with no name there is nothing left
     await repo.deleteAccount('aw-2');
@@ -3524,9 +3514,9 @@ async function main(): Promise<void> {
   // ---- THE REWARD LEDGER + THE COMPETITIVE AWARD JOB (0048) -------------------------
   /**
    * Owner, 2026-09-22: ranked TOP 3 of 1v1 and 2v2 at the end of every ACT (the prestigious
-   * one: a placement title + a gold/silver/bronze podium badge), and at the end of every
-   * SEASON the record board's overall TOP 3 and each drivetrain's #1 (a title + the Record
-   * Holder badge) — never Act 0, paid for every past period NOW and automatically from here
+   * one: a gold/silver/bronze podium badge), and at the end of every SEASON the record board's
+   * overall TOP 3 and each drivetrain's #1 (the Record Holder badge; each placement is a
+   * trophy-case row off the grant's reason) — never Act 0, paid for every past period NOW and automatically from here
    * on, and never silently: every grant waits to be CLAIMED.
    *
    * The world below is built by hand on `chain` at balance versions far above anything the
@@ -3602,8 +3592,8 @@ async function main(): Promise<void> {
     check('job: the podium is three — #4 gets nothing', !(await ranked('rw-d', '1v1')));
     check('⚠️ job: an UNPLACED player is not on the board, so not on the podium', !(await ranked('rw-e', '1v1')));
     check('job: 2v2 is its own ladder with its own podium', (await ranked('rw-a', '2v2'))?.reason.kind === 'ranked_act');
-    check('job: a podium grant carries the placement title AND the metal badge',
-      !!a1 && a1.items.some((i) => i.kind === 'title' && i.id === 'award:chain:act1:ranked_act:1v1:1') && a1.items.some((i) => i.kind === 'badge' && i.id === 'ranked-gold'),
+    check('⚠️ job: a podium grant carries the metal badge and NOTHING else — no title (0049)',
+      !!a1 && a1.items.length === 1 && a1.items[0].kind === 'badge' && a1.items[0].id === 'ranked-gold',
       JSON.stringify(a1?.items));
     check('job: silver and bronze by placement', !!b1?.items.some((i) => i.id === 'ranked-silver') && !!c1?.items.some((i) => i.id === 'ranked-bronze'));
 
@@ -3612,10 +3602,10 @@ async function main(): Promise<void> {
     const aRec = await recOf('rw-a', 902);
     const dRec = await recOf('rw-d', 902);
     const cRec = await recOf('rw-c', 902);
-    check('job: the overall #1 is also #1 of their drivetrain — two titles, ONE grant, ONE badge',
+    check('job: the overall #1 is also #1 of their drivetrain — two placements, ONE grant, ONE badge',
       aRec?.reason.kind === 'record_season' && aRec.reason.placements.length === 2 &&
-        aRec.items.filter((i) => i.kind === 'title').length === 2 && aRec.items.filter((i) => i.kind === 'badge').length === 1,
-      JSON.stringify(aRec?.reason));
+        aRec.items.length === 1 && aRec.items[0].kind === 'badge' && aRec.items[0].id === 'record-holder',
+      JSON.stringify(aRec));
     check('⚠️ job: per-drivetrain #1 — 4th overall on score, but the best swerve run',
       dRec?.reason.kind === 'record_season' && dRec.reason.placements.length === 1 && dRec.reason.placements[0].board === 'swerve',
       JSON.stringify(dRec?.reason));
@@ -3626,37 +3616,34 @@ async function main(): Promise<void> {
     check('job: the live season pays nothing', !(await recOf('rw-b', 905)));
 
     // ---- pending → claimed → equipped ------------------------------------------------
-    check('⚠️ pending: an unclaimed title is NOT wearable', !(await repo.earnedTitles('rw-a')).includes('award:chain:act1:ranked_act:1v1:1'));
-    check('⚠️ pending: ...an unclaimed badge does not count', Object.keys(await repo.badgeCounts('rw-a')).length === 0);
-    check('pending: ...and setTitle refuses it', (await repo.setTitle('rw-a', 'award:chain:act1:ranked_act:1v1:1')) === false);
+    check('⚠️ pending: an unclaimed badge does not count', Object.keys(await repo.badgeCounts('rw-a')).length === 0);
+    check('pending: ...and cannot be worn', (await repo.setEquippedBadges('rw-a', ['ranked-gold'])) === null);
     const claimed = await repo.claimReward('rw-a', a1!.id, false);
-    check('claim: CLAIM delivers the title', !!claimed && claimed.earnedTitles.includes('award:chain:act1:ranked_act:1v1:1'));
-    check('claim: ...and counts the badge', claimed?.badges['ranked-gold'] === 1, JSON.stringify(claimed?.badges));
-    check('claim: ...but plain Claim wears nothing', claimed?.title === null && claimed.equippedBadges.length === 0);
+    check('claim: CLAIM counts the badge', claimed?.badges['ranked-gold'] === 1, JSON.stringify(claimed?.badges));
+    check('claim: ...but plain Claim wears nothing', !!claimed && claimed.equippedBadges.length === 0);
+    check('claim: the reward state carries no title fields (0049)', !!claimed && !('title' in claimed) && !('earnedTitles' in claimed));
     const twice = await repo.claimReward('rw-a', a1!.id, false);
     check('claim: claiming twice (two tabs, a double click) delivers nothing twice', twice?.badges['ranked-gold'] === 1);
     check('claim: somebody else\'s grant is not yours to claim', (await repo.claimReward('rw-b', a1!.id, true)) === null);
     const eq = await repo.claimReward('rw-a', (await ranked('rw-a', '2v2'))!.id, true);
-    check('⚠️ equip now: CLAIMS AND WEARS — the title', eq?.title === 'award:chain:act1:ranked_act:2v2:1', eq?.title ?? 'null');
-    check('⚠️ equip now: ...and the badge, with its COUNTER — two golds', eq?.equippedBadges.length === 1 && eq.equippedBadges[0].id === 'ranked-gold' && eq.equippedBadges[0].n === 2,
+    check('⚠️ equip now: CLAIMS AND WEARS the badge, with its COUNTER — two golds', eq?.equippedBadges.length === 1 && eq.equippedBadges[0].id === 'ranked-gold' && eq.equippedBadges[0].n === 2,
       JSON.stringify(eq?.equippedBadges));
     // jsonb re-orders an object's keys, so the projection is compared by VALUE, not by its text
     const goldTimes2 = (v: unknown): boolean =>
       Array.isArray(v) && v.length === 1 && (v[0] as { id?: string }).id === 'ranked-gold' && Number((v[0] as { n?: number }).n) === 2;
-    const wearing = await db.query<{ equipped_badges: unknown; title: string | null }>(`select equipped_badges, title from profiles where user_id = 'rw-a'`);
+    const wearing = await db.query<{ equipped_badges: unknown }>(`select equipped_badges from profiles where user_id = 'rw-a'`);
     check('equip now: the projection on profiles is what the boards will ship', goldTimes2(wearing.rows[0].equipped_badges),
       JSON.stringify(wearing.rows[0].equipped_badges));
 
     // ---- the badge counter: a second season's record award raises it, never adds a badge
     const r902 = await repo.claimReward('rw-a', aRec!.id, true);
-    check('counter: the record grant wears its best title', r902?.title === 'award:chain:902:record_overall:solo:1', r902?.title ?? '');
+    check('counter: the record grant wears its badge beside the gold', r902?.equippedBadges.map((b) => b.id).join(',') === 'ranked-gold,record-holder',
+      JSON.stringify(r902?.equippedBadges));
     const r903 = await repo.claimReward('rw-a', (await recOf('rw-a', 903))!.id, true);
     check('⚠️ counter: earning the SAME badge again INCREMENTS it — Record Holder ×2', r903?.badges['record-holder'] === 2, JSON.stringify(r903?.badges));
     check('counter: ...and the worn copy shows the new count, not a second badge',
       r903?.equippedBadges.filter((b) => b.id === 'record-holder').length === 1 && r903.equippedBadges.find((b) => b.id === 'record-holder')?.n === 2,
       JSON.stringify(r903?.equippedBadges));
-    check('⚠️ no double award: a placement 0045 already awarded is ONE title, not two',
-      (await repo.earnedTitles('rw-a')).filter((t) => t === 'award:chain:902:record_overall:solo:1').length === 1);
     const stats = await repo.getUserStats('rw-a', 905, G);
     check('trophy case: the profile lists the claimed awards once each, legacy included',
       (stats.awards ?? []).filter((x) => x.kind === 'record_overall' && x.balanceVersion === 902).length === 1 &&
@@ -3664,7 +3651,7 @@ async function main(): Promise<void> {
       JSON.stringify(stats.awards?.map((x) => `${x.kind}:${x.balanceVersion}:${x.mode}:${x.rank}`)));
     check('trophy case: ...and every badge with its count', stats.badgeCounts?.['record-holder'] === 2 && stats.badgeCounts?.['ranked-gold'] === 2);
 
-    // ---- equipping badges is validated like a title ------------------------------------
+    // ---- equipping badges is validated on the server ---------------------------------------
     check('badges: wearing one you hold takes', (await repo.setEquippedBadges('rw-a', ['record-holder']))?.length === 1);
     check('⚠️ badges: one you do NOT hold is refused', (await repo.setEquippedBadges('rw-a', ['ranked-silver'])) === null);
     check('badges: an unknown id is refused', (await repo.setEquippedBadges('rw-a', ['self-made'])) === null);
@@ -3690,12 +3677,12 @@ async function main(): Promise<void> {
     check('grant: an item outside every closed set is dropped, and a grant of nothing refused',
       (await repo.grantReward({ userId: 'rw-s', key: 'x', source: 'ranked_act', reason: { kind: 'other' }, items: [{ kind: 'badge', id: 'fake' as never }] })) === 'refused');
 
-    // ---- what was handed out BEFORE the ledger survives it -----------------------------------
+    // ---- what was handed out BEFORE the ledger survives it, and survives 0049 ------------------
     /* An account that already held the star reward in `profiles.cosmetics` and was WEARING the
-       title when 0048 landed. The migration imports it as a claimed, SILENT grant — showing a
-       "you earned this" for a thing already worn would be the dialog lying the other way — and
-       the equipped title must survive. Re-running the migration's own SQL is safe by design
-       (every statement is `if not exists` / `on conflict`), which is also what proves it. */
+       title when 0048 landed. 0048 imports it as a claimed, SILENT grant — showing a "you earned
+       this" for a thing already worn would be the dialog lying the other way. 0049 then turns
+       the title into the `stargazer` badge and WEARS it, because the player was wearing it.
+       Re-running both migrations' SQL is safe by design, which is also what proves it. */
     await repo.ensureProfile('rw-old', 'Old');
     await db.query(`update profiles set cosmetics = '["title:stargazer","decal:star"]'::jsonb, title = 'title:stargazer' where user_id = 'rw-old'`);
     await db.exec(readFileSync(join(ROOT, 'server/db/migrations/0048_reward_grants.sql'), 'utf8'));
@@ -3705,10 +3692,45 @@ async function main(): Promise<void> {
     check('⚠️ legacy: a reward given before the ledger is imported CLAIMED and SILENT — no dialog for a thing already worn',
       imported.rows.length === 1 && imported.rows[0].silent && imported.rows[0].claimed && (await repo.pendingRewards('rw-old')).length === 0,
       JSON.stringify(imported.rows));
-    const oldTitle = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'rw-old'`);
-    check('⚠️ legacy: an EQUIPPED title survives the migration, and is still wearable',
-      oldTitle.rows[0].title === 'title:stargazer' && (await repo.earnedTitles('rw-old')).includes('title:stargazer'));
-    check('legacy: ...and the migration re-runs cleanly (one row, not two)', Number((await db.query<{ n: number }>(
+
+    /* 0049's other cases, staged as they would stand before it ran: somebody wearing an act
+       podium title they hold the badge for, somebody wearing a RETIRED per-season title (0045 —
+       it never came with a badge), and a PENDING grant still carrying a title item. rw-a already
+       holds ranked-gold ×2; its worn list is emptied so there is room. */
+    await db.query(`update profiles set title = 'award:chain:act1:ranked_act:1v1:1', equipped_badges = '[]'::jsonb where user_id = 'rw-a'`);
+    await repo.ensureProfile('rw-t45', 'Retired');
+    await db.query(`update profiles set title = 'award:decode:5:ranked:1v1:1' where user_id = 'rw-t45'`);
+    await db.query(
+      `insert into reward_grants (user_id, grant_key, source, reason, items)
+       values ('rw-t45', 'old:pending', 'ranked_act', '{"kind":"other"}'::jsonb,
+               '[{"kind":"title","id":"award:decode:act1:ranked_act:1v1:1"},{"kind":"badge","id":"ranked-gold"}]'::jsonb)`,
+    );
+    const m49 = readFileSync(join(ROOT, 'server/db/migrations/0049_titles_to_badges.sql'), 'utf8');
+    await db.exec(m49);
+    await db.exec(m49); // twice: every statement must be a no-op the second time
+
+    const oldRow = await db.query<{ title: string | null; cosmetics: string[]; equipped_badges: unknown }>(
+      `select title, cosmetics, equipped_badges from profiles where user_id = 'rw-old'`,
+    );
+    const oldGrant = await db.query<{ items: unknown }>(`select items from reward_grants where user_id = 'rw-old' and grant_key = 'stargazer'`);
+    check('⚠️ 0049: the star grant delivers the stargazer BADGE (and still the decal), no title',
+      JSON.stringify(oldGrant.rows[0].items) === JSON.stringify([{ id: 'stargazer', kind: 'badge' }, { id: 'decal:star', kind: 'cosmetic' }]),
+      JSON.stringify(oldGrant.rows[0].items));
+    check('⚠️ 0049: the star\'s title leaves the inventory, the decal stays',
+      !oldRow.rows[0].cosmetics.includes('title:stargazer') && oldRow.rows[0].cosmetics.includes('decal:star'), JSON.stringify(oldRow.rows[0].cosmetics));
+    check('⚠️ 0049: whoever WORE the stargazer title now wears the badge — once, after two runs',
+      JSON.stringify(oldRow.rows[0].equipped_badges) === JSON.stringify([{ n: 1, id: 'stargazer' }]), JSON.stringify(oldRow.rows[0].equipped_badges));
+    check('0049: ...and the badge counts off the rewritten grant', (await repo.badgeCounts('rw-old')).stargazer === 1);
+    check('0049: nobody wears a title any more', Number((await db.query<{ n: number }>(`select count(*)::int as n from profiles where title is not null`)).rows[0].n) === 0);
+    const aRow = await repo.getProfile('rw-a');
+    check('⚠️ 0049: a podium title\'s wearer wears its badge, with the real count',
+      aRow?.badges?.length === 1 && aRow.badges[0].id === 'ranked-gold' && aRow.badges[0].n === 2, JSON.stringify(aRow?.badges));
+    check('0049: a retired per-season title, which never had a badge, maps to nothing',
+      ((await repo.getProfile('rw-t45'))?.badges ?? []).length === 0);
+    const oldPending = await db.query<{ items: unknown }>(`select items from reward_grants where user_id = 'rw-t45' and grant_key = 'old:pending'`);
+    check('⚠️ 0049: a PENDING grant loses its title item and keeps its badge',
+      JSON.stringify(oldPending.rows[0].items) === JSON.stringify([{ id: 'ranked-gold', kind: 'badge' }]), JSON.stringify(oldPending.rows[0].items));
+    check('legacy: ...and the 0048 import re-runs cleanly (one row, not two)', Number((await db.query<{ n: number }>(
       `select count(*)::int as n from reward_grants where user_id = 'rw-old'`)).rows[0].n) === 1);
 
     // ---- a roll pays automatically, through the same job ------------------------------------
@@ -3749,24 +3771,25 @@ async function main(): Promise<void> {
     let r = await repo.sweepStargazers(['1001'], true);
     check('star sweep: a linked stargazer is granted', r.applied && r.granted.includes('gh-1'), JSON.stringify(r));
     /* ⚠️ GRANTED IS NOT GIVEN (0048). The sweep creates a PENDING reward and delivers nothing:
-       the title is not wearable and the decal is not unlocked until the player claims it
+       the badge does not count and the decal is not unlocked until the player claims it
        through the dialog — "titles should not ever silently get added" (owner, 2026-09-22). */
     const starPending = (await repo.pendingRewards('gh-1')).find((p) => p.source === 'stargazer');
     check('⚠️ star sweep: ...as a PENDING reward, not a silent write', !!starPending, JSON.stringify(await repo.pendingRewards('gh-1')));
-    check('⚠️ star sweep: ...and a pending reward delivers NOTHING yet — no title',
-      !(await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    check('⚠️ star sweep: ...and a pending reward delivers NOTHING yet — no badge',
+      !(await repo.badgeCounts('gh-1'))[repo.STARGAZER_BADGE]);
+    check('star sweep: the pending reward is the stargazer BADGE and the decal (0049)',
+      (starPending?.items ?? []).map((i) => `${i.kind}:${i.id}`).join() === repo.STARGAZER_ITEMS.map((i) => `${i.kind}:${i.id}`).join(),
+      JSON.stringify(starPending?.items));
     const unlockedEarly = await db.query<{ cosmetics: string[] }>(`select cosmetics from profiles where user_id = 'gh-1'`);
     check('⚠️ star sweep: ...and no decal', !(unlockedEarly.rows[0].cosmetics ?? []).includes(repo.STARGAZER_DECAL));
     await repo.claimReward('gh-1', starPending!.id, false);
-    check('star sweep: once CLAIMED it holds the title', (await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    check('star sweep: once CLAIMED it holds the badge', (await repo.badgeCounts('gh-1'))[repo.STARGAZER_BADGE] === 1);
     check('star sweep: ...and a claimed reward leaves the pending queue', (await repo.pendingRewards('gh-1')).length === 0);
     /**
-     * ⚠️ **THE STAR GRANTS TWO IDS AND THEY MUST MOVE TOGETHER** (owner, 2026-09-21: the
-     * star should carry a cosmetic, not only a name decal). Half a reward is a state no
-     * later sweep repairs — the holder set is read off the TITLE, so an account holding the
-     * decal without the title would never be reconciled by anything. Every one of the four
-     * sites that touches the pair iterates `STARGAZER_GRANTS`; these checks are what stops a
-     * fifth being written out by hand.
+     * ⚠️ **THE STAR GRANTS A BADGE AND A DECAL AND THEY MUST MOVE TOGETHER** (owner,
+     * 2026-09-21: the star should carry a cosmetic, not only a mark on a name). Half a reward
+     * is a state no later sweep repairs. Both ride ONE grant (`STARGAZER_ITEMS`), and these
+     * checks are what stop the two drifting apart.
      */
     const cosmOf = async (u: string): Promise<string[]> => {
       const rows = await db.query<{ cosmetics: unknown }>(`select cosmetics from profiles where user_id = $1`, [u]);
@@ -3774,8 +3797,9 @@ async function main(): Promise<void> {
       return Array.isArray(c) ? (c as string[]) : Object.keys((c as Record<string, unknown>) ?? {});
     };
     const held = await cosmOf('gh-1');
-    check('⚠️ star sweep: ...and the COSMETIC too — both ids, or the reward is half granted',
-      repo.STARGAZER_GRANTS.every((id) => held.includes(id)), JSON.stringify(held));
+    check('⚠️ star sweep: ...and the COSMETIC too — both, or the reward is half granted',
+      held.includes(repo.STARGAZER_DECAL), JSON.stringify(held));
+    check('star sweep: the badge is never written into the cosmetics inventory', !held.some((id) => id.includes('stargazer')), JSON.stringify(held));
     check('...and the cosmetic it grants is `earned` tier, NOT a supporter fill given away free',
       cosmeticTier(repo.STARGAZER_DECAL as CosmeticId) === 'earned', repo.STARGAZER_DECAL);
     r = await repo.sweepStargazers(['1001'], true);
@@ -3783,34 +3807,29 @@ async function main(): Promise<void> {
 
     // ⚠️ THE FAIL-SAFE. A fetch that did not finish must change NOTHING — with revocation
     // on, the same failure that used to mean "no grants this cycle" would otherwise strip
-    // the title from every holder at once.
+    // the badge from every holder at once.
     r = await repo.sweepStargazers([], false);
     check(
       '⚠️ star sweep: an INCOMPLETE fetch revokes nobody and grants nobody',
       r.applied === false && r.revoked.length === 0 && r.granted.length === 0,
     );
-    check('⚠️ star sweep: ...and the title is still held after it', (await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
+    check('⚠️ star sweep: ...and the badge is still held after it', (await repo.badgeCounts('gh-1'))[repo.STARGAZER_BADGE] === 1);
 
-    // unstarring revokes (owner ruling 2026-09-21) — and takes the EQUIPPED title with it
-    await repo.setTitle('gh-1', repo.STARGAZER_TITLE);
-    const wearing = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'gh-1'`);
-    check('star sweep: the title can be equipped before it is taken away', wearing.rows[0].title === repo.STARGAZER_TITLE);
+    // unstarring revokes (owner ruling 2026-09-21) — and takes the WORN badge off the name
+    const wearing = await repo.setEquippedBadges('gh-1', [repo.STARGAZER_BADGE]);
+    check('star sweep: the badge can be worn before it is taken away', wearing?.[0]?.id === repo.STARGAZER_BADGE, JSON.stringify(wearing));
     r = await repo.sweepStargazers([], true);
     check('⚠️ star sweep: unstarring REVOKES (owner, 2026-09-21)', r.applied && r.revoked.includes('gh-1'), JSON.stringify(r));
-    check('star sweep: ...the ledger no longer has it', !(await repo.earnedTitles('gh-1')).includes(repo.STARGAZER_TITLE));
-    /* ⚠️ BOTH ids, the other way. The grant side is checked above; an asymmetry here is the
-       one that LASTS — a revoke that took the title and left the decal leaves an account
-       wearing a reward it no longer qualifies for, and the holder set is read off the title,
+    check('star sweep: ...the ledger no longer counts it', !(await repo.badgeCounts('gh-1'))[repo.STARGAZER_BADGE]);
+    /* ⚠️ BOTH, the other way. The grant side is checked above; an asymmetry here is the one
+       that LASTS — a revoke that took the badge and left the decal leaves an account holding a
+       reward it no longer qualifies for, and the sweep reads the decal as "already holds it",
        so no later sweep would ever look at it again. */
     const leftOver = await cosmOf('gh-1');
     check('⚠️ star sweep: ...and the COSMETIC went with it — a half-revoke is permanent',
-      repo.STARGAZER_GRANTS.every((id) => !leftOver.includes(id)), JSON.stringify(leftOver));
-    const after = await db.query<{ title: string | null }>(`select title from profiles where user_id = 'gh-1'`);
-    check(
-      '⚠️ star sweep: ...and the EQUIPPED title was cleared, not left dangling',
-      after.rows[0].title === null,
-      `title=${after.rows[0].title}`,
-    );
+      !leftOver.includes(repo.STARGAZER_DECAL), JSON.stringify(leftOver));
+    check('⚠️ star sweep: ...and the WORN badge came off the name, not left dangling',
+      ((await repo.getProfile('gh-1'))?.badges ?? []).length === 0, JSON.stringify((await repo.getProfile('gh-1'))?.badges));
     // a RE-STAR re-opens the SAME grant — the key stays spoken for, so it is never a second row
     r = await repo.sweepStargazers(['1001'], true);
     const starRows = await db.query<{ n: number }>(`select count(*)::int as n from reward_grants where user_id = 'gh-1' and grant_key = 'stargazer'`);
@@ -3830,8 +3849,8 @@ async function main(): Promise<void> {
     );
     check('links: the original owner may relink it', (await repo.linkProvider('gh-1', 'github', '1001')) === true);
 
-    // a ledger title is a closed set; an unknown one is refused like any cosmetic id
-    check('links: an unknown title id cannot be granted', (await repo.grantCosmetic('gh-1', 'title:selfawarded', 'rewards')) === false);
+    // a `title:` id is not a cosmetic any more (0049), so the inventory refuses every one
+    check('links: a title id cannot be granted as a cosmetic', (await repo.grantCosmetic('gh-1', 'title:stargazer', 'rewards')) === false);
 
     await repo.deleteAccount('gh-2');
     const left = await db.query<{ n: number }>(`select count(*)::int as n from provider_links where user_id = 'gh-2'`);

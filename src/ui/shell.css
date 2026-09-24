@@ -196,19 +196,18 @@
      which checks the glyph against its own FILL, while being invisible on the dark
      panel). One saturated hue carrying the rank as a NUMERAL instead: it stays legible
      on both grounds, it is one pair rather than three, and it extends to a fourth rank
-     for free. The badge is distinguished from ★ owner / ◆ admin / ♥ supporter by SHAPE
-     as well (a hexagon), which that guide also requires. */
+     for free. It was chosen for a season-award title's hexagon, which went with titles
+     (0049); it now fills the Record Holder ribbon and the stargazer disc. */
   --ds-award: #a96bff;
   --ds-award-ink: #2a1065;
   /* THE STARGAZER ★ — yellow, on the --ds-award disc, outlined in --ds-award-ink
-     (`.sup-badge.stargazer`, styles.css). CATEGORY 2, declared here only. Its own name
+     (`.badge-mark.tier-stargazer`). CATEGORY 2, declared here only. Its own name
      rather than --ds-podium-gold or --ds-gold, so neither hue picks up a second job. */
   --ds-star: #ffd23f;
-  /* THE RANKED PODIUM (0048) — gold / silver / bronze, on the podium badge and an act
-     podium title. CATEGORY 2 like --ds-award above: fills with ONE fixed dark ink, declared
+  /* THE RANKED PODIUM (0048) — gold / silver / bronze, on the podium badge. CATEGORY 2 like --ds-award above: fills with ONE fixed dark ink, declared
      here only, so they do not invert. The owner asked for the metals by name (2026-09-22:
      "gold/silver/bronze by placement … make it look special"), and the trap the award note
-     above names is answered by the SHAPE (a crest, a hexagon) and by a --ds-mut RIM on every
+     above names is answered by the SHAPE (a crest) and by a --ds-mut RIM on every
      one of them: silver is ~1.9:1 on the light panel by fill alone, and the rim is what
      separates it there, the way an edge identifies a floating HUD card. The numeral on each
      fill is a pair in scripts/contrast.mjs. Not --ds-gold, which means SUPPORTER. */
@@ -7957,68 +7956,9 @@ a.ds-cta {
 }
 
 /* ====================================================================================
-   SEASON-AWARD BADGE — `src/ui/AwardBadge.tsx`. A SIBLING of `.sup-badge`, never a
-   variant of it: that one renders exactly one of owner/admin/supporter by precedence,
-   and an award is a different claim, so a champion who also pays shows both.
+   THE TROPHY CASE — `src/ui/AwardList.tsx`: one row per placement, its badge beside the
+   sentence that names it.
    ==================================================================================== */
-.award-badge {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  /* decoration BESIDE a name, never part of it — the same two reasons `.sup-badge`
-     gives: it must not be swept into a selection, and `vertical-align` is ignored on a
-     flex item, so it centres on the line instead of dropping to the baseline. */
-  user-select: none;
-  align-self: center;
-  vertical-align: middle;
-  color: var(--ds-award-ink);
-}
-/* the --ds-mut RIM is on EVERY hexagon, not only the metals: it is what bounds the family's
-   silhouettes on the panel (1.4.11), and the plain violet one went without it at 2.7:1 */
-.award-badge svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  fill: var(--ds-award);
-  stroke: var(--ds-mut);
-  stroke-width: 1.2;
-  stroke-linejoin: round;
-}
-/* the numeral sits ON the hexagon, so it is absolutely placed rather than laid out —
-   a flex sibling would push the shape aside instead of labelling it */
-.award-rank {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--ds-font-mono);
-  font-size: 0.62em;
-  font-weight: 800;
-  line-height: var(--ds-lh-tight);
-  color: var(--ds-award-ink);
-}
-/* 1em: the family's one base size — see `.sup-badge.sup-sm` */
-.award-badge.award-sm {
-  width: 1em;
-  height: 1em;
-  margin-left: 0.42em;
-}
-/* ...except in a flex name row that already spaces its children with `gap`, where the
-   margin would be added on top of it — the same exception `.sup-badge` needs. */
-.lb-name > .award-badge,
-.award-list > li > .award-badge {
-  margin-left: 0;
-}
-.award-badge.award-md {
-  width: 1.5em;
-  height: 1.5em;
-  margin-left: 0.3em;
-}
-
-/* the trophy case on a profile */
 .award-list {
   display: flex;
   flex-direction: column;
@@ -8039,56 +7979,6 @@ a.ds-cta {
   color: var(--ds-ink);
 }
 
-/* the title picker (`src/ui/TitlePicker.tsx`) is `.ds-opt` tiles; an award tile's label is
-   the numeral badge beside the board name, so the label is a flex row. */
-.title-pick-ot {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--ds-s-1);
-}
-
-/* ── A LEDGER TITLE BESIDE A NAME (`ui/TitleChip.tsx`) ──────────────────────────────────────
-   The sibling of `.award-badge`, and it takes the same `--ds-award` hue on purpose: the two
-   are the same KIND of claim (earned, as against paid for), and one hue is ONE measured
-   `contrast.mjs` pair rather than a new one per reward.
-   IT CARRIES ITS NAME AS TEXT: a ledger title's message is its NAME. The one exception is
-   `title:stargazer`, which the owner asked to be a ★ badge (2026-09-24). It renders as a
-   `.sup-badge.stargazer` (styles.css) and never reaches this rule. */
-.title-chip {
-  display: inline-flex;
-  align-items: center;
-  flex: 0 0 auto;
-  /* decoration BESIDE a name, never part of it — the same two reasons `.award-badge` gives:
-     it must not be swept into a selection, and `vertical-align` is ignored on a flex item so
-     it centres on the line instead of dropping to the baseline. */
-  user-select: none;
-  align-self: center;
-  vertical-align: middle;
-  /* the family's leading gap (`.sup-badge`/`.award-badge`/`.badge-mark` all carry it); it had
-     none, so in a non-gap row it sat hard against the badge before it (design review 06-20) */
-  margin-left: 0.42em;
-  padding: 0 6px;
-  /* full pill, like every badge (DESIGN.md Shapes) — it was the one square-cornered mark */
-  border-radius: var(--ds-round-full);
-  font-family: var(--ds-font-mono);
-  /* --ds-t-xs, one step under `.lb-at`: a title is quieter than the @handle, which is quieter
-     than the name. A length rather than an `em` because this chip appears in rows at two
-     different name sizes and an em would make it two different chips. */
-  font-size: var(--ds-t-xs);
-  font-weight: 700;
-  line-height: 18px;
-  color: var(--ds-award-ink);
-  background: var(--ds-award);
-  /* the family's --ds-mut rim, as an inset ring so it adds no width */
-  box-shadow: inset 0 0 0 1px var(--ds-mut);
-}
-/* ...except in a flex name row that already spaces its children with `gap` — the same
-   exception `.award-badge` needs (`.appr-preview > .title-chip` sits with the Appearance
-   preview's own list). It targeted `.title-pick`, a class that exists nowhere. */
-.lb-name > .title-chip {
-  margin-left: 0;
-}
-
 /* ── THE STAR REWARD HINT (`ui/StarReward.tsx`) ─────────────────────────────────────────────
    Linked GitHub but no star: one quiet sentence, no emphasis. The reward itself, when there is
    one, is the claim dialog's (`.rw-*` below). */
@@ -8096,36 +7986,11 @@ a.ds-cta {
   margin: 0;
 }
 
-/* ── AN ACT PODIUM TITLE (`AwardBadge`, `awardPodiumTier`) ──────────────────────────────────
-   The most prestigious title the ledger mints wears the podium's metal instead of the award
-   violet. The `--ds-mut` rim (on every hexagon, above) is what keeps silver visible on the light panel (~1.9:1 by fill
-   alone) — the lavender-pastel lesson in docs/area/accounts.md. */
-.award-badge.podium-gold svg {
-  fill: var(--ds-podium-gold);
-}
-.award-badge.podium-silver svg {
-  fill: var(--ds-podium-silver);
-}
-.award-badge.podium-bronze svg {
-  fill: var(--ds-podium-bronze);
-}
-.award-badge.podium-gold .award-rank,
-.award-badge.podium-silver .award-rank,
-.award-badge.podium-bronze .award-rank {
-  color: var(--ds-podium-ink);
-}
-/* the claim dialog's hero, for a grant whose lead item is a title */
-.award-badge.award-lg {
-  width: 3em;
-  height: 3em;
-  margin-left: 0;
-  font-size: var(--ds-t-xl);
-}
-
 /* ====================================================================================
-   BADGES — `src/ui/BadgeMark.tsx`, `src/badges.ts` (0048). A SIBLING of `.sup-badge` and
-   `.award-badge`, told apart from both by SHAPE: a crest for the ranked podium, a bookmark
-   ribbon for the record holder. Sized in `em` beside a name, like the two it sits with.
+   BADGES — `src/ui/BadgeMark.tsx`, `src/badges.ts` (0048). A SIBLING of `.sup-badge`, told
+   apart from it by SHAPE: a crest for the ranked podium, a bookmark ribbon for the record
+   holder. The stargazer badge is the one disc, told from the owner's ★ disc by hue and by its
+   outlined star. Sized in `em` beside a name, like the status disc it sits with.
    ==================================================================================== */
 .badge-mark {
   position: relative;
@@ -8133,7 +7998,9 @@ a.ds-cta {
   align-items: center;
   flex: 0 0 auto;
   gap: 0.12em;
-  /* decoration BESIDE a name, never part of it — `.award-badge`'s two reasons */
+  /* decoration BESIDE a name, never part of it — `.sup-badge`'s two reasons: it must not be
+     swept into a selection, and `vertical-align` is ignored on a flex item, so it centres on
+     the line instead of dropping to the baseline */
   user-select: none;
   align-self: center;
   vertical-align: middle;
@@ -8150,7 +8017,7 @@ a.ds-cta {
 /* ...except where the row already spaces its children with `gap` */
 .lb-name > .badge-mark,
 .appr-preview > .badge-mark,
-.rw-item-mark > .badge-mark,
+.award-list > li > .badge-mark,
 .appr-badge-art > .badge-mark,
 .rw-hero > .badge-mark {
   margin-left: 0;
@@ -8177,6 +8044,20 @@ a.ds-cta {
 }
 .badge-mark.tier-record .badge-body {
   fill: var(--ds-award);
+}
+/* THE STARGAZER DISC: a yellow ★ on the award violet. Yellow on that violet is ~2.4:1, so the
+   star carries an award-ink outline — the outline is what separates it (both pairs in
+   `contrast.mjs`). Its 128 box is 5.3× the crest's 24, so the rim and outline are scaled to
+   match the 1.2 the others draw. */
+.badge-mark.tier-stargazer .badge-body {
+  fill: var(--ds-award);
+  stroke-width: 6.4;
+}
+.badge-mark .badge-star {
+  fill: var(--ds-star);
+  stroke: var(--ds-award-ink);
+  stroke-width: 6;
+  stroke-linejoin: round;
 }
 /* the crest's inner bevel — a hairline in the numeral's own ink, so it reads as struck metal */
 .badge-mark .badge-inner {
@@ -8337,53 +8218,6 @@ a.ds-cta {
   line-height: var(--ds-lh-prose);
   color: var(--ds-ink);
 }
-/* WHAT IS IN IT — recessed, like the builder's own lists, so the card's claim reads as the
-   sentence above and the contents as a list of things */
-/* ONE GRID FOR THE WHOLE LIST (each row is `display: contents`), so the mark column is as wide
-   as its WIDEST mark — a "Stargazer" chip is several times a hexagon — and every label still
-   starts on one edge. A grid per row cannot do that: each row would size its own columns. */
-.rw-items {
-  align-self: stretch;
-  display: grid;
-  grid-template-columns: auto auto 1fr;
-  align-items: center;
-  gap: var(--ds-s-3) var(--ds-s-3);
-  margin: 0;
-  padding: var(--ds-s-3);
-  list-style: none;
-  text-align: left;
-  border-radius: var(--ds-round-md);
-  background: var(--ds-tile);
-}
-.rw-items > li {
-  display: contents;
-}
-.rw-item-mark {
-  display: inline-flex;
-  justify-self: center;
-  font-size: var(--ds-t-lg);
-}
-.rw-item-k {
-  font-family: var(--ds-font-mono);
-  font-size: var(--ds-t-xs);
-  font-weight: 700;
-  letter-spacing: var(--ds-track-caps);
-  line-height: var(--ds-lh-tight);
-  text-transform: uppercase;
-  color: var(--ds-mut);
-}
-.rw-item-v {
-  display: flex;
-  flex-direction: column;
-  gap: var(--ds-s-1);
-  font-size: var(--ds-t-md);
-  line-height: var(--ds-lh-prose);
-  color: var(--ds-ink);
-}
-.rw-item-sub {
-  font-size: var(--ds-t-sm);
-  color: var(--ds-mut);
-}
 .rw-err {
   margin: 0;
 }
@@ -8429,8 +8263,6 @@ a.ds-cta {
   border-radius: var(--ds-round-md);
   background: var(--ds-tile);
 }
-.appr-preview > .award-badge,
-.appr-preview > .title-chip,
 .appr-preview > .sup-badge {
   margin-left: 0;
 }

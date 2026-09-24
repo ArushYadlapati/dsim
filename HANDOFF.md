@@ -1,3 +1,15 @@
+# HANDOFF — 2026-09-24g (titles folded into badges; stargazer is a badge; one claim card per item)
+
+**State: committed and pushed on `alpha`.** `npm test` 5055/5055, `dbtest`, `build`, `server:check`, `uiaudit`, `docaudit`, `contrast` all pass. ⚠️ **Server change + migration 0049**: the alpha game server needs `./scripts/fly-deploy.sh --alpha`, and production needs a deploy from `main` once it gets there.
+
+- **Owner:** "titles are now essentially the same thing as badges … remove titles completely", keep 3 badge slots, no count-based evolving art for now, and stargazer becomes a badge.
+- **Migration 0049** strips title items from `reward_grants`, rewrites `title:stargazer` to the `stargazer` badge (the decal stays on the same grant), removes `title:stargazer` from `profiles.cosmetics`, moves anyone wearing a title onto its badge if they hold it and have a free slot, and nulls `profiles.title` (the column stays). A retired per-season title (0045) had no badge, so it is simply taken off; the row stays in the trophy case.
+- **Gone:** `TitleChip`/`TitleMark`/`TitlePicker`/the `AwardBadge` hexagon, `earnedTitles`/`setTitle`/`getTitle`/`clearTitleIfEquipped`, `TITLE_KEYS`, `LobbyPlayer.title`, `badgeCols`' title column. Every name surface uses `<BadgeMarks badges={…}/>`. The trophy case is `AwardList.tsx`, each row drawn with `awardBadge`. `awardTitleId` is `awardKey` (dedupe only).
+- **Old clients:** `/api/user/title` still answers (GET empty, POST `null` only) and the reward routes still send `title: null, earnedTitles: []` (`RETIRED_TITLE_FIELDS`). Delete both once no pre-0049 client can connect.
+- **Claim dialog, one card per item (owner):** the star grant is two cards, badge then decal, each with its own Claim / Equip now. The first card claims the whole grant; Equip now wears that card's item only. `grantCards` (rewards.ts), `answerCard`/`currentCard`/`revealing` (rewardsStore.ts).
+- The stargazer disc is drawn by `BadgeArt` (`.badge-mark.tier-stargazer`), not `SupporterBadge`.
+- Rules: `docs/area/accounts.md` ("TITLES ARE GONE", "ONE CARD PER ITEM", "THE STAR").
+
 # HANDOFF — 2026-09-24f (BIOBUZZ height dial capped at 18 in)
 
 **State: committed and pushed on `alpha`.** `build`, `server:check`, `docaudit` pass; `npm test` all pass (the `PREDICT_FULL_BUDGET_MS` timing flake failed once and passed on a rerun).

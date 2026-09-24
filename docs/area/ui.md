@@ -472,8 +472,9 @@ same arguments are not had again:
   what to do next.
 - **`.ds-empty` for an empty list** (`.big` headline, no period, then one sentence with
   one), **`.ds-loading` for a loading state** (9/10 already did).
-- **A name always gets `SupporterBadge`, as a SIBLING** — see the badge rules above — and,
-  since 2026-09-22, **`TitleMark` beside it**: see `docs/area/accounts.md` for the surfaces.
+- **A name always gets `SupporterBadge`, as a SIBLING** — see the badge rules above — and
+  **`BadgeMarks` beside it** (the worn badges; titles folded into badges in 0049): see
+  `docs/area/accounts.md` for the surfaces.
 - **Terminology.** DSIM is the app; DECODE and Chain Reaction are seasons. DECODE has
   ARTIFACTS, CR has PARTICLES, and a leak either way is a bug. CR's ring is a **CATALYST**
   — the **RING STAND** is a different object in the same game, so the HUD chips that said

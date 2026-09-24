@@ -136,7 +136,7 @@ const BASELINE = {
   // inside `font:` shorthands.
   // 33 → 32, 2026-09-22: `.as-field input` restated .ds-input with its own `/ 1.4`; it is gone.
   // → 29, 2026-09-23: merged upstream's builder-hero rebuild onto design review wave 5.
-  'literal-line-height': 29,
+  'literal-line-height': 28,
   // measured 2026-09-22 (design review 13-12), when the tip, the banners, the danger button and
   // the LAN panel moved to shell.css. The four left are deliberate: `.ds-dialog-title` is the one
   // title contract the match overlays share with the shell dialogs, `.ds-key.capturing` sits in

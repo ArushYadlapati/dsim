@@ -375,8 +375,8 @@ const serverPairs = (t) => {
     ['SupporterBadge admin glyph', t('--ds-staff-ink'), t('--ds-staff'), AA],
     // a 12px disc is a meaningful graphic: each badge FILL has to read against the panel
     ['SupporterBadge admin disc on the panel (1.4.11)', t('--ds-staff'), panel, NON_TEXT],
-    ['AwardBadge hexagon on the panel (1.4.11)', t('--ds-award'), panel, NON_TEXT],
-    // the stargazer ★ (`.sup-badge.stargazer`): yellow on the award violet, and the award-ink
+    ['Award-violet badge (record ribbon, stargazer disc) on the panel (1.4.11)', t('--ds-award'), panel, NON_TEXT],
+    // the stargazer ★ (`.badge-mark.tier-stargazer`): yellow on the award violet, and the award-ink
     // outline is what separates the two, so the outline is checked against both
     ['Stargazer star outline on the award disc (1.4.11)', t('--ds-award-ink'), t('--ds-award'), NON_TEXT],
     ['Stargazer star on its outline (1.4.11)', t('--ds-star'), t('--ds-award-ink'), NON_TEXT],
@@ -385,9 +385,10 @@ const serverPairs = (t) => {
     ['Badge ring on the blue roster half (1.4.11)', t('--ds-on-field'), t('--ds-blue-chip'), NON_TEXT],
     // .resx-winbanner.gold, the WORLD RECORD banner, is the podium gold
     ['Results WORLD RECORD banner', t('--ds-podium-ink'), t('--ds-podium-gold'), AA],
-    // The SEASON-AWARD badge (0045). Like gold it does NOT invert, so one pair covers
-    // both themes; the rank numeral is the glyph, and it is what has to stay readable.
-    ['AwardBadge rank numeral', t('--ds-award-ink'), t('--ds-award'), AA],
+    // The AWARD VIOLET (0045). Like gold it does NOT invert, so one pair covers both themes.
+    // Its ink is the record ribbon's crown now (the hexagon's rank numeral went with titles,
+    // 0049), still held to text contrast so the pair can carry a numeral again.
+    ['Award ink on the award violet (record ribbon crown)', t('--ds-award-ink'), t('--ds-award'), AA],
     // THE RANKED PODIUM (0048). Three metal fills with ONE fixed ink, declared in the light
     // block only — so, like the award pair above, each numeral is one pair for both themes.
     ['Podium badge numeral (gold)', t('--ds-podium-ink'), t('--ds-podium-gold'), AA],

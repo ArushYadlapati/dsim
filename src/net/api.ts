@@ -49,15 +49,9 @@ export interface BadgeFields {
   /** 'owner' | 'admin' — renders the staff badge in place of the supporter one */
   role?: StaffRole;
   /**
-   * the EQUIPPED TITLE id, or null. It rides `badgeCols` for the same reason the two
-   * above do — every surface that prints a name prints this beside it, and writing the
-   * column out by hand per query is how a board ends up quietly missing it.
-   * `parseAwardTitleId` turns it back into an award without touching `season_awards`.
-   */
-  title?: string | null;
-  /**
    * the EQUIPPED BADGES and their counters, `[{id, n}]` (0048). Rides `badgeCols` beside the
-   * title for the same reason — every name surface draws it. Absent from an older server;
+   * two above for the same reason — every surface that prints a name draws it, and writing the
+   * column out by hand per query is how a board ends up quietly missing it. Absent from an older server;
    * read through `coerceEquippedBadges`, which drops anything this build does not know.
    */
   badges?: EquippedBadge[] | null;
@@ -82,8 +76,6 @@ export interface RecordRow extends BadgeFields {
   /** the partner's own badge — a duo row prints two names, so it carries two */
   partnerSupporter?: boolean;
   partnerRole?: StaffRole;
-  /** ...and the partner's equipped title, for the same reason. */
-  partnerTitle?: string | null;
   /** ...and the partner's worn badges. */
   partnerBadges?: EquippedBadge[] | null;
   score: number;
@@ -242,8 +234,6 @@ export interface UserStats {
   /** every SEASON AWARD this account holds — account-wide, never season-scoped, or a
    *  trophy case would empty itself the moment a new season opened. */
   awards?: AwardRow[];
-  /** the equipped title id, or null. */
-  title?: string | null;
   /** the worn badges and their counters (0048). */
   badges?: EquippedBadge[] | null;
   /** every badge the account holds and how many times — the trophy case (0048). */
@@ -614,34 +604,17 @@ export function startLink(provider: LinkProvider): Promise<{ url: string }> {
   return authedJson(`/api/link/${provider}/start`);
 }
 
-/** disconnect. For GitHub the server also takes the star title back. */
+/** disconnect. For GitHub the server also takes the star badge and decal back. */
 export function unlinkProvider(provider: LinkProvider): Promise<{ unlinked: boolean }> {
   return authedJson(`/api/link/${provider}/unlink`, { method: 'POST' });
 }
 
-/** your equipped title and the ids you have earned (0045/0046). */
-export function fetchTitle(): Promise<{ title: string | null; earned: string[] }> {
-  return authedJson('/api/user/title');
-}
-
-/**
- * EQUIP a title, or clear it with `null`.
- *
- * ⚠️ The server re-validates against what you have actually earned and answers 403
- * otherwise — this call is the UI's convenience, never the authority. A title the client
- * could assert would be the same impersonation primitive the staff role is server-authored
- * to prevent.
- */
-export function saveTitle(title: string | null): Promise<{ title: string | null }> {
-  return authedJson('/api/user/title', {
-    method: 'POST',
-    body: JSON.stringify({ title }),
-  });
-}
-
 /**
  * THE REWARD LEDGER (0048) — everything the claim dialog and the appearance page read, in one
- * request: pending grants, badge counts, what is worn, what is wearable.
+ * request: pending grants, badge counts, what is worn, and the trophy case.
+ *
+ * The server still sends `title: null` and `earnedTitles: []` so a client from before titles
+ * folded into badges (0049) does not break; this build reads neither.
  *
  * An older server has no such route and answers 404, which `authedJson` raises as
  * `FriendsUnavailableError` — the caller reads that as "nothing pending", which is true.
@@ -650,10 +623,8 @@ export interface RewardStateDto {
   pending: RewardGrant[];
   badges: Record<string, number>;
   equippedBadges: EquippedBadge[];
-  title: string | null;
-  earnedTitles: string[];
-  /** the trophy case behind the award titles — names each one's act and season. Absent from
-   *  a server that predates the field. */
+  /** the trophy case — each placement with its act and season. Absent from a server that
+   *  predates the field. */
   awards?: AwardRow[];
 }
 

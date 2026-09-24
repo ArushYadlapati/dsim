@@ -313,19 +313,8 @@ export interface LobbyPlayer {
    */
   role?: StaffRole;
   /**
-   * the EQUIPPED TITLE id, or null — the award hexagon / ledger chip beside this
-   * driver's name, resolved client-side by `parseAwardTitleId` without a second query.
-   *
-   * Server-authored on exactly the same terms as the two above, and for the same reason:
-   * a title is something earned, so a self-declared one is a claim to have earned it.
-   * Read once at join from the account (`getProfile`), like the badge fields, so a roster
-   * broadcast still costs no database read. Optional, so an older server that never sets
-   * it and an older client that ignores it both keep working against this build.
-   */
-  title?: string | null;
-  /**
    * the EQUIPPED BADGES and their counters, `[{id, n}]` (migration 0048, `src/badges.ts`).
-   * Server-authored on exactly the same terms as `title` above — a badge is a claim to have
+   * Server-authored on exactly the same terms as `role` above — a badge is a claim to have
    * won something — and read at join off the same `getProfile` row, so a roster broadcast
    * still costs no database read. At most three short ids, never a rendered string. Optional:
    * an older server never sets it and an older client ignores it.

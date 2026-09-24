@@ -19,7 +19,7 @@ import { serverPhysics } from '../games/types';
 import { PeriodPicker } from './PeriodPicker';
 import { DRIVETRAIN_LABELS } from './labelData';
 import { SupporterBadge, type StaffRole } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
+import { BadgeMarks } from './BadgeMark';
 import { PLACEMENT_GAMES } from '../config';
 import {
   CHAIN_MODE_LABELS,
@@ -63,7 +63,6 @@ function DriverName({
   username,
   supporter,
   role,
-  title,
   badges,
   onOpenProfile,
 }: {
@@ -71,8 +70,6 @@ function DriverName({
   username: string | null;
   supporter?: boolean;
   role?: StaffRole;
-  /** the equipped TITLE id (`badgeCols`). Parsed, never joined — see `parseAwardTitleId`. */
-  title?: string | null;
   /** the worn badges and their counters (`badgeCols`, 0048) */
   badges?: unknown;
   onOpenProfile?: (username: string) => void;
@@ -94,7 +91,7 @@ function DriverName({
             part of it. */}
         <span className="lb-name-h">{label}</span>
         <SupporterBadge supporter={supporter} role={role} />
-        <TitleMark title={title} badges={badges} />
+        <BadgeMarks badges={badges} />
         <span className="lb-at">@{username}</span>
       </button>
     );
@@ -104,8 +101,8 @@ function DriverName({
       <span className="lb-name-h">{label}</span>
       <SupporterBadge supporter={supporter} role={role} />
       {/* a row without a username (an anonymous or unclaimed run) still shows whatever
-          title it is wearing */}
-      <TitleMark title={title} badges={badges} />
+          badges it is wearing */}
+      <BadgeMarks badges={badges} />
     </>
   );
 }
@@ -490,7 +487,6 @@ export function Leaderboard({
                             username={r.username}
                             supporter={r.supporter}
                             role={r.role}
-                            title={r.title}
                             badges={r.badges}
                             onOpenProfile={onOpenProfile}
                           />
@@ -502,7 +498,6 @@ export function Leaderboard({
                                 username={rec.partnerUsername}
                                 supporter={rec.partnerSupporter}
                                 role={rec.partnerRole}
-                                title={rec.partnerTitle}
                                 badges={rec.partnerBadges}
                                 onOpenProfile={onOpenProfile}
                               />

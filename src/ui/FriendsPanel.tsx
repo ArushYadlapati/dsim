@@ -13,7 +13,7 @@ import { confirmBlock, confirmUnfriend, useFriendsCtx } from './friendsContext';
 import { challengeLine, formatLabel } from './challenge';
 import { Select, type SelectOption } from './Select';
 import { SupporterBadge } from './SupporterBadge';
-import { TitleMark } from './TitleChip';
+import { BadgeMarks } from './BadgeMark';
 import type { GameId } from '../games/types';
 import { seasonFor } from '../seasons';
 import type { RoomKind } from '../net/protocol';
@@ -602,7 +602,7 @@ export function PersonRow({
         {/* the equipped title rides along, on the same terms as the badge: a sibling of
             `.fr-name`, which ellipsises and would truncate anything nested in it. Both
             `FriendRow` and `PublicProfile` extend `BadgeFields`, so it is already here. */}
-        <TitleMark title={p.title} badges={p.badges} />
+        <BadgeMarks badges={p.badges} />
       </span>
       <span className="fr-sub">{sub ?? (username ? `@${username}` : '')}</span>
     </>

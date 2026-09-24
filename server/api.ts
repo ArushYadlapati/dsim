@@ -54,7 +54,6 @@ import {
   replayAccess,
   replayRefusalMessage,
   setReplaysPublic,
-  earnedTitles,
   linkProvider,
   providerLinks,
   claimReward,
@@ -63,8 +62,6 @@ import {
   setEquippedBadges,
   unlinkProvider,
   type LinkProvider,
-  getTitle,
-  setTitle,
   getUserSettings,
   getUserStats,
   getSupporter,
@@ -131,9 +128,9 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *   POST /api/user/settings {settings}       — save your settings (Bearer JWT)
  *   GET  /api/user/privacy                   — your replay-visibility setting (Bearer JWT)
  *   POST /api/user/privacy {replaysPublic}   — set it (Bearer JWT)
- *   GET  /api/user/title                     — your equipped title + what you have earned
- *   POST /api/user/title {title}             — equip one, or null to clear (Bearer JWT)
- *   GET  /api/user/rewards                   — pending rewards + badges + title (Bearer JWT)
+ *   GET  /api/user/title                     — RETIRED (0049): always no title, nothing earned
+ *   POST /api/user/title {title}             — RETIRED: null is accepted, anything else 403
+ *   GET  /api/user/rewards                   — pending rewards + badges + trophy case (JWT)
  *   POST /api/user/rewards/claim {id,equip}  — claim one, and with equip wear it (Bearer JWT)
  *   POST /api/user/badges {badges}           — wear these badges, in order (Bearer JWT)
  *   GET  /api/link/<p>/start                 — the authorize URL for github|discord (JWT)
@@ -169,6 +166,10 @@ import { DEPLOY_REGIONS, interRegionMs } from './regions';
  *
  * CLAIM-TIME ONLY. Use `lookupUsername` for a name that identifies an EXISTING
  * account — see the note there. */
+/** what a client from before titles folded into badges (0049) still reads off the reward
+ *  routes. Constant, and never read by this build — see the `/api/user/rewards` note. */
+const RETIRED_TITLE_FIELDS = { title: null, earnedTitles: [] as string[] };
+
 const USERNAME_RE = /^[a-z0-9]{4,20}$/;
 function normalizeUsername(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -698,55 +699,48 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
     }
 
     /**
-     * YOUR EQUIPPED TITLE (0046). GET lists what you have earned; POST equips one, or
-     * clears it with null.
+     * TITLES ARE RETIRED (0049): they folded into badges, and `profiles.title` is always null.
      *
-     * ⚠️ THE SERVER DECIDES WHAT IS EARNED, NOT THE CLIENT. `setTitle` validates against
-     * `earnedTitles` and answers false for anything else — `profiles.title` is bare `text`
-     * with no check constraint, so this route and that function are the whole guard. A
-     * self-declared title is the same impersonation primitive `LobbyPlayer.role` is
-     * server-authored to prevent (`docs/area/accounts.md`).
+     * ⚠️ THE ROUTE STAYS, because the one Fly app serves every client version and a client
+     * from before the fold still calls it: GET answers "no title, nothing earned" (its picker
+     * then renders nothing), and POST accepts `null` (clearing is always true) and refuses
+     * anything else, the same 403 an unearned title always got. Delete it once no client
+     * older than 0049 can reach the server.
      */
     if (url.pathname === '/api/user/title' && (req.method === 'GET' || req.method === 'POST')) {
       const user = await verifyAuthToken(bearer(req));
       if (!user) return json(401, { error: 'sign in required' }), true;
-      if (!dbEnabled) return json(200, { title: null, earned: [] }), true;
-
-      if (req.method === 'GET') {
-        return json(200, { title: await getTitle(user.userId), earned: await earnedTitles(user.userId) }), true;
-      }
+      if (req.method === 'GET') return json(200, { title: null, earned: [] }), true;
       let body: Record<string, unknown>;
       try {
         body = JSON.parse(await readBody(req)) as Record<string, unknown>;
       } catch {
         return json(400, { error: 'bad json' }), true;
       }
-      const wanted = body.title;
-      if (wanted !== null && typeof wanted !== 'string') {
-        return json(400, { error: 'title must be a string or null' }), true;
-      }
-      await ensureProfile(user.userId, user.handle);
-      const ok = await setTitle(user.userId, wanted);
-      if (!ok) return json(403, { error: 'You have not earned that title.' }), true;
-      return json(200, { title: wanted }), true;
+      if (body.title !== null) return json(403, { error: 'Titles are now badges. Pick one under Profile, Appearance.' }), true;
+      return json(200, { title: null }), true;
     }
 
     /**
      * THE REWARD LEDGER (0048). GET is everything the claim dialog and the appearance page
-     * read at once — pending grants, badge counts, what is worn, what is wearable. POST claim
+     * read at once — pending grants, badge counts, what is worn, the trophy case. POST claim
      * takes one grant and, with `equip`, wears it.
      *
      * ⚠️ NEW ROUTES, NOT NEW FIELDS ON OLD ONES, so every older client keeps working exactly as
-     * it did: it never asks for pending rewards, so it never sees one, and `/api/user/title`
-     * still answers what is wearable (claimed titles only). An older SERVER answers 404 here,
-     * which the client reads as "nothing pending" — so no capability flag is needed either way.
+     * it did: it never asks for pending rewards, so it never sees one. An older SERVER answers
+     * 404 here, which the client reads as "nothing pending" — so no capability flag is needed
+     * either way.
+     *
+     * ⚠️ BOTH ANSWERS STILL CARRY `title: null` AND `earnedTitles: []` (`RETIRED_TITLE_FIELDS`)
+     * for a client from before titles folded into badges (0049), which reads
+     * `earnedTitles.includes(…)` without a guard. This build ignores both.
      */
     if (url.pathname === '/api/user/rewards' && req.method === 'GET') {
       const user = await verifyAuthToken(bearer(req));
       if (!user) return json(401, { error: 'sign in required' }), true;
-      if (!dbEnabled) return json(200, { pending: [], badges: {}, equippedBadges: [], title: null, earnedTitles: [] }), true;
+      if (!dbEnabled) return json(200, { pending: [], badges: {}, equippedBadges: [], ...RETIRED_TITLE_FIELDS }), true;
       await ensureProfile(user.userId, user.handle);
-      return json(200, await rewardState(user.userId)), true;
+      return json(200, { ...(await rewardState(user.userId)), ...RETIRED_TITLE_FIELDS }), true;
     }
     if (url.pathname === '/api/user/rewards/claim' && req.method === 'POST') {
       const user = await verifyAuthToken(bearer(req));
@@ -764,10 +758,10 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
       if (!id) return json(400, { error: 'id must be a reward id' }), true;
       const state = await claimReward(user.userId, id, body.equip === true);
       if (!state) return json(404, { error: 'That reward is not yours to claim.' }), true;
-      return json(200, state), true;
+      return json(200, { ...state, ...RETIRED_TITLE_FIELDS }), true;
     }
-    /** WEAR these badges, in this order. The server decides what is held (`setEquippedBadges`),
-     *  on the same terms `setTitle` decides what is earned. */
+    /** WEAR these badges, in this order. The server decides what is held (`setEquippedBadges`):
+     *  a badge beside a name is a claim to have won it, so a client may not assert one. */
     if (url.pathname === '/api/user/badges' && req.method === 'POST') {
       const user = await verifyAuthToken(bearer(req));
       if (!user) return json(401, { error: 'sign in required' }), true;
@@ -840,13 +834,13 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
         if (!user) return json(401, { error: 'sign in required' }), true;
         if (!dbEnabled) return json(200, { unlinked: false }), true;
         const ok = await unlinkProvider(user.userId, provider);
-        /* ⚠️ UNLINKING TAKES THE REWARD WITH IT. Leaving the title on an account that no
-           longer proves it starred is the same dangling state `clearTitleIfEquipped` exists
-           to prevent, one level up — and it is also the farm: unlink, keep the decal, relink
-           elsewhere. The 0047 row survives, so the PAIR still cannot earn again. */
+        /* ⚠️ UNLINKING TAKES THE REWARD WITH IT. Leaving the badge on an account that no
+           longer proves it starred is a dangling claim — and it is also the farm: unlink, keep
+           the decal, relink elsewhere. The 0047 row survives, so the PAIR still cannot earn
+           again. */
         if (ok && provider === 'github') {
           /* ⚠️ THE WHOLE REWARD, THROUGH THE ONE REVOKE PATH (`revokeStargazer`): the ledger
-             grant (pending or claimed), both ids it delivered, and the equipped title. Half a
+             grant (pending or claimed), the badge and decal it delivered, and the worn badge. Half a
              reward is a state no later sweep repairs — the sweep only looks at accounts that
              still have a LIVE link, and this one no longer does. */
           await revokeStargazer(user.userId, 'github unlinked');
