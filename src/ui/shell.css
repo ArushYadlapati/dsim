@@ -6114,6 +6114,35 @@ a.ds-cta {
 .ds-key.remove {
   color: var(--ds-danger);
 }
+/* A CONFLICT: the keycap already holding the bind the armed slot was refused. A ring, not a
+   border change, so nothing moves; two shakes, then it holds still (docs/area/ui.md). */
+.ds-key.conflict {
+  border-color: var(--ds-danger);
+  color: var(--ds-danger);
+  box-shadow: 0 0 0 2px var(--ds-danger);
+  animation: ds-key-shake 0.18s ease-in-out 2;
+}
+@keyframes ds-key-shake {
+  25% {
+    transform: translateX(-2px);
+  }
+  75% {
+    transform: translateX(2px);
+  }
+}
+/* ...and the scope button that lists it, when the holder is in another scope */
+.ds-seg.conflict:not(.on) {
+  color: var(--ds-danger);
+  box-shadow: inset 0 0 0 1px var(--ds-danger);
+}
+.ds-panel-title.notice.error {
+  color: var(--ds-danger);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ds-key.conflict {
+    animation: none;
+  }
+}
 /* ---- lobby roster ---------------------------------------------------- */
 .ds-players {
   display: flex;

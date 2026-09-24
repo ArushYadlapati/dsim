@@ -1,5 +1,5 @@
 /**
- * THE VIEW KEY — `t` cycles 2D ⇄ 3D, from OUTSIDE the scene (`docs/biobuzz/plan-3d.md` §4.3).
+ * THE VIEW KEY — `viewToggle` (T by default) cycles 2D ⇄ 3D, from OUTSIDE the scene (`docs/biobuzz/plan-3d.md` §4.3).
  *
  * ── WHY IT CANNOT LIVE IN THE SCENE, WHICH IS WHERE IT STARTED ─────────────────────────────
  * `scene/renderScene.ts` bound `t` itself on Day 2 and could only ever go 3D → 2D, because the
@@ -14,11 +14,37 @@
  * So: ONE window listener, installed on the first `installViewKey()` and removed when the last
  * handle is released. Calling it twice is therefore safe and is the expected case.
  *
- * `t` is UNBOUND in `DEFAULT_BINDINGS` (`src/input/bindings.ts`), which is why this can own it
- * without a rebind row or a settings migration — see the scene's own note on `c`.
+ * ── THE KEYS ARE BINDINGS NOW (owner, 2026-09-24) ─────────────────────────────────────────
+ * `t` here and `c`/`i`/`o` in the scene were hard-coded and missing from Controls, and `c`
+ * also placed POLLEN, so one press did both. They are the four `VIEW_ACTIONS` in
+ * `src/input/bindings.ts` now, rebindable with a row each. This module holds the player's binds
+ * for them (`setViewBindings`, kept current by the App), and `viewActionOf` is the one reader,
+ * for this listener and for the scene's.
  */
 
+import { DEFAULT_BINDINGS, VIEW_ACTIONS, type KeyAction, type ViewAction } from '../../../input/bindings';
 import { getViewPref, setViewPref } from './store';
+
+let viewKeys: Record<ViewAction, readonly string[]> = pickViewKeys(DEFAULT_BINDINGS.keys);
+
+function pickViewKeys(keys: Record<KeyAction, readonly string[]>): Record<ViewAction, readonly string[]> {
+  const out = {} as Record<ViewAction, readonly string[]>;
+  for (const a of VIEW_ACTIONS) out[a] = [...keys[a]];
+  return out;
+}
+
+/** adopt the player's binds (the MAIN map: view actions are BIOBUZZ-only, so never overridden) */
+export function setViewBindings(keys: Record<KeyAction, readonly string[]>): void {
+  viewKeys = pickViewKeys(keys);
+}
+
+/** which view action `e` presses, if any — null under a modifier or while typing */
+export function viewActionOf(e: KeyboardEvent): ViewAction | null {
+  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  if (typingInto(e.target)) return null;
+  const k = e.key.toLowerCase();
+  return VIEW_ACTIONS.find((a) => viewKeys[a].includes(k)) ?? null;
+}
 
 let refs = 0;
 let attached: ((e: KeyboardEvent) => void) | null = null;
@@ -52,10 +78,7 @@ export function installViewKey(target: EventTarget = typeof window !== 'undefine
   refs++;
   if (!attached) {
     attached = (e: KeyboardEvent): void => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      if (typingInto(e.target)) return;
-      if (e.key.toLowerCase() !== 't') return;
-      toggleViewPref();
+      if (viewActionOf(e) === 'viewToggle') toggleViewPref();
     };
     attachedTo = target;
     target.addEventListener('keydown', attached as EventListener);

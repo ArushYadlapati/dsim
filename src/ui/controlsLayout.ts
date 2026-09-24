@@ -18,6 +18,7 @@ import type { GameId } from '../games/types';
 import {
   KEY_ACTIONS,
   PAD_ACTIONS,
+  VIEW_ACTIONS,
   actionOverridable,
   seasonKeyActions,
   seasonPadActions,
@@ -48,6 +49,10 @@ export const ACTION_LABELS: Record<KeyAction, string> = {
   bbNectar: 'Human player: enter NECTAR',
   bbRamp: 'Deploy ramp',
   bbPass: 'Pass to partner',
+  viewToggle: 'Switch 2D / 3D view',
+  cameraCycle: 'Next camera',
+  eyeUp: 'Camera higher',
+  eyeDown: 'Camera lower',
   driveMode: 'Swap wheel set (Butterfly)',
   flipFront: 'Flip front',
   park: 'Park mode',
@@ -56,7 +61,7 @@ export const ACTION_LABELS: Record<KeyAction, string> = {
 };
 
 export interface BindPanel {
-  id: 'driving' | 'mechanisms' | 'match';
+  id: 'driving' | 'mechanisms' | 'match' | 'view';
   title: string;
   /** the keyboard column, in reading order */
   keys: readonly KeyAction[];
@@ -107,12 +112,20 @@ export const ALL_GAMES_PANELS: readonly BindPanel[] = [
   },
 ];
 
-/** A SEASON'S SCOPE: its own actions and nothing any other season shares with it unchanged. */
-export function seasonPanel(game: GameId): BindPanel {
-  return {
+const isView = (a: KeyAction): boolean => (VIEW_ACTIONS as readonly KeyAction[]).includes(a);
+
+/**
+ * A SEASON'S SCOPE: its own actions and nothing any other season shares with it unchanged. The
+ * robot's mechanisms first; then, for a season with a 3D view, a "3D view" card for the camera
+ * keys, which are keyboard-only and move no part of the robot.
+ */
+export function seasonPanels(game: GameId): BindPanel[] {
+  const mech: BindPanel = {
     id: 'mechanisms',
     title: 'Mechanisms',
-    keys: seasonKeyActions(game),
+    keys: seasonKeyActions(game).filter((a) => !isView(a)),
     pads: inKeyOrder(seasonPadActions(game)),
   };
+  const view = seasonKeyActions(game).filter(isView);
+  return view.length ? [mech, { id: 'view', title: '3D view', keys: view, pads: [] }] : [mech];
 }

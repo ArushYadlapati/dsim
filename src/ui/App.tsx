@@ -109,6 +109,7 @@ import { chainDisclaimerSeen, markChainDisclaimerSeen } from '../chainDisclaimer
 import { startSelectionLegal } from './startPositions';
 import { setPadNavPrefs } from '../input/padNav';
 import { LoadBoundary } from './LoadBoundary';
+import { setViewBindings } from '../games/biobuzz/graphics/viewKey';
 
 type Screen =
   | 'home'
@@ -539,6 +540,8 @@ export function App() {
   // kept current every render so the []-deps effects (popstate) read live settings
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  // the 3D view keys listen outside React (`graphics/viewKey.ts`), so they are handed the binds
+  useEffect(() => setViewBindings(settings.bindings.keys), [settings.bindings]);
 
   // on first load, persist the possibly-URL-switched game and canonicalize the URL
   // so an old unprefixed / cross-game link becomes a proper /<game>/... path.

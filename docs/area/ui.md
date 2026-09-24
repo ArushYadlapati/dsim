@@ -27,9 +27,28 @@ and then the code. **`uiaudit`** is what actually enforces both, as ratchets.
 
 - **Controls are fully rebindable** (`src/input/bindings.ts`, `src/ui/ControlsSection.tsx`):
   every keyboard action, gamepad buttons, AND the drive/turn stick assignment. Escape is
-  reserved (menu/cancel — never bindable). Conflict policy: a rebound key is STOLEN from its
-  old action (may show UNBOUND). Defaults: WASD drive, Q/E or ←/→ turn, Shift/K intake,
+  reserved (menu/cancel — never bindable). Defaults: WASD drive, Q/E or ←/→ turn, Shift/K intake,
   Space fire, C catalyst (CR), F flip-front, P park, Enter start, R restart.
+  ⚠️ **CONFLICT POLICY: A TAKEN BIND IS REFUSED, NEVER STOLEN** (owner, 2026-09-24: binding a
+  key another function uses "shouldn't unbind the other one. Instead, it should show a
+  conflict error"). The screen asks `keyConflict` / `padConflict` (`bindings.ts`) BEFORE it
+  assigns. On a hit the slot STAYS ARMED, the card title turns red ("C is taken by Place
+  POLLEN (BIOBUZZ). Press another key, or Esc."), the holder's keycap is ringed red and shakes
+  twice (`.ds-key.conflict`), and when the holder is listed in another scope that scope's
+  button is ringed too (`.ds-seg.conflict`). The ring outlives the capture by `NOTICE_MS`, so
+  following the red button still finds the keycap. The query covers what the old steal
+  reached: main vs every action sharing a game, and main vs a season's own override. The
+  steal code in `assignKey` / `assignPadBind` is still there and still tested, but the screen
+  only calls it once the bind is free. Everything below that says "steals" describes those
+  model functions, not what the player sees.
+  **THE 3D VIEW KEYS ARE BINDINGS** (`VIEW_ACTIONS`: `viewToggle` T, `cameraCycle` L,
+  `eyeUp` I, `eyeDown` O; BIOBUZZ-only, keyboard-only, on a "3D view" card in the BIOBUZZ
+  scope). They were hard-coded in `graphics/viewKey.ts` and `scene/renderScene.ts`, missing from
+  this screen, and the camera sat on C with Place POLLEN, so one press did both. The listeners
+  read the player's binds through `viewActionOf`, which the App keeps current with
+  `setViewBindings`. `mergeBindings` gives an action newer than the stored blob its default
+  only where no stored bind in a conflicting action holds that key. An old Deploy ramp on L keeps
+  L, and the camera starts unbound, with the red dot on BIOBUZZ.
   **Every action carries as many alternatives as the player wants**: the `+` keycap at the end
   of a row captures into a new slot, and Backspace or Delete while a slot is waiting removes
   it (neither key is anywhere a driving hand goes, so nothing bindable is lost). The screen
@@ -148,8 +167,8 @@ that season has none) — then three bind panels —
   stays in a `.ds-sr` span so the card keeps its heading. The title slot keeps its line-height and
   ellipsizes (`.ds-panel-title.notice`), so a message never moves the panels. That is also why
   there is no status line under the switch any more: a reserved empty line there cost ~25px of gap
-  above the first card. A prompt stays while its slot is armed; a confirmation, refusal or loss
-  notice ("Took C from Catalyst … and Place POLLEN …") fades after `NOTICE_MS` (4s). A season's
+  above the first card. A prompt stays while its slot is armed, and so does a conflict (in red,
+  in place of the prompt); a confirmation ("Place POLLEN: J") fades after `NOTICE_MS` (4s). A season's
   button carries a red dot while one of its own rows has no bind (`seasonUnbound`).
   ⚠️ **The capture effects on the controls screen depend on `capture` ALONE**, with
   `bindings`/`onChange` in refs: `onChange` is a fresh arrow every render and the App re-renders
