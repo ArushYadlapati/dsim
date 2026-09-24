@@ -215,9 +215,12 @@ export const HIVE_VIEW_POINTS: readonly Eye3[] = (() => {
   return pts;
 })();
 
-/** the frame margin a hive corner must clear, as a fraction of the half-FOV (the solved driver
- * camera's own 4 %, doubled: this camera does not move its eye to make room) */
-const HIVE_MARGIN = 0.08;
+/** the HORIZONTAL frame margin a fitted point must clear, as a fraction of the half-FOV. The
+ * vertical fit is exact (see `driverEyeAimFit`); the horizontal one reads bearings, which drift
+ * off the projection for points far above or below the centre line, and this covers that. */
+const FIT_MARGIN_H = 0.12;
+/** the vertical margin — exact fit, so only the "a hair inside the edge" the solved camera uses */
+const FIT_MARGIN_V = 0.04;
 
 /**
  * Is every point inside the frame of a camera at `eye` looking along (`yaw`, `pitch`) — pitch
@@ -255,49 +258,172 @@ export function pointsInFrame(
 }
 
 /**
- * `driverEyeAim`, turned just far enough that both HIVES are in frame (see `HIVE_VIEW_POINTS`).
+ * A FRAME THAT HOLDS EVERY POINT, from a fixed eye: the yaw and pitch that centre the set, and
+ * the vertical FOV it needs there (radians, before any cap).
  *
- * The allowed centre range is read off the hive corners' own angles from the eye — yaw from their
- * bearings, pitch from their elevations — shrunk by the half-FOV, and the blended aim is CLAMPED
- * into it, so the camera still leans toward the driver's robot as far as it can without losing the
- * hive. Angles are an approximation of the projection off the frame's centre line, so the answer
- * is checked with `pointsInFrame` and the margin tightened until it passes. When the hive cannot
- * fit at all (a narrow FOV on a narrow screen), the camera centres on it: "ideally" visible means
- * as much of it as the lens allows, evenly cropped.
+ *  1. YAW centres the points' bearings.
+ *  2. PITCH, EXACT: with the yaw fixed, a point at bearing offset `a` and elevation `e` projects
+ *     at `β = atan(tan e / cos a)` in the yawed frame, and pitching the camera shifts every `β`
+ *     by the same angle (the solved driver camera's own derivation, `scene/renderCameras.ts`
+ *     `solveFit`), so centring the `β` span is the pitch and the span is the vertical need.
+ *  3. The horizontal need reads bearings, which drift off the projection for points far above or
+ *     below the centre line; `FIT_MARGIN_H` covers that.
  */
-export function driverEyeAimFit(eye: Eye3, robot: Eye3 | null, vFov: number, aspect: number): DriverEyeAim {
-  const base = driverEyeAim(eye, robot);
-  // already in frame by the exact projection: keep the aim exactly (the angle clamp below is an
-  // approximation and would nudge an aim that needs nothing)
-  if (pointsInFrame(eye, base.yaw, base.pitch, vFov, aspect, HIVE_VIEW_POINTS, HIVE_MARGIN)) return base;
-  const hHalf = datan(dtan(vFov / 2) * aspect);
-  const vHalf = vFov / 2;
-  let yawLo = Infinity;
-  let yawHi = -Infinity;
-  let elLo = Infinity;
-  let elHi = -Infinity;
-  for (const p of HIVE_VIEW_POINTS) {
+export function frameAllFrom(eye: Eye3, points: readonly Eye3[], aspect: number): DriverEyeFit {
+  const toward = datan2(-eye.y, -eye.x); // field centre: the reference the bearings are read from
+  const rel: { a: number; e: number }[] = [];
+  let aLo = Infinity;
+  let aHi = -Infinity;
+  for (const p of points) {
     const dx = p.x - eye.x;
     const dy = p.y - eye.y;
-    // bearings relative to the base yaw, so a hive straddling ±π does not wrap
-    let yaw = datan2(dy, dx) - base.yaw;
-    while (yaw > Math.PI) yaw -= 2 * Math.PI;
-    while (yaw < -Math.PI) yaw += 2 * Math.PI;
-    const el = datan2(p.z - eye.z, hyp(dx, dy));
-    yawLo = Math.min(yawLo, yaw);
-    yawHi = Math.max(yawHi, yaw);
-    elLo = Math.min(elLo, el);
-    elHi = Math.max(elHi, el);
+    let a = datan2(dy, dx) - toward;
+    while (a > Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    rel.push({ a, e: datan2(p.z - eye.z, hyp(dx, dy)) });
+    aLo = Math.min(aLo, a);
+    aHi = Math.max(aHi, a);
   }
-  const clampOrCentre = (v: number, lo: number, hi: number): number =>
-    lo <= hi ? Math.min(hi, Math.max(lo, v)) : (lo + hi) / 2;
-  let out: DriverEyeAim = base;
-  for (let m = HIVE_MARGIN; m <= 0.5; m += 0.06) {
-    const dYaw = clampOrCentre(0, yawHi - hHalf * (1 - m), yawLo + hHalf * (1 - m));
-    // the camera's own elevation is -pitch
-    const el = clampOrCentre(-base.pitch, elHi - vHalf * (1 - m), elLo + vHalf * (1 - m));
-    out = { yaw: base.yaw + dYaw, pitch: -el };
-    if (pointsInFrame(eye, out.yaw, out.pitch, vFov, aspect, HIVE_VIEW_POINTS)) return out;
+  const mid = (aLo + aHi) / 2;
+  const hHalfNeed = Math.min(1.55, (aHi - aLo) / 2 / (1 - FIT_MARGIN_H));
+  const vForH = 2 * datan(dtan(hHalfNeed) / aspect);
+  let bLo = Infinity;
+  let bHi = -Infinity;
+  for (const q of rel) {
+    const c = dcos(q.a - mid);
+    const b = c > 1e-6 ? datan(dtan(q.e) / c) : q.e > 0 ? Math.PI / 2 : -Math.PI / 2;
+    bLo = Math.min(bLo, b);
+    bHi = Math.max(bHi, b);
   }
-  return out;
+  const vForV = (bHi - bLo) / (1 - FIT_MARGIN_V);
+  return { yaw: toward + mid, pitch: -(bLo + bHi) / 2, vFov: Math.max(vForH, vForV) };
 }
+
+export interface DriverEyeFit extends DriverEyeAim {
+  /** vertical FOV, radians */
+  vFov: number;
+}
+
+/** the whole field — floor and wall-top corners — and both hives: what the driver view holds */
+export function fieldViewPoints(halfX: number, halfY: number, wallH: number): Eye3[] {
+  const pts: Eye3[] = [...HIVE_VIEW_POINTS];
+  for (const sx of [-1, 1]) {
+    for (const sy of [-1, 1]) {
+      pts.push({ x: sx * halfX, y: sy * halfY, z: 0 });
+      pts.push({ x: sx * halfX, y: sy * halfY, z: wallH });
+    }
+  }
+  return pts;
+}
+
+export interface DriverEyeFrame extends DriverEyeFit {
+  eye: Eye3;
+  /** how much further back than `STAND_BACK_IN` the eye had to stand, in (0 when it fits) */
+  extraBack: number;
+}
+
+/**
+ * THE HEIGHT-ACCURATE DRIVER VIEW HOLDS THE WHOLE FIELD, ALWAYS (owner, 2026-09-24: "the whole
+ * field should be visible in driver view at all times, because in real life, you can look up and
+ * down or away from the robot to 'look ahead'").
+ *
+ * The eye is the player's own height at their role's place on the alliance wall
+ * (`driverEyePoint`), and the lens is their FOV setting (`vFovCap`, vertical for this screen).
+ * The field has to fit in `1 - EYE_TURN_SLACK` of the lens, not all of it: the rest is the room
+ * `driverEyeFollow` turns the view in toward the robot without losing a corner (owner, same day:
+ * "Not fixed driver view tho. Maybe have both"). From `STAND_BACK_IN` behind the wall the near
+ * corners sit nearly beside the eye, which no human-width lens holds, so the eye steps straight
+ * back from the field by the least that fits (bisection: further back only ever needs less).
+ * Height and role are kept exactly.
+ */
+export function fitDriverEyeFrame(
+  alliance: Alliance,
+  role: DriverRole,
+  heightIn: number,
+  points: readonly Eye3[],
+  aspect: number,
+  vFovCap: number,
+): DriverEyeFrame {
+  const at = driverEyePoint(alliance, role, heightIn);
+  const away = Math.sign(at.x) || 1;
+  const frameAt = (back: number): DriverEyeFrame => {
+    const eye = { x: at.x + away * back, y: at.y, z: at.z };
+    return { ...frameAllFrom(eye, points, aspect), eye, extraBack: back };
+  };
+  const fitIn = vFovCap * (1 - EYE_TURN_SLACK);
+  let f = frameAt(0);
+  if (f.vFov > fitIn) {
+    let lo = 0;
+    let hi = 480;
+    for (let i = 0; i < 30; i++) {
+      const m = (lo + hi) / 2;
+      if (frameAt(m).vFov <= fitIn) hi = m;
+      else lo = m;
+    }
+    f = frameAt(hi);
+  }
+  // the player's lens (it is their setting); wider only if the search hit its own ceiling
+  return { ...f, vFov: Math.max(f.vFov, vFovCap) };
+}
+
+/** the share of the lens left over for turning toward the robot — see `fitDriverEyeFrame` */
+export const EYE_TURN_SLACK = 0.2;
+
+/**
+ * WHERE THE DRIVER VIEW LOOKS THIS FRAME: toward the robot (`driverEyeAim`'s blend of field
+ * centre and robot), CLAMPED into the aims that keep every `points` entry in `frame`'s lens.
+ *
+ * ⚠️ **A CLAMP, NOT A TEST.** Every step is continuous in the robot's position, so the view slides
+ * to the edge of its room and stops there. The first version returned one aim when a projection
+ * test passed and a stepped one when it failed, and those switches were the owner's "extremely
+ * choppy, especially coming off the wall". The renderer also eases toward this, frame to frame.
+ *
+ *  1. YAW: the points' bearings, and the centres that keep them inside the horizontal half-lens
+ *     (`FIT_MARGIN_H` off it, for the drift `frameAllFrom` notes).
+ *  2. PITCH, exact: with that yaw, each point's `β = atan(tan e / cos a)`, and the elevations that
+ *     keep every `β` inside the vertical half-lens.
+ * A range that is empty (a lens too narrow even to centre on) is its midpoint, the frame's own
+ * centred aim, which is where the clamp was heading anyway.
+ */
+export function driverEyeFollow(
+  frame: DriverEyeFrame,
+  points: readonly Eye3[],
+  robot: Eye3 | null,
+  aspect: number,
+): DriverEyeAim {
+  const eye = frame.eye;
+  const base = driverEyeAim(eye, robot);
+  const rel: { a: number; e: number }[] = [];
+  let aLo = Infinity;
+  let aHi = -Infinity;
+  for (const p of points) {
+    const dx = p.x - eye.x;
+    const dy = p.y - eye.y;
+    let a = datan2(dy, dx) - base.yaw;
+    while (a > Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    rel.push({ a, e: datan2(p.z - eye.z, hyp(dx, dy)) });
+    aLo = Math.min(aLo, a);
+    aHi = Math.max(aHi, a);
+  }
+  const hHalf = datan(dtan(frame.vFov / 2) * aspect) * (1 - FIT_MARGIN_H);
+  const dYaw = clampOrCentre(0, aHi - hHalf, aLo + hHalf);
+  let bLo = Infinity;
+  let bHi = -Infinity;
+  for (const q of rel) {
+    const c = dcos(q.a - dYaw);
+    const b = c > 1e-6 ? datan(dtan(q.e) / c) : q.e > 0 ? Math.PI / 2 : -Math.PI / 2;
+    bLo = Math.min(bLo, b);
+    bHi = Math.max(bHi, b);
+  }
+  const vHalf = (frame.vFov / 2) * (1 - FIT_MARGIN_V);
+  // the camera's own elevation is -pitch
+  const el = clampOrCentre(-base.pitch, bHi - vHalf, bLo + vHalf);
+  return { yaw: base.yaw + dYaw, pitch: -el };
+}
+
+/** `v` clamped into [lo, hi]; an empty range (lo > hi) is its midpoint — continuous either way */
+function clampOrCentre(v: number, lo: number, hi: number): number {
+  return lo <= hi ? Math.min(hi, Math.max(lo, v)) : (lo + hi) / 2;
+}
+

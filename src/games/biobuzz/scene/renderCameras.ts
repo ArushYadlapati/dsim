@@ -17,7 +17,7 @@ import {
   type FreeCamNav,
   type FreeCamState,
 } from '../graphics/freeCam';
-import { driverEyeAimFit, driverEyePoint, type DriverRole } from '../graphics/driverEye';
+import { driverEyeFollow, fieldViewPoints, fitDriverEyeFrame, type DriverEyeFrame, type DriverRole } from '../graphics/driverEye';
 import { vFovFromH } from '../graphics/fov';
 import { GFX_FOV_DEFAULT, GFX_FOV_MAX, GFX_FOV_MIN } from '../graphics/settings';
 
@@ -183,6 +183,10 @@ interface FitPoint {
   y: number;
   z: number;
 }
+/** how fast the height-accurate driver view turns toward the robot — a head turn, not a snap */
+const EYE_FOLLOW_HALFLIFE = 0.18; // s
+/** what the height-accurate driver view frames: the whole field and both hives (`fieldViewPoints`) */
+const EYE_FIT_POINTS = fieldViewPoints(BB_HALF_X, BB_HALF_Y, BB3_WALL_H);
 const FIT_POINTS: readonly FitPoint[] = (() => {
   const pts: FitPoint[] = [];
   for (const sx of [1, -1] as const) {
@@ -631,24 +635,35 @@ export function createCameras(): BbCameras {
    * every case that must fall back to the fit — no height set, no local robot (a spectator, a
    * replay with no viewpoint), or a role the game has not locked yet.
    */
-  function driverEyePoseFor(
-    frame: SceneFrame,
-    world: World,
-    vFovDeg: number,
-    aspect: number,
-  ): { eye: { x: number; y: number; z: number }; yaw: number; pitch: number } | null {
+  /**
+   * The whole-field frame from a standing driver's eye (`fitDriverEyeFrame`). It depends on the
+   * alliance, the role, the height, the screen shape and the lens and on NOTHING that moves in a
+   * match, so it is solved once per change of those and the camera then holds still — the owner's
+   * "choppy" report was a frame that followed the robot.
+   */
+  let eyeKey = '';
+  let eyeFrame: DriverEyeFrame | null = null;
+  /** the eased aim — the view turns toward the robot at `EYE_FOLLOW_HALFLIFE`, and snaps when the
+   *  frame itself changes (a new match, a resize, a new lens) */
+  let eyeYaw = 0;
+  let eyePitch = 0;
+  let eyeHave = false;
+  function driverEyePoseFor(frame: SceneFrame, world: World, vFovDeg: number, aspect: number): DriverEyeFrame | null {
     if (tunedDriverHeightIn == null) return null;
     const robot = localRobot(world, frame);
     if (!robot) return null;
     const role = bbRoleLabel(frame.localStartCat, robot.alliance);
     if (role !== 'TOP' && role !== 'BOTTOM') return null;
-    const eye = driverEyePoint(robot.alliance, role as DriverRole, tunedDriverHeightIn);
-    // turned only as far as it takes to keep both HIVES in frame (`driverEyeAimFit`)
-    const aim = driverEyeAimFit(eye, { x: robot.pos.x, y: robot.pos.y, z: robot.z ?? 0 }, (vFovDeg * Math.PI) / 180, aspect);
-    return { eye, yaw: aim.yaw, pitch: aim.pitch };
+    const key = `${robot.alliance}|${role}|${tunedDriverHeightIn}|${aspect}|${vFovDeg}`;
+    if (key !== eyeKey || !eyeFrame) {
+      eyeKey = key;
+      eyeHave = false;
+      eyeFrame = fitDriverEyeFrame(robot.alliance, role as DriverRole, tunedDriverHeightIn, EYE_FIT_POINTS, aspect, (vFovDeg * Math.PI) / 180);
+    }
+    return eyeFrame;
   }
 
-  function updateDriver(frame: SceneFrame, world: World): void {
+  function updateDriver(frame: SceneFrame, world: World, dt: number): void {
     // THE FIT IS AGAINST THE SAFE RECT, not the canvas — the field has to land inside the part
     // of the viewport the HUD is not covering, so that is the aspect (and the virtual image)
     // every number below is solved for.
@@ -657,23 +672,36 @@ export function createCameras(): BbCameras {
 
     const eyeFov = driverEyeFovDeg(aspect);
     const heightPose = driverEyePoseFor(frame, world, eyeFov, aspect);
-    if (heightPose) {
-      // THE EYE STAYS PUT — no fit search, no `i`/`o` nudge, no re-centring: a standing person
-      // turns their head, they do not float or slide. The lens is the player's own FOV setting,
-      // horizontal and capped at what two human eyes see (`graphics/fov.ts`); it used to be a
-      // fixed 55° vertical that ignored the slider. `driver.near` (set at construction, 1 in)
-      // already clears "the wall top a foot in front of the eye".
+    const robotNow = heightPose ? localRobot(world, frame) : null;
+    if (heightPose && robotNow) {
+      // THE WHOLE FIELD, ALWAYS, AND TURNED TOWARD THE ROBOT AS FAR AS THAT ALLOWS (owner,
+      // 2026-09-24) — `driverEyeFollow` clamps, this eases, so the view glides to the edge of its
+      // room instead of stepping.
+      const want = driverEyeFollow(heightPose, EYE_FIT_POINTS, { x: robotNow.pos.x, y: robotNow.pos.y, z: robotNow.z ?? 0 }, aspect);
+      if (!eyeHave || !(dt > 0)) {
+        eyeYaw = want.yaw;
+        eyePitch = want.pitch;
+        eyeHave = true;
+      } else {
+        const k = blend(dt, reducedMotion() ? REDUCED_HALFLIFE : EYE_FOLLOW_HALFLIFE);
+        eyeYaw += wrapAngle(want.yaw - eyeYaw) * k;
+        eyePitch += (want.pitch - eyePitch) * k;
+      }
+      // THE WHOLE FIELD, AND STILL — no `i`/`o` nudge, no following the robot: a standing person
+      // moves their eyes, not the field. The lens is the player's own FOV setting, horizontal and
+      // capped at what two human eyes see (`graphics/fov.ts`). `driver.near` (1 in) already
+      // clears "the wall top a foot in front of the eye".
       driver.aspect = aspect;
-      driver.fov = eyeFov;
+      driver.fov = (heightPose.vFov * 180) / Math.PI;
       applyViewOffset(driver);
       driver.position.set(heightPose.eye.x, heightPose.eye.y, heightPose.eye.z);
       driver.up.set(0, 0, 1);
-      const cosP = Math.cos(heightPose.pitch);
-      const sinP = Math.sin(heightPose.pitch);
+      const cosP = Math.cos(eyePitch);
+      const sinP = Math.sin(eyePitch);
       const lookDist = 100;
       scratchTarget.set(
-        heightPose.eye.x + Math.cos(heightPose.yaw) * cosP * lookDist,
-        heightPose.eye.y + Math.sin(heightPose.yaw) * cosP * lookDist,
+        heightPose.eye.x + Math.cos(eyeYaw) * cosP * lookDist,
+        heightPose.eye.y + Math.sin(eyeYaw) * cosP * lookDist,
         heightPose.eye.z - sinP * lookDist,
       );
       driver.lookAt(scratchTarget);
@@ -912,7 +940,7 @@ export function createCameras(): BbCameras {
       // satisfied this frame (no local robot). Chase, orbit and free only run when asked: each
       // keeps smoothed STATE, and advancing it while it is not on screen would have it fly in
       // from wherever it last was when the player last looked.
-      updateDriver(frame, world);
+      updateDriver(frame, world, dt);
       updateOverhead(frame);
       let picked: THREE.Camera;
       if (camera === 'chase') picked = updateChase(frame, world, dt) ? chase : driver;

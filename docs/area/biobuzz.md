@@ -555,13 +555,21 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     21:9. Every camera converts it for its own screen shape: the solved driver camera's ceiling
     (`fovCapRad`, allowed below the fit's 60° floor so an ultrawide steps the eye back instead of
     going fish-eye), chase, orbit/free (15° tighter), and the height-accurate driver eye.
-  - ⚠️ **THE HEIGHT-ACCURATE DRIVER EYE KEEPS BOTH HIVES IN FRAME** (owner, 2026-09-24: "the hive
-    should be fully visible ideally as a driver"). It used a fixed 55° vertical lens aimed at a blend
-    of field centre and the robot, which cut the top of the hive off in 976 of 1,200 sampled cases.
-    It now takes the slider's lens, and `driverEyeAimFit` keeps the blended aim when the eight
-    `HIVE_VIEW_POINTS` are already in frame, otherwise turns it the least that brings them in. When
-    the hive is taller than the lens (a short driver on 21:9) it centres on it. The eye never moves.
-    Pinned by the RENDER lane's `driverEye/hive` checks.
+  - ⚠️ **THE HEIGHT-ACCURATE DRIVER VIEW HOLDS THE WHOLE FIELD AND FOLLOWS THE ROBOT INSIDE IT**
+    (owner, 2026-09-24, four reports in a row: the hive cut off; then "extremely choppy, especially
+    coming off the wall... Robot is off the frame"; then "the whole field should be visible in driver
+    view at all times"; then "Not fixed driver view tho", ruled as one view that does both).
+    `fitDriverEyeFrame` keeps the player's height and role and steps the eye straight back from the
+    wall until the whole field and both hives (`fieldViewPoints`) fit in `1 - EYE_TURN_SLACK` of
+    their lens: about 77 in back at the default 100°, 38 at 120°. `driverEyeFollow` then turns
+    toward the robot, CLAMPED into the aims that keep every point in frame, and the renderer eases
+    it (`EYE_FOLLOW_HALFLIFE`). ⚠️ **No step may branch on a projection test**: the first version
+    returned one aim when a test passed and a stepped one when it failed, and those switches were
+    the chop. The vertical clamp is exact (`β = atan(tan e / cos a)` in the yawed frame, the solved
+    camera's own derivation); the horizontal one carries `FIT_MARGIN_H`. The frame is solved once per
+    alliance, role, height, screen shape and lens (`eyeKey`), not per frame. Pinned by the RENDER
+    lane's `driverEye/field` checks: 0 of 2,700 frames lose a point, and a half-inch of robot travel
+    turns the view at most 0.044°.
   - ⚠️ **MSAA is a render target this scene owns, not the canvas's `antialias`.** The context is
     created with `antialias: false` always: WebGL cannot be asked for a particular sample count
     on the default framebuffer and the attribute is fixed for the life of the context, so that

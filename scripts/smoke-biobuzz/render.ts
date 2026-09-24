@@ -31,6 +31,7 @@ import {
 } from '../../src/games/biobuzz/config';
 // -- LANE A (FIELD RENDER) imports, kept in their own block beside lane B's --------------
 import {
+  BB3_WALL_H,
   BB_GARDEN,
   BB_HALF_X,
   BB_HALF_Y,
@@ -277,9 +278,10 @@ import {
 import {
   coerceDriverHeightIn,
   driverEyeAim,
-  driverEyeAimFit,
+  driverEyeFollow,
+  fieldViewPoints,
+  fitDriverEyeFrame,
   driverEyePoint,
-  HIVE_VIEW_POINTS,
   pointsInFrame,
   DRIVER_HEIGHT_MAX_IN,
   DRIVER_HEIGHT_MIN_IN,
@@ -3142,43 +3144,35 @@ function driverEyeChecks(check: Check): void {
     check('driverEye/aim: yaw stays finite and pitch stays finite for an ordinary eye/robot pair', Number.isFinite(withRobot.yaw) && Number.isFinite(withRobot.pitch));
   }
 
-  // ---- THE HIVE STAYS IN FRAME (owner, 2026-09-24: "the hive should be fully visible ideally as
-  //      a driver"). Every standing position, every height the setting allows, three screen shapes,
-  //      and the robot anywhere on the field — including hard against its own wall, which is what
-  //      tilted the old aim down far enough to cut the top of the hive off.
+  // ---- THE HEIGHT-ACCURATE DRIVER VIEW (owner, 2026-09-24, four reports in a row): "the hive should
+  //      be fully visible", then "extremely choppy, especially coming off the wall... Robot is off the
+  //      frame", then "the whole field should be visible in driver view at all times", then "Not
+  //      fixed driver view tho" — so the whole field and both hives are ALWAYS in frame, and the
+  //      view turns toward the robot within the room that leaves, continuously.
   {
-    let misses = 0;
-    let oldMisses = 0;
+    const pts = fieldViewPoints(BB_HALF_X, BB_HALF_Y, BB3_WALL_H);
     let cases = 0;
-    let tooTall = 0;
-    let centred = 0;
-    const worst: string[] = [];
+    let lost = 0;
+    let turned = 0;
+    const lostAt: string[] = [];
     for (const alliance of ['red', 'blue'] as const) {
       for (const role of ['TOP', 'BOTTOM'] as const) {
-        for (const h of [DRIVER_HEIGHT_MIN_IN, 66, 72, DRIVER_HEIGHT_MAX_IN]) {
-          const eye = driverEyePoint(alliance, role, h);
+        for (const h of [DRIVER_HEIGHT_MIN_IN, 68, DRIVER_HEIGHT_MAX_IN]) {
           for (const aspect of [16 / 9, 4 / 3, 21 / 9]) {
-            const vFov = (vFovFromH(100, aspect) * Math.PI) / 180;
-            for (let gx = -60; gx <= 60; gx += 30) {
-              for (let gy = -60; gy <= 60; gy += 30) {
-                const robot = { x: gx, y: gy, z: 0 };
-                const aim = driverEyeAimFit(eye, robot, vFov, aspect);
-                const old = driverEyeAim(eye, robot);
-                cases++;
-                // the hive's own vertical span from this eye: past the lens, no aim can hold all of
-                // it, and the camera is meant to CENTRE on it instead ("ideally" visible)
-                const el = HIVE_VIEW_POINTS.map((q) => Math.atan2(q.z - eye.z, Math.hypot(q.x - eye.x, q.y - eye.y)));
-                const mid = (Math.max(...el) + Math.min(...el)) / 2;
-                if (Math.max(...el) - Math.min(...el) > vFov * 0.92) {
-                  tooTall++;
-                  if (Math.abs(-aim.pitch - mid) < 0.02) centred++;
-                  continue;
+            for (const hfov of [60, 100, 120]) {
+              const cap = (vFovFromH(hfov, aspect) * Math.PI) / 180;
+              const f = fitDriverEyeFrame(alliance, role, h, pts, aspect, cap);
+              const centred = driverEyeFollow(f, pts, null, aspect);
+              for (let gx = -60; gx <= 60; gx += 30) {
+                for (let gy = -60; gy <= 60; gy += 30) {
+                  const aim = driverEyeFollow(f, pts, { x: gx, y: gy, z: 0 }, aspect);
+                  cases++;
+                  if (!pointsInFrame(f.eye, aim.yaw, aim.pitch, f.vFov, aspect, pts)) {
+                    lost++;
+                    if (lostAt.length < 4) lostAt.push(`${alliance} ${role} h${h} a${aspect.toFixed(2)} fov${hfov} (${gx},${gy})`);
+                  }
+                  if (Math.abs(aim.yaw - centred.yaw) + Math.abs(aim.pitch - centred.pitch) > 0.01) turned++;
                 }
-                if (!pointsInFrame(eye, aim.yaw, aim.pitch, vFov, aspect, HIVE_VIEW_POINTS)) {
-                  misses++;
-                  if (worst.length < 4) worst.push(`${alliance} ${role} h${h} a${aspect.toFixed(2)} robot(${gx},${gy})`);
-                }
-                if (!pointsInFrame(eye, old.yaw, old.pitch, (55 * Math.PI) / 180, aspect, HIVE_VIEW_POINTS)) oldMisses++;
               }
             }
           }
@@ -3186,42 +3180,44 @@ function driverEyeChecks(check: Check): void {
       }
     }
     check(
-      '⚠️ driverEye/hive: at the default FOV both HIVES are fully in frame from every driver position the lens can hold them from',
-      misses === 0 && tooTall < cases / 4,
-      `${misses}/${cases - tooTall} cases cut the hive${worst.length ? ': ' + worst.join(', ') : ''} (${tooTall} taller than the lens)`,
+      '⚠️ driverEye/field: the WHOLE FIELD and both HIVES are in frame wherever the robot is — every role, height, screen and lens',
+      lost === 0,
+      `${lost}/${cases} frames lost a point${lostAt.length ? ': ' + lostAt.join(', ') : ''}`,
     );
     check(
-      'driverEye/hive: ...and where the hive is taller than the lens (a short driver on an ultrawide screen), the view centres on it',
-      centred === tooTall,
-      `${centred}/${tooTall} centred`,
+      'driverEye/field: ...and it is not a fixed view: the aim turns toward the robot in most of those frames',
+      turned > cases / 2,
+      `${turned}/${cases} turned`,
     );
+    // the eye stays the player's own height and role; only the distance back from the wall moves
+    const f = fitDriverEyeFrame('red', 'TOP', 68, pts, 16 / 9, (vFovFromH(100, 16 / 9) * Math.PI) / 180);
+    const at = driverEyePoint('red', 'TOP', 68);
     check(
-      'driverEye/hive: ...which the old aim at a fixed 55° did not (so the check above is not vacuous)',
-      oldMisses > cases / 4,
-      `${oldMisses}/${cases} cases cut the hive before`,
+      "driverEye/field: the eye keeps the player's own height and role, and only steps straight back from the wall",
+      f.eye.z === at.z && f.eye.y === at.y && Math.abs(f.eye.x) >= Math.abs(at.x) && f.extraBack >= 0,
+      `eye ${JSON.stringify(f.eye)} vs ${JSON.stringify(at)}, ${f.extraBack.toFixed(1)} in further back`,
     );
-    // and it leans toward the driver's robot as far as it can: an aim that already shows the hive
-    // is kept exactly
-    // (searched, not assumed: a robot whose blended aim ALREADY shows the hive, or the check
-    // below would pass on nothing)
-    const eye = driverEyePoint('red', 'TOP', 72);
-    const vFov = (vFovFromH(110, 16 / 9) * Math.PI) / 180;
-    let kept = 0;
-    let found = 0;
-    for (let gx = -60; gx <= 60; gx += 10) {
-      for (let gy = -60; gy <= 60; gy += 10) {
-        const robot = { x: gx, y: gy, z: 0 };
-        const base = driverEyeAim(eye, robot);
-        if (!pointsInFrame(eye, base.yaw, base.pitch, vFov, 16 / 9, HIVE_VIEW_POINTS, 0.08)) continue;
-        found++;
-        const fit = driverEyeAimFit(eye, robot, vFov, 16 / 9);
-        if (Math.abs(fit.yaw - base.yaw) < 1e-9 && Math.abs(fit.pitch - base.pitch) < 1e-9) kept++;
+    // ⚠️ CONTINUITY — the choppiness report. Drive the robot off its own wall in half-inch steps and
+    // across the field: no step may turn the view more than a fraction of a degree. The first
+    // version switched between two aims on a projection test and jumped several degrees here.
+    let worst = 0;
+    const cap = (vFovFromH(100, 16 / 9) * Math.PI) / 180;
+    for (const alliance of ['red', 'blue'] as const) {
+      const g = fitDriverEyeFrame(alliance, 'TOP', 68, pts, 16 / 9, cap);
+      const sx = alliance === 'red' ? 1 : -1;
+      for (const y of [-40, 0, 40]) {
+        let prev = driverEyeFollow(g, pts, { x: -sx * 62, y, z: 0 }, 16 / 9);
+        for (let d = 0.5; d <= 124; d += 0.5) {
+          const cur = driverEyeFollow(g, pts, { x: -sx * 62 + sx * d, y, z: 0 }, 16 / 9);
+          worst = Math.max(worst, Math.abs(cur.yaw - prev.yaw), Math.abs(cur.pitch - prev.pitch));
+          prev = cur;
+        }
       }
     }
     check(
-      'driverEye/hive: an aim that already shows the hive is left exactly as it was — it leans toward the robot',
-      found > 0 && kept === found,
-      `${kept}/${found} kept`,
+      '⚠️ driverEye/field: the aim is CONTINUOUS — a half-inch of robot travel never turns the view more than 0.3°',
+      worst < (0.3 * Math.PI) / 180,
+      `worst ${((worst * 180) / Math.PI).toFixed(3)}° per half inch`,
     );
   }
 
@@ -3264,8 +3260,8 @@ function driverEyeChecks(check: Check): void {
     const expected = driverEyePoint(robot.alliance, role as DriverRole, 68);
     const got = cams.driver.position;
     check(
-      "driverEye/wiring: with a height set, the driver camera's position is EXACTLY driverEyePoint's answer",
-      Math.abs(got.x - expected.x) < 1e-6 && Math.abs(got.y - expected.y) < 1e-6 && Math.abs(got.z - expected.z) < 1e-6,
+      "driverEye/wiring: with a height set, the driver camera stands at the player's own height and role, straight back from their wall",
+      Math.abs(got.y - expected.y) < 1e-6 && Math.abs(got.z - expected.z) < 1e-6 && Math.abs(got.x) >= Math.abs(expected.x) - 1e-6,
       `${got.toArray()} vs ${JSON.stringify(expected)}`,
     );
     check('driverEye/wiring: the height-accurate pose is NOT the legacy pose (the fallback did not silently win)', !got.equals(posUnset));
