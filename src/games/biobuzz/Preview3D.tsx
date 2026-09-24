@@ -91,6 +91,24 @@ interface ThumbRequest {
 let queue: ThumbRequest[] = [];
 let draining = false;
 
+/**
+ * WHEN THE BROWSER HAS NOTHING BETTER TO DO — the batch waits for it, and so does each capture.
+ *
+ * The batch used to start on a microtask, in the same moment the builder's live turntable was
+ * creating ITS context, so entering Configure ▸ Robot stacked two WebGL setups, two environment
+ * maps and three synchronous captures into one burst: ~130 ms of the ~210 ms of long tasks
+ * measured on entry (2026-09-23). The cards show the 2D schematic meanwhile, so waiting costs
+ * nothing a player can see except the swap. The timeout is the upper bound on a busy page.
+ * ponytail: still a second context per batch; drawing thumbnails through the turntable's own
+ * scene would remove it, if a trace ever shows the idle-time batch mattering.
+ */
+function idle(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestIdleCallback === 'function') requestIdleCallback(() => resolve(), { timeout: 2000 });
+    else setTimeout(resolve, 300);
+  });
+}
+
 async function drain(): Promise<void> {
   const batch = queue;
   queue = [];
@@ -114,13 +132,18 @@ async function drain(): Promise<void> {
       // asked for the procedural room. The cache is per DOCUMENT and regenerated on demand, so a
       // settings change catching up on the next load is the whole of the cost.
       scene = factory(host, { interactive: false, animate: false });
-      for (const req of batch) {
+      // ONE CAPTURE PER IDLE SLICE, after the shaders are compiled off the main thread (`ready`):
+      // a capture is a synchronous render + PNG encode, and three of them in a row were one task.
+      while (batch.length > 0) {
+        const req = batch[0];
         scene.setSpec(req.spec, req.alliance);
+        await scene.ready();
+        await idle();
         const url = scene.capture(THUMB_CAPTURE_PX);
         if (url) thumbs.set(req.key, url);
         req.resolve(url);
+        batch.shift();
       }
-      batch.length = 0;
     }
   } catch (err) {
     // no WebGL2, a software renderer, a failed chunk — the cards drop their thumbnail
@@ -146,7 +169,7 @@ function thumbFor(spec: RobotSpec, alliance: Alliance): Promise<string> {
     queue.push({ key, spec, alliance, resolve });
     if (draining) return;
     draining = true;
-    void Promise.resolve().then(drain);
+    void idle().then(drain);
   });
 }
 
@@ -334,16 +357,16 @@ export function BiobuzzPreview3D({
 // ─────────────────────────────────────────────────── the saved-robot thumbnail ──
 
 /**
- * `GameModule.savedThumb` for BIOBUZZ — the picture beside one saved build's name.
+ * `GameModule.savedThumb` for BIOBUZZ — the picture in one saved build's card.
  *
  * On the 3D view it is a render of the robot, made once per build through the same scene the
- * builder preview uses. On the 2D view it is NOTHING: the card is its name and build line, which
- * is what it always said, and a schematic at thumbnail size is a smudge rather than a picture.
+ * builder preview uses. Everywhere else it is the 2D SCHEMATIC, in the same box: on the 2D view,
+ * while the render is still being made, and on a machine that cannot make one (no WebGL2, a
+ * software renderer). Every saved card in every game carries a picture (owner, 2026-09-23), and at
+ * 96px the schematic reads — it was a smudge only at the old 48.
  *
- * The box holds its size while the image is still rendering, so the card does not jump when it
- * lands (§1.4 of `docs/ui-standard.md`). A render that FAILED — no WebGL2, a software renderer —
- * takes the box away rather than leaving an empty dark square beside the name for the life of the
- * page; that is one change, once, on a machine that cannot draw the picture at all.
+ * The box is a fixed size whichever picture is in it, so the card does not jump when the render
+ * lands (§1.4 of `docs/ui-standard.md`).
  */
 export function BiobuzzSavedThumb({ spec, alliance }: GameSavedCardProps) {
   const pref = useViewPref();
@@ -361,12 +384,11 @@ export function BiobuzzSavedThumb({ spec, alliance }: GameSavedCardProps) {
     };
   }, [pref, spec, alliance]);
 
-  if (pref !== '3d' || url === '') return null;
   return (
     <span className="ds-robot-card-thumb">
       {/* DECORATIVE: the card already names the robot and its team beside this, so an alt text
           would be a third reading of the same thing for a screen reader. */}
-      {url ? <img src={url} alt="" /> : null}
+      {pref === '3d' && url ? <img src={url} alt="" /> : <BiobuzzRobotPreview spec={spec} size={88} caption={false} />}
     </span>
   );
 }

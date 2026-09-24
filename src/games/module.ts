@@ -629,6 +629,8 @@ export interface RobotPreviewScene {
   resize(width: number, height: number, dpr: number): void;
   /** ONE frame at `size`x`size` CSS pixels, synchronously, as a PNG data URL. */
   capture(size: number): string;
+  /** resolves once the first build's shaders are compiled off the main thread */
+  ready(): Promise<void>;
   dispose(): void;
 }
 

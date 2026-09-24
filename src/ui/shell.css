@@ -4729,9 +4729,12 @@ tr.lb-detail td {
 /* ---- robot cards (`RobotCard.tsx`) ----------------------------------------------------------
    A saved robot and a preset are ONE card, in the builder and in the lobby's swap row: the name,
    the team when there is one, and one build line. AUTO-FILL, so a lone saved robot is one card
-   wide — the width of a preset under it — rather than a slab across the whole panel. */
+   wide rather than a slab across the whole panel. 260px, not 200: a card with a 96px picture has
+   to leave its text a column a name can be read in (one that still does not fit scrolls,
+   `Marquee`). Measured at 220, two cards sat side by side at 1100 with a 90px text column and a
+   build line six lines deep; one card a row there reads better. */
 .ds-opts.robots {
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
 }
 /* (0,3,0), so it outranks `.ds-opt:not(.mini):not(:has(.od))` by source order */
 .ds-opts .ds-opt.ds-robot-card {
@@ -4740,51 +4743,80 @@ tr.lb-detail td {
   align-content: start;
   gap: var(--ds-s-1) var(--ds-s-3);
 }
-/* a card with a picture: the picture beside the NAME, and the team and build line under both,
-   so neither of them is squeezed into what is left beside a 48px square */
+/* A CARD WITH A PICTURE: the picture is the LEFT COLUMN, spanning every row, and the name, team
+   and build line are stacked to its right (owner, 2026-09-23: the 48px square beside the name was
+   too small to show a robot). `auto` rows, and the last one takes the slack, so the text sits at
+   the top beside a picture taller than it. */
 .ds-opts .ds-opt.ds-robot-card:has(> .ds-robot-card-thumb) {
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: 96px minmax(0, 1fr);
+  grid-template-rows: auto auto 1fr;
 }
 /* `-2` is the LAST column: the only one without a picture, the second with one */
-.ds-robot-card > .ot {
+.ds-robot-card > .ot,
+.ds-robot-card > .od,
+.ds-robot-card > .om {
   grid-column: -2;
-  align-self: center;
+  min-width: 0;
+}
+/* the name and the team are ONE LINE each; `Marquee` scrolls the one that does not fit */
+.ds-robot-card > .ot {
+  display: flex;
+  align-items: center;
 }
 .ds-robot-card > .od {
-  grid-column: 1 / -1;
+  display: flex;
 }
 /* a real, documented robot (a kit shape, a real team's build) says so in a word beside its name,
-   not a stripe down one edge (design review C51) */
+   not a stripe down one edge (design review C51). It keeps its width; the name is what gives. */
 .ds-robot-card > .ot .ds-badge {
+  flex: none;
   margin-left: var(--ds-s-2);
 }
 /* the build line is a sentence of words, not a row of figures, so it takes the UI face */
 .ds-robot-card > .om {
-  grid-column: 1 / -1;
   font-family: var(--ds-font-ui);
   font-size: var(--ds-t-sm);
   letter-spacing: normal;
   line-height: var(--ds-lh-prose);
 }
-/* 48px shows the 192px capture at a quarter, crisp on a 2x panel. It holds its size while the
-   image renders, so the card does not jump (§1.4). On the field's dark ground, like the sprite. */
+/* 96px shows the 192px capture at half, crisp on a 2x panel. It holds its size while the image
+   renders, so the card does not jump (§1.4). On the field's dark ground, like the sprite. A 2D
+   picture (every game's schematic) is centred in the same box. */
 .ds-robot-card-thumb {
-  display: block;
-  width: 48px;
-  height: 48px;
+  grid-row: 1 / -1;
+  display: grid;
+  place-items: center;
+  width: 96px;
+  height: 96px;
   border-radius: var(--ds-round-sm);
   border: 1px solid var(--ds-hud-line);
   background: var(--ds-bg);
   overflow: hidden;
 }
-/* the capture frames the whole floor disc; at 48px the robot is what matters, so it is cropped
-   in on the centre (a transform, so it moves nothing) */
+/* the capture frames the whole floor disc; the robot is what matters, so it is cropped in on the
+   centre (a transform, so it moves nothing) */
 .ds-robot-card-thumb img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
   transform: scale(1.35);
+}
+/* the 2D schematics: DECODE draws a `<canvas>` with both sides inline, the other two an `<svg>`.
+   Box both square and let the drawing keep its own ratio (see `.ds-hero-view canvas`). */
+.ds-robot-card-thumb svg,
+.ds-robot-card-thumb canvas {
+  max-width: 88px;
+  max-height: 88px;
+  width: auto;
+  height: auto;
+}
+.ds-robot-card-thumb canvas {
+  object-fit: contain;
+}
+/* the thumb box is the frame; DECODE's sprite would otherwise draw a second one inside it */
+.ds-robot-card-thumb .ds-robot-sprite {
+  border: 0;
 }
 /* A LABEL FOR A SCREEN READER AND NOT FOR THE EYE — the app's one visually-hidden utility
    (analytics' From/To, the results live line, "Link copied", the connection word). Use it
@@ -4989,10 +5021,11 @@ input[type='range'].ds-range:disabled {
    directions, the top chip clipped and the name cut to "My Ro…". Under it the card was a 509px
    stack, 690px on a phone.
 
-   THE BUDGET: the 96px picture sets the row. Six numbers in a fixed grid sit beside it — three
-   by two where the card has the room, two by three where it does not — so no season's stat can
-   widen or deepen the card, and nothing inside it scrolls. The build's WORDS are one line under
-   the team. The card is 114px as a strip, 118px when its numbers stack three deep. */
+   THE BUDGET: the 160px picture sets the row, in a column that takes about the left quarter to
+   third of the card (owner, 2026-09-23: at 96px the robot was too small to read). Six numbers in
+   a fixed grid sit beside it — three by two where the card has the room, two by three where it
+   does not — so no season's stat can widen or deepen the card, and nothing inside it scrolls. The
+   build's WORDS are one line under the team. The card is about 178px as a strip. */
 .ds-hero {
   container: hero / inline-size;
   border: 1px solid var(--ds-line);
@@ -5006,7 +5039,7 @@ input[type='range'].ds-range:disabled {
 /* the card's own row. A container query cannot style the container, so the grid is one in. */
 .ds-hero-in {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(200px, 30%) minmax(0, 1fr) auto;
   grid-template-areas: 'view info stats';
   align-items: center;
   gap: var(--ds-s-3) var(--ds-s-4);
@@ -5018,25 +5051,25 @@ input[type='range'].ds-range:disabled {
   border-radius: var(--ds-round);
   border: 1px solid var(--ds-hud-line);
 }
-/* 96px is the picture's box, and the budget for the whole row. A picture's size, not a spacing
-   value, so it is a literal on purpose. */
+/* 160px is the picture's box, and the budget for the whole row. A picture's size, not a spacing
+   value, so it is a literal on purpose. The WIDTH is the column's. */
 .ds-hero-view {
   grid-area: view;
   display: grid;
   place-items: center;
-  height: 96px;
-  min-width: 96px;
+  height: 160px;
+  min-width: 0;
   padding: var(--ds-s-1);
   background: var(--ds-bg);
   border: 1px solid var(--ds-line-soft);
   border-radius: var(--ds-round);
 }
-/* 88px = the box less its padding. A PERCENTAGE cannot do this job: BIOBUZZ's schematic hangs off
-   `.bb-prev`, whose height is auto, so `max-height: 100%` resolved to none.
+/* 150px = the box less its padding and border. A PERCENTAGE cannot do the height: BIOBUZZ's
+   schematic hangs off `.bb-prev`, whose height is auto, so `max-height: 100%` resolved to none.
    BOTH ELEMENTS: Chain Reaction and BIOBUZZ draw an `<svg>`, DECODE a `<canvas>`. */
 .ds-hero-view svg {
-  max-height: 88px;
-  max-width: 88px;
+  max-height: 150px;
+  max-width: 100%;
   width: auto;
   height: auto;
 }
@@ -5044,8 +5077,8 @@ input[type='range'].ds-range:disabled {
    scale the other one — clamping the height alone squashed DECODE's robot to a letterbox of the
    wrong shape. Box it square and let `object-fit` read the bitmap's own ratio. */
 .ds-hero-view canvas {
-  max-width: 88px;
-  max-height: 88px;
+  max-width: 100%;
+  max-height: 150px;
   object-fit: contain;
 }
 .ds-hero-info {
@@ -5055,13 +5088,19 @@ input[type='range'].ds-range:disabled {
   gap: var(--ds-s-1);
   min-width: 0;
 }
-/* THE NAME WRAPS; IT IS NEVER CUT. It is the one thing on the card the player typed. */
+/* THE NAME IS NEVER CUT: one line, and it SCROLLS when it does not fit (`Marquee`, owner
+   2026-09-23). It used to wrap, which with the picture at a third of the card broke a 24-character
+   name mid-word across three lines at 1100px and made the pinned card taller. The team too. */
+.ds-hero-name,
+.ds-hero-team {
+  display: flex;
+  min-width: 0;
+}
 .ds-hero-name {
   font-size: var(--ds-t-xl);
   font-weight: 800;
   letter-spacing: -0.01em;
   line-height: var(--ds-lh-tight);
-  overflow-wrap: anywhere;
 }
 .ds-hero-team {
   color: var(--ds-mut);
@@ -5125,10 +5164,10 @@ input[type='range'].ds-range:disabled {
   }
 }
 /* A PHONE-WIDTH CARD: the picture and the name share the top row, the numbers go under both —
-   three across, which a 280px card holds. */
+   three across, which a 280px card holds. The picture keeps about 40% of the row. */
 @container hero (max-width: 439px) {
   .ds-hero-in {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
     grid-template-areas:
       'view info'
       'stats stats';
@@ -5140,7 +5179,7 @@ input[type='range'].ds-range:disabled {
 
 /* ─── the BIOBUZZ robot preview: the 2D/3D toggle and the live turntable ───────────────────
    `docs/roadmap.md` item 1. The base rules are the preview on its own; inside the hero it is the
-   96px row below (`.ds-hero .bb-prev`). A FIXED box either way: switching 2D/3D must not resize
+   160px row below (`.ds-hero .bb-prev`). A FIXED box either way: switching 2D/3D must not resize
    the card, and neither must a thumbnail landing on a saved-robot card below. */
 .bb-prev {
   display: grid;
@@ -5411,9 +5450,9 @@ button.bb-cell:where(:not(:disabled)):active {
 /* the BIOBUZZ preview INSIDE the hero: the 2D/3D toggle goes BESIDE the picture — stacked over
    it, the toggle and not the robot would set the row's height. */
 .ds-hero .bb-prev {
-  grid-auto-flow: column;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  width: auto;
+  width: 100%;
 }
 .ds-hero .bb-prev-tabs {
   order: 2;
@@ -5423,9 +5462,10 @@ button.bb-cell:where(:not(:disabled)):active {
   margin-left: 0;
 }
 .ds-hero .bb-prev-host {
-  width: 88px;
-  height: 88px;
+  width: 100%;
+  height: 150px;
   max-height: none;
+  aspect-ratio: auto;
 }
 /* 3D ASKED FOR AND NOT AVAILABLE: the segment reads as the chassis map's TAKEN cell does — a
    dashed edge and muted ink — and its title says why. Still a button: pressing it retries. */
@@ -5435,15 +5475,16 @@ button.bb-cell:where(:not(:disabled)):active {
   color: var(--ds-mut);
 }
 
-/* PINNED, but only with height to spare. At 720px tall or less the card simply scrolls away:
-   114px is 16% of that viewport, which is affordable to LOOK at and not to give up permanently.
+/* PINNED, but only with height to spare. Under 860px tall the card simply scrolls away: at about
+   178px it would be a quarter of a 720px viewport, which is affordable to LOOK at and not to give
+   up permanently. 860 keeps it near a fifth.
    1100px wide is where the Configure page has both nav columns and the card has 535px, which the
    container rules above still fit on one row.
 
    FLUSH UNDER THE BAR, unlike `.ds-subnav`'s 84px. The sub-nav is a list of transparent
    buttons, so the 21px of page showing above it is page; an opaque card pinned there instead
    leaves a 21px window with the panel behind it scrolling through, which reads as a bug. */
-@media (min-width: 1100px) and (min-height: 721px) {
+@media (min-width: 1100px) and (min-height: 860px) {
   .ds-hero {
     position: sticky;
     top: var(--ds-bar-h);

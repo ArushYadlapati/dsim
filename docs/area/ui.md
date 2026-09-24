@@ -308,19 +308,33 @@ where the settings are stored, which nobody picks a section by, and went as clut
   scrolling in both directions between 1100 and 1280 with the top chip clipped and the name cut to
   "My Ro…", and under 1100 the card was 509px tall (690 on a phone). **It is ONE card now, laid
   out by a CONTAINER query on its own width** — the viewport breakpoint gave a 535px card a strip it
-  could not hold. The 96px picture sets the row; beside it the name (it wraps, never truncates), the
-  team, and ONE build line (`buildWords`); then a FIXED grid of six numbers, 3×2 or 2×3, so no
-  season's stat can widen or deepen the card and nothing in it scrolls. 114px as a strip (up to 134
-  with a 24-character name at 1100); on a phone the numbers go under the picture. A 3D preview
-  that cannot start marks its 3D segment (dashed, reason in the title); it does not print a
-  sentence into the 96px column, which is what cut the name.
+  could not hold. The picture is a 160px-tall box in a column of `minmax(200px, 30%)` (owner,
+  2026-09-23: "the robot should take up the left fourth - third"; it was 96px and too small to
+  read); beside it the name and the team, ONE LINE each, scrolling when they do not fit (`Marquee`
+  — wrapped, a 24-character name broke mid-word across three lines at 1100), and ONE build line
+  (`buildWords`); then a FIXED grid of six numbers, 3×2 or 2×3, so no season's stat can widen or
+  deepen the card. About 178px as a strip, so it pins only from **860px** tall (it was 721 at
+  114px). On a phone the numbers go under the picture. A 3D preview that cannot start marks its 3D
+  segment (dashed, reason in the title); it does not print a sentence into the picture column.
 - **ONE ROBOT CARD** (`src/ui/RobotCard.tsx`): a saved robot, a preset, and the "Your robot" swap
   row in the lobby and the ranked strategy window. Name, the team when there is one (a preset's
   only when it is a real team — a demo's `teamName` is a tagline), and ONE line, `buildWords`: the
   drivetrain and the mechanisms, no numbers. A preset card used to carry a tagline, a spec line and
-  a loadout chip — three readings of one robot. A game's thumbnail (`GameModule.savedThumb`,
-  BIOBUZZ's 3D render) sits beside the name and never replaces the line. `.ds-opts.robots` is
-  auto-FILL, so a lone saved robot is one card wide, not a slab across the panel.
+  a loadout chip — three readings of one robot. **Every SAVED robot in the builder carries a 96px
+  picture** (owner, 2026-09-23), as the card's LEFT COLUMN with the name, team and line stacked to
+  its right: the game's `GameModule.savedThumb` when it has one (BIOBUZZ: the 3D render, else its
+  2D schematic), otherwise the same 2D schematic the hero draws. The name and team are one line
+  each through `Marquee` (the results roster's — two passes, hover pauses, off under reduced
+  motion; not infinite, WCAG 2.2.2). Presets and the lobby pass no picture and are unchanged.
+  `.ds-opts.robots` is auto-FILL at `minmax(260px, 1fr)`, so a lone saved robot is one card wide;
+  at 220 two cards shared 1100px with a 90px text column.
+- ⚠️ **ENTERING CONFIGURE ▸ ROBOT IS MEASURED, 2026-09-23** (cold, offscreen Electron, long tasks
+  over 50 ms). DECODE's `RobotPreview` used to call `createWorld` per picture, whose G304 start
+  search is ~30 ms a call; with the saved cards that was a 276 ms task, so it now builds ONE
+  template world per document (0 ms after). BIOBUZZ 3D was ~210 ms: the thumbnail batch now waits
+  for idle and captures one per slice, and the preview warms its shaders with `compileAsync`
+  before it draws (~140 ms after, the floor being context + PMREM setup). Prefetching the scene
+  chunk was measured and bought nothing. A new picture on this page gets measured the same way.
 
 **Configure copy.** No decorative glyph (the `🎯` on preset cards, the `＋` on the add cards and
 the `✎` on Edit build are gone), no sentence whose content is where another screen is, and no

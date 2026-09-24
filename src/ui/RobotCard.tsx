@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import type { RobotSpec } from '../types';
 import type { GameId } from '../games/types';
 import { buildWords } from './robotLabels';
+import { Marquee } from './Marquee';
 
 /**
  * ONE ROBOT CARD — a saved robot and a preset in the builder's `Start from`, and a saved robot in
@@ -17,8 +18,9 @@ import { buildWords } from './robotLabels';
  * name in its corner. The swap rows said a name and a drivetrain.
  *
  * So a card is: the NAME, the TEAM when there is one, and ONE line — `buildWords`, the drivetrain
- * and the mechanisms. The numbers are the hero's; the tagline was flavour. A thumbnail, when the
- * game draws one (`GameModule.savedThumb`), sits beside the name and never replaces the line.
+ * and the mechanisms. The numbers are the hero's; the tagline was flavour. A picture, when the
+ * caller passes one (every saved robot in the builder), is the card's LEFT COLUMN, and the name,
+ * team and line sit to its right. It never replaces the line.
  *
  * It is a `.ds-opt`, so selection, hover, press and focus are the option card's and cannot drift
  * from every other pick in the app. A real robot says so in a WORD beside its name (`.ds-badge`):
@@ -55,11 +57,17 @@ export function RobotCard({
   const body = (
     <>
       {thumb}
+      {/* the NAME and the TEAM are one line each and scroll when they do not fit (`Marquee`, the
+          results roster's). The badge is a SIBLING of the clip: the clip is what gets measured. */}
       <span className="ot">
-        {spec.name || 'Unnamed'}
+        <Marquee text={spec.name || 'Unnamed'} />
         {real ? <span className="ds-badge">Real robot</span> : null}
       </span>
-      {team ? <span className="od">{team}</span> : null}
+      {team ? (
+        <span className="od">
+          <Marquee text={team} />
+        </span>
+      ) : null}
       <span className="om">{buildWords(spec, game).join(' · ')}</span>
     </>
   );

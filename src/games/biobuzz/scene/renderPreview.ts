@@ -174,6 +174,10 @@ export interface RobotPreviewScene {
    * a call that happens three times a session cheaper.
    */
   capture(size: number): string;
+  /** resolves once the first build's shaders are compiled — see `warmUp`. A thumbnail batch
+   * awaits it before its first `capture`, which is synchronous and would otherwise block on the
+   * compile itself. */
+  ready(): Promise<void>;
   dispose(): void;
 }
 
@@ -434,6 +438,26 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
    *  caller handing the spec back — the wheel tessellation is baked at build time (see
    *  `bbWheelDetail`) and is the one setting this preview cannot apply in place. */
   let builtSpec: RobotSpec | null = null;
+
+  /**
+   * THE FIRST BUILD'S SHADERS COMPILE OFF THE MAIN THREAD. A first `render()` compiles every
+   * program synchronously and then BLOCKS on the link (`getProgramInfoLog`): measured at ~100 ms of
+   * the ~210 ms of long tasks on entering Configure ▸ Robot in BIOBUZZ 3D (2026-09-23).
+   * `compileAsync` polls `KHR_parallel_shader_compile` instead, so the loop draws nothing until it
+   * resolves — a blank frame or two in a box that was blank anyway while the chunk loaded. Once
+   * only: a later rebuild adds a mechanism's material or two, which is the old, small cost.
+   */
+  let warm = false;
+  let warming: Promise<void> | null = null;
+  function warmUp(): Promise<void> {
+    warming ??= renderer
+      .compileAsync(scene, camera)
+      .catch(() => undefined)
+      .then(() => {
+        warm = true;
+      });
+    return warming;
+  }
   let builtWheelDetail: BbWheelDetail = bbWheelDetail(settings, tier);
 
   function rebuild(spec: RobotSpec): void {
@@ -456,6 +480,7 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
     scene.add(group);
     measure(group);
     tuneMaterials();
+    void warmUp();
   }
 
   /** place the camera for this frame. `dt` advances the turntable; 0 leaves it where it is. */
@@ -485,7 +510,7 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
   function loop(): void {
     raf = requestAnimationFrame(loop);
     const now = performance.now();
-    if (frameInterval > 0 && now - lastDraw < frameInterval) return;
+    if (!warm || (frameInterval > 0 && now - lastDraw < frameInterval)) return;
     const dt = lastT === 0 ? 0 : Math.min(0.25, (now - lastT) / 1000);
     lastT = now;
     lastDraw = now;
@@ -630,6 +655,9 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
       hostDpr = prevDpr;
       syncSize();
       return url;
+    },
+    ready(): Promise<void> {
+      return warmUp();
     },
     dispose(): void {
       if (disposed) return;

@@ -4083,6 +4083,45 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
           !readFileSync(join(root, 'src', 'ui', 'MatchStrategy.tsx'), 'utf8').includes('allow3d'),
       );
       check('Menu hands the savedThumb slot to the saved-robot card', menuSrc.includes('<SavedThumb spec={r}'));
+      // A PICTURE ON EVERY SAVED ROBOT, in every game (owner, 2026-09-23): a game with no
+      // savedThumb gets the hero's 2D schematic, and BIOBUZZ's slot draws its own schematic
+      // whenever it has no 3D render (2D view, still rendering, or a machine that cannot)
+      check(
+        '...and a game with no savedThumb still gets a 2D picture on the card',
+        menuSrc.includes('<span className="ds-robot-card-thumb">{preview2d(r,'),
+      );
+      check(
+        'the BIOBUZZ thumbnail falls back to the 2D schematic, never to nothing',
+        slotCode.includes("pref === '3d' && url ? <img") && slotCode.includes('<BiobuzzRobotPreview spec={spec} size={88}'),
+      );
+      // ENTERING THE PAGE: the thumbnail batch must not stack a second WebGL setup on the live
+      // turntable's (measured ~130 of ~210 ms of long tasks), and the first build's shaders
+      // compile off the main thread (`compileAsync`) before anything captures or draws
+      check(
+        'the thumbnail batch starts on idle and captures one per idle slice, after `ready()`',
+        slotCode.includes('void idle().then(drain)') &&
+          !slotCode.includes('Promise.resolve().then(drain)') &&
+          slotCode.includes('await scene.ready()') &&
+          slotCode.includes('await idle()'),
+      );
+      check(
+        'the preview scene warms its shaders with compileAsync and draws nothing until then',
+        previewSrc.includes('.compileAsync(scene, camera)') && previewSrc.includes('if (!warm ||'),
+      );
+      // DECODE's sprite preview builds its template world ONCE: `createWorld` runs the G304 start
+      // search (~30 ms a call), and a hero plus three saved cards made it a 276 ms long task
+      check(
+        'the DECODE robot preview builds one template world per document, not one per picture',
+        readFileSync(join(root, 'src', 'ui', 'RobotPreview.tsx'), 'utf8').includes('template ??= createWorld('),
+      );
+      // the name and the team are one line each and scroll rather than wrap, on the card and in
+      // the pinned hero — the results roster's own marquee, not a second one
+      check(
+        'robot cards and the hero put the name and team through the shared Marquee',
+        readFileSync(join(root, 'src', 'ui', 'RobotCard.tsx'), 'utf8').includes('<Marquee text={spec.name') &&
+          menuSrc.includes('<Marquee text={spec.name') &&
+          readFileSync(join(root, 'src', 'ui', 'Results.tsx'), 'utf8').includes('<Marquee text={p.name}'),
+      );
       // the picture sits BESIDE the name and never replaces the build line: a thumbnail that did
       // not render used to leave a tall card with nothing on it but a name (owner, 2026-09-22)
       check(

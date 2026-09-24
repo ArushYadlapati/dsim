@@ -75,6 +75,7 @@ import { ChainRobotPreview } from '../games/chain/RobotPreview';
 import { moduleFor } from '../games';
 import { DRIVETRAIN_LABELS, buildWords, teamLine } from './robotLabels';
 import { RobotCard } from './RobotCard';
+import { Marquee } from './Marquee';
 import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
 import { starPoints } from '../render/drawRobot';
@@ -508,6 +509,18 @@ export function Menu({ settings, onChange }: Props) {
   // the saved-robot card's THUMBNAIL, when the game draws one: BIOBUZZ renders the build on the
   // 3D view. DECODE and CR draw none, and their cards are the name and the build line.
   const SavedThumb = mod.savedThumb;
+  /** the game's 2D schematic of a build — the hero's picture and a saved card's, one spelling. TWO
+   * components, not one with a `chain` flag: DECODE's schematic is main's, untouched, and Chain
+   * Reaction's is its own, so work on one game's mechanisms can never change how the other's robot
+   * looks. A game with a `Preview` slot draws its own (BIOBUZZ's, without `allow3d`, is 2D). */
+  const preview2d = (s: RobotSpec, size: number) =>
+    Preview ? (
+      <Preview spec={s} size={size} alliance={settings.alliance} caption={false} />
+    ) : isDecode ? (
+      <RobotPreview spec={s} size={size} caption={false} />
+    ) : (
+      <ChainRobotPreview spec={s} size={size} caption={false} />
+    );
   // slider envelopes come from the SAME limit functions coerceSpec clamps with,
   // in the same dependency order (intake → size, drivetrain → rpm, drivetrain ×
   // inertia → mass), so the UI and the validator can never disagree
@@ -607,24 +620,26 @@ export function Menu({ settings, onChange }: Props) {
         <div className="ds-hero">
           <div className="ds-hero-in">
             <div className="ds-hero-view">
-              {/* TWO components, not one with a `chain` flag: DECODE's schematic is
-                  main's, untouched, and Chain Reaction's is its own — so work on one
-                  game's mechanisms can never change how the other's robot looks.
-                  NO CAPTION: at 88px the dimension line was 5px type. The size is a stat. */}
+              {/* NO CAPTION: the dimension line is small type under a picture, and the size is
+                  already a stat. */}
               {Preview ? (
                 // `allow3d`: this is ONE preview on screen and it is the whole point of the
                 // screen, so a game with a 3D generator may mount a live scene here. The
                 // strategy cards pass no such thing — see `GamePreviewProps`.
-                <Preview spec={spec} size={160} alliance={settings.alliance} allow3d caption={false} />
-              ) : isDecode ? (
-                <RobotPreview spec={spec} size={160} caption={false} />
+                <Preview spec={spec} size={200} alliance={settings.alliance} allow3d caption={false} />
               ) : (
-                <ChainRobotPreview spec={spec} size={160} caption={false} />
+                preview2d(spec, 200)
               )}
             </div>
             <div className="ds-hero-info">
-              <div className="ds-hero-name">{spec.name || 'Unnamed'}</div>
-              {heroTeam ? <div className="ds-hero-team">{heroTeam}</div> : null}
+              <div className="ds-hero-name">
+                <Marquee text={spec.name || 'Unnamed'} />
+              </div>
+              {heroTeam ? (
+                <div className="ds-hero-team">
+                  <Marquee text={heroTeam} />
+                </div>
+              ) : null}
               <div className="ds-hero-build">{buildWords(spec, settings.game).join(' · ')}</div>
             </div>
             <dl className="ds-hero-stats">
@@ -671,9 +686,17 @@ export function Menu({ settings, onChange }: Props) {
                       game={settings.game}
                       on={sameRobot(spec, r)}
                       team={teamLine(r)}
-                      // the game's own picture, when it draws one: BIOBUZZ renders the build on
-                      // the 3D view. It sits BESIDE the name and never replaces the line.
-                      thumb={SavedThumb ? <SavedThumb spec={r} alliance={settings.alliance} /> : undefined}
+                      // A PICTURE ON EVERY SAVED ROBOT, in every game (owner, 2026-09-23): the
+                      // game's own when it draws one (BIOBUZZ: the 3D render, or its schematic on
+                      // the 2D view), else the same 2D schematic the hero draws. The card's left
+                      // column; it never replaces the line.
+                      thumb={
+                        SavedThumb ? (
+                          <SavedThumb spec={r} alliance={settings.alliance} />
+                        ) : (
+                          <span className="ds-robot-card-thumb">{preview2d(r, 88)}</span>
+                        )
+                      }
                       onPick={() => applySpec({ ...r })}
                       onDelete={() => deleteSavedRobot(i)}
                     />

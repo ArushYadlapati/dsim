@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef } from 'react';
-import type { RobotSpec, RobotState, World } from '../types';
+import type { RobotSpec, RobotState } from '../types';
 import * as C from '../config';
-import { createWorld, DEFAULT_ASSISTS } from '../sim/spawn';
+import { coerceSpec, createWorld, DEFAULT_ASSISTS } from '../sim/spawn';
+import { DEFAULT_SPEC } from '../sim/specDefaults';
 import { footprintExtents } from '../sim/field';
 import { drawRobot } from '../render/drawRobot';
 import { clampCosmetics } from '../cosmetics';
@@ -10,6 +11,23 @@ import { clampCosmetics } from '../cosmetics';
 const PAD = 0.16;
 /** the caption's type size in CSS px */
 const DIM_FONT = 11;
+
+/**
+ * ONE template robot per document, and each preview puts its own build into it.
+ *
+ * ⚠️ `createWorld` is NOT cheap for a picture: seating robot 0 runs the G304 start-pose search
+ * (`snapStartToLegal`), measured at ~30 ms a call and 126 ms of a 152 ms long task on entering
+ * Configure ▸ Robot with the hero and three saved cards (2026-09-23). The preview then throws the
+ * pose away — position, heading, turret and hopper are all overridden below — so the only thing
+ * the build changes in the template is `spec`, which is coerced exactly as `createWorld` would.
+ */
+let template: RobotState | null = null;
+function previewRobot(spec: RobotSpec): RobotState {
+  template ??= createWorld('match', 1, [
+    { id: 0, alliance: 'blue', spec: DEFAULT_SPEC, assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
+  ]).robots[0];
+  return { ...template, spec: coerceSpec(spec) };
+}
 
 /**
  * The builder's robot preview — THE REAL SPRITE, not a drawing of one.
@@ -52,18 +70,11 @@ export function RobotPreview({
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // a real world, and therefore a real RobotState — turret, wheels, hopper and all.
-  // Rebuilt only when the BUILD changes; the spec object identity churns on every
-  // keystroke in the name field, which is not a reason to respawn a world.
+  // a real RobotState — turret, wheels, hopper and all (`previewRobot`). Rebuilt only when
+  // the BUILD changes; the spec object identity churns on every keystroke in the name field.
   const key = specKey(spec);
-  const world: World = useMemo(
-    () =>
-      createWorld('match', 1, [
-        { id: 0, alliance: 'blue', spec, assists: { ...DEFAULT_ASSISTS }, startIndex: 0 },
-      ]),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [key],
-  );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const tpl: RobotState = useMemo(() => previewRobot(spec), [key]);
 
   const fx = footprintExtents(spec);
   // NOSE UP: the robot is drawn at heading +90°, so its forward axis (+x in the robot
@@ -97,7 +108,6 @@ export function RobotPreview({
     // the chassis origin is not the footprint's centre when an intake extends one end
     ctx.translate(0, -(fx.front - fx.rear) / 2);
 
-    const tpl = world.robots[0];
     const robot: RobotState = {
       ...tpl,
       pos: { x: 0, y: 0 },
@@ -125,7 +135,7 @@ export function RobotPreview({
     ctx.textBaseline = 'bottom';
     ctx.fillText(`${spec.width}" wide · ${spec.length}" long`, size / 2, height - 6);
     ctx.restore();
-  }, [world, spec, size, height, boxW, boxH, fx.front, fx.rear, caption]);
+  }, [tpl, spec, size, height, boxW, boxH, fx.front, fx.rear, caption]);
 
   return (
     <canvas
