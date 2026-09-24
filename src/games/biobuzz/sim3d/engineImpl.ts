@@ -774,7 +774,8 @@ function syncElement(RAPIER: Rapier3d, engine: Engine3d, world: World, b: Artifa
         .setFriction(ELEMENT_FRICTION)
         .setRestitution(ELEMENT_RESTITUTION)
         .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max)
-        .setCollisionGroups(GROUP_ELEMENT),
+        // a NECTAR also carries the bit the FLOWER's middle-ring lip meets (`groups.ts`)
+        .setCollisionGroups(isNectar ? GROUP_NECTAR : GROUP_ELEMENT),
       body,
     );
     engine.elements.set(b.id, body);
@@ -837,6 +838,7 @@ export function syncElements(world: World, engine: Engine3d): void {
 import { BB_HALF_X, BB_HALF_Y } from '../config';
 import { hiveDetentHold, hiveTiltAngle } from './hive3d';
 import { tiltQuatX } from './math3';
+import { GROUP_NECTAR } from './groups';
 
 /**
  * Drive both hive trays' KINEMATIC rotation from `hiveTiltAngle` -- the Day 1 fallback

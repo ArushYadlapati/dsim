@@ -1,5 +1,6 @@
 import type { Check } from './harness';
-import { cmd, mkWorld3dPair } from './harness';
+import { cmd, mkWorld3d, mkWorld3dPair } from './harness';
+import { bbBotBuildByKey } from '../../src/games/biobuzz/ai/builds';
 import { step3d } from '../../src/games/biobuzz/sim3d/step3d';
 import {
   createFullPredictor,
@@ -11,6 +12,7 @@ import {
 import {
   BB_HALF_Y,
   BB_POLLEN_R,
+  bbHopperCap,
   BB_SIDE_ROLLER_OUT,
   BB_SIDE_ROLLER_R,
   PREDICT_ELEMENT_RADIUS,
@@ -472,5 +474,64 @@ export function predictChecks(check: Check): void {
       rampMs <= PREDICT_FULL_BUDGET_MS,
       `${rampMs.toFixed(1)}ms vs budget ${PREDICT_FULL_BUDGET_MS}ms (baseline ${baselineMs.toFixed(1)}ms)`,
     );
+  }
+
+  /**
+   * A FULL HOPPER INTO A WALL ROW OF POLLEN DOES NOT LIFT THE PREDICTED ROBOT (owner, 2026-09-24:
+   * "When my robot is full of balls (intake stopped) and I drive into a row of pollen that are
+   * against the field wall, my whole robot jumps upwards").
+   *
+   * The authority lets that row into the mouth pocket and never leaves the tiles. The predictor's
+   * chassis was one solid cuboid, so the pinned row was in front of a solid face and the solver
+   * lifted the chassis over it: 0.94–1.04 in at a 6-tick lead, 2.08–2.23 at 20, on the three
+   * builds below, every reconcile. Each is paired with the authority's own height on the same run,
+   * so the check cannot pass on a robot that never reached the row.
+   */
+  {
+    const wallY = -BB_HALF_Y;
+    const rows: string[] = [];
+    let ok = true;
+    for (const key of ['harvester', 'pollinator', 'sidewinder']) {
+      const w = mkWorld3d('free', 4400, bbBotBuildByKey(key));
+      w.balls.length = 0;
+      for (let k = 0; k < 7; k++) {
+        w.balls.push({
+          id: 100 + k,
+          color: 'yellow',
+          state: { kind: 'ground' },
+          pos: { x: -44 + (k - 3) * 2 * BB_POLLEN_R, y: wallY + BB_POLLEN_R + 0.02 },
+          vel: { x: 0, y: 0 },
+          z: 0,
+          vz: 0,
+          r: BB_POLLEN_R,
+        } as Artifact);
+      }
+      const r = w.robots[0];
+      r.hopper.length = 0;
+      for (let k = 0; k < bbHopperCap(r.spec); k++) r.hopper.push('yellow');
+      r.pos = { x: -44, y: wallY + 30 };
+      const side = r.spec.intakeMount === 'side';
+      r.heading = side ? Math.PI : -Math.PI / 2;
+      const c = side ? cmd({ driveX: -1, intake: true }) : cmd({ driveY: 1, leftDrive: 1, rightDrive: 1, intake: true });
+      const p = createFullPredictor(w, 0);
+      let pred = 0;
+      let auth = 0;
+      let reached = Infinity;
+      for (let t = 0; t < 240; t++) {
+        step3d(w, SIM_DT, new Map([[0, c]]));
+        auth = Math.max(auth, r.z ?? 0);
+        reached = Math.min(reached, r.pos.y - wallY);
+        if (t % 4 === 0) {
+          p.reset(w, w.tick);
+          let pose = p.step(c);
+          for (let k = 1; k < 20; k++) pose = p.step(c);
+          pred = Math.max(pred, pose.z);
+        }
+      }
+      p.dispose();
+      if (!(pred < 0.1 && auth < 0.1 && reached < 16)) ok = false;
+      rows.push(`${key}: predicted max z ${pred.toFixed(2)}, authority ${auth.toFixed(2)}, got within ${reached.toFixed(1)} in of the wall`);
+    }
+    check('⚠️ predict: a full hopper driven into a wall row of POLLEN does not lift the predicted robot', ok, rows.join(' · '));
   }
 }

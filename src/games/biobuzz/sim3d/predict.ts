@@ -26,6 +26,8 @@ import {
   chassisBoxDesc,
   chassisMechDesc,
   chassis3dMechShapes,
+  chassis3dPocketShapes,
+  chassis3dShapes,
   chassis3dReachShapes,
   clearChassis3dColliders,
   swapChassis3dReachColliders,
@@ -35,9 +37,11 @@ import {
   ELEMENT_RESTITUTION,
   ELEMENT_ROLL_DAMP,
   GROUP_ELEMENT,
+  GROUP_POCKET,
 } from './bodies';
 import { hiveTiltAngle } from './hive3d';
 import { hyp3, QUAT_IDENTITY, round4, tiltQuatX, yawQuat, yawOfQuat } from './math3';
+import { GROUP_NECTAR } from './groups';
 
 /**
  * BIOBUZZ 3D — CLIENT-SIDE PREDICTION WORLDS (Day 2, `docs/biobuzz/plan-3d.md` §5).
@@ -543,6 +547,10 @@ function buildKinematicTray(
 }
 
 /**
+ * ⚠️ **SUPERSEDED 2026-09-24 FOR ANY CHASSIS WITH A MOUTH** — see `fitChassis`: it builds the
+ * authority's compound now, because the cuboid lifted the robot over a wall row of POLLEN, and the
+ * cost below no longer measures what it did. What follows is the record of the original trade.
+ *
  * ⚠️ **THE PREDICTOR'S CHASSIS IS ONE `robotExtents` CUBOID, AND THAT IS A MEASURED TRADE, NOT
  * AN OVERSIGHT.** The authority solves a compound with an open intake mouth (`chassis3dShapes`,
  * `bodies.ts`); this predictor does not, so a predicted element can bounce off a mouth the real
@@ -627,9 +635,59 @@ function fitChassis(
    * there is, and exactly the one the driver feels.
    */
   const bodyTop = Math.min(BB3_CHASSIS_TOP_Z, heightIn);
+  const bodyCz = -heightIn / 2 + bodyTop / 2;
+  /**
+   * ⚠️ **THE MOUTH IS OPEN TO ELEMENTS HERE TOO — THE ONE PART OF THE POCKET THAT IS NOT A CHEAP
+   * RECONCILE** (owner, 2026-09-24: "When my robot is full of balls (intake stopped) and I drive
+   * into a row of pollen that are against the field wall, my whole robot jumps upwards").
+   *
+   * With one `robotExtents` cuboid, a POLLEN the server lets into the mouth pocket is, in the
+   * prediction, in front of a solid face. Free, it is pushed away and corrected. PINNED against
+   * the wall it cannot move, so the solver moves the chassis, and a body whose z is free rides UP
+   * over the row. MEASURED (`scratch/jump3.ts`), wall row, full hopper, three of the seven builds:
+   * the authority's z stayed at 0.00 while the predictor's reached 0.94–1.04 in at a 6-tick lead
+   * and 2.08–2.23 in at 20 ticks, every reconcile.
+   *
+   * So the LOCAL chassis, when it has a mouth, is the authority's compound (`chassis3dShapes`,
+   * `chassis3dPocketShapes`, `chassis3dReachShapes`) with one change: each lintel is folded into
+   * its pocket filler, which is taken up to the chassis top (`predictChassisShapes`). A filler alone,
+   * without the ARMS, was tried first and was worse on a wall row: the arms pin the row's END
+   * elements and stop the authority's chassis, and without them the prediction drove 1.1 in deeper
+   * every window. Over the seven bot builds at a 6-tick lead: no lift at all, p95 error 0.25 → 0.06
+   * in, worst 2.88 → 2.48. A remote robot keeps the cuboid (`usesCompound`).
+   *
+   * ⚠️ **THE COST THAT REFUSED THE COMPOUND ON 2026-09-19 IS NOT WHAT IT COSTS NOW.** That note
+   * (above `makeRobotBody`) measured 9–11 ms per forty-tick reconcile against an 8 ms budget. The
+   * PREDICT lane's push scene, best of five, isolated: 3 ms with the cuboid, 4 ms with this, 5 ms
+   * with the full compound. Re-measure there if the compound grows: Auto drops a machine to Light
+   * past `PREDICT_FULL_BUDGET_MS`, and Light predicts no elements at all.
+   */
+  if (usesCompound(body, r, heightIn)) {
+    // the frame, the mechanisms and each mouth's two arms, exactly as the authority builds them
+    for (const sh of predictChassisShapes(r.spec, heightIn)) {
+      world3d.createCollider(
+        chassisMechDesc(RAPIER, sh).setTranslation(sh.cx, sh.cy, sh.cz).setDensity(0).setFriction(PHYS_FRICTION).setRestitution(0),
+        body,
+      );
+    }
+    // ...and each pocket filler taken up to the chassis top, which is the lintel folded in
+    for (const pk of chassis3dPocketShapes(r.spec, heightIn)) {
+      world3d.createCollider(
+        chassisBoxDesc(RAPIER, pk.hx, pk.hy, bodyTop / 2)
+          .setTranslation(pk.cx, pk.cy, bodyCz)
+          .setDensity(0)
+          .setFriction(PHYS_FRICTION)
+          .setRestitution(0)
+          .setCollisionGroups(GROUP_POCKET),
+        body,
+      );
+    }
+    for (const sh of chassis3dReachShapes(r.spec, heightIn, rampReady)) world3d.createCollider(reachColliderDesc(RAPIER, sh), body);
+    return;
+  }
   world3d.createCollider(
     chassisBoxDesc(RAPIER, hx, fe.half, bodyTop / 2)
-      .setTranslation(forward, 0, -heightIn / 2 + bodyTop / 2)
+      .setTranslation(forward, 0, bodyCz)
       .setDensity(0)
       .setFriction(PHYS_FRICTION)
       .setRestitution(0),
@@ -655,8 +713,34 @@ function fitChassis(
 
 /** how many colliders `fitChassis` puts on before the reach hardware — the cuboid plus one per
  * standing mechanism. `refitRobotBody`'s `keep` for a RAMP-only edge; it was a bare `1`. */
-function predictBaseColliderCount(r: RobotState, heightIn: number): number {
+function predictBaseColliderCount(body: InstanceType<Rapier3d['RigidBody']>, r: RobotState, heightIn: number): number {
+  if (usesCompound(body, r, heightIn)) {
+    return predictChassisShapes(r.spec, heightIn).length + chassis3dPocketShapes(r.spec, heightIn).length;
+  }
   return 1 + chassis3dMechShapes(r.spec, heightIn).length;
+}
+
+/**
+ * THE AUTHORITY'S COMPOUND, FOR THE LOCAL ROBOT ONLY — see `fitChassis`. A REMOTE robot here is
+ * kinematic and held where the snapshot put it, so its mouth pocket decides nothing the driver
+ * feels, and giving every robot the compound doubled the reconcile (3 → 5 ms in the PREDICT
+ * lane's push scene, best of five) where the local robot alone costs a fraction of that.
+ */
+/**
+ * The authority's `chassis3dShapes` WITHOUT the lintels: the frame, then one shape per standing
+ * mechanism, then per mouth two arms and a lintel, in that order (`bodies.ts`). The predictor
+ * folds each lintel into its pocket filler instead (`fitChassis`). Measured against the full
+ * compound over the seven bot builds: the same accuracy (p95 0.06 in) at 4 ms against 5 in the
+ * PREDICT lane's push scene, best of five, where the old cuboid was 3.
+ */
+function predictChassisShapes(spec: RobotState['spec'], heightIn: number) {
+  const all = chassis3dShapes(spec, heightIn);
+  const mech = chassis3dMechShapes(spec, heightIn).length;
+  return all.filter((_, k) => k <= mech || (k - mech - 1) % 3 !== 2);
+}
+
+function usesCompound(body: InstanceType<Rapier3d['RigidBody']>, r: RobotState, heightIn: number): boolean {
+  return body.isDynamic() && chassis3dPocketShapes(r.spec, heightIn).length > 0;
 }
 
 /**
@@ -681,7 +765,7 @@ function refitRobotBody(
   if (Math.abs(builtHeight - heightIn) <= 1e-9) {
     // a RAMP edge alone: keep the one chassis cuboid (and its floor contact) and swap only the
     // reach hardware, exactly as the authority does — a full clear sinks the robot 0.28 in.
-    swapChassis3dReachColliders(RAPIER, world3d, body, predictBaseColliderCount(r, heightIn), r.spec, heightIn, rampReady);
+    swapChassis3dReachColliders(RAPIER, world3d, body, predictBaseColliderCount(body, r, heightIn), r.spec, heightIn, rampReady);
     return { height: heightIn, ramp: rampReady };
   }
   clearChassis3dColliders(world3d, body);
@@ -723,7 +807,7 @@ function makeElementBody(
       .setFriction(ELEMENT_FRICTION)
       .setRestitution(ELEMENT_RESTITUTION)
       .setFrictionCombineRule(RAPIER.CoefficientCombineRule.Max)
-      .setCollisionGroups(GROUP_ELEMENT),
+      .setCollisionGroups(b.color === 'red' || b.color === 'blue' ? GROUP_NECTAR : GROUP_ELEMENT),
     body,
   );
   return body;

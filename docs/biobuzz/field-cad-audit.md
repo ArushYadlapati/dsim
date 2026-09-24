@@ -541,6 +541,14 @@ not the middle one.
 
 ## 11.3 The one gameplay consequence, and why nothing was changed to hide it
 
+> **RESOLVED 2026-09-24 (owner).** The NECTAR on the tiles was worse than a scoring difference:
+> it sat in the retrieval opening, and a deployed ramp lifted it on the way in and dragged it out
+> of the flower on the way back ("not allowed and does not happen in real life"). The 3D middle
+> ring now carries a NECTAR-only lip (`BB3_FLOWER_NECTAR_SORT_D` 3.4, `buildNectarSorter3d`,
+> collision group `GROUP_NECTAR_SORTER`), so a NECTAR seats on the middle ring with its bottom at
+> ~4.0, the lone-nectar row scores the same in both pipelines, and POLLEN is untouched. What
+> follows is the reasoning as it stood before the ruling.
+
 A LONE NECTAR tops out at 3.597 in the real tube, against a scoring-volume floor of 3.904. By the
 geometry it does not score. By the 2D model — seated on the middle ring, spanning 3.904 … 7.504 —
 it always does. The difference is **0.30 in**, and it is worth 2 points, the 5-point Bottom Nectar
