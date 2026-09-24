@@ -5220,6 +5220,17 @@ input[type='range'].ds-range:disabled {
 
    Sized to sit in one `.ds-field` column of the builder, so two of them (a double turret) fit
    side by side wherever `.ds-fields` gives two columns. */
+/* the map's caption is exactly the map's width, so it sits over its own map — two of them side by
+   side (a double turret) read as two labelled maps rather than two labels floating over one row */
+.ds-field:has(> .bb-map) {
+  max-width: 256px;
+}
+/* the caption leads with the glyph of the mechanism the map places (the NECTAR turret's dot) */
+.bb-map-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-s-1);
+}
 .bb-map {
   display: grid;
   gap: var(--ds-s-1);
@@ -6437,7 +6448,7 @@ a.ds-cta {
 .ds-startpos-presets .ds-opt.mini {
   flex: 1 1 auto;
 }
-/* ---- BIOBUZZ pass-target picker (My Robot builder, `PassPicker.tsx`) ------
+/* ---- BIOBUZZ pass-target picker (the robot page's Driving panel, `PassPicker.tsx`) ------
    The map itself borrows `.ds-startpos-stage`/`.ds-startpos-canvas` directly, just above —
    a shrinkable square field canvas is the same shape for both pickers, and the shrink rule's
    own comment already says why it stays generic (a CSS-scaled canvas re-derives the click

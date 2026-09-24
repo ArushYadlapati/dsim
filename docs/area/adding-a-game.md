@@ -43,6 +43,7 @@ inline branches stay untouched:
 | slot | consumer |
 |---|---|
 | `Builder` | `Menu.tsx` (the Customize section) |
+| `DrivingRows` | `Menu.tsx` — the end of the robot page's Driving panel (BIOBUZZ: the pass-target picker) |
 | `Preview` | `Menu.tsx` + `MatchStrategy.tsx` (the robot schematic) |
 | `startEditor` | `MatchSetup.tsx` / `Lobby.tsx` / `MatchStrategy.tsx` |
 | `hudChips`, `scoreBar` | `GameView.tsx` (the `.robot-status` row / the whole bottom bar) |

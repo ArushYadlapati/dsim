@@ -3,6 +3,7 @@ import { BiobuzzGalleryRoute } from './GalleryRoute';
 import { BiobuzzPreview3D, BiobuzzSavedThumb } from './Preview3D';
 import {
   BiobuzzBuilderSlot,
+  BiobuzzDrivingSlot,
   BiobuzzHudChips,
   BiobuzzPinnedNotice,
   BiobuzzScoreBar,
@@ -56,6 +57,7 @@ export const BIOBUZZ_MODULE: GameModule = {
   drawSceneOverlay: drawBiobuzzFlowerReadout,
   // ---- UI slots ----
   Builder: BiobuzzBuilderSlot,
+  DrivingRows: BiobuzzDrivingSlot,
   /**
    * THE ROBOT SCHEMATIC — and, where the host allows it, the live 3D turntable
    * (`docs/roadmap.md` item 1). `BiobuzzPreview3D` wraps `BiobuzzRobotPreview`: without the

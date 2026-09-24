@@ -506,6 +506,7 @@ export function Menu({ settings, onChange }: Props) {
   const mod = moduleFor(settings.game);
   const Preview = mod.Preview;
   const Builder = mod.Builder;
+  const DrivingRows = mod.DrivingRows;
   // the saved-robot card's THUMBNAIL, when the game draws one: BIOBUZZ renders the build on the
   // 3D view. DECODE and CR draw none, and their cards are the name and the build line.
   const SavedThumb = mod.savedThumb;
@@ -1390,6 +1391,16 @@ export function Menu({ settings, onChange }: Props) {
                 onChange={(e) => set({ parkSpeedPct: Number(e.target.value) })}
               />
             </label>
+            {DrivingRows && (
+              <DrivingRows
+                spec={spec}
+                onChange={setSpec}
+                game={settings.game}
+                alliance={settings.alliance}
+                startIndex={settings.startIndex}
+                startPose={settings.startPose}
+              />
+            )}
           </div>
         </section>
       </div>

@@ -18,8 +18,8 @@ import {
 /**
  * WHERE PASS THROWS — the builder control for `RobotSpec.bbPassTarget`/`bbPassPreset` (owner,
  * 2026-09-22: "Where to pass should also be configurable using a map and there should be
- * presets"). Lives in the BIOBUZZ builder (`Builder.tsx`), under the Launcher section — a pass
- * is thrown by the launcher hardware every build carries.
+ * presets"). Lives in the robot page's DRIVING panel (`GameModule.DrivingRows`, owner 2026-09-23),
+ * as a labelled row like the drive style and park speed above it.
  *
  * ── THE MAP IS THE REAL FIELD RENDERER, NOT A SCHEMATIC ─────────────────────────────────────
  * `drawBiobuzzField` + the exact camera `BiobuzzStartEditor` (`StartEditor.tsx`) already uses
@@ -224,8 +224,8 @@ export function BbPassPicker({ spec, alliance, startIndex, startPose, onChange, 
   const pickPreset = (p: BbPassPreset): void => onChange({ bbPassPreset: p, bbPassTarget: undefined });
 
   return (
-    <>
-      <h3 className="ds-subh">Pass target</h3>
+    <div className="ds-field">
+      <span className="cap">Pass target</span>
       <div className="ds-passpick">
         <div className="ds-startpos-stage">
           <canvas
@@ -259,6 +259,6 @@ export function BbPassPicker({ spec, alliance, startIndex, startPose, onChange, 
           </div>
         </div>
       </div>
-    </>
+    </div>
   );
 }

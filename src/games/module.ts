@@ -109,6 +109,9 @@ export interface GameModule extends GameSimModule {
    * inline block. It gets ONE patch callback rather than a settings setter: a
    * builder must not know where a spec is stored. */
   Builder?: ComponentType<GameBuilderProps>;
+  /** game-owned rows at the end of the robot page's DRIVING panel (BIOBUZZ: where PASS throws).
+   * Same props as `Builder`: they edit the spec through the same patch callback. */
+  DrivingRows?: ComponentType<GameBuilderProps>;
   /** the robot schematic (the builder hero + the pre-match strategy card). One
    * component per game on purpose — work on one game's mechanisms must never
    * change how another game's robot looks. */
@@ -262,7 +265,7 @@ export interface GameModule extends GameSimModule {
   tutorial?: TutorialSpec;
 }
 
-/** props for `GameModule.Builder` */
+/** props for `GameModule.Builder` and `GameModule.DrivingRows` */
 export interface GameBuilderProps {
   spec: RobotSpec;
   /** apply a PARTIAL spec change (the caller owns storage + coercion) */
@@ -271,7 +274,7 @@ export interface GameBuilderProps {
   /**
    * THE ACTIVE SETUP'S ALLIANCE + START, so a per-game builder can answer "where does this
    * robot actually begin" without re-deriving it from `GameSettings` itself (which a DOM-free
-   * builder slot never sees). Added for BIOBUZZ's pass-target picker (`bbPassTarget`/
+   * builder slot never sees). Added for BIOBUZZ's pass-target picker (`DrivingRows`, `bbPassTarget`/
    * `bbPassPreset`, `PassPicker.tsx`): `pastGoal`/`farEnd` are relative to the THROWER, and the
    * thrower's honest position is its configured start anchor, not a guess.
    *

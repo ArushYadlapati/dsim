@@ -6,6 +6,7 @@ import type { GameBuilderProps, GameHudProps, ResultsSection } from '../module';
 import { fmtTime, timerPanel } from '../../ui/timerPanel';
 import { FoulChip } from '../../ui/FoulChip';
 import { BiobuzzBuilder } from './Builder';
+import { BbPassPicker } from './PassPicker';
 import { BB_NECTAR_COUNT, BB_PTS } from './config';
 import type { BbCellHud, BbPinHud, BiobuzzFieldHud } from './hud';
 import type { BiobuzzHud } from './hudRobot';
@@ -44,19 +45,25 @@ const other = (a: Alliance): Alliance => (a === 'red' ? 'blue' : 'red');
  * already knows which game it is, and reading it would be the first step back toward one
  * component with a branch per season.
  *
- * `alliance`/`startIndex`/`startPose` are forwarded (defaulted to `'blue'`/`0`/`undefined`
- * here, not inside `BiobuzzBuilder`, so the one fallback lives at the seam every other slot's
- * optional prop is resolved at) — the pass-target picker's `from` needs them; every other
- * block in the builder ignores them.
  */
-export function BiobuzzBuilderSlot({ spec, onChange, alliance, startIndex, startPose }: GameBuilderProps) {
+export function BiobuzzBuilderSlot({ spec, onChange }: GameBuilderProps) {
+  return <BiobuzzBuilder spec={spec} setSpec={onChange} />;
+}
+
+/**
+ * The DRIVING-panel rows: where PASS throws (owner, 2026-09-23: it was a Build block, under the
+ * launcher). `alliance`/`startIndex`/`startPose` are defaulted to `'blue'`/`0`/`undefined` HERE,
+ * so the one fallback lives at the seam every other slot's optional prop is resolved at — the
+ * picker's `from` needs them.
+ */
+export function BiobuzzDrivingSlot({ spec, onChange, alliance, startIndex, startPose }: GameBuilderProps) {
   return (
-    <BiobuzzBuilder
+    <BbPassPicker
       spec={spec}
-      setSpec={onChange}
       alliance={alliance ?? 'blue'}
       startIndex={startIndex ?? 0}
       startPose={startPose}
+      onChange={onChange}
     />
   );
 }
