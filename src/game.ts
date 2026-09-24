@@ -2,6 +2,7 @@ import type {
   Alliance,
   Artifact,
   ArtifactColor,
+  BallState,
   CardColor,
   ChainScoreMode,
   DrivetrainType,
@@ -70,12 +71,22 @@ export type { GameSettings };
 const SMOOTH_HALFLIFE = 0.06; // s — the offset halves every 60ms (~gone in 200ms)
 const SMOOTH_MAX_DIST = 16; // in — larger corrections snap instead of floating
 /**
- * The same thing for ONE ELEMENT (`ballSmooth`), and it is much smaller than the robot's on
- * purpose: a POLLEN is 3 in across, so an offset the size of a chassis is not a correction being
- * eased in, it is a different ball. Past this the offset is dropped and the element snaps to the
- * prediction, which is what should happen when a capture, a launch or a re-tag has moved it.
+ * The same thing for ONE ELEMENT (`ballSmooth`): the largest single reconcile CORRECTION that is
+ * eased in rather than snapped. Past it the element snaps to the prediction. It was 6 in, and
+ * at 200 ms RTT a predicted shot that bounced differently on the server corrected by more than
+ * that often enough to read as teleporting (probe, 2026-09-24: 12 in cut the >6 in pops per
+ * 3-minute run from 38 to 6). Captures and launches no longer reach this path — carried balls
+ * are never predicted, and a release is handled in `displayWorld`.
  */
-const BALL_SMOOTH_MAX = 6; // in
+const BALL_SMOOTH_MAX = 12; // in
+/**
+ * The largest offset a SOURCE SWITCH may ease in (see `drawPredictedElements`). Much larger than
+ * `BALL_SMOOTH_MAX` because it is not an error: the predicted and interpolated clocks are ~10
+ * ticks apart, so a ball at 150 in/s sits 25 in apart on them. Snapping that distance was the
+ * "balls keep teleporting" report (owner, 2026-09-24): measured, a shot changing clocks jumped
+ * 14–25 in in one frame against 2–4 in of real motion.
+ */
+const BALL_SWITCH_MAX = 48; // in
 
 // Minecraft-style entity INTERPOLATION for REMOTE robots + balls: render them a
 // couple snapshots in the PAST and lerp between the two authoritative states that
@@ -594,7 +605,7 @@ export class GameController {
     robots: { id: number; x: number; y: number; z: number; heading: number }[];
     /** element poses + their `state.kind`, only for a 3D-physics world (empty otherwise, so
      *  a 2D room allocates nothing it did not allocate before) */
-    balls: { id: number; x: number; y: number; z: number; kind: string }[];
+    balls: { id: number; x: number; y: number; z: number; kind: string; state: BallState }[];
   }[] = [];
   /** the interpolation render clock (in server ticks), lagging the latest snapshot
    * by ~INTERP_DELAY_TICKS; eased forward each frame for smooth playback */
@@ -2082,6 +2093,7 @@ export class GameController {
             y: b.pos.y,
             z: b.z,
             kind: b.state.kind,
+            state: { ...b.state } as BallState,
           }))
         : [],
     });
@@ -2288,11 +2300,18 @@ export class GameController {
     for (const e of after) {
       const w = was.get(e.id);
       if (!w) continue; // it entered the near set this reconcile — `displayWorld` absorbs that
+      // `BALL_SMOOTH_MAX` bounds the CORRECTION, not the running offset: the offset may still be
+      // easing a source switch in (`BALL_SWITCH_MAX`), and bounding the sum dropped that on the
+      // next reconcile, which is the snap the switch was eased to avoid.
+      if (Math.hypot(w.x - e.x, w.y - e.y, w.z - e.z) > BALL_SMOOTH_MAX) {
+        this.ballSmooth.delete(e.id);
+        continue;
+      }
       const o = this.ballSmooth.get(e.id);
       const x = (o ? o.x : 0) + (w.x - e.x);
       const y = (o ? o.y : 0) + (w.y - e.y);
       const z = (o ? o.z : 0) + (w.z - e.z);
-      if (Math.hypot(x, y, z) > BALL_SMOOTH_MAX) this.ballSmooth.delete(e.id);
+      if (Math.hypot(x, y, z) > BALL_SWITCH_MAX) this.ballSmooth.delete(e.id);
       else this.ballSmooth.set(e.id, { x, y, z });
     }
   }
@@ -2515,12 +2534,30 @@ export class GameController {
      */
     const b0 = new Map(s0.balls.map((b) => [b.id, b] as const));
     const b1 = new Map(s1.balls.map((b) => [b.id, b] as const));
+    // released this frame, per the branch below: `drawPredictedElements` must not ease FROM here
+    const released = new Set<number>();
+    const predicted = new Set((this.predictor?.elements() ?? []).map((e) => e.id));
     const balls = this.world.balls.map((ball) => {
       if (ball.state.kind === 'held' || ball.state.kind === 'stock') return ball;
       const p = b0.get(ball.id);
       const q = b1.get(ball.id);
       if (!p || !q) return ball;
-      if (p.kind !== q.kind && (isCarried(p.kind) || isCarried(q.kind))) {
+      /**
+       * ⚠️ JUST RELEASED, AND THE INTERPOLATION HAS NOT SEEN IT YET. The newest snapshot says the
+       * ball is loose, but the snapshot the render clock is heading for (~5 ticks older) still
+       * says `held`, and a held ball's pose there is not where it will leave from. Lerping the
+       * two drew a fresh shot for a split second back where it was intaken (owner report
+       * 2026-09-24). So it stays CARRIED — hidden, with that snapshot's own state — until the
+       * render clock reaches the release, which is also the moment an interpolated robot fires
+       * it. The one exception is a ball the predictor already has (the local robot's own shot):
+       * `drawPredictedElements` draws that at the prediction's clock straight away.
+       */
+      if (isCarried(q.kind)) {
+        released.add(ball.id);
+        return predicted.has(ball.id) ? ball : { ...ball, pos: { x: q.x, y: q.y }, z: q.z, state: q.state };
+      }
+      if (p.kind !== q.kind && isCarried(p.kind)) {
+        released.add(ball.id);
         return { ...ball, pos: { x: q.x, y: q.y }, z: q.z };
       }
       return {
@@ -2529,7 +2566,7 @@ export class GameController {
         z: lerp(p.z, q.z, a),
       };
     });
-    return { ...this.world, robots, balls: this.drawPredictedElements(balls, dtSec) };
+    return { ...this.world, robots, balls: this.drawPredictedElements(balls, dtSec, released) };
   }
 
   /**
@@ -2538,14 +2575,16 @@ export class GameController {
    *
    * It runs only where the predictor has an opinion: a FULL predictor, and an element it holds a
    * body for whose tag says it is loose on the field (`ground`) or in the air (`flight`). An
-   * `element` — seated in a FLOWER's bore or latched in a HIVE cell — is deliberately left
-   * interpolated: its position there is the authority's derived structure rather than a free
-   * body the local chassis is about to hit, so the client has nothing to add and a stack the
-   * prediction let settle differently would be a new artifact in place of the one being fixed.
+   * `element` — seated in a FLOWER's bore or latched in a HIVE cell — stays on whichever clock it
+   * arrived on. One that was already seated stays interpolated: the predictor only PINS it at the
+   * newest snapshot's pose, so drawing it from there would step a tipping tray's contents at
+   * 30 Hz. One that was being drawn PREDICTED when it landed stays predicted until it leaves the
+   * predictor's set. ⚠️ It used to switch to the interpolated clock on the re-tag, and a shot the
+   * predictor carried into a hive jumped back ~10 ticks up its own flight path as it landed.
    * A LIGHT predictor carries no elements at all and `elements()` returns null, so this is one
    * map lookup and out.
    */
-  private drawPredictedElements(balls: Artifact[], dtSec: number): Artifact[] {
+  private drawPredictedElements(balls: Artifact[], dtSec: number, released: ReadonlySet<number>): Artifact[] {
     const pe = this.predictor?.elements();
     if (!pe && this.ballSmooth.size === 0 && this.ballDrawn.size === 0) return balls;
     const by = pe ? new Map(pe.map((e) => [e.id, e] as const)) : null;
@@ -2553,23 +2592,29 @@ export class GameController {
     return balls.map((ball) => {
       const e = by?.get(ball.id);
       const kind = ball.state.kind;
-      const use = !!e && (kind === 'ground' || kind === 'flight');
+      const use =
+        !!e && (kind === 'ground' || kind === 'flight' || (kind === 'element' && this.ballPredicted.has(ball.id)));
       const base = use ? { x: e!.x, y: e!.y, z: e!.z } : { x: ball.pos.x, y: ball.pos.y, z: ball.z };
       let off = this.ballSmooth.get(ball.id) ?? null;
       // A SOURCE SWITCH is the one discontinuity `noteElementCorrection` cannot see: an element
       // crossing `PREDICT_ELEMENT_RADIUS`, or being re-tagged into or out of a structure, moves
       // between two legitimate answers that are ~`INTERP_DELAY_TICKS` apart. Absorb it whole.
-      const prev = this.ballDrawn.get(ball.id);
+      // a release is a real teleport out of a hopper, so it never eases from where it was drawn
+      const prev = released.has(ball.id) ? undefined : this.ballDrawn.get(ball.id);
       if (prev && this.ballPredicted.has(ball.id) !== use) {
         off = { x: prev.x - base.x, y: prev.y - base.y, z: prev.z - base.z };
       }
-      if (off && Math.hypot(off.x, off.y, off.z) > BALL_SMOOTH_MAX) off = null;
+      if (off && Math.hypot(off.x, off.y, off.z) > BALL_SWITCH_MAX) off = null;
       if (use) this.ballPredicted.add(ball.id);
       else this.ballPredicted.delete(ball.id);
       if (!off) {
         this.ballSmooth.delete(ball.id);
         if (!use) {
-          this.ballDrawn.delete(ball.id);
+          // an interpolated ball is remembered too, or its switch INTO the prediction (a shot
+          // entering the radius at speed) has no `prev` to ease from and jumps forward. A
+          // carried one is not: it is hidden, and leaving a hopper is a real teleport.
+          if (kind === 'held' || kind === 'stock') this.ballDrawn.delete(ball.id);
+          else this.ballDrawn.set(ball.id, base);
           return ball;
         }
         this.ballDrawn.set(ball.id, base);

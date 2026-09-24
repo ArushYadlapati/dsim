@@ -13,6 +13,7 @@ import {
   BB_HALF_X,
   BB_HALF_Y,
   BB_POLLEN_R,
+  PREDICT_ELEMENT_KEEP_SPEED,
   PREDICT_ELEMENT_RADIUS,
   PREDICT_MAX_TICKS,
   bbHeightNow,
@@ -431,14 +432,19 @@ export function createFullPredictor(world: World, localRobotId: number): Predict
 
       // the near elements: replaced outright. Fifteen-ish bodies is cheaper to rebuild than to
       // diff, and a diff would have to answer "did this id leave the radius" anyway.
+      // One that was carried last window and is still MOVING is kept wherever it is — see
+      // `PREDICT_ELEMENT_KEEP_SPEED` for the jump dropping it mid-flight put on screen.
+      const kept = new Set(elements.keys());
       clearElements();
       if (local) {
         const r2 = PREDICT_ELEMENT_RADIUS * PREDICT_ELEMENT_RADIUS;
+        const keep2 = PREDICT_ELEMENT_KEEP_SPEED * PREDICT_ELEMENT_KEEP_SPEED;
         for (const b of w.balls) {
           if (b.state.kind === 'held' || b.state.kind === 'stock') continue;
           const dx = b.pos.x - local.pos.x;
           const dy = b.pos.y - local.pos.y;
-          if (dx * dx + dy * dy > r2) continue;
+          const moving = b.vel.x * b.vel.x + b.vel.y * b.vel.y + b.vz * b.vz > keep2;
+          if (dx * dx + dy * dy > r2 && !(moving && kept.has(b.id))) continue;
           /**
            * ⚠️ A STRUCTURE-SEATED ELEMENT IS KINEMATIC, FOR THE REASON THE TRAYS AND THE REMOTE
            * ROBOTS ARE — and it used to be DYNAMIC, which put every one of them in FREE FALL.
