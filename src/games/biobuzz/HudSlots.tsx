@@ -404,6 +404,33 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
   }
   return (
     <>
+      <div className="scorebar" data-hud-band>
+        <div className={`score-panel bb red ${hud.alliance === 'red' ? 'mine' : ''}`}>
+          {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
+          <span className="panel-score">{red}</span>
+          <span className={`bb-tip ${f && f.cells.red.tipping > 0 ? 'go' : ''}`}>
+            {cellLine(f?.cells.red)}
+          </span>
+        </div>
+        <div className={`timer-panel ${timer.cls}`}>
+          {/* status on the PHASE only — the digits beside it retick every frame and would
+              flood a screen reader. This changes ~4 times a match. */}
+          <span className="timer-phase" role="status">
+            {timer.label}
+          </span>
+          <span className="timer-time">{timer.time}</span>
+        </div>
+        <div className={`score-panel bb blue ${hud.alliance === 'blue' ? 'mine' : ''}`}>
+          {hud.alliance === 'blue' && <span className="you-tag">YOU</span>}
+          <span className="panel-score">{blue}</span>
+          <span className={`bb-tip ${f && f.cells.blue.tipping > 0 ? 'go' : ''}`}>
+            {cellLine(f?.cells.blue)}
+          </span>
+        </div>
+      </div>
+      {/* AFTER the bar, as DECODE's and Chain Reaction's rows are (`GameView`): the two are
+          siblings in one stacking context, so DOM order is the paint order, and a row
+          rendered first went UNDER the phone's compact bar the moment the two touched. */}
       {/* G410: a NECTAR into a FLOWER before the 1:00 cue is a MAJOR, PER NECTAR. On a real
           field the cue is audio; here it has to be readable from the driver's station, so it
           sits on the bar rather than only in the desktop-only chip row. `nectarIn` is null
@@ -436,30 +463,6 @@ export function BiobuzzScoreBar({ hud }: GameHudProps) {
         {/* the shared running foul tally — the same chip, in the same row, as DECODE's and
             Chain Reaction's (design review 22-02). CONTROL 5+ and PIN stay this game's own. */}
         <FoulChip hud={hud} />
-      </div>
-      <div className="scorebar" data-hud-band>
-        <div className={`score-panel bb red ${hud.alliance === 'red' ? 'mine' : ''}`}>
-          {hud.alliance === 'red' && <span className="you-tag">YOU</span>}
-          <span className="panel-score">{red}</span>
-          <span className={`bb-tip ${f && f.cells.red.tipping > 0 ? 'go' : ''}`}>
-            {cellLine(f?.cells.red)}
-          </span>
-        </div>
-        <div className={`timer-panel ${timer.cls}`}>
-          {/* status on the PHASE only — the digits beside it retick every frame and would
-              flood a screen reader. This changes ~4 times a match. */}
-          <span className="timer-phase" role="status">
-            {timer.label}
-          </span>
-          <span className="timer-time">{timer.time}</span>
-        </div>
-        <div className={`score-panel bb blue ${hud.alliance === 'blue' ? 'mine' : ''}`}>
-          {hud.alliance === 'blue' && <span className="you-tag">YOU</span>}
-          <span className="panel-score">{blue}</span>
-          <span className={`bb-tip ${f && f.cells.blue.tipping > 0 ? 'go' : ''}`}>
-            {cellLine(f?.cells.blue)}
-          </span>
-        </div>
       </div>
     </>
   );

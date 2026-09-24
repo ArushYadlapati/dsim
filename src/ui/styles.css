@@ -451,7 +451,7 @@ button {
   align-items: flex-end;
   min-height: 24px;
   min-width: 24px;
-  gap: 8px;
+  gap: var(--ds-s-2);
 }
 
 /* `>`: a chip may carry inner spans (`FoulChip`'s visible shorthand and its `.ds-sr` words),
@@ -460,9 +460,9 @@ button {
   background: var(--ds-hud-soft);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-full);
-  padding: 4px 12px;
+  padding: var(--ds-s-1) var(--ds-s-3);
   font-family: var(--ds-font-mono);
-  font-size: 11px;
+  font-size: var(--ds-t-xs);
   font-weight: 700;
   letter-spacing: 1px;
   color: var(--ds-mut);
@@ -3060,9 +3060,11 @@ button {
      HALF the viewport, and once 05-10 kept the labels at --ds-t-xs DECODE's four chips
      ("CLASSIFIED 12 … RAMP 9/9", ~400px) could not fit a 375px phone: each chip broke its own
      words onto two lines instead. Now the row takes its real width up to the viewport, and a
-     chip that does not fit drops to a second line, centred like the first. */
+     chip that does not fit drops to a second line, centred like the first.
+     NO `bottom` HERE. It was a literal 50px, 6px BELOW the 56px `--hud-bottom` this same query
+     sets, so BIOBUZZ's NECTAR LOCKED / PENDING chips sat under the compact bar (tester report,
+     2026-09-23). The base rule's `var(--hud-bottom) + --ds-s-2` is right at every size. */
   .breakdown-row {
-    bottom: 50px;
     width: max-content;
     max-width: calc(100vw - 2 * var(--ds-s-3));
     flex-wrap: wrap;
@@ -3070,7 +3072,7 @@ button {
   }
   .breakdown-row > span {
     letter-spacing: 0;
-    padding: 2px 8px;
+    padding: var(--ds-s-0) var(--ds-s-2);
     white-space: nowrap;
   }
   /* THE PHONE'S STATUS CARD (design review 05-05): the same card as the desktop's, smaller.
@@ -3781,7 +3783,7 @@ button {
 }
 
 /* the score bar is shorter where it goes compact — the SAME query as the compact bar, so the
-   tutorial card follows the bar it sits on (the phone breakdown row keeps its own offset) */
+   tutorial card and the breakdown row follow the bar they sit on */
 @media (pointer: coarse), (max-height: 520px) {
   .game-root {
     --hud-bottom: 56px;

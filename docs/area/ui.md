@@ -579,8 +579,12 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
   purpose; the file position is the tiebreak.
 - **`--hud-bottom`** is the height the in-match score bar reserves: 68px on `.game-root`, 56px
   under `@media (pointer: coarse), (max-height: 520px)` — the SAME query as the compact score
-  bar, so the two cannot disagree. `.breakdown-row` and the tutorial card read it; anything
-  new that sits above the bar reads it too instead of a literal.
+  bar, so the two cannot disagree. `.breakdown-row` and the tutorial card read it, on phones
+  too; anything new that sits above the bar reads it too instead of a literal. The phone row
+  used to carry its own `bottom: 50px`, 6px under the bar, and BIOBUZZ rendered its row BEFORE
+  `.scorebar`, so the bar painted over NECTAR LOCKED and PENDING. **Render a chip row AFTER the
+  bar it sits on**, as all three games do now, because DOM order is the paint order between
+  siblings.
 - **Contrast blind spots are audited now.** `scripts/contrast.mjs` covers the in-match
   surfaces that used to be skipped: the 3D view's scrim (its tokens are parsed from
   `.game-root.view-3d .eventlog` in `styles.css`, so retuning the scrim retunes the check), the
