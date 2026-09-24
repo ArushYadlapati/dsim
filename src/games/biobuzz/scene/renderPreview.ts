@@ -20,6 +20,7 @@ import {
   SceneUnsupportedError,
   createSceneLights,
   createSceneRenderer,
+  releaseRenderer,
   watchContextLoss,
   gpuProbe,
 } from './renderCore';
@@ -147,6 +148,8 @@ export interface RobotPreviewOptions {
   interactive?: boolean;
   /** `false` runs NO frame loop at all: the scene draws only when `capture()` asks it to. */
   animate?: boolean;
+  /** the WebGL context was lost and the scene has disposed itself; the host shows its fallback */
+  onContextLost?: () => void;
 }
 
 /**
@@ -645,12 +648,18 @@ export const createRobotPreviewScene: RobotPreviewFactory = (host, options) => {
       floorTex.dispose();
       floorMat.dispose();
       shot = null;
-      renderer.dispose();
+      releaseRenderer(renderer);
       canvas.parentElement?.removeChild(canvas);
     },
   };
 
-  teardown.push(watchContextLoss(canvas, () => api.dispose()));
+  // a lost context leaves an empty box, so the host is told and can offer the retry
+  teardown.push(
+    watchContextLoss(canvas, () => {
+      api.dispose();
+      opts.onContextLost?.();
+    }),
+  );
 
   return api;
 };

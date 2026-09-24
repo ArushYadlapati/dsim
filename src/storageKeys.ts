@@ -84,6 +84,8 @@ export const FREE_CAM_NAV_KEY = 'decodesim.freeCamNav';
 export const PREDICTION_KEY = 'decodesim.prediction';
 /** that the "prediction is off" notice has been shown once, so it is not shown again */
 export const PREDICTION_OFF_NOTICE_KEY = 'decodesim.prediction.offNotice';
+/** this tab already reloaded once for an out-of-date page file after a deploy (`main.tsx`) */
+export const CHUNK_RELOAD_KEY = 'decodesim.chunkReload';
 /** usage analytics on/off. Absent means ON — `src/analytics.ts` says why */
 export const ANALYTICS_KEY = 'decodesim.analytics';
 /** which games’ tutorials this device has finished, exited or turned down (comma-separated ids; legacy `1` = all) */
@@ -177,6 +179,14 @@ export const STORAGE_KEYS: readonly StorageKeyEntry[] = [
     storage: 'session',
     category: 'necessary',
     purpose: 'That you dismissed the "verify your email" banner, so it stays dismissed.',
+    retention: 'Ends with this browser tab.',
+  },
+  {
+    key: CHUNK_RELOAD_KEY,
+    storage: 'session',
+    category: 'necessary',
+    purpose:
+      'That this tab has already reloaded once to pick up a new version of the site, so a missing file cannot make it reload forever.',
     retention: 'Ends with this browser tab.',
   },
   {

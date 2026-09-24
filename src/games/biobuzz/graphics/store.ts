@@ -10,8 +10,8 @@
  * `THEME_KEY` uses, client-only, with no React import in this file.
  *
  * Defaults `'3d'` (owner, 2026-09-23). It defaulted `'2d'` while the scene did not exist yet.
- * A device the scene cannot run on still lands on 2D: `renderScene` stores `'2d'` itself when
- * WebGL is unsupported or the context is lost.
+ * A device the scene cannot run on still lands on 2D, for the TAB only: `renderScene` calls
+ * `fallBackTo2d` when WebGL is unsupported or the context is lost (see `sessionFallback2d`).
  */
 
 import { VIEW_KEY, CAMERA_KEY, DRIVER_HEIGHT_KEY, FREE_CAM_NAV_KEY } from '../../../storageKeys';
@@ -23,9 +23,27 @@ export type ViewPref = '2d' | '3d';
 
 const isViewPref = (v: unknown): v is ViewPref => v === '2d' || v === '3d';
 
+/**
+ * THIS TAB FELL BACK TO 2D — a lost GPU context, no WebGL2, or a software renderer.
+ *
+ * In memory, NEVER in storage. It used to be written to `VIEW_KEY`, so one lost context (a GPU
+ * driver reset, Chrome dropping the oldest of too many contexts, a GPU-process crash that leaves
+ * Chrome on its software rasteriser) put the device on 2D for good, and players reported being
+ * "stuck on 2D". A reload tries 3D again; so does picking 3D (`setViewPref` clears it).
+ */
+let sessionFallback2d = false;
+
+/** fall back to 2D for this tab only, and tell the subscribers. See `sessionFallback2d`. */
+export function fallBackTo2d(): void {
+  if (sessionFallback2d) return;
+  sessionFallback2d = true;
+  for (const fn of listeners) fn('2d');
+}
+
 /** the stored preference, or `'3d'` when absent, corrupt, or storage is unavailable (private
- * browsing, a locked-down profile). Never throws. */
+ * browsing, a locked-down profile). `'2d'` while this tab has fallen back. Never throws. */
 export function getViewPref(): ViewPref {
+  if (sessionFallback2d) return '2d';
   try {
     const v = localStorage.getItem(VIEW_KEY);
     return isViewPref(v) ? v : '3d';
@@ -46,6 +64,8 @@ const listeners = new Set<ViewListener>();
  * (quota, private mode) still notifies, so the UI reflects the pick for this session even
  * though it will not survive a reload. */
 export function setViewPref(pref: ViewPref): void {
+  // a pick is a pick: choosing 3D after a fallback is the retry
+  sessionFallback2d = false;
   try {
     localStorage.setItem(VIEW_KEY, pref);
   } catch {

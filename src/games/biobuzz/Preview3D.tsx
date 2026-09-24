@@ -195,7 +195,11 @@ function LiveTurntable({
           onUnsupported('no 3D renderer for this game');
           return;
         }
-        const sc = factory(host, {});
+        const sc = factory(host, {
+          onContextLost: () => {
+            if (!dead) onUnsupported('the graphics context was lost');
+          },
+        });
         live = sc;
         sceneRef.current = sc;
         sc.setSpec(specRef.current, allianceRef.current);

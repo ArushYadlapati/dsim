@@ -12,6 +12,7 @@ import { Analytics } from '@vercel/analytics/react';
 import { analyticsEnabled } from './analytics';
 import { analyticsAllowed } from './analyticsPref';
 import { adoptLanFromOrigin } from './net/lanAdopt';
+import { CHUNK_RELOAD_KEY } from './storageKeys';
 // Self-hosted (not a CDN <link>): the Electron build runs from file:// with
 // vite `base: './'`, so fingerprinted woff2 must be bundled to resolve offline.
 // Variable cuts, because shell.css asks for weights off the 100 grid (750).
@@ -41,6 +42,21 @@ loadCmp();
 // init rather than after it, so a guest at a venue never waits on it; it resolves in
 // milliseconds on a LAN and is skipped outright on https. See src/net/lanAdopt.ts.
 const lanReady = adoptLanFromOrigin().catch(() => false);
+
+// A STALE CHUNK AFTER A DEPLOY. A tab opened before a deploy still asks for the old hashed
+// `assets/<name>-<hash>.js`, which is gone, and Vite fires this before the lazy import rejects.
+// Reload ONCE to pick up the new build; the session flag stops a loop when the file is missing
+// for some other reason (offline), which `LoadBoundary` then reports on the page.
+window.addEventListener('vite:preloadError', (e) => {
+  try {
+    if (sessionStorage.getItem(CHUNK_RELOAD_KEY) === '1') return;
+    sessionStorage.setItem(CHUNK_RELOAD_KEY, '1');
+  } catch {
+    return; // no storage, no loop guard: let LoadBoundary show the error instead
+  }
+  e.preventDefault();
+  location.reload();
+});
 
 Promise.all([initPhysics(), lanReady]).then(() => {
   createRoot(document.getElementById('root')!).render(

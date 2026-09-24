@@ -1,6 +1,6 @@
 # HANDOFF — 2026-09-23f (3D loading screen; perf read-out moved and filled out; prediction picker removed)
 
-**State: green, pushed to `alpha`** (32602e9d, d02eef48). `build`, `uiaudit` (after `uiindex`),
+**State: green, pushed to `alpha`** (32602e9d, d02eef48, and the 2D-lock fix after them). `build`, `uiaudit` (after `uiindex`),
 `docaudit`, `contrast` (383), `bundleaudit` and `npm test` pass. Client-only, no deploy needed.
 
 - **In-match prediction picker removed.** Its buttons never took a click (`.hud` is
@@ -13,6 +13,15 @@
 - **Perf read-out.** Simple line is now fps · 1% low · ping ±jitter. Desktop: bottom-right in
   `.net-corner` above the net chips. Phone: unchanged spot, simple only. Frame gaps over 1 s
   (hidden tab) are not sampled.
+- **Stuck on 2D / black Graphics (tester report).** A lost GPU context or a failed WebGL2 probe
+  used to STORE `'2d'`, and the failed probe was cached for the tab, so 3D could not come back
+  without a reload. Now `fallBackTo2d()` (graphics/store.ts) is per tab only, a failed probe is
+  not cached, and `releaseRenderer` frees contexts on dispose (`forceContextLoss`), so they no
+  longer pile up to Chrome's cap of 16. A lost builder-preview context shows the 2D card with 3D
+  one click away. Black screen: lazy pages had no error boundary, so a failed chunk (stale file
+  after a deploy) unmounted the app. `LoadBoundary` wraps every `lazy()` page, and `main.tsx`
+  reloads once on `vite:preloadError` (`CHUNK_RELOAD_KEY`). Devices that already stored `'2d'`
+  keep it, since it looks the same as a real pick; clicking 3D now works.
 - **Not verified:** the online ping ± jitter line (no game server in this dev build) and a room's
   loading screen. Both paths are small; worth a look on alpha.
 

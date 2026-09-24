@@ -30,8 +30,26 @@ import { probeGpu } from '../graphics/auto';
  */
 let cachedProbe: ReturnType<typeof probeGpu> | null = null;
 export function gpuProbe(): ReturnType<typeof probeGpu> {
-  cachedProbe ??= probeGpu();
-  return cachedProbe;
+  if (cachedProbe) return cachedProbe;
+  const probe = probeGpu();
+  // ONLY A GOOD ANSWER IS KEPT. A probe taken while the page sat at the context cap, or while
+  // Chrome was on its software rasteriser after a GPU-process crash, said "no" for the rest of
+  // the tab, so the 3D button could not work again until a reload. A "no" is asked again on the
+  // next mount, and mounts only happen when the player asks for 3D.
+  if (probe.webgl2 && !probe.software) cachedProbe = probe;
+  return probe;
+}
+
+/**
+ * FREE A RENDERER'S CONTEXT NOW, not at the next garbage collection. `dispose()` alone leaves
+ * the WebGL context alive until the canvas is collected, and Chrome caps a page at 16: every
+ * builder visit, view switch and match left one behind, and at the cap Chrome drops the OLDEST
+ * live one, which can be the scene on screen. Callers remove their `webglcontextlost` listener
+ * first (their teardown list runs before this), so the forced loss is not read as a failure.
+ */
+export function releaseRenderer(renderer: THREE.WebGLRenderer): void {
+  renderer.dispose();
+  renderer.forceContextLoss();
 }
 
 /** thrown by a scene factory that cannot run here — no WebGL2, or a software rasteriser. The
@@ -161,7 +179,7 @@ export function createSceneRenderer(
  * `preventDefault()` on the event is what makes restoration POSSIBLE at all (without it the
  * browser never fires `webglcontextrestored`). This scene does not restore — every buffer,
  * texture and program would have to be rebuilt — it hands the loss to the host, which takes the
- * same route the `SceneUnsupportedError` fallback takes: the view preference goes to 2D and a
+ * same route the `SceneUnsupportedError` fallback takes: this tab falls back to 2D (`fallBackTo2d`, never stored) and a
  * line goes to the event log. That is a live game a click later instead of a dead canvas.
  *
  * Returns the REMOVER, for the caller's teardown list. A scene that is disposed and remounted

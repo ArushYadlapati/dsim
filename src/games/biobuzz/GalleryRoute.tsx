@@ -1,4 +1,5 @@
-import { Suspense, lazy } from 'react';
+import { lazy } from 'react';
+import { LoadBoundary } from '../../ui/LoadBoundary';
 
 /**
  * THE SCENE GALLERY'S ROUTE ENTRY — a lazy wrapper, so the gallery itself is not in the stable
@@ -21,8 +22,8 @@ const BiobuzzGalleryLazy = lazy(() => import('./Gallery').then((m) => ({ default
 
 export function BiobuzzGalleryRoute(): JSX.Element {
   return (
-    <Suspense fallback={<div className="ds-loading">Loading the scene gallery…</div>}>
+    <LoadBoundary what="the scene gallery" fallback={<div className="ds-loading">Loading the scene gallery…</div>}>
       <BiobuzzGalleryLazy />
-    </Suspense>
+    </LoadBoundary>
   );
 }

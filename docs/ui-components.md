@@ -538,7 +538,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-btn` | src/ui/shell.css:650 | 215 |
+| `.ds-btn` | src/ui/shell.css:650 | 216 |
 
 ## `ds-checkline` — 1
 
@@ -664,7 +664,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-loading` | src/ui/shell.css:2252 | 26 |
+| `.ds-loading` | src/ui/shell.css:2252 | 27 |
 
 ## `ds-lobbies` — 1
 

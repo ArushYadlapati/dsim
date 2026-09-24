@@ -610,6 +610,8 @@ export interface RobotPreviewOptions {
   interactive?: boolean;
   /** `false` runs no frame loop at all — the scene draws only when `capture()` asks it to. */
   animate?: boolean;
+  /** the WebGL context was lost and the scene has disposed itself; the host shows its fallback */
+  onContextLost?: () => void;
 }
 
 /**

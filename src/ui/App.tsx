@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { lazy, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
 import { useDialog } from './useDialog';
 import type { GameSettings } from '../game';
@@ -108,6 +108,7 @@ import type { GameId } from '../games/types';
 import { chainDisclaimerSeen, markChainDisclaimerSeen } from '../chainDisclaimer';
 import { startSelectionLegal } from './startPositions';
 import { setPadNavPrefs } from '../input/padNav';
+import { LoadBoundary } from './LoadBoundary';
 
 type Screen =
   | 'home'
@@ -2108,9 +2109,9 @@ export function App() {
       {screen === 'accountreset' && <AccountReset onAccount={() => navigate('account')} />}
       {screen === 'accountverify' && <AccountVerify onAccount={() => navigate('account')} />}
       {screen === 'admin' && isAdmin && (
-        <Suspense fallback={<p className="ds-loading">Loading the console…</p>}>
+        <LoadBoundary what="the console" fallback={<p className="ds-loading">Loading the console…</p>}>
           <Admin onWatch={spectateRoom} onWatchReplay={watchReplay} />
-        </Suspense>
+        </LoadBoundary>
       )}
       {screen === 'dev' &&
         (() => {

@@ -241,7 +241,7 @@ import { bbCoerce } from './harness';
 import { bbSpecKey } from '../../src/games/biobuzz/specKey';
 import { SHOT, SHOT_ARC_MAX, shotArc, solveShotPath } from '../../src/games/biobuzz/shotPath';
 import { drawBiobuzzShotPath } from '../../src/games/biobuzz/drawShot';
-import { CAMERA_PREFS, getCameraPref, getViewPref, resolveSceneCamera } from '../../src/games/biobuzz/graphics/store';
+import { CAMERA_PREFS, fallBackTo2d, getCameraPref, getViewPref, resolveSceneCamera, setViewPref } from '../../src/games/biobuzz/graphics/store';
 import { VIEW_KEY } from '../../src/storageKeys';
 import {
   bindFreeCamCustom,
@@ -3557,11 +3557,24 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
       /antialias:\s*false/.test(sceneSrc) && sceneSrc.includes('WebGLRenderTarget'),
     );
     check('the shadow map is DISPOSED when its size changes (else low to high does nothing)', /this\.sun\.shadow\.map\?\.dispose\(\)/.test(sceneSrc));
-    check('a software renderer selects the 2D view before it throws', sceneSrc.includes("setViewPref('2d')") && sceneSrc.includes('SceneUnsupportedError'));
+    check('a software renderer selects the 2D view before it throws', sceneSrc.includes('fallBackTo2d()') && sceneSrc.includes('SceneUnsupportedError'));
+    // STUCK ON 2D (tester report, 2026-09-23): a lost context or a failed probe used to STORE
+    // '2d', so one GPU hiccup put the device on 2D for good. The fallback is per tab now.
+    check('no scene code stores 2D on a failure (the fallback is per tab)', !sceneSrc.includes("setViewPref('2d')"));
+    {
+      const before = getViewPref();
+      fallBackTo2d();
+      const during = getViewPref();
+      setViewPref('3d');
+      const after = getViewPref();
+      check('fallBackTo2d reads 2D for this tab, and picking 3D clears it', during === '2d' && after === '3d', `${before} → ${during} → ${after}`);
+    }
     // the renderer ITSELF is built by `renderCore.ts`'s shared factory now (the builder preview
     // builds one the same way), so the attribute lives there — the `antialias: false` above is
     // still this file's own call site, which is the half that is a decision rather than plumbing.
     const coreSrc = readFileSync(join(SCENE_DIR, 'renderCore.ts'), 'utf8');
+    check('a failed GPU probe is not cached (a retry can succeed without a reload)', /if \(probe\.webgl2 && !probe\.software\) cachedProbe = probe/.test(coreSrc));
+    check('a disposed renderer frees its WebGL context now, not at GC', /forceContextLoss\(\)/.test(coreSrc) && sceneSrc.includes('releaseRenderer(this.renderer)'));
     check(
       'powerPreference high-performance on both the probe and the renderer',
       coreSrc.includes('high-performance') && readFileSync(join(GRAPHICS_DIR, 'auto.ts'), 'utf8').includes('high-performance'),

@@ -1,4 +1,5 @@
-import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
+import { lazy, useCallback, useEffect, useState } from 'react';
+import { LoadBoundary } from './LoadBoundary';
 import {
   adminAnnounce,
   adminCancelNotice,
@@ -500,9 +501,9 @@ export function Admin({
           opens this tab will ever look at, and the client bundle is meant to stay React +
           Rapier 2D. One extra request behind the `.ds-loading` line every list already has. */}
       {tab === 'analytics' && (
-        <Suspense fallback={<p className="ds-loading">Loading analytics…</p>}>
+        <LoadBoundary what="analytics" fallback={<p className="ds-loading">Loading analytics…</p>}>
           <AdminAnalytics />
-        </Suspense>
+        </LoadBoundary>
       )}
 
       {tab === 'server' && (

@@ -8,8 +8,8 @@ import {
   getDriverHeightIn,
   getFreeCamNav,
   resolveSceneCamera,
+  fallBackTo2d,
   setCameraPref,
-  setViewPref,
   subscribeCameraPref,
   subscribeDriverHeightIn,
   subscribeFreeCamNav,
@@ -47,6 +47,7 @@ import {
   watchContextLoss,
   disposeObject3D,
   gpuProbe,
+  releaseRenderer,
   readBackdropColor,
 } from './renderCore';
 
@@ -250,7 +251,7 @@ class BiobuzzScene implements GameScene {
     // two places this game draws it.
     this.renderer = createSceneRenderer(canvas, { antialias: false, alpha: false });
     /**
-     * A LOST CONTEXT TAKES THE SAME EXIT AS AN UNSUPPORTED ONE — `setViewPref('2d')` plus an
+     * A LOST CONTEXT TAKES THE SAME EXIT AS AN UNSUPPORTED ONE — `fallBackTo2d()` plus an
      * event-log line, exactly what the factory below does for a failed WebGL2 probe or a
      * software renderer. One host path, because a player cannot tell the three apart and
      * neither answer is "keep looking at this canvas": see `watchContextLoss` for why a lost
@@ -262,7 +263,7 @@ class BiobuzzScene implements GameScene {
      */
     this.teardown.push(
       watchContextLoss(canvas, () => {
-        setViewPref('2d');
+        fallBackTo2d();
         this.onQualityEvent?.('Lost the graphics context. Showing the 2D view.');
       }),
     );
@@ -939,7 +940,7 @@ class BiobuzzScene implements GameScene {
     this.scene.remove(this.robots.group);
     this.robots.dispose();
     disposeObject3D(this.scene);
-    this.renderer.dispose();
+    releaseRenderer(this.renderer);
     this.element.parentElement?.removeChild(this.element);
   }
 }
@@ -974,11 +975,11 @@ function detectOnce(onEvent?: (line: string) => void): void {
  * can fall back to the 2D view on a software renderer or an old browser without this module
  * having thrown mid-construction.
  *
- * ⚠️ A SOFTWARE RENDERER IS REFUSED HERE, AND THE VIEW PREFERENCE IS SET TO 2D BEFORE THE
- * THROW (plan §4.6: "a software renderer string or a failed WebGL2 probe selects the 2D view
- * with an event-log line; the 3D view stays one click away for retry"). Setting the preference
- * is what makes the fallback stick — the host's own catch only logs, so without this the scene
- * would be retried on every remount and the player would sit in front of a canvas that never
+ * ⚠️ A SOFTWARE RENDERER IS REFUSED HERE, AND THE TAB FALLS BACK TO 2D BEFORE THE THROW
+ * (plan §4.6: "a software renderer string or a failed WebGL2 probe selects the 2D view
+ * with an event-log line; the 3D view stays one click away for retry"). The fallback is what
+ * makes it stick for this tab (never in storage: see `fallBackTo2d`). The host's own catch only
+ * logs, so without it the scene would be retried on every remount and the player would sit in front of a canvas that never
  * appears. Nothing is disabled: the Graphics section's 3D button is still one click away, which
  * is the retry §4.6 asks for.
  *
@@ -992,12 +993,12 @@ export const createBiobuzzScene: GameSceneFactory = async (host: HTMLElement, op
 
   const probe = gpuProbe();
   if (!probe.webgl2) {
-    setViewPref('2d');
+    fallBackTo2d();
     opts.onQualityEvent?.('This browser has no WebGL2. Showing the 2D view.');
     throw new SceneUnsupportedError('WebGL2 unavailable');
   }
   if (probe.software) {
-    setViewPref('2d');
+    fallBackTo2d();
     opts.onQualityEvent?.(`No GPU acceleration here (${probe.renderer || 'software renderer'}). Showing the 2D view.`);
     throw new SceneUnsupportedError(`software renderer: ${probe.renderer}`);
   }

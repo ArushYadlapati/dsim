@@ -1,4 +1,5 @@
-import { Suspense, lazy } from 'react';
+import { lazy } from 'react';
+import { LoadBoundary } from './LoadBoundary';
 import type { GameSettings } from '../game';
 import { Menu } from './Menu';
 import { MatchSetup } from './MatchSetup';
@@ -129,9 +130,9 @@ export function Configure({
           )}
           {section === 'audio' && <AudioSection settings={settings} onChange={onChange} />}
           {section === 'graphics' && (
-            <Suspense fallback={<div className="ds-loading">Loading graphics settings…</div>}>
+            <LoadBoundary what="the graphics settings" fallback={<div className="ds-loading">Loading graphics settings…</div>}>
               <GraphicsSection />
-            </Suspense>
+            </LoadBoundary>
           )}
           {section === 'network' && <NetworkSection />}
         </div>
