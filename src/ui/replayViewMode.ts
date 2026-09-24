@@ -4,7 +4,7 @@ import type { ViewPref } from '../games/biobuzz/graphics/store';
  * WHICH RENDERER A REPLAY OPENS IN.
  *
  * A replay is a match somebody is WATCHING, exactly like the live game — so it should open in
- * the same device preference the live game reads (`decodesim.view`, `GameController.syncScene`)
+ * the same device preference the live game reads (`decodesim.view.v2`, `GameController.syncScene`)
  * rather than defaulting to the 2D map and making the player ask for 3D on every replay they
  * open. `viewable` folds together the two reasons 3D might not be reachable regardless of the
  * preference: this game has no 3D scene at all (DECODE, Chain Reaction), or — for the export

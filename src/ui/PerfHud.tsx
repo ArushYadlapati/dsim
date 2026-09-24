@@ -165,11 +165,16 @@ export const PerfHud = memo(function PerfHud({
             />
           )}
           {/* the prediction READ-OUT, not the control — the picker is its own panel below this
-              one, because a control cannot live on a `pointer-events: none` card. */}
+              one, because a control cannot live on a `pointer-events: none` card. It says what
+              is RUNNING, which Auto and the step-down rule can make differ from the pressed
+              button, so the picker itself does not have to. */}
           {pred && (
             <Row
               k="PREDICT"
-              v={`${pred.mode}${pred.reconcileP95 === null ? '' : ` · ${ms(pred.reconcileP95)} ms p95`}`}
+              v={
+                `${pred.pref === 'auto' ? 'auto · ' : ''}${pred.mode}` +
+                `${pred.reconcileP95 === null ? '' : ` · ${ms(pred.reconcileP95)} ms`}`
+              }
             />
           )}
           {net?.server && <Row k="SERVER" v={net.server} />}

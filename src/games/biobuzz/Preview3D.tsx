@@ -20,7 +20,7 @@ import { bbSpecKey } from './specKey';
  * render.ts` asserts it rather than trusting it.
  *
  * ── THE TOGGLE IS THE DEVICE'S OWN VIEW PREFERENCE ──────────────────────────────────────────
- * Not component state: `graphics/store.ts`'s `decodesim.view`, the same preference the match view,
+ * Not component state: `graphics/store.ts`'s `decodesim.view.v2`, the same preference the match view,
  * the `t` key, the touch layer's button and the Graphics section all read. Building your robot in
  * 3D and then driving it in 2D is not a thing anybody wants, and a second switch that meant
  * something slightly different would be how you end up with it.

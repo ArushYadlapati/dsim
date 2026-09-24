@@ -9,8 +9,9 @@
  * build". So it lives in its own localStorage key, under the SAME `decodesim.` prefix
  * `THEME_KEY` uses, client-only, with no React import in this file.
  *
- * Defaults `'2d'`: Day 1 lands the seam, not a `GameScene` implementation, so defaulting to
- * the renderer that actually exists is the only default that draws anything.
+ * Defaults `'3d'` (owner, 2026-09-23). It defaulted `'2d'` while the scene did not exist yet.
+ * A device the scene cannot run on still lands on 2D: `renderScene` stores `'2d'` itself when
+ * WebGL is unsupported or the context is lost.
  */
 
 import { VIEW_KEY, CAMERA_KEY, DRIVER_HEIGHT_KEY, FREE_CAM_NAV_KEY } from '../../../storageKeys';
@@ -22,14 +23,14 @@ export type ViewPref = '2d' | '3d';
 
 const isViewPref = (v: unknown): v is ViewPref => v === '2d' || v === '3d';
 
-/** the stored preference, or `'2d'` when absent, corrupt, or storage is unavailable (private
+/** the stored preference, or `'3d'` when absent, corrupt, or storage is unavailable (private
  * browsing, a locked-down profile). Never throws. */
 export function getViewPref(): ViewPref {
   try {
     const v = localStorage.getItem(VIEW_KEY);
-    return isViewPref(v) ? v : '2d';
+    return isViewPref(v) ? v : '3d';
   } catch {
-    return '2d';
+    return '3d';
   }
 }
 

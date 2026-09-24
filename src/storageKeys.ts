@@ -70,8 +70,10 @@ export const SETTINGS_KEY = 'decodesim.settings.v1';
 export const THEME_KEY = 'decodesim.theme';
 /** 3D quality preset — a property of THIS machine's GPU, so never an account setting */
 export const GRAPHICS_KEY = 'decodesim.graphics';
-/** 2D or 3D renderer, per device */
-export const VIEW_KEY = 'decodesim.view';
+/** 2D or 3D renderer, per device. `.v2` since the default moved to 3D (2026-09-23): a new key
+ *  rather than a rewrite of the old one, so every device starts on 3D once, including those
+ *  that had stored `'2d'`. The old `decodesim.view` is no longer read. */
+export const VIEW_KEY = 'decodesim.view.v2';
 /** which 3D camera the last match was watched from */
 export const CAMERA_KEY = 'decodesim.camera';
 /** the driver's own height, for the height-accurate BIOBUZZ 3D driver camera — per device */
