@@ -1,4 +1,14 @@
-# HANDOFF — 2026-09-24b (BIOBUZZ PIN line stayed up after the pin stopped)
+# HANDOFF — 2026-09-24c (Controls: conflicts are refused, 3D view keys are rebindable)
+
+**State: green, pushed on `alpha`.** `npm test` 5044 checks all pass. `build`, `server:check`, `uiaudit`, `contrast`, `docaudit` and `bundleaudit` pass. Client-only.
+
+- **Rebinding a key another action holds is REFUSED, not stolen.** `keyConflict` / `padConflict` (`src/input/bindings.ts`) run before any assign. The slot stays armed, the card title turns red and names the holder, the holder's keycap gets a red ring and shakes twice, and the holder's scope button is ringed when it sits in another scope. `assignKey`'s steal code is untouched and still tested; the screen just never reaches it with a taken bind. Rules are in `docs/area/ui.md`.
+- **The 3D view keys are bindings**: `VIEW_ACTIONS` = `viewToggle` T, `cameraCycle` **L** (was a hard-coded C, which also placed POLLEN), `eyeUp` I, `eyeDown` O. They are BIOBUZZ-only and keyboard-only, on a new "3D view" card in the BIOBUZZ scope (`seasonPanels` replaces `seasonPanel`). `graphics/viewKey.ts` holds the binds (`setViewBindings`, called from `App.tsx`), and both listeners read them through `viewActionOf`.
+- **Migration:** an action missing from a stored blob gets its default only where no stored bind of a conflicting action holds that key (`mergeBindings`). An old Deploy ramp on L keeps L, and the camera starts unbound with the red dot on BIOBUZZ.
+- The conflict message names only the FIRST holder found. With C in All games that is Chain Reaction's Catalyst, although BIOBUZZ's Place POLLEN has it too.
+- ⚠️ Don't run `npx prettier --write` here. There is no Prettier config, so the defaults (double quotes, 80 columns) rewrite whole files.
+
+# 2026-09-24b (BIOBUZZ PIN line stayed up after the pin stopped)
 
 **State: green, committed (4cfb37f).** `build`, `server:check` pass; `npm test` 3/5039 failures, all timing
 (`PREDICT_FULL_BUDGET`, the Auto probe that measures the same budget, 2v2 `step3d` p95).
