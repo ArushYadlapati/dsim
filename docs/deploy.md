@@ -454,6 +454,40 @@ Absent ⇒ the MULTIPLAYER menu is hidden and the solo game is unaffected (mirro
 old `supabaseConfigured()` gating). For the Electron build, set the same var in the
 shell before `npm run dist`.
 
+### Security headers, and why framing is an ALLOWLIST rather than `'none'`
+
+`vercel.json` sends `Referrer-Policy`, `X-Content-Type-Options` and a `Content-Security-Policy`
+carrying one directive: `frame-ancestors`. They landed on 2026-09-19 because the one-click
+consent controls were frameable, which is a clickjacking target.
+
+⚠️ **`frame-ancestors` MUST keep naming Discord, and `X-Frame-Options` MUST stay gone.** A
+Discord Activity IS an iframe: the client is served through the proxy at
+`<app-id>.discordsays.com` and framed by the Discord client. `frame-ancestors 'none'` therefore
+forbids the whole activity, and it fails the way this repo hates most — no error anywhere, just
+a blank or refused embed inside Discord, on a surface no audit here loads. It shipped that way:
+the headers landed on 2026-09-19 (`f993507`) and the activity merged on 2026-09-21 (`eae5b98`),
+while the last time anyone drove the activity in a real embed predates both. The two changes are
+each correct alone and were never once seen together.
+
+The allowlist is `'self'` plus `discord.com`, `*.discord.com` (canary and ptb) and
+`*.discordsays.com` (the proxy origin, and any nesting inside it). Ordinary cross-origin framing
+is still refused, which is the attack `f993507` was closing.
+
+⚠️ **It is weaker than `'none'` by exactly those four sources, and `*.discordsays.com` is the
+loose one**: it admits ANY Discord developer's proxy origin, not only ours, so a third party
+could map this site into their own activity. What defuses it is that a proxied document is
+served FROM the `discordsays` origin, so it carries none of this site's cookies or
+`localStorage` — the frame is signed out, with no stored consent state to clickjack and no
+session to act on. That is why the wildcard is kept rather than trimmed to `'self'`: the cost
+is near zero, and guessing wrong in the other direction re-breaks the embed silently, which is
+the whole bug this section exists to prevent.
+
+`X-Frame-Options: DENY` was REMOVED rather than kept beside it, because that header has no
+allowlist — `ALLOW-FROM` is dead in every current browser, so `DENY` is the only thing it can
+say, and anything that honours it over the CSP blocks the activity. Every browser that supports
+`X-Frame-Options` but NOT `frame-ancestors` is too old to run this app at all — the physics is
+WebAssembly and the bundle is ESM — so nothing real loses cover.
+
 ## 3. Local dev
 
 ```bash
