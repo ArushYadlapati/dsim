@@ -15,6 +15,7 @@ import { DRIVETRAIN_LABELS } from './labelData';
 import type { ResultBanner } from './recordBanner';
 import { seasonFor } from '../seasons';
 import { SupporterBadge } from './SupporterBadge';
+import { Marquee } from './Marquee';
 import { useDialog } from './useDialog';
 import type { Alliance, ScoreBreakdown } from '../types';
 
@@ -280,64 +281,6 @@ function useEloPending(ranked: boolean, eloResults: EloResultRow[] | null): stri
   return timedOut ? 'No rating change this match.' : 'Updating rating…';
 }
 
-/**
- * A driver name that does not fit its panel SCROLLS instead of wrapping.
- *
- * The roster row is one line on a broadcast board, and a wrapped name used to push the team
- * number onto a second line — which, on a versus board, desynced the two halves' rows. The
- * overflow has to be MEASURED: the panel is a percentage of the viewport, so whether a given
- * name fits is a question about the window, not about the string. `over` is read off the
- * first copy against the clip, never off the clip's own `scrollWidth`, so it still answers
- * correctly once the second copy exists and the marquee can switch back off when the window
- * grows.
- */
-function DriverName({ name }: { name: string }) {
-  const clip = useRef<HTMLSpanElement>(null);
-  const text = useRef<HTMLSpanElement>(null);
-  const [over, setOver] = useState(false);
-  useEffect(() => {
-    const c = clip.current;
-    const t = text.current;
-    if (!c || !t) return;
-    // ⚠️ `getBoundingClientRect`, NOT `scrollWidth`. `.resx-name-text` is an INLINE element
-    // (it has to stay inline for the `text-overflow: ellipsis` fallback to apply to it), and
-    // `scrollWidth` on a non-replaced inline box is 0 — so the comparison was false for every
-    // name, however long, and the marquee never once fired. The rect is the text's real
-    // layout width; the parent's `overflow: hidden` clips at PAINT and does not shrink it.
-    // 1px of slack: sub-pixel metrics otherwise scroll a name that visually fits.
-    const measure = () => setOver(t.getBoundingClientRect().width > c.clientWidth + 1);
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(c);
-    // ⚠️ AND AGAIN ONCE THE WEBFONT LANDS. Both families are variable cuts loaded by
-    // `@fontsource`, so the first measurement is taken in the fallback face — which is
-    // narrower here, so a name that overflows Plus Jakarta measured as fitting and never
-    // scrolled. The observer cannot catch it: the CLIP's box does not change, only the
-    // text's. `fonts` is absent in no browser this app runs in, but it is optional chaining
-    // because the harness renders under jsdom-less test conditions too.
-    let live = true;
-    document.fonts?.ready.then(() => live && measure());
-    return () => {
-      live = false;
-      ro.disconnect();
-    };
-  }, [name]);
-  return (
-    <span ref={clip} className={`resx-name-clip${over ? ' scroll' : ''}`}>
-      <span ref={text} className="resx-name-text">
-        {name}
-      </span>
-      {/* the second copy is what makes the loop seamless rather than a snap back to the
-          start. It is decorative: a screen reader must not read the name twice. */}
-      {over && (
-        <span className="resx-name-text" aria-hidden="true">
-          {name}
-        </span>
-      )}
-    </span>
-  );
-}
-
 function RosterList({
   roster,
   showElo,
@@ -367,8 +310,8 @@ function RosterList({
         <li key={p.robotId} className="resx-roster-row" style={{ animationDelay: `${i * 90}ms` }}>
           {order(
             <span className="resx-roster-name">
-              <DriverName name={p.name} />
-              {/* A SIBLING of the clip, never inside it: `DriverName` MEASURES its text
+              <Marquee text={p.name} />
+              {/* A SIBLING of the clip, never inside it: `Marquee` MEASURES its text
                   against the clip to decide whether to marquee, so anything else in there
                   would widen the thing being measured and scroll a name that fits.
                   Badge ONLY here — no title chip. See the note in styles.css beside

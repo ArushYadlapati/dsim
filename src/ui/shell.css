@@ -4797,6 +4797,61 @@ tr.lb-detail td {
   clip-path: inset(50%);
   white-space: nowrap;
 }
+/* ---- a line that does not fit MARQUEES rather than wrapping (`Marquee.tsx` measures it) ----
+   The results roster's driver names and a robot card's name and team. A roster name used to
+   `overflow-wrap: anywhere` onto a second line, which on a versus board put the two halves' rows
+   at different heights. `.scroll` is only ever set when the text genuinely does not fit, so a
+   line that fits never moves. */
+.ds-marquee {
+  display: inline-block;
+  /* SHRINK-ONLY, like its parent: growing would drag a YOU chip or a badge away from the text
+     it belongs to. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  /* the non-scrolling fallback, and what reduced motion falls back to */
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.ds-marquee.scroll {
+  display: inline-flex;
+  gap: 2em;
+}
+.ds-marquee-text {
+  white-space: nowrap;
+}
+.ds-marquee.scroll .ds-marquee-text {
+  flex: none;
+  /* TWO passes, not `infinite` (design review 17-18): text that scrolls for as long as the
+     screen is up is motion nobody can switch off. It rests on the start afterwards, and a
+     pointer over it holds it mid-pass (WCAG 2.2.2). */
+  animation: ds-marquee 14s linear 2;
+}
+.ds-marquee.scroll:hover .ds-marquee-text {
+  animation-play-state: paused;
+}
+/* `-100%` is the copy's own width and the gap is the space behind it, so the second copy
+   lands exactly where the first began — no snap. */
+@keyframes ds-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(calc(-100% - 2em));
+  }
+}
+/* the marquee is switched off outright (capping a 14s pass's duration would only make it
+   race), and the clip falls back to the ellipsis it already declares. */
+@media (prefers-reduced-motion: reduce) {
+  .ds-marquee.scroll {
+    display: inline-block;
+  }
+  .ds-marquee.scroll .ds-marquee-text {
+    animation: none !important;
+  }
+}
 .ds-note {
   display: block;
   font-family: var(--ds-font-mono);

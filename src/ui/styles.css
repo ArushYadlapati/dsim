@@ -2303,7 +2303,7 @@ button {
 /* ⚠️ `nowrap`, and the NAME is the part that gives. It used to wrap, which is how a long name
    pushed the team number onto a second line — and on a versus board that put the two halves'
    rows at different heights, the one thing the reserved banner slot exists to prevent. The
-   name marquees instead (`DriverName`), so the row is always exactly one line. */
+   name marquees instead (`Marquee`), so the row is always exactly one line. */
 .resx-roster-row {
   display: flex;
   align-items: baseline;
@@ -2329,56 +2329,12 @@ button {
 /* ⚠️ NO TITLE CHIP ON THIS ROW, DELIBERATELY — the badge only.
    Every other surface that prints a name prints badge THEN title, and this one does not,
    because the roster row is ONE LINE by contract: `.resx-roster-row` is `flex-wrap: nowrap`
-   and `DriverName` marquees rather than wrapping, precisely so the two alliance halves'
+   and `Marquee` scrolls rather than wrapping, precisely so the two alliance halves'
    rows stay level with each other. The chips beside the name are `flex: 0 0 auto`, so the
    name is what shrinks — and a variable-width TEXT chip costs about four times what the
    badge disc does. Measured on a 340px half, "Maximiliano Featherstone" clipped to "M."
    with a title chip beside it. The badge is ~1em and fixed, so it fits; a title belongs
    here only with a second line to put it on, which is a layout decision, not a chip. */
-/* ---- a long name MARQUEES rather than wrapping (`DriverName` measures it) ----
-   It used to `overflow-wrap: anywhere` onto a second line, which on a versus board put the
-   two halves' rows at different heights. `.scroll` is only ever set when the text genuinely
-   does not fit, so a name that fits never moves. */
-.resx-name-clip {
-  display: inline-block;
-  /* SHRINK-ONLY, like its parent: growing would drag the YOU chip away from the name it
-     belongs to and park it against the team number. */
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  /* the non-scrolling fallback, and what reduced motion falls back to */
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
-}
-.resx-name-clip.scroll {
-  display: inline-flex;
-  gap: 2em;
-}
-.resx-name-text {
-  white-space: nowrap;
-}
-.resx-name-clip.scroll .resx-name-text {
-  flex: none;
-  /* TWO passes, not `infinite` (design review 17-18): a roster that scrolls for as long as the
-     screen is up is motion nobody can switch off. It rests on the name's start afterwards, and
-     a pointer over it holds it mid-pass (WCAG 2.2.2). */
-  animation: resx-marquee 14s linear 2;
-}
-.resx-name-clip.scroll:hover .resx-name-text {
-  animation-play-state: paused;
-}
-/* `-100%` is the copy's own width and the gap is the space behind it, so the second copy
-   lands exactly where the first began — no snap. */
-@keyframes resx-marquee {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(calc(-100% - 2em));
-  }
-}
 /* both of these are sized in `em` OFF THE ROSTER ROW rather than off the unit: they are
    parts of that row, so they scale for free and cannot drift out of proportion with it. */
 .resx-you {
@@ -2731,14 +2687,6 @@ button {
   }
   .resx-sting {
     display: none;
-  }
-  /* the marquee is switched off outright (capping a 14s pass's duration would only make it
-     race), and the clip falls back to the ellipsis it already declares. */
-  .resx-name-clip.scroll {
-    display: inline-block;
-  }
-  .resx-name-clip.scroll .resx-name-text {
-    animation: none !important;
   }
 }
 @keyframes resx-reduced-fade {
