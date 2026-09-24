@@ -69,50 +69,40 @@ import {
  * this says what to do about it, and the foot line says what the last reconcile actually cost.
  *
  * It renders only for a 3D-physics room, because that is the only place the setting changes
- * anything (`hud.prediction` is null everywhere else, which is the single fact that decides it).
+ * anything (`hud.prediction` is null everywhere else), and only at the `detailed` and `graphs`
+ * display levels (owner, 2026-09-23: not needed in simple mode at all).
+ *
+ * ── ONE ROW, NO READ-OUT ──────────────────────────────────────────────────────────────────
+ * It is the buttons and nothing else. What is actually running (Auto resolved, or stepped
+ * down) and what reconciling costs are the PREDICT and SYNC rows of `PerfHud` directly above,
+ * which are on at every level this panel is. A step-down posts its own event-log line.
  */
 function PredictionPanel({
-  stats,
+  pref,
   onPick,
 }: {
-  stats: NonNullable<HudSnapshot['prediction']>;
+  pref: PredictionPref;
   onPick: (p: PredictionPref) => void;
 }) {
-  // WHAT IS RUNNING, not what was asked for. `auto` resolves at the countdown probe and the
-  // slip rule can step Full down mid-match, so a player on Auto who reads only the pressed
-  // button would have no way to know which of the two they actually got.
-  const running = stats.pref === 'auto' ? `Auto · ${PREDICTION_LABELS[stats.mode]}` : PREDICTION_LABELS[stats.mode];
-  const cost = stats.reconcileP95 !== null ? `${stats.reconcileP95.toFixed(1)}ms p95` : `${stats.reconcileMs.toFixed(1)}ms`;
-  const foot =
-    stats.mode === 'off'
-      ? 'Drawn from the server. Nothing is guessed.'
-      : `Correction ${stats.correctionIn.toFixed(2)}in · reconcile ${cost}` +
-        (stats.probeMs !== null ? ` · probe ${stats.probeMs.toFixed(1)}ms` : '') +
-        (stats.stepped ? ' · stepped down' : '');
   return (
-    <div className="pred-panel">
-      <div className="pred-head">
-        <span>PREDICTION</span>
-        <span className="pred-mode">{running}</span>
-      </div>
-      {/* `role="group"` + `aria-pressed`, not a radiogroup: these are three TOGGLES sharing
-          one setting, and `.on` is the only thing that says which is chosen — a screen reader
-          reading three bare buttons could not tell. The group's label is what gives "Auto"
-          its context, since the heading above is decorative text, not a heading element. */}
-      <div className="pred-opts" role="group" aria-label="Prediction">
-        {PREDICTION_PREFS.map((p) => (
-          <button
-            key={p}
-            className={`pred-opt ${stats.pref === p ? 'on' : ''}`}
-            title={PREDICTION_BLURBS[p]}
-            aria-pressed={stats.pref === p}
-            onClick={() => onPick(p)}
-          >
-            {PREDICTION_LABELS[p]}
-          </button>
-        ))}
-      </div>
-      <div className="pred-foot">{foot}</div>
+    /* `role="group"` + `aria-pressed`, not a radiogroup: these are TOGGLES sharing one
+       setting, and `.on` is the only thing that says which is chosen. The group's label is
+       what gives "Auto" its context; the PREDICT word beside the buttons is decorative. */
+    <div className="pred-panel" role="group" aria-label="Prediction">
+      <span className="pred-k" aria-hidden="true">
+        PREDICT
+      </span>
+      {PREDICTION_PREFS.map((p) => (
+        <button
+          key={p}
+          className={`pred-opt ${pref === p ? 'on' : ''}`}
+          title={PREDICTION_BLURBS[p]}
+          aria-pressed={pref === p}
+          onClick={() => onPick(p)}
+        >
+          {PREDICTION_LABELS[p]}
+        </button>
+      ))}
     </div>
   );
 }
@@ -1200,13 +1190,12 @@ function Hud({
               and nothing else, `hud.prediction` is null everywhere it is inert).
               It used to be behind the connection chip's click, which means it was never
               reachable: that click never landed (see the top of this file). It is a CONTROL, so
-              it is not part of the read-out above, a `pointer-events: none` card cannot hold
-              one, and it is not gated on the display level either, because hiding a control
-              behind a diagnostic's setting is the same mistake in a different place.
-              Fine pointer only: the panel is taller than a landscape gutter, and the same setting
-              is in Configure › Network, which a phone reaches from the menu. */}
-          {!coarsePointer && hud.prediction && (
-            <PredictionPanel stats={hud.prediction} onPick={setPredictionPref} />
+              it is not part of the read-out above: a `pointer-events: none` card cannot hold
+              one. Shown at the `detailed` and `graphs` levels only, beside the rows that say
+              what it is doing; Configure › Network holds the same setting for everyone else.
+              Fine pointer only: a phone's read-out is capped at `simple` anyway. */}
+          {!coarsePointer && hud.prediction && (perfLevel === 'detailed' || perfLevel === 'graphs') && (
+            <PredictionPanel pref={hud.prediction.pref} onPick={setPredictionPref} />
           )}
           {/* DESYNC, on a phone, at the foot of this cluster: the bottom-right corner is the
               thumb pad's. It is the one net chip that is a state rather than a fact (see the

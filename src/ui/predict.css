@@ -1,5 +1,6 @@
 /*
- * THE IN-MATCH PREDICTION CONTROL — the panel under the connection graph
+ * THE IN-MATCH PREDICTION CONTROL — one row of buttons under the performance read-out,
+ * shown at the detailed and graphs display levels
  * (`docs/biobuzz/plan-3d.md` §5; `PredictionPanel` in GameView.tsx).
  *
  * ── WHY ITS OWN FILE ──────────────────────────────────────────────────────────────────────
@@ -23,35 +24,25 @@
  */
 
 .pred-panel {
+  display: flex;
+  align-items: center;
+  gap: var(--ds-s-1);
   background: var(--ds-hud);
   border: 1px solid var(--ds-hud-line);
   border-radius: var(--ds-round-md);
-  padding: var(--ds-s-2);
-  width: 260px; /* one-off: the width of the three option buttons at --ds-t-xs */
+  padding: var(--ds-s-1) var(--ds-s-2);
+  /* the same cap as `.perf-hud` directly above it, so the two cards line up */
+  max-width: min(232px, calc(50vw - var(--ds-s-5)));
   margin-top: var(--ds-s-1);
-  font-variant-numeric: tabular-nums;
 }
 
-.pred-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
+/* the same word style as the read-out's `.perf-k` rows above */
+.pred-k {
+  font-family: var(--ds-font-mono);
   font-size: var(--ds-t-xs);
-  letter-spacing: 0.6px;
+  letter-spacing: 1px;
   color: var(--ds-mut);
-  margin-bottom: var(--ds-s-1);
-}
-
-/* what is ACTUALLY running, which is not always what the pref says (`auto` resolves, and the
-   slip rule can step Full down mid-match) — so it is stated, not implied by a pressed button */
-.pred-mode {
-  color: var(--ds-ink);
-  font-weight: 600;
-}
-
-.pred-opts {
-  display: flex;
-  gap: var(--ds-s-1);
+  margin-right: var(--ds-s-1);
 }
 
 .pred-opt {
@@ -84,10 +75,3 @@
      and a text colour fails one of the two (CLAUDE.md) */
   color: var(--ds-accent-ink);
 }
-
-.pred-foot {
-  font-size: var(--ds-t-xs);
-  color: var(--ds-mut);
-  margin-top: var(--ds-s-1);
-}
-

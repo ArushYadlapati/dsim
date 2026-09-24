@@ -547,13 +547,13 @@ const reviewW3HudPairs = (t) => {
     ['3D scrim over a light backdrop: muted', s('--ds-mut'), cardLit, AA],
 
     // the prediction panel: themed inks on the themed card (a 3D room in the 2D view) …
-    ['.pred-mode on the themed HUD card', t('--ds-ink'), themedCard, AA],
-    ['.pred-opt / .pred-head on the themed HUD card', t('--ds-mut'), themedCard, AA],
+    ['.pred-opt:hover on the themed HUD card', t('--ds-ink'), themedCard, AA],
+    ['.pred-opt / .pred-k on the themed HUD card', t('--ds-mut'), themedCard, AA],
     ['.pred-opt focus ring on the themed HUD card (1.4.11)', t('--ds-accent'), themedCard, NON_TEXT],
     ['.pred-opt.on', t('--ds-accent-ink'), t('--ds-accent'), AA],
     // … and the same rules inside the 3D scrim
-    ['3D scrim .pred-mode', s('--ds-ink'), card, AA],
-    ['3D scrim .pred-opt / .pred-head', s('--ds-mut'), card, AA],
+    ['3D scrim .pred-opt:hover', s('--ds-ink'), card, AA],
+    ['3D scrim .pred-opt / .pred-k', s('--ds-mut'), card, AA],
     ['3D scrim .pred-opt.on', s('--ds-accent-ink'), s('--ds-accent'), AA],
 
     // the admin server notice (fixed-ink fills; floats over the match and the shell)
