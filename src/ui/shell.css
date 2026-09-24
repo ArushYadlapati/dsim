@@ -4726,6 +4726,83 @@ tr.lb-detail td {
   color: var(--ds-accent);
   font-size: var(--ds-t-lg);
 }
+/* ---- the builder's PRESETS: one row that scrolls sideways (owner, 2026-09-23) ----
+   Every card is the same width (the column), and the same height because they share one row.
+   The padding is the room the option card's shadow, hover lift and 2px+2px focus ring draw in,
+   which a scroll container would otherwise clip; the negative margin puts the cards back on the
+   caption's edge. */
+.ds-opts.robots.strip {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: 260px;
+  overflow-x: auto;
+  /* NO scroll-snap. Chrome re-snaps to the snapped card's TRANSFORMED box, so pressing a preset
+     (`.ds-opt:active` is translate(2px, 2px)) scrolled the strip with it and every other card slid
+     2px: `shiftaudit` 2026-09-24, 2-4 shifts with snap, 0 without. */
+  padding: var(--ds-s-1) var(--ds-s-1) var(--ds-s-2);
+  margin-inline: calc(-1 * var(--ds-s-1));
+}
+/* THE BAR IS INVISIBLE, THE "THERE IS MORE" IS NOT (owner, 2026-09-24). A strip that hides some of
+   its items has to say so (the narrow-viewport nav note below), so hiding the bar comes with a
+   FADE on whichever edge has cards past it: the right at rest, both mid-scroll, the left at the
+   end, neither when everything fits (an inactive scroll timeline applies nothing). The mask is on
+   the scroller's own box, so the edges stay put while the cards pass under them.
+   The bar is still THERE: `thin` in every state, so it reserves the same room and nothing shifts,
+   and only its COLOUR appears on hover or focus. A vertical wheel does not scroll this row, so the
+   bar is a mouse's way in. Behind `@supports`: a browser without scroll-driven animations (Firefox
+   today) keeps its plain visible bar rather than a hidden one with no fade to say so. */
+@property --strip-fade-l {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@property --strip-fade-r {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+@supports (animation-timeline: scroll()) {
+  .ds-opts.robots.strip {
+    --strip-fade-l: 0px;
+    --strip-fade-r: 0px;
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+    mask-image: linear-gradient(
+      to right,
+      transparent,
+      black var(--strip-fade-l),
+      black calc(100% - var(--strip-fade-r)),
+      transparent
+    );
+    animation:
+      strip-fade-l linear both,
+      strip-fade-r linear both;
+    animation-timeline: scroll(self inline);
+    animation-range:
+      0 40px,
+      calc(100% - 40px) 100%;
+  }
+  .ds-opts.robots.strip:hover,
+  .ds-opts.robots.strip:focus-visible {
+    scrollbar-color: var(--ds-line-strong) transparent;
+  }
+}
+@keyframes strip-fade-l {
+  from {
+    --strip-fade-l: 0px;
+  }
+  to {
+    --strip-fade-l: 40px;
+  }
+}
+@keyframes strip-fade-r {
+  from {
+    --strip-fade-r: 40px;
+  }
+  to {
+    --strip-fade-r: 0px;
+  }
+}
 /* ---- robot cards (`RobotCard.tsx`) ----------------------------------------------------------
    A saved robot and a preset are ONE card, in the builder and in the lobby's swap row: the name,
    the team when there is one, and one build line. AUTO-FILL, so a lone saved robot is one card

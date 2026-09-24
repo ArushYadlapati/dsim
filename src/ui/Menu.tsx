@@ -708,7 +708,10 @@ export function Menu({ settings, onChange }: Props) {
 
             <div className="ds-field">
               {savedRobots.length > 0 && <span className="cap">Presets</span>}
-              <div className="ds-opts robots">
+              {/* ONE ROW that scrolls sideways (owner, 2026-09-23), so every preset card is the
+                  same width and, sharing the row, the same height. Focusable so the arrow keys
+                  scroll it. */}
+              <div className="ds-opts robots strip" role="group" aria-label="Presets" tabIndex={0}>
                 {presets.map((p, i) => (
                   <RobotCard
                     key={p.name}
