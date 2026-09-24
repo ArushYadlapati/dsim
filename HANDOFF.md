@@ -1,4 +1,20 @@
-# HANDOFF — 2026-09-24c (Controls: conflicts are refused, 3D view keys are rebindable)
+# HANDOFF — 2026-09-24d (NECTAR lip, predicted mouth, FOV + driver view, desktop Google pop-up)
+
+**State: pushed on `alpha` (11870a1).** `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. `npm test`: every check passes except the known load flake `FULL reconciles 40 ticks inside PREDICT_FULL_BUDGET_MS`. It measures 9–10 ms with 12 test processes running and 4 ms alone. It was 3 ms alone before the predicted-mouth change below, so it now flakes more often.
+
+**⚠️ Two things still to do, both need the owner:**
+- **The alpha game server has NOT been redeployed.** `./scripts/fly-deploy.sh --alpha` stopped at `flyctl` with no access token. The NECTAR lip is 3D server physics, so until `flyctl auth login` is run and the deploy repeated, online 3D matches still let a ramp pull a NECTAR out.
+- **The desktop Google pop-up ships only with a new desktop release.** `electron/main.cjs` and `preload.cjs` live inside the installed app. The site half is on Vercel already, and older shells keep the in-window redirect.
+
+What landed:
+- **A NECTAR seats on the flower's middle ring** (`BB3_FLOWER_NECTAR_SORT_D` 3.4, `buildNectarSorter3d`, `GROUP_NECTAR` / `GROUP_NECTAR_SORTER` in `sim3d/groups.ts`; the pocket filler excludes the new bit too). Before this it sat on the tiles in the retrieval opening, and a ramp lifted it on the way in and dragged it out on the way back. The FLOWER3D lane drives in and back out; the check fails 5 ways with the lip removed. The lone-NECTAR 2D/3D scoring divergence (audit §11.3) is gone.
+- **The Full predictor's LOCAL chassis has the authority's mouth** (frame, mechanisms, arms, pocket filler with the lintel folded in; `predictChassisShapes`). The one solid cuboid lifted the predicted robot up to 2.2 in over a wall row of POLLEN with a full hopper. p95 prediction error on the seven bot builds went 0.25 → 0.06 in.
+- **FOV slider is horizontal, 60–120°** (`GraphicsSettings.hfov`; a stored vertical `fov` converts once, old default 70 → 100). `graphics/fov.ts` does the conversions, and each camera converts per screen shape.
+- **Height-accurate driver view**: the whole field and both hives always in frame, turning smoothly toward the robot (`fitDriverEyeFrame`, `driverEyeFollow`). The eye stands about 77 in behind the real driver spot at 100° to leave turning room. The default driver view (no "Your height") is unchanged: static, whole field.
+- **3D view hints** name the player's bound key (`viewKeyName`), not a literal T.
+- **Desktop Google sign-in** runs in a pop-up window (`dsim:oauth`), with details in `docs/area/sponsor.md`. It has NOT been exercised against a real Google account here. The wiring is pinned by source checks, and both Electron files parse.
+
+# 2026-09-24c (Controls: conflicts are refused, 3D view keys are rebindable)
 
 **State: green, pushed on `alpha`.** `npm test` 5044 checks all pass. `build`, `server:check`, `uiaudit`, `contrast`, `docaudit` and `bundleaudit` pass. Client-only.
 
