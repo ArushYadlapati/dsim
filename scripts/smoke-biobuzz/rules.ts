@@ -2552,6 +2552,7 @@ function pinChecks(check: Check): void {
     const w = frame();
     const held = bill(w, ticks(2.5), press);
     check('G421: 2.5 s of pinning is still under the tariff', held.major.red === 0, String(held.major.red));
+    check('HUD: a pin that is counting reads as counting', biobuzzFieldHud(w).pins[0]?.counting === true);
 
     const off = bill(w, ticks(0.7)); // no command — the pinner stops pressing
     check('G421: easing off for 0.7 s bills nothing', off.major.red === 0, String(off.major.red));
@@ -2561,9 +2562,13 @@ function pinChecks(check: Check): void {
     check('G421: and its count PAUSED rather than resetting — ~2.5 s, not 0',
       paused.length === 1 && Math.abs(paused[0].seconds - 2.5) < 0.05,
       paused.length === 1 ? paused[0].seconds.toFixed(3) : 'no pin');
+    // the HUD line bug: a paused pin stays on the books, and a HUD that drew it froze its
+    // countdown on screen for as long as the robots stayed within 2 ft of each other
+    check('HUD: a PAUSED pin is not counting, so the PIN line goes away', paused[0]?.counting === false);
 
     const resumed = bill(w, ticks(0.6), press); // 2.5 + 0.6 = 3.1 s of actual pinning
     check('G421: the count RESUMES — 2.5 s + 0.6 s crosses the tariff', resumed.major.red === 1, String(resumed.major.red));
+    check('HUD: and a resumed pin is counting again', biobuzzFieldHud(w).pins[0]?.counting === true);
   }
 
   /**

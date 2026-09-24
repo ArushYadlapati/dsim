@@ -113,10 +113,13 @@ const BB_WARN_HOLD_S = 3;
  * `pins` is usually empty and holds more than one entry only in a genuine multi-robot tangle.
  * The chip shows ONE, and it is the one with the least time left on its tariff: every entry
  * carries the same 20-point-per-3-second clock, so the soonest is the only one whose number
- * changes what either driver does in the next second.
+ * changes what either driver does in the next second. PAUSED pins are skipped — their clock
+ * is not moving, and a frozen countdown is not a warning.
  */
-const soonestPin = (pins: readonly BbPinHud[] | undefined): BbPinHud | null =>
-  !pins || pins.length === 0 ? null : pins.reduce((a, b) => (b.nextIn < a.nextIn ? b : a));
+const soonestPin = (pins: readonly BbPinHud[] | undefined): BbPinHud | null => {
+  const live = pins?.filter((p) => p.counting) ?? [];
+  return live.length === 0 ? null : live.reduce((a, b) => (b.nextIn < a.nextIn ? b : a));
+};
 
 /**
  * THE PIN LINE. `PIN · 20 IN 1.4 S` — the ACT, the tariff, and the seconds until it lands.

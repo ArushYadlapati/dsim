@@ -847,6 +847,7 @@ function bbUpdatePins(world: World, dt: number, commands: Map<number, RobotComma
       if (escapeSpeed >= PIN_STUCK_SPEED) continue; // getting away under its own power
 
       st.seconds += dt;
+      st.at = world.time;
       // MAJOR at 3 s, and another every 3 s the situation is not corrected — Table 10-6's
       // "6 MAJOR FOULS for 15 seconds in violation", which is 18 s of pinning and `floor(18/3)`.
       // A `while` rather than an `if` because a coarse `dt` can cross two thresholds in one

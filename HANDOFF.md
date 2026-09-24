@@ -1,3 +1,17 @@
+# HANDOFF — 2026-09-24b (BIOBUZZ PIN line stayed up after the pin stopped)
+
+**State: green, UNCOMMITTED.** `build`, `server:check` pass; `npm test` 3/5039 failures, all timing
+(`PREDICT_FULL_BUDGET`, the Auto probe that measures the same budget, 2v2 `step3d` p95).
+
+- **Bug:** the `PIN · 20 IN x.x S` line (event log + score-bar row) drew every entry in
+  `penalties.pins`. G421 keeps a PAUSED pin on the books until 3 s of 2 ft distance, so robots that
+  stayed close after a brief pin left a frozen countdown up for the rest of the match.
+- **Fix:** `PinState.at` (optional, `src/types.ts`) = `world.time` of the last counted tick, set in
+  `bbUpdatePins`; `BbPinHud.counting` (`hud.ts`, 0.5 s hold); `soonestPin` skips paused pins.
+  Rules unchanged. 3 checks in the rules.ts pause/resume block.
+- ⚠️ **Online needs a game-server deploy** (the HUD reads the server's `penalties.pins`). Until
+  then a snapshot without `at` reads as counting, which is the old behaviour.
+
 # HANDOFF — 2026-09-24 (integration check: 23h + the parallel BIOBUZZ-builder session)
 
 **State: green, UNCOMMITTED** (both sessions' work is still in the tree). `build`, `uiaudit` (after

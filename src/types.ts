@@ -687,6 +687,9 @@ export interface PinState {
   sepFor: number;
   /** seconds criterion B has held (EITHER robot that far from where the pin initiated) */
   awayFor: number;
+  /** `world.time` of the last tick `seconds` advanced — what tells a HUD a COUNTING pin from a
+   * PAUSED one. Optional: set by BIOBUZZ only, and absent on older snapshots. */
+  at?: number;
 }
 
 

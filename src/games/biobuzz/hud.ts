@@ -90,7 +90,17 @@ export interface BbPinHud {
   billed: number;
   /** seconds until the NEXT MAJOR lands */
   nextIn: number;
+  /**
+   * is the count RUNNING, rather than paused? A paused pin stays on the books until criterion
+   * A or B ends it (3 s of distance), and robots that drift apart by less than 2 ft never end
+   * it — so a HUD that drew every entry left a frozen countdown up for the rest of the match.
+   */
+  counting: boolean;
 }
+
+/** how long a pin still reads as counting after its last counted tick, so a single tick of
+ * escape does not blink the line off and on */
+const PIN_SHOW_HOLD_S = 0.5;
 
 export interface BiobuzzFieldHud {
   /** elements scored per alliance — up-CELL contents + owned FLOWER elements + GARDEN. */
@@ -267,6 +277,8 @@ function livePins(world: World): BbPinHud[] {
       // what the tariff charges NEXT, not what it has charged: one MAJOR lands every
       // `PIN_SECONDS`, so the next one is due at `(billed + 1) × PIN_SECONDS`.
       nextIn: Math.max(0, PIN_SECONDS * (st.billed + 1) - st.seconds),
+      // no `at` is a snapshot from a server that predates it: show the pin, as it always did
+      counting: st.at === undefined || world.time - st.at < PIN_SHOW_HOLD_S,
     });
   }
   out.sort((p, q) => p.pinner - q.pinner || p.pinned - q.pinned);
