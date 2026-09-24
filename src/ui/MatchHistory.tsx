@@ -87,8 +87,9 @@ function Players({
   r: MatchHistoryEntry;
   onOpenProfile?: (username: string) => void;
 }) {
+  // an alliance with no signed-in driver (a guest, bots, or nobody) has no rows to name
   const join = (ps: MatchHistoryPlayer[]) =>
-    ps.map((p, i) => (
+    !ps.length ? <span className="ds-muted">—</span> : ps.map((p, i) => (
       <span key={p.userId}>
         {i > 0 && <span className="mh-sep">, </span>}
         <PlayerLink p={p} onOpenProfile={onOpenProfile} />

@@ -361,6 +361,8 @@ export interface MatchOutcome {
    * Absent ⇒ the old head-count, which is all a LAN upload or an older caller can offer.
    */
   mode?: '1v1' | '2v2';
+  /** a bot was seated: the match and replay are kept, playtime is not credited */
+  bots?: boolean;
   result: ReplayResult;
   replay: Replay;
   participants: MatchParticipant[];
@@ -664,12 +666,10 @@ export class Room {
   // WOULD RATE.** Two independent statements, because one of them can be got wrong quietly:
   //   · `addBot` REFUSES a staged/matchmade room, a record room and a live match outright, so
   //     there is no path by which a rated result is produced against an AI.
-  //   · `unpersisted` is true whenever a bot has ever been seated, so even a custom versus room
-  //     — which normally writes a `matches` row and credits playtime — writes nothing. The
-  //     results screen and the replay still work off the broadcast, exactly as an alpha room's
-  //     do. That is deliberately stronger than "unrated": ELO was never in play in a custom
-  //     room, and what IS in play is `user_activity`, which `docs/area/accounts.md` is explicit
-  //     that nothing competitive may start reading. A match against three bots is not playtime.
+  //   · a room that has ever seated a bot reports `bots: true` to persistence, which still
+  //     writes the `matches` row and the replay (so its players can watch it back from their
+  //     history) but credits NO playtime: `user_activity` is what `docs/area/accounts.md` says
+  //     nothing competitive may read, and a match against three bots is not playtime.
 
   /** one seated bot: a synthetic roster row plus the tier it plays at. */
   private readonly bots: { id: string; tier: string; alliance: Alliance; startIndex: number }[] = [];
@@ -685,7 +685,7 @@ export class Room {
   /** the tier each bot ROBOT plays at, resolved at `startMatch` when seats become robot ids. */
   private readonly botTiers = new Map<number, string>();
   /** a bot has been seated here at some point — latched, so removing one before START does not
-   *  quietly make the room persistable again after the roster was already built around it. */
+   *  quietly make the room count as playtime again after the roster was already built around it. */
   private botsEverSeated = false;
 
   /** how many seats are spoken for: connected drivers plus bots. */
@@ -1107,9 +1107,7 @@ export class Room {
    *  in-development build talking to the PRODUCTION server. On the alpha deployment, whose
    *  database is its own, alpha results persist normally (see server/channel.ts). */
   private get unpersisted(): boolean {
-    // A BOT ROOM WRITES NOTHING — see the bot-seat block's header for why that is stronger
-    // than "unrated" and why it is the right strength.
-    return !roomPersists(this.channel) || this.botsEverSeated;
+    return !roomPersists(this.channel);
   }
 
   /** add a read-only SPECTATOR. It receives the current `matchStart` (with a sentinel
@@ -2746,6 +2744,7 @@ export class Room {
         // end of it: the queue bucket when the matchmaker staged this room, else the roster it
         // actually fielded. See `MatchOutcome.mode`.
         mode: this.pendingMatch?.mode ?? (this.matchSetups.length ? eloMode(this.matchSetups.length) : undefined),
+        bots: this.botsEverSeated,
         result,
         replay,
         participants,

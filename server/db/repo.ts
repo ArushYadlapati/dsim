@@ -4870,10 +4870,12 @@ export async function getUserStats(
        select mode, rnk from ranked where user_id = $2`,
       phys ? [balanceVersion, userId, gm, phys] : [balanceVersion, userId, gm],
     ),
+    // RANKED only — the Career panel labels it "Ranked W–L", and a custom game can be
+    // one-sided or against bots, which would hand out free wins
     q<{ played: string; wins: string }>(
       `select count(*) as played, count(*) filter (where mp.won) as wins
        from match_participants mp join matches m on m.id = mp.match_id
-       where mp.user_id = $1 and m.balance_version = $2 and m.game = $3`,
+       where mp.user_id = $1 and m.balance_version = $2 and m.game = $3 and m.ranked`,
       [userId, balanceVersion, gm],
     ),
     q<UserMatchRow>(

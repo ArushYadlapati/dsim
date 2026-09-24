@@ -314,6 +314,14 @@ moderation. It reads `profiles.role`, the projection of `ADMIN_USER_IDS` that ex
 this kind of question can be answered in SQL, so the exemption is SYMMETRIC with the env like
 every other staff perk; the lookup runs only for a signed-in caller who has already been refused,
 never on the happy path.
+**EVERY CUSTOM GAME IS KEPT, ONE-SIDED OR NOT** (owner, 2026-09-24: "users can't see their
+custom room games"). `persistVersusMatch` used to drop any room without an authed player on
+BOTH alliances (vs a guest, alone, two accounts on one side), and a room that had seated a bot
+wrote nothing. So the game never reached anyone's history. Now only a RANKED room needs both
+sides. A custom one writes its row whatever the roster, and a bot room (`MatchOutcome.bots`)
+does too but credits no `user_activity`. The Career panel's "Ranked W–L" is `m.ranked` only,
+so these add no free wins. A short roster never goes public (see UNANIMITY above), so a
+one-sided game is watchable by its players and staff only.
 **THE MATCH HISTORY LIST STAYS PUBLIC** — results, scores, W/L and rating deltas are the
 leaderboard's substance. What comes off the page is the WATCH BUTTON: `userMatchHistory` takes a
 `viewerId` and nulls `replayId` on a row that reader may not watch, so the button is absent rather

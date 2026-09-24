@@ -1630,65 +1630,109 @@ async function main(): Promise<void> {
     );
   }
 
-  // -------------------------------- the one-sided versus room's orphan replay ---
+  // -------------------------------- one-sided versus rooms: kept if custom, swept if ranked ---
   /**
-   * `persistMatch` writes the replay BEFORE calling `persistVersusMatch`, which
-   * early-returns without `saveMatch` when either alliance has no AUTHED player — a
-   * signed-in player against a guest, or a 2v2 whose two accounts sat on one alliance.
-   * Every such room left a `replays` row pointed at by NOTHING: invisible to
-   * `deleteAccount` and to both prunes, freed only by a season purge.
+   * `persistMatch` writes the replay BEFORE calling `persistVersusMatch`. A CUSTOM room with
+   * one side unauthed (a guest, nobody, bots) now writes its match row too, so its players find
+   * it in their history and can watch it. A RANKED one still writes no row, and its replay
+   * would be pointed at by NOTHING (invisible to `deleteAccount` and both prunes), so it is
+   * swept.
    *
-   * The `user_activity` assertion is the ANTI-VACUITY GUARD, and it is not optional.
-   * `persistMatch` no-ops outright on four conditions (DB off, unscored game, zero authed
-   * participants, a throw into its own catch) and every one of them ALSO leaves the replay
-   * count unchanged — so without proof that the function actually RAN, "no new replay"
-   * passes for the wrong reason. Crediting playtime is the last thing it does before the
-   * versus branch.
+   * The `user_activity` assertion is the ANTI-VACUITY GUARD for the ranked case, and it is not
+   * optional. `persistMatch` no-ops outright on four conditions (DB off, unscored game, zero
+   * authed participants, a throw into its own catch) and every one of them ALSO leaves the
+   * replay count unchanged — so without proof that the function actually RAN, "no new replay"
+   * passes for the wrong reason.
    */
   {
     const { persistMatch } = await import('../server/persist');
     const { DEFAULT_SPEC, DEFAULT_ASSISTS } = await import('../src/sim/spawn');
-    await repo.ensureProfile('solo-vs', 'Only');
-    const before = (await db.query<{ n: number }>(`select count(*)::int as n from replays`)).rows[0].n;
-    const out = await persistMatch({
-      game: 'decode',
-      config: { kind: 'versus' },
-      ranked: false,
-      result: { score: { red: 90, blue: 40 }, foulPoints: { red: 0, blue: 0 }, hash: 0, ticks: 1200 },
-      replay: {
-        format: 2,
-        balanceVersion: 4,
-        sim: 2,
+    const replays = async (): Promise<number> =>
+      (await db.query<{ n: number }>(`select count(*)::int as n from replays`)).rows[0].n;
+    const oneSided = (userId: string, ranked: boolean, bots?: boolean) =>
+      persistMatch({
         game: 'decode',
-        mode: 'match',
-        seed: 77,
-        ticks: 1200,
-        setups: [],
-        tracks: { 0: [1, 2, 3, 4, 5, 6, 7] },
-      },
-      participants: [
-        {
-          clientId: 'c1',
-          userId: 'solo-vs',
-          handle: 'Only',
-          alliance: 'red',
-          drivetrain: 'tank',
-          score: 90,
-          spec: DEFAULT_SPEC,
-          assists: DEFAULT_ASSISTS,
+        config: { kind: 'versus' },
+        ranked,
+        bots,
+        result: { score: { red: 90, blue: 40 }, foulPoints: { red: 0, blue: 0 }, hash: 0, ticks: 1200 },
+        replay: {
+          format: 2,
+          balanceVersion: 4,
+          sim: 2,
+          game: 'decode',
+          mode: 'match',
+          seed: 77,
+          ticks: 1200,
+          setups: [],
+          tracks: { 0: [1, 2, 3, 4, 5, 6, 7] },
         },
-      ],
-    });
-    const after = (await db.query<{ n: number }>(`select count(*)::int as n from replays`)).rows[0].n;
+        participants: [
+          {
+            clientId: 'c1',
+            userId,
+            handle: 'Only',
+            alliance: 'red',
+            drivetrain: 'tank',
+            score: 90,
+            spec: DEFAULT_SPEC,
+            assists: DEFAULT_ASSISTS,
+          },
+        ],
+      });
+
+    // ranked: swept
+    await repo.ensureProfile('solo-vs', 'Only');
+    let before = await replays();
+    const ranked = await oneSided('solo-vs', true);
+    let after = await replays();
     check(
-      'versus: persistMatch RAN (it credited playtime) but wrote no match row',
-      !out.matchId && (await repo.getActivity('solo-vs')).total.games === 1,
-      `matchId=${String(out.matchId)}`,
+      'versus/ranked: persistMatch RAN (it credited playtime) but wrote no match row',
+      !ranked.matchId && (await repo.getActivity('solo-vs')).total.games === 1,
+      `matchId=${String(ranked.matchId)}`,
     );
     check(
-      'versus: ...so a ONE-SIDED room leaves no orphaned replay behind',
+      'versus/ranked: ...so a ONE-SIDED ranked room leaves no orphaned replay behind',
       after === before,
       `replays ${before} → ${after}`,
+    );
+
+    // custom: kept, listed, watchable by its player and nobody else
+    await repo.ensureProfile('solo-custom', 'Only');
+    before = await replays();
+    const custom = await oneSided('solo-custom', false);
+    after = await replays();
+    check('versus/custom: a ONE-SIDED custom room writes its match row', !!custom.matchId);
+    check('versus/custom: ...and keeps its replay', after === before + 1, `replays ${before} → ${after}`);
+    const bv = (
+      await db.query<{ balance_version: number }>(`select balance_version from matches where id = $1`, [custom.matchId])
+    ).rows[0]?.balance_version;
+    const hist = await repo.userMatchHistory('solo-custom', { balanceVersion: bv, game: 'decode', viewerId: 'solo-custom' });
+    const row = hist.rows.find((r) => r.id === custom.matchId);
+    check('versus/custom: ...it is in the player’s history with a Watch button', !!row?.replayId, JSON.stringify(row));
+    check(
+      'versus/custom: ...the player may watch it',
+      !!row?.replayId && (await repo.replayAccess(row.replayId, 'solo-custom')).access === 'ok',
+    );
+    check(
+      'versus/custom: ...a stranger may not (a short roster never goes public)',
+      !!row?.replayId && (await repo.replayAccess(row.replayId, 'rp-nosy-custom')).access === 'private',
+    );
+    const stats = await repo.getUserStats('solo-custom', bv, 'decode');
+    check(
+      'versus/custom: ...and its win is NOT on the "Ranked W–L"',
+      stats.match.played === 0 && stats.match.wins === 0,
+      JSON.stringify(stats.match),
+    );
+
+    // a bot room: kept, but no playtime
+    await repo.ensureProfile('solo-bots', 'Only');
+    const bots = await oneSided('solo-bots', false, true);
+    check('versus/bots: a bot room writes its match row', !!bots.matchId);
+    check(
+      'versus/bots: ...but credits no playtime',
+      (await repo.getActivity('solo-bots')).total.games === 0,
+      JSON.stringify((await repo.getActivity('solo-bots')).total),
     );
   }
 

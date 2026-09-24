@@ -86,11 +86,15 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
      * to the players who mostly do that. Departed players are in `authed` too — they played
      * the part they were there for.
      */
-    await addActivity(
-      authed.map((p) => p.userId!),
-      o.replay.ticks * C.SIM_DT,
-      game,
-    ).catch((e: unknown) => console.error('[persist] activity write failed:', e));
+    if (!o.bots) {
+      // ...except a room a bot was seated in: its match and replay are kept, but a match
+      // against bots is not playtime (see the bot-seat block in room.ts)
+      await addActivity(
+        authed.map((p) => p.userId!),
+        o.replay.ticks * C.SIM_DT,
+        game,
+      ).catch((e: unknown) => console.error('[persist] activity write failed:', e));
+    }
 
     if (o.config.kind === 'record') {
       /**
@@ -170,9 +174,10 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
       /* ORPHAN SWEEP — the same one `saveLanRun` does when it loses its race, for the same
        * reason: a `replays` row has no back-reference, so one nothing points at is invisible
        * to `deleteAccount` and to both prunes and is freed only by a season purge.
-       * `persistVersusMatch` early-returns WITHOUT calling `saveMatch` when either alliance
-       * has no authed player — a signed-in player against a guest, or a 2v2 whose two
-       * accounts sat on one alliance — and the replay was already written above.
+       * `persistVersusMatch` early-returns WITHOUT calling `saveMatch` for a RANKED room
+       * where either alliance has no authed player, and the replay was already written above.
+       * A one-sided CUSTOM room (vs a guest, alone, vs bots) does write its match row, so its
+       * players can find it in their history and watch it back.
        * ⚠️ The test is `ids.matchId`, NOT `elo.length`: an UNRANKED custom room moves no ELO
        * and returns [], but it DOES write its match row, and deleting that match's replay
        * would take the Watch button off a real custom game. */
@@ -184,7 +189,7 @@ export async function persistMatch(o: MatchOutcome): Promise<PersistOutcome> {
         ids.matchId
           ? `[persist] WROTE versus match (ranked=${o.ranked}) — ${elo.length} ratings updated` +
               (elo.length === 0 && o.ranked ? ' (not a two-sided match)' : '')
-          : `[persist] NO versus match row (one-sided room, ranked=${o.ranked}) — replay discarded, playtime still credited`,
+          : `[persist] NO versus match row (one-sided ranked room) — replay discarded, playtime still credited`,
       );
       return { elo, matchId: ids.matchId };
     }

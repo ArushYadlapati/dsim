@@ -1179,9 +1179,9 @@ export function net3dChecks(check: Check): void {
       // seconds to prove something about the frame builder. The checks are about commands
       // arriving, not about a solve.
       {
-        let outcome: { replay: Replay } | null = null;
+        let outcome: { replay: Replay; bots?: boolean } | null = null;
         const room = new Room('n3-bot-run', () => {}, { kind: 'versus', game: 'biobuzz' }, (o) => {
-          outcome = o as unknown as { replay: Replay };
+          outcome = o as unknown as { replay: Replay; bots?: boolean };
         });
         room.add(mkClient(ROSTER[0], () => {}));
         room.addBot(drv.tiers[drv.tiers.length - 1]);
@@ -1191,8 +1191,13 @@ export function net3dChecks(check: Check): void {
           room.onMessage(ROSTER[0].id, { t: 'input', tick, q: quantizeCommand(drive(tick, 0)) });
           room.advanceForTest(1);
         }
-        check('bots: a room with a bot in it is UNPERSISTED — nothing reached the DB layer',
-          outcome === null, outcome ? 'onResult fired' : '');
+        // run it out: a bot room IS persisted now (its players can watch it back), tagged
+        // `bots` so persistence credits no playtime. The old check stopped at tick 700, long
+        // before any match ends, so its "nothing reached the DB" passed whatever the gate said.
+        room.advanceForTest(maxMatchTicks() + 5);
+        const o = outcome as { replay: Replay; bots?: boolean } | null;
+        check('bots: a finished bot room reaches persistence, tagged bots:true',
+          o?.bots === true, o ? `bots=${String(o.bots)}` : 'onResult never fired');
         // and the replay the recorder is building has the bot's track in it. Read through the
         // room's own snapshot stream: robot 1 is the bot, and it has to have MOVED.
         const room2 = new Room('n3-bot-move', () => {}, { kind: 'versus', game: 'biobuzz' });

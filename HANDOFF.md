@@ -1,4 +1,15 @@
-# HANDOFF — 2026-09-24d (NECTAR lip, predicted mouth, FOV + driver view, desktop Google pop-up)
+# HANDOFF — 2026-09-24e (custom-room games are saved, so their replays can be watched)
+
+**State: committed and pushed on `alpha`, alpha game server deployed.** `dbtest` all pass, `server:check` and `build` pass. `npm test` has 5 failures out of 5047, all timing checks (`PREDICT_FULL_BUDGET` ×3, the Auto probe, 2v2 `step3d` p95). The parallel session's stargazer/badge SVG work is committed separately ("Badges: every disc badge is one 128×128 SVG…"). ⚠️ **Production still needs a Fly deploy from `main`** once this reaches main.
+
+- **Bug (owner):** users could not see their custom room games. The cause was not `replayAccess`. The games were never saved. `persistVersusMatch` dropped any room without an authed player on both alliances (vs a guest, alone, two accounts on one side), and `persistMatch` deleted the replay. `Room.unpersisted` also wrote nothing at all once a bot had been seated.
+- **Fix:** the two-sided rule applies to RANKED only (`server/ranked.ts`). `unpersisted` is channel-only. `MatchOutcome.bots` (room.ts) makes `persistMatch` skip `addActivity`, so bot games still earn no playtime. `getUserStats` played/wins is `m.ranked` only, matching its "Ranked W–L" label (it counted custom games before). `MatchHistory.tsx` shows `—` for an alliance with no signed-in driver.
+- LAN and the `replays_public` toggle are unchanged. A one-sided game never goes public (short roster), so only its players and staff can watch it.
+- Games played before the deploy are gone, because their replays were never kept.
+- Checks: dbtest "versus/ranked|custom|bots" block. net3d "a finished bot room reaches persistence, tagged bots:true" replaces a vacuous check that stopped at tick 700.
+- Rule in `docs/area/accounts.md` ("EVERY CUSTOM GAME IS KEPT").
+
+# 2026-09-24d (NECTAR lip, predicted mouth, FOV + driver view, desktop Google pop-up)
 
 **State: pushed on `alpha` (11870a1).** `build`, `server:check`, `uiaudit`, `docaudit`, `bundleaudit` pass. `npm test`: every check passes except the known load flake `FULL reconciles 40 ticks inside PREDICT_FULL_BUDGET_MS`. It measures 9–10 ms with 12 test processes running and 4 ms alone. It was 3 ms alone before the predicted-mouth change below, so it now flakes more often.
 

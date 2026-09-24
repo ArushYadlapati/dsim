@@ -183,7 +183,9 @@ export async function persistVersusMatch(
 ): Promise<EloOutcome[]> {
   const reds = authed.filter((p) => p.alliance === 'red');
   const blues = authed.filter((p) => p.alliance === 'blue');
-  if (!reds.length || !blues.length) return []; // not a two-sided match
+  // a RANKED result needs both sides; a custom game is kept one-sided (vs a guest, alone, vs
+  // bots) so the people in it can still find it in their history and watch it back
+  if (ranked && (!reds.length || !blues.length)) return [];
   /**
    * THE ROOM'S OWN FORMAT FIRST, a head-count only as the fallback.
    *
