@@ -348,6 +348,11 @@ four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow no
   are under 4.5:1 as 12-px type on the field; the dark stroke stays, and it is what carries the
   glyphs onto the light backdrop and onto a 3D background. Category 3 (their ground is the
   canvas), so they do not theme.
+- ⚠️ **NOTHING IN `.game-root` MAY KEY A COLOUR OR AN ASSET ON `:root[data-theme]`.** The 3D
+  view's scrim (`.game-root.view-3d …`, styles.css) makes every HUD plate dark in BOTH themes by
+  REDEFINING tokens, so anything themed by the attribute instead misses it. The sponsor logo swap
+  did, and put the dark-ink cut on a dark chip in light theme. Draw with a token the scrim
+  redefines, or add a `.game-root.view-3d` override beside the theme rule.
 - ⚠️ **`.hud` IS `pointer-events: none`** so the canvas keeps a drag. Anything in it meant to
   be clicked re-enables them ON ITSELF (`.game-btn`, `.sponsor-chip`, `.mobile-btn`).
   The connection chip did not, for months: its `onClick` opened a ping graph and the click never

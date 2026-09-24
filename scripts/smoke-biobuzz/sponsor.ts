@@ -156,6 +156,15 @@ export function sponsorChecks(check: Check): void {
   for (const [where, file, component] of consumers) {
     check(`sponsor: the ${where} renders <${component} />`, read(file).includes(`<${component}`), file);
   }
+  // the in-game chip's plate is the 3D scrim, dark in BOTH themes — the theme swap alone put
+  // the dark-ink cut on it in light theme
+  check(
+    'sponsor: the in-game mark shows the light-ink cut on the 3D scrim',
+    /\.game-root\.view-3d \[data-hud-band\] \.sponsor-logo-swap \.on-dark \{\s*display: block;/.test(
+      read('src/ui/shell.css'),
+    ),
+    'src/ui/shell.css',
+  );
 
   // ⚠️ THE IN-GAMEPLAY PLACEMENT IS NOT AN AD, AND THIS IS THE CHECK THAT SAYS SO.
   // `AdSlot`/`useAds` render nothing on touch, nothing under Electron and nothing

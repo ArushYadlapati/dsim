@@ -38,7 +38,9 @@ import { trackEvent } from '../analytics';
  *  It is not the field the logo has to read against — it is the chip's own plate,
  *  and that plate is `--ds-hud`, which INVERTS (a white card on the dark field in
  *  light theme, exactly like every other HUD chip). Pinning the light-ink cut there
- *  "because the field is dark" puts a white wordmark on a white card. The one
+ *  "because the field is dark" puts a white wordmark on a white card. The cut
+ *  follows the PLATE: under the 3D view's scrim that plate is dark in BOTH themes,
+ *  so shell.css pins the light-ink cut there (`.game-root.view-3d …`). The one
  *  surface that genuinely does not theme is the burned-in replay mark, whose plate
  *  is painted dark by `replayOverlay.ts` — and that one is canvas, not this.
  *

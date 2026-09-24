@@ -7073,6 +7073,16 @@ a.ds-cta {
 :root[data-theme='dark'] .sponsor-logo-swap .on-dark {
   display: block;
 }
+/* THE CUT FOLLOWS THE PLATE, NOT <html>. Under the 3D view's scrim (styles.css,
+   `.game-root.view-3d …`) the in-game chip's plate is dark in BOTH themes, so the
+   light-theme rule above put the dark cut on a dark chip beside light "PRESENTED BY"
+   text. Display only, like the swap itself: the reserved box never changes. */
+.game-root.view-3d [data-hud-band] .sponsor-logo-swap .on-light {
+  display: none;
+}
+.game-root.view-3d [data-hud-band] .sponsor-logo-swap .on-dark {
+  display: block;
+}
 
 /* HOME — under the app title, above the game switcher. Its own line, because the
    eyebrow above already names the SEASON's presenter and the two are different

@@ -236,9 +236,13 @@ button {
    palette's values, which are tuned for a dark ground — fixed here, because the scrim is fixed.
    `npm run contrast` composites this block over the 3D mat (its `hud3dPairs`), so a card that
    starts using another themed ink here needs a line added in both places. */
+/* `.mobile-edit-bar` (the touch-layout editor) is a HUD card over the field with no band, so it
+   is named like `.net-corner` — without it, it was the one white card among dark ones in a 3D
+   view in light theme. Keep `.eventlog` LAST: `contrast.mjs` finds this block by that line. */
 .game-root.view-3d [data-hud-band],
 .game-root.view-3d .status-wrap,
 .game-root.view-3d .net-corner,
+.game-root.view-3d .mobile-edit-bar,
 .game-root.view-3d .eventlog {
   --ds-hud: rgba(14, 18, 22, 0.82);
   --ds-hud-soft: rgba(14, 18, 22, 0.7);
