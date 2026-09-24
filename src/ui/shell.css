@@ -2639,9 +2639,20 @@ button.ds-key:where(:not(:disabled)):active,
 }
 /* the two FIXED columns, so a wide name can never take their width. `.rk` is already 34;
    the value column is mono tabular and its widest content is a 5-digit Chain Reaction
-   score plus the watch arrow. */
+   score. Records add a third, the Watch button: its OWN column so the Score header sits
+   over the number (sharing the cell put it over the button). No left padding, so the gap
+   between number and button is the score cell's right padding. The width is EXACT, not
+   a minimum — the phone rule below pins the score this far from the right edge. */
 .lb-table .sc {
   width: 88px;
+}
+.lb-table {
+  --lb-watch-w: 84px;
+}
+.lb-table .lb-watch {
+  width: var(--lb-watch-w);
+  padding-left: 0;
+  text-align: right;
 }
 /* the date + type sub-line inside the Players cell — shown only where those two columns
    are dropped (a phone, below) */
@@ -2675,19 +2686,38 @@ button.ds-key:where(:not(:disabled)):active,
   .mh-table .mh-players {
     max-width: 176px;
   }
-  .lb-table th:last-child,
-  .lb-table td.sc {
+  .lb-table .lb-val {
     position: sticky;
     right: 0;
     /* the pinned edge is a 1px rule painted in the background, not a border (a collapsed
        border stays behind with the table) and not a shadow (one depth model) */
     background: linear-gradient(to right, var(--ds-line) 1px, var(--ds-panel) 1px);
   }
-  /* the pinned cell is opaque, so it repaints the row's hover tint itself */
+  /* records pin score AND Watch as one block: the button sits at the edge, the score
+     exactly one Watch column in from it */
+  .lb-table.rec .lb-val {
+    right: var(--lb-watch-w);
+  }
+  .lb-table .lb-watch {
+    position: sticky;
+    right: 0;
+    background: var(--ds-panel);
+  }
+  /* the pinned cells are opaque, so they repaint the row's hover tint themselves */
   .lb-table tr.ds-clickable:hover > td.sc {
     background:
       linear-gradient(to right, var(--ds-line) 1px, transparent 1px),
       linear-gradient(color-mix(in srgb, var(--ds-accent) 8%, transparent), color-mix(in srgb, var(--ds-accent) 8%, transparent)),
+      var(--ds-panel);
+  }
+  .lb-table tr.ds-clickable:hover > td.lb-watch {
+    background:
+      linear-gradient(color-mix(in srgb, var(--ds-accent) 8%, transparent), color-mix(in srgb, var(--ds-accent) 8%, transparent)),
+      var(--ds-panel);
+  }
+  .lb-table tr.lb-you > td.lb-watch {
+    background:
+      linear-gradient(color-mix(in srgb, var(--ds-accent) 12%, transparent), color-mix(in srgb, var(--ds-accent) 12%, transparent)),
       var(--ds-panel);
   }
   .lb-table tr.lb-you > td.sc {

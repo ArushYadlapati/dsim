@@ -453,14 +453,19 @@ export function Leaderboard({
              The one table scroller (`.ds-table-scroll`), so every table degrades
              identically; on a phone `.lb-table` pins the value column to the right. */
           <div className="ds-table-scroll tall" aria-busy={refetching}>
-          <table className="ds-table lb-table">
+          <table className={`ds-table lb-table${isRecords ? ' rec' : ''}`}>
             <thead>
               <tr>
                 <th className="rk">#</th>
                 <th>Driver</th>
                 {isRecords && <th>Robot</th>}
                 {!isRecords && <th className="r">Games</th>}
-                <th className="r">{valueLabel}</th>
+                <th className="r lb-val">{valueLabel}</th>
+                {isRecords && (
+                  <th className="lb-watch">
+                    <span className="ds-sr">Replay</span>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
@@ -532,13 +537,14 @@ export function Leaderboard({
                         </td>
                       )}
                       {!isRecords && <td className="num">{(r as EloRow).games}</td>}
-                      <td className="sc">
-                        {isRecords ? rec.score : (r as EloRow).rating}
-                        {/* the button is the keyboard path; the row click is a mouse convenience,
-                            so the button stops propagation or it would open the replay twice */}
-                        {watchable && (
-                          <>
-                            {' '}
+                      <td className="sc lb-val">{isRecords ? rec.score : (r as EloRow).rating}</td>
+                      {/* its OWN column, as in match history: sharing the score cell put the
+                          right-aligned Score header over the button, not the number */}
+                      {isRecords && (
+                        <td className="lb-watch">
+                          {/* the button is the keyboard path; the row click is a mouse convenience,
+                              so the button stops propagation or it would open the replay twice */}
+                          {watchable && (
                             <button
                               className="ds-btn ghost mh-watch"
                               aria-label={`Watch replay, score ${rec.score}`}
@@ -549,13 +555,13 @@ export function Leaderboard({
                             >
                               Watch
                             </button>
-                          </>
-                        )}
-                      </td>
+                          )}
+                        </td>
+                      )}
                     </tr>
                     {isRecords && isOpen && cfg && (
                       <tr className="lb-detail" id={`lb-detail-${r.userId}`}>
-                        <td colSpan={4}>
+                        <td colSpan={5}>
                           <ConfigSummary cfg={cfg} game={game} />
                         </td>
                       </tr>
