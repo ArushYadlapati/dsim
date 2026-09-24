@@ -700,12 +700,10 @@ export function GameView({
       {coarsePointer && controllerRef.current && (
         <MobileControls
           inputManager={controllerRef.current.getInputManager()}
-          game={hud?.game}
+          hud={hud}
           spec={settings.spec}
           layout={settings.mobileLayout}
           editing={editingLayout}
-          autoIntake={hud?.autoIntake ?? false}
-          autoFire={hud?.autoFire ?? false}
           onLayoutChange={(l) => onSettingsChange?.({ ...settings, mobileLayout: l })}
         />
       )}

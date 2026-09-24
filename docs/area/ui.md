@@ -358,12 +358,24 @@ four `PERF_DISPLAY_BLURB` lines, an option's download size, and the R102 stow no
   `TOUCH_OTHER_ACTIONS`. It was a hand-written list of four, so BIOBUZZ shipped `bbPlace`,
   `bbPlaceNectar`, `bbRamp` and `bbPass` with a keybind, a pad button and nothing at all on a
   phone — three of its own handoffs recorded that and none of them could fail a build.
-  Two rules fall out of it. **An ASSISTED action is ghosted, never hidden**: hiding them left a
-  default DECODE phone with NO action buttons, because auto intake and auto fire are both on by
-  default and they were the only two the pad had. The ghosting is the fill, the ring and the
-  glyph (`.mobile-btn.auto`, `.mb-ico` at 0.45), **never `opacity` on the button**: that took
-  the LABEL down with it on a control that still takes presses. The label keeps full on-field
-  ink. And **positions are computed, not stored** —
+  **Two questions, on two clocks.** `present(ctx)` asks whether a press could EVER act for this
+  build and these assists, which only the menu can change. A button that can't is not drawn:
+  INTAKE under auto intake, SHOOT under auto fire, FLIP in field-centric drive. Each of those
+  is checked by STEPPING THE SIM with the button held and released, not by reading the table
+  back. The exception is Chain Reaction's drum and dumper with aim assist on, where a held
+  SHOOT steers the chassis onto the goal (`chainAimAssist`) and so keeps its button (the
+  `manualFireCounts` hook). This reverses the 2026-09-21 "ghosted, never hidden" ruling (tester
+  feedback, 2026-09-23). A default DECODE phone really is the two sticks and PARK, because
+  nothing else on it would do anything. `ready(live)` asks whether a press would act NOW
+  (hopper empty, no FLOWER in reach, robots disabled), off `touchLiveOf(hud)` at the 10 Hz HUD
+  poll. An unready button is drawn IDLE in place (`.mobile-btn.idle`, `aria-disabled`), still
+  sends its press, and **never moves or vanishes under a thumb**, which was the real concern
+  behind the old ruling. Sub-second cooldowns, BIOBUZZ's shot-lands gate and Chain alignment are
+  deliberately NOT modelled, because at 10 Hz they would flicker while the driver aims. A
+  season-specific predicate FAILS OPEN when its half of the HUD is missing. The idle look is the
+  fill, the ring, the glyph at 0.45 and a `--ds-on-field-dim` label, **never `opacity` on the
+  button**, which would take the hit area's feedback down with it. And **positions are
+  computed, not stored** —
   a `mobileLayout` fraction cannot be right in both orientations (the shipped default overlapped
   SHOOT with INTAKE in portrait and hung the drive stick off the left edge), so the pad packs
   itself into two thumb columns against the live viewport and reads a stored position only once
@@ -572,7 +584,7 @@ next step **REBUILDS** the world and stages that one, exactly as `startMatch`/`r
 - **Contrast blind spots are audited now.** `scripts/contrast.mjs` covers the in-match
   surfaces that used to be skipped: the 3D view's scrim (its tokens are parsed from
   `.game-root.view-3d .eventlog` in `styles.css`, so retuning the scrim retunes the check), the
-  prediction panel, the server notice, the touch pad's ghosted labels and rings, the score-bar
+  prediction panel, the server notice, the touch pad's idle labels, the score-bar
   tips and the replay-video labels, plus the results stage on `--ds-stage-bg`. A new in-match
   surface gets its pairs there.
 - **Career tiles hide when empty** (G9). `CareerPanel` renders `.ds-stats` only when the player

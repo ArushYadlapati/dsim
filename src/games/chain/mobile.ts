@@ -7,10 +7,10 @@
  * Both keep the `mobileLayout` keys they shipped with, so a player who dragged either one
  * still finds it where they left it.
  */
-import type { TouchButton } from '../../ui/mobileActions';
-import { chainCatalystGeom } from './config';
+import type { GameTouch, TouchButton } from '../../ui/mobileActions';
+import { CHAIN_DEFAULT_SCORE_MODE, chainCatalystGeom } from './config';
 
-export const CHAIN_TOUCH_BUTTONS: readonly TouchButton[] = [
+const CHAIN_TOUCH_BUTTONS: readonly TouchButton[] = [
   {
     action: 'catalyst',
     hold: 'catalyst',
@@ -20,6 +20,10 @@ export const CHAIN_TOUCH_BUTTONS: readonly TouchButton[] = [
     cls: 'catalyst',
     side: 'right',
     slot: 'catalyst',
+    // carrying, a press always acts: it seats the ring on a hook in reach or drops it at the
+    // mouth (`catalystAction`). Empty-handed it only acts with a ring in reach — the prompt's
+    // `pickup`. So `ringAction` alone is NOT the answer: it is null while carrying with no hook.
+    ready: (l) => !l.chain || l.chain.carrying || l.chain.ringAction === 'pickup',
   },
   {
     // the CATAPULT throw. Its own button for the same reason it has its own keybind — a throw
@@ -34,5 +38,17 @@ export const CHAIN_TOUCH_BUTTONS: readonly TouchButton[] = [
     side: 'right',
     slot: 'fling',
     present: (c) => chainCatalystGeom(c.spec).fling,
+    ready: (l) => !l.chain || l.chain.carrying,
   },
 ];
+
+export const CHAIN_TOUCH: GameTouch = {
+  buttons: CHAIN_TOUCH_BUTTONS,
+  // the drum and the dumper have no turret: a HELD shoot button turns the chassis onto the goal
+  // (`chainAimAssist` — "only the manual button steers"), which auto fire never does. With aim
+  // assist OFF it steers nothing, and the press is as dead as a turret's.
+  manualFireCounts: (c) => {
+    const mode = c.spec.scoreMode ?? CHAIN_DEFAULT_SCORE_MODE;
+    return c.aimAssist && (mode === 'drum' || mode === 'dumper');
+  },
+};

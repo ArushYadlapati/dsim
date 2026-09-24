@@ -504,8 +504,8 @@ const scrimGetter = (t) => {
    PLATE_DIM_INK); a canvas colour, so there is no token to read. Change the two together. */
 const REPLAY_PLATE = ['#12151a', 0.94];
 const REPLAY_DIM_INK = ['#e5e7eb', 0.62];
-/* the touch pad's ghosted (auto-assist) button fill, `.mobile-btn.auto` in styles.css */
-const PAD_AUTO_FILL = ['#1c2027', 0.3];
+/* the touch pad's ghosted fill for a button that cannot act yet, `.mobile-btn.idle` in styles.css */
+const PAD_IDLE_FILL = ['#1c2027', 0.3];
 
 const reviewW3HudPairs = (t) => {
   const s = scrimGetter(t);
@@ -521,7 +521,7 @@ const reviewW3HudPairs = (t) => {
   const well = composite(tc, ta, card);
   const themedCard = hudCard(t, '--ds-hud');
   const plate = composite(REPLAY_PLATE[0], REPLAY_PLATE[1], BACKDROP);
-  const padAuto = composite(PAD_AUTO_FILL[0], PAD_AUTO_FILL[1], TILE3D);
+  const padIdle = composite(PAD_IDLE_FILL[0], PAD_IDLE_FILL[1], TILE3D);
   return [
     // 3D scrim over the 3D mat — every themed ink a banded card uses
     ['3D scrim .timer-time / .chip ink', s('--ds-ink'), card, AA],
@@ -562,9 +562,9 @@ const reviewW3HudPairs = (t) => {
 
     // the touch pad: the joystick label is FULL opacity now, on both field grounds
     ['.mobile-joystick-label on the 3D mat', t('--ds-on-field-dim'), TILE3D, AA],
-    ['.mobile-btn.auto label (ghosted fill over the 3D mat)', t('--ds-on-field'), padAuto, AA],
-    ['.mobile-btn.shoot.auto label', t('--ds-on-field-accent'), padAuto, AA],
-    ['.mobile-btn.park.auto label', t('--ds-on-field-dim'), padAuto, AA],
+    // idle: every button's label drops to the dim ink, whatever its own colour. The idle ring
+    // and glyph are not held to 1.4.11 — an inactive control is exempt, and receding is the point
+    ['.mobile-btn.idle label (ghosted fill over the 3D mat)', t('--ds-on-field-dim'), padIdle, AA],
     ['.mobile-btn ring on the 3D mat (1.4.11)', t('--ds-on-field-dim'), TILE3D, NON_TEXT],
     // DONE is a .game-btn.primary on the themed HUD card (it was a fixed mint pill once)
     ['.mobile-edit-bar primary (.game-btn.primary)', t('--ds-accent-ink'), t('--ds-accent'), AA],

@@ -1,9 +1,12 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
+import type { HudSnapshot } from '../game';
 import type { InputManager } from '../input/input';
-import type { GameId, MobileLayout, RobotSpec } from '../types';
+import type { MobileLayout, RobotSpec } from '../types';
 import {
   TOUCH_JOY_MAX_RADIUS,
   packTouchControls,
+  touchLiveOf,
+  touchReady,
   visibleTouchButtons,
   type PlacedTouchButton,
   type TouchButton,
@@ -44,13 +47,13 @@ function useViewport(): { w: number; h: number } {
 
 /** one action button. Hold-style in play; draggable in edit if it has a stored slot.
  *
- * `auto` (the robot is handling this action itself) rides the ARIA label and the `.auto`
- * ghosting, never the drawn label: `label` renders INSIDE the circle, so "SHOOT (automatic)"
- * wrapped and overflowed the button in the layout editor. */
+ * `idle` (a press would do nothing right now) rides the ARIA label and the `.idle` ghosting,
+ * never the drawn label: `label` renders INSIDE the circle, so a suffix there wraps and
+ * overflows it. An idle button still takes its press — see `touchReady`. */
 function ActionButton({
   label,
   aria,
-  auto,
+  idle,
   glyph,
   cls,
   size,
@@ -65,7 +68,7 @@ function ActionButton({
 }: {
   label: string;
   aria: string;
-  auto?: boolean;
+  idle?: boolean;
   glyph: string;
   cls: string;
   size: number;
@@ -83,7 +86,7 @@ function ActionButton({
   // POSITION AND SIZE ONLY — the type scale is `.mobile-btn` / `.mobile-btn.shoot`
   // in the sheet, where the colours already live (`.mb-ico`/`.mb-lbl` size off it in em).
   const style: React.CSSProperties = { left, top, width: size, height: size };
-  const full = auto ? `${aria} (automatic)` : aria;
+  const full = idle ? `${aria} (not available now)` : aria;
   if (editing) {
     // A button with no `mobileLayout` key of its own arranges itself, so it is drawn but not
     // grabbable: the solid edge against the draggable ones' dashed edge is what says which is
@@ -139,12 +142,13 @@ function ActionButton({
   return (
     <button
       type="button"
-      className={`mobile-btn ${cls}${pressed ? ' pressed' : ''}`}
+      className={`mobile-btn ${cls}${idle ? ' idle' : ''}${pressed ? ' pressed' : ''}`}
       style={style}
       onTouchStart={down}
       onTouchEnd={up}
       onTouchCancel={up}
       aria-label={full}
+      aria-disabled={idle || undefined}
     >
       <span className="mb-ico" aria-hidden>
         {glyph}
@@ -156,17 +160,21 @@ function ActionButton({
 
 export function MobileControls({
   inputManager,
-  game,
+  hud,
   spec,
   layout,
   editing = false,
-  autoIntake = false,
-  autoFire = false,
   onLayoutChange,
 }: {
   inputManager: InputManager;
-  /** the active game — `ACTION_GAMES` decides the button set from it (`mobileActions.ts`) */
-  game?: GameId;
+  /**
+   * the live HUD, or null before its first poll. It answers both of the pad's questions
+   * (`mobileActions.ts`): its game and the local robot's ASSISTS decide which buttons exist
+   * (`ACTION_GAMES`, then `present`), and the rest decides which of them are idle right now.
+   * No buttons are drawn until it arrives, so a pad never flashes INTAKE for the 100 ms before
+   * the assists are known and then takes it away.
+   */
+  hud: HudSnapshot | null;
   /**
    * the local build. Every `present` predicate asks it — "does this robot have the
    * mechanism" — so a claw-only Chain Reaction build gets no THROW and a single-turret
@@ -174,10 +182,6 @@ export function MobileControls({
    * the wire because that is what they spawned with in every mode this pad renders in.
    */
   spec: RobotSpec;
-  /** the local robot's live assists. An assisted action is GHOSTED, never removed — hiding
-   * them is what left a default DECODE phone with no action buttons at all. */
-  autoIntake?: boolean;
-  autoFire?: boolean;
   /** editable touch-control layout (centres as viewport fractions) */
   layout: MobileLayout;
   /** edit mode: drag controls to reposition instead of driving */
@@ -211,6 +215,7 @@ export function MobileControls({
   // keyboard and works immediately on one that does (a tablet with a case, a Chromebook in
   // tablet mode) without waiting on a mount somewhere else
   useEffect(() => installViewKey(), []);
+  const game = hud?.game ?? 'decode';
   const showView = !editing && game === 'biobuzz';
 
   // live-editable working copy while in edit mode (persist on release)
@@ -230,8 +235,18 @@ export function MobileControls({
   // own table, the arrangement from the live viewport — so a season that adds an action cannot
   // silently leave it unreachable on touch, and neither answer depends on the orientation the
   // player's stored layout happened to be tuned in.
-  const buttons = visibleTouchButtons(game ?? 'decode', { spec, autoIntake, autoFire });
+  const buttons = hud
+    ? visibleTouchButtons(game, {
+        spec,
+        autoIntake: hud.autoIntake,
+        autoFire: hud.autoFire,
+        fieldCentric: hud.fieldCentric,
+        aimAssist: hud.aimAssist,
+      })
+    : [];
   const packed = packTouchControls(buttons, L, vp);
+  // laying the pad out is not driving it: every button that exists is drawn live there
+  const live = hud && !editing ? touchLiveOf(hud) : null;
 
   const onTouchStart = (e: React.TouchEvent): void => {
     if (editing) return;
@@ -344,15 +359,14 @@ export function MobileControls({
 
   const renderButton = (p: PlacedTouchButton): React.ReactNode => {
     const b = p.button;
-    const auto = b.auto?.({ spec, autoIntake, autoFire }) ?? false;
     return (
       <ActionButton
         key={b.action}
         label={b.label}
         aria={b.aria}
-        auto={auto}
+        idle={live !== null && !touchReady(b, live)}
         glyph={b.glyph}
-        cls={`${b.cls}${auto ? ' auto' : ''}`}
+        cls={b.cls}
         size={p.size}
         left={p.x}
         top={p.y}

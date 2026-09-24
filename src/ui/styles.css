@@ -2966,20 +2966,23 @@ button {
   border-color: var(--ds-on-field-dim);
   color: var(--ds-on-field-dim);
 }
-/* an action the ROBOT is doing for you. GHOSTED, NOT HIDDEN: hiding them is what left a
-   default DECODE phone with no action buttons at all — auto intake and auto fire are both on
-   by default and they were the only two the pad had — and a manual press still reaches the
-   sim with the assist on.
-   The GHOSTING is the fill, the ring and the glyph — never `opacity` on the button, which took
-   the LABEL down with it (0.45) on a control that still takes presses. The label keeps its
-   full on-field ink so it stays readable while the rest of the button recedes. */
-.mobile-btn.auto {
+/* a press would do nothing RIGHT NOW (`touchReady` in mobileActions.ts): an empty hopper, no
+   FLOWER in reach, the countdown. IDLE IN PLACE, NEVER HIDDEN — a button that comes and goes
+   mid-match moves under a thumb. (A button that can NEVER act for this build and these
+   assists is not drawn at all; that is `present`, not this.)
+   The ghosting is the fill, the ring and the glyph — never `opacity` on the button, which takes
+   the LABEL down to an unreadable 0.45. The label drops to the dim on-field ink instead, which
+   `npm run contrast` holds at AA on the 3D mat under this fill. */
+.mobile-btn.idle {
   background: rgba(28, 32, 39, 0.3);
   border-color: color-mix(in srgb, currentColor 45%, transparent);
   box-shadow: none;
 }
-.mobile-btn.auto .mb-ico {
+.mobile-btn.idle .mb-ico {
   opacity: 0.45;
+}
+.mobile-btn.idle .mb-lbl {
+  color: var(--ds-on-field-dim);
 }
 /* laying the pad out, a button with no stored position of its own: drawn, so the arrangement
    is complete, but not grabbable. The solid edge against the draggable ones' dashed one is

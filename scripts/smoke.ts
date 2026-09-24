@@ -263,8 +263,13 @@ import {
   packTouchControls,
   touchButtonsFor,
   touchCoverageGaps,
+  touchLiveOf,
+  touchReady,
   visibleTouchButtons,
+  type TouchButton,
+  type TouchLive,
 } from '../src/ui/mobileActions';
+import type { HudSnapshot } from '../src/game';
 import { DEFAULT_MOBILE_LAYOUT } from '../src/settings';
 import { PadChordResolver, PAD_CHORD_GRACE_MS, PAD_TAP_HOLD_MS } from '../src/input/padChords';
 import {
@@ -25372,7 +25377,7 @@ const dumperSetup = (): RobotSetup => {
       intake: { kind: intake, mount: 'front' },
     },
   }) as RobotSpec;
-  const ctx = (spec: RobotSpec) => ({ spec, autoIntake: false, autoFire: false });
+  const ctx = (spec: RobotSpec) => ({ spec, autoIntake: false, autoFire: false, fieldCentric: false, aimAssist: true });
 
   for (const g of GAME_IDS) {
     check(
@@ -25459,20 +25464,154 @@ const dumperSetup = (): RobotSetup => {
     check('touch: the human player button is on every BIOBUZZ build', has('biobuzz', noTube, 'bbNectar'));
   }
 
-  // ⚠️ AN ASSISTED ACTION IS GHOSTED, NOT REMOVED. Hiding them is what left a default DECODE
-  // phone with no action buttons at all: auto intake and auto fire are both on by default and
-  // they were the only two the pad had.
+  // ── EXISTENCE UNDER THE ASSISTS: a button whose press can never act is not drawn ──
+  // Tester feedback 2026-09-23 ("intake button shouldn't exist if I have auto intake on")
+  // reversed the ghosted-never-hidden ruling. What makes hiding SAFE is that the press really is
+  // dead, so that is checked first — by stepping the sim, not by reading the table back.
   {
-    const assisted = visibleTouchButtons('decode', { spec: DEFAULT_SPEC as RobotSpec, autoIntake: true, autoFire: true });
+    // DECODE: every read is `cmd.intake || r.autoIntake` / `cmd.fire || r.autoFire`, so two
+    // worlds that differ only in the held buttons must never diverge, through a collect AND a shot
+    const decode = (held: boolean): { json: string; scored: number } => {
+      const w = mkWorld('free', 'blue', 5);
+      const r = w.robots[0];
+      r.hopper = [];
+      w.balls = w.balls.filter((b) => b.state.kind !== 'held');
+      r.autoIntake = true;
+      r.autoFire = true;
+      r.pos = { x: 46, y: -55 };
+      r.heading = Math.PI / 2;
+      r.fieldCentric = false;
+      run(w, cmd({ driveY: 0.5, intake: held, fire: held }), 2.5);
+      run(w, cmd({ intake: held, fire: held }), 3);
+      const g = w.goals.blue;
+      return { json: JSON.stringify(w), scored: g.classifiedCount + g.overflowCount };
+    };
+    const off = decode(false);
     check(
-      '⚠️ touch: auto intake + auto fire still draw their buttons (ghosted), so the pad is never empty',
-      assisted.some((b) => b.action === 'fire') && assisted.some((b) => b.action === 'intake'),
+      '⚠️ touch: under auto intake + auto fire, holding INTAKE and SHOOT changes nothing in DECODE',
+      off.json === decode(true).json && off.scored >= 1,
+      `scored=${off.scored}`,
+    );
+    // CHAIN REACTION: the same for intake and a TURRET's fire — but NOT for a drum or dumper with
+    // aim assist on, whose held button turns the chassis onto the goal (`chainAimAssist`). That
+    // difference is the whole of `manualFireCounts`, so each side of it is pinned.
+    const chain = (mode: 'turret' | 'dumper', aimAssist: boolean, held: boolean): World => {
+      const setup = chainSetup(0, 'blue');
+      setup.spec = { ...DEFAULT_SPEC, scoreMode: mode };
+      setup.assists = { ...DEFAULT_ASSISTS, autoIntake: true, autoFire: true };
+      const w = createChainWorld('free', 7, [setup]);
+      // on the ROBOT: `coerceAssists` forces aim assist on for every setup (the toggle is gone)
+      w.robots[0].aimAssist = aimAssist;
+      runChain(w, cmd({ driveY: 0.4, intake: held, fire: held }), 3);
+      return w;
+    };
+    const same = (mode: 'turret' | 'dumper', aim: boolean): boolean =>
+      JSON.stringify(chain(mode, aim, false)) === JSON.stringify(chain(mode, aim, true));
+    check('touch: Chain turret — under both assists, holding INTAKE and SHOOT changes nothing', same('turret', true));
+    check('touch: Chain dumper with aim assist OFF — the same, nothing', same('dumper', false));
+    const d0 = chain('dumper', true, false).robots[0];
+    const d1 = chain('dumper', true, true).robots[0];
+    check(
+      '⚠️ touch: Chain dumper with aim assist — a held SHOOT still steers under auto fire, so it stays',
+      Math.abs(d0.heading - d1.heading) > 0.01,
+      `heading ${d0.heading.toFixed(3)} vs ${d1.heading.toFixed(3)}`,
+    );
+  }
+  {
+    type Over = Partial<ReturnType<typeof ctx>>;
+    const acts = (g: GameId, spec: RobotSpec, over: Over): string[] =>
+      visibleTouchButtons(g, { ...ctx(spec), ...over }).map((b) => b.action);
+    const on = (g: GameId, spec: RobotSpec, over: Over, a: string): boolean => acts(g, spec, over).includes(a);
+    const decode = DEFAULT_SPEC as RobotSpec;
+    const turret = { ...DEFAULT_SPEC, scoreMode: 'turret' } as RobotSpec;
+    for (const g of GAME_IDS) {
+      const spec = g === 'biobuzz' ? bbSpec : decode;
+      check(`touch: ${g} — auto intake removes INTAKE`, on(g, spec, {}, 'intake') && !on(g, spec, { autoIntake: true }, 'intake'));
+      check(
+        `touch: ${g} — field-centric drive removes FLIP (it only reverses robot-centric)`,
+        on(g, spec, {}, 'flipFront') && !on(g, spec, { fieldCentric: true }, 'flipFront'),
+      );
+    }
+    check('touch: DECODE — auto fire removes SHOOT', on('decode', decode, {}, 'fire') && !on('decode', decode, { autoFire: true }, 'fire'));
+    const phone = acts('decode', decode, { ...PLAYER_ASSISTS });
+    check(
+      '⚠️ touch: a default DECODE phone (field-centric, both assists) is the sticks and PARK, and nothing dead',
+      phone.join(',') === 'park',
+      phone.join(','),
+    );
+    check('touch: Chain turret — auto fire removes SHOOT', !on('chain', turret, { autoFire: true }, 'fire'));
+    check(
+      'touch: Chain drum and dumper keep SHOOT under auto fire while aim assist is on',
+      on('chain', { ...decode, scoreMode: 'drum' }, { autoFire: true }, 'fire') &&
+        on('chain', { ...decode, scoreMode: 'dumper' }, { autoFire: true }, 'fire'),
     );
     check(
-      'touch: and they report themselves as automatic',
-      assisted
-        .filter((b) => b.action === 'fire' || b.action === 'intake')
-        .every((b) => b.auto?.({ spec: DEFAULT_SPEC as RobotSpec, autoIntake: true, autoFire: true }) === true),
+      'touch: and lose it with aim assist off',
+      !on('chain', { ...decode, scoreMode: 'dumper' }, { autoFire: true, aimAssist: false }, 'fire'),
+    );
+    check('touch: BIOBUZZ keeps SHOOT whatever the flag says (it has no auto fire)', on('biobuzz', bbSpec, { autoFire: true }, 'fire'));
+  }
+
+  // ── READINESS: a button that cannot act YET is drawn idle, in place ──
+  {
+    const btn = (a: string): TouchButton => allTouchButtons().find((b) => b.action === a)!;
+    const base: TouchLive = { enabled: true, parked: false, held: [], cap: 3, launchZoneOk: true };
+    const ready = (a: string, over: Partial<TouchLive>): boolean => touchReady(btn(a), { ...base, ...over });
+    check(
+      '⚠️ touch: every HELD button is idle while robots are disabled (countdown, transition, post)',
+      allTouchButtons()
+        .filter((b) => b.hold !== undefined)
+        .every((b) => !touchReady(b, { ...base, enabled: false, held: ['yellow'], bb: { flowerInReach: true, nectarOk: true } })),
+    );
+    check('touch: FLIP is a tap and is never idle', ready('flipFront', { enabled: false }));
+    check(
+      'touch: PARK waits for the robot to be enabled, but turning it OFF always works',
+      !ready('park', { enabled: false }) && ready('park', { enabled: false, parked: true }) && ready('park', {}),
+    );
+    check('touch: SHOOT is idle with an empty hopper', !ready('fire', {}) && ready('fire', { held: ['green'] }));
+    check("touch: SHOOT is idle outside DECODE's launch zone", !ready('fire', { held: ['green'], launchZoneOk: false }));
+    check('touch: INTAKE is idle with the hopper full', !ready('intake', { held: ['green', 'green', 'purple'] }) && ready('intake', { held: ['green'] }));
+    type Ring = NonNullable<TouchLive['chain']>['ringAction'];
+    const ring = (carrying: boolean, ringAction: Ring): Partial<TouchLive> => ({ chain: { carrying, ringAction } });
+    check('touch: CATALYST is idle empty-handed with no ring in reach', !ready('catalyst', ring(false, null)) && ready('catalyst', ring(false, 'pickup')));
+    check(
+      '⚠️ touch: CATALYST is live whenever carrying — a press with no hook in reach DROPS the ring, though the prompt is null',
+      ready('catalyst', ring(true, null)),
+    );
+    check('touch: THROW is idle unless carrying', !ready('fling', ring(false, 'pickup')) && ready('fling', ring(true, null)));
+    const bb = (flowerInReach: boolean, held: TouchLive['held'], nectarOk = false): Partial<TouchLive> => ({
+      held,
+      bb: { flowerInReach, nectarOk },
+    });
+    check(
+      'touch: place POLLEN needs a FLOWER in reach AND a POLLEN held',
+      !ready('bbPlace', bb(false, ['yellow'])) && !ready('bbPlace', bb(true, ['red'])) && ready('bbPlace', bb(true, ['yellow'])),
+    );
+    check(
+      'touch: place NECTAR needs a FLOWER in reach AND a NECTAR held',
+      !ready('bbPlaceNectar', bb(true, ['yellow'])) && ready('bbPlaceNectar', bb(true, ['blue'])),
+    );
+    check('touch: PASS is idle with an empty hopper', !ready('bbPass', bb(false, [])) && ready('bbPass', bb(false, ['yellow'])));
+    check('touch: HUMAN is idle unless the tick says an entry would be taken', !ready('bbNectar', bb(false, [])) && ready('bbNectar', bb(false, [], true)));
+    check('touch: RAMP and WHEELS are live whenever robots are', ready('bbRamp', {}) && ready('driveMode', {}));
+    check(
+      '⚠️ touch: a season-specific predicate FAILS OPEN when its half of the HUD is missing',
+      ready('catalyst', {}) && ready('fling', {}) && ready('bbPlace', {}) && ready('bbNectar', {}),
+    );
+
+    // `touchLiveOf` reads each season's capacity, and its own half, from the right place
+    const hud = (over: Record<string, unknown>): HudSnapshot =>
+      ({ game: 'decode', canPark: true, parked: false, hopper: [], inLaunchZone: false, alliance: 'blue', ...over }) as unknown as HudSnapshot;
+    const d = touchLiveOf(hud({}));
+    check('touch: DECODE live — the fixed hopper, and the launch zone gates SHOOT', d.cap === HOPPER_CAPACITY && !d.launchZoneOk && !d.chain && !d.bb);
+    const c = touchLiveOf(hud({ game: 'chain', chain: { storage: 7, carrying: true, ringAction: null } }));
+    check("touch: Chain live — the builder's storage, and no DECODE launch zone", c.cap === 7 && c.launchZoneOk && c.chain?.carrying === true);
+    const b = touchLiveOf(
+      hud({ game: 'biobuzz', gameHud: { field: { nectarWhy: { red: 'locked', blue: 'ok' } }, robot: { cap: 5, flowerInReach: true } } }),
+    );
+    check(
+      "touch: BIOBUZZ live — its own cap, the reach, and THIS alliance's nectar answer",
+      b.cap === 5 && b.launchZoneOk && b.bb?.flowerInReach === true && b.bb.nectarOk,
     );
   }
 

@@ -10,14 +10,14 @@
  * ⚠️ EVERY `present` HERE ASKS THE SPEC, NOT THE TICK. "Does this build have the mechanism" is
  * a property of the robot the player assembled; whether a press would do anything RIGHT NOW
  * (something of that kind in the hopper, a FLOWER in reach, an entitlement owed) changes
- * several times a match and is answered in the HUD, never by a button appearing and vanishing
- * under a driver's thumb.
+ * several times a match and is `ready`'s question — it draws the button IDLE in place, never
+ * by a button appearing and vanishing under a driver's thumb.
  */
-import type { TouchButton } from '../../ui/mobileActions';
+import type { GameTouch, TouchButton } from '../../ui/mobileActions';
 import { BB_HOOD_DEFAULT_DEG } from './config';
 import { bbCarriesNectar, bbIntakeKindOf, bbIsTurreted, bbLauncherOf, bbLiftOf } from './mechs';
 
-export const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
+const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
   {
     // place a held POLLEN into the FLOWER in reach. No Box Tube, no placement
     // (`placeInFlower` returns false on the first line), so no button.
@@ -29,6 +29,9 @@ export const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
     cls: 'bbplace',
     side: 'right',
     present: (c) => bbLiftOf(c.spec) !== null,
+    // `placeInFlower`: a FLOWER in reach and one of that kind in the hopper (a full FLOWER is
+    // not in the HUD, and is rare enough to leave to the press)
+    ready: (l) => !l.bb || (l.bb.flowerInReach && l.held.includes('yellow')),
   },
   {
     // place a held NECTAR. Needs the tube AND a launcher that can carry NECTAR at all — a
@@ -41,6 +44,7 @@ export const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
     cls: 'bbplacenectar',
     side: 'right',
     present: (c) => bbLiftOf(c.spec) !== null && bbCarriesNectar(bbLauncherOf(c.spec, BB_HOOD_DEFAULT_DEG)),
+    ready: (l) => !l.bb || (l.bb.flowerInReach && l.held.some((c) => c === 'red' || c === 'blue')),
   },
   {
     // PASS to your partner: the same solver aimed at a field point rather than at the hive.
@@ -53,6 +57,7 @@ export const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
     cls: 'bbpass',
     side: 'right',
     present: (c) => bbIsTurreted(bbLauncherOf(c.spec, BB_HOOD_DEFAULT_DEG)),
+    ready: (l) => l.held.length > 0,
   },
   {
     // the deployable ramp — the `ramp` intake archetype only; every other build's sim ignores
@@ -82,5 +87,15 @@ export const BB_TOUCH_BUTTONS: readonly TouchButton[] = [
     cls: 'bbnectar',
     side: 'left',
     slot: 'bbNectar',
+    // the tick already says why an entry would be refused (`bb.nectarWhy`: none left, none
+    // owed, locked); only 'ok' takes one
+    ready: (l) => !l.bb || l.bb.nectarOk,
   },
 ];
+
+export const BB_TOUCH: GameTouch = {
+  buttons: BB_TOUCH_BUTTONS,
+  // BIOBUZZ has NO auto fire (spawn forces it off and `robot.ts` never reads it), so SHOOT is
+  // the only way to fire and is never made redundant. Stated rather than left to the flag.
+  manualFireCounts: () => true,
+};

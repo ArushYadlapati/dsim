@@ -14,6 +14,25 @@
  * empty for every game. A season that adds an action now fails the suite until the action is
  * either given a button here or written into `TOUCH_OTHER_ACTIONS` with the reason.
  *
+ * ── TWO QUESTIONS, ON TWO CLOCKS ──────────────────────────────────────────────────
+ * **Does the button EXIST?** (`present`) Only if a press could ever change something for this
+ * build with these assists — both fixed for the whole match, since assists are menu-only. So
+ * a claw build has no THROW, and auto intake removes INTAKE: every sim reads the bit as
+ * `cmd.intake || r.autoIntake`, so with the assist on the press is provably dead. That
+ * REVERSES the 2026-09-21 ruling that an assisted button is ghosted, never hidden (tester
+ * feedback 2026-09-23: "intake button shouldn't exist if I have auto intake on"). The worry
+ * behind that ruling was a pad with nothing on it; a default DECODE phone now has the sticks
+ * and PARK, which is every control on it that does anything.
+ * **Can it act RIGHT NOW?** (`ready`, read off `TouchLive` at the 10 Hz HUD poll) If not, it is
+ * drawn IDLE — ghosted, in the same place — never removed, because a button that appears and
+ * vanishes mid-match moves under a thumb. Shooting with an empty hopper, placing with no FLOWER
+ * in reach, anything during the countdown. It still sends its press, exactly as a keyboard
+ * would; the sim ignores it.
+ * ⚠️ `ready` reads only what changes on a HUMAN timescale. The sub-second cooldowns
+ * (`fireReadyAt`, `catalystReadyAt`), BIOBUZZ's per-tick "shot lands" gate and a Chain dumper's
+ * alignment are deliberately absent: at a 10 Hz poll they flicker the button while the driver
+ * is lining the shot up, which is exactly when they would be looking at it.
+ *
  * ── WHY POSITIONS ARE COMPUTED RATHER THAN STORED ─────────────────────────────
  * `GameSettings.mobileLayout` stores a centre per control as a fraction of the viewport, which
  * cannot be right in both orientations at once: the shipped default put SHOOT and INTAKE 0.16
@@ -32,14 +51,17 @@
  * season, which is the coupling this file removes.
  */
 
+import type { HudSnapshot } from '../game';
 import type { GameId } from '../games/types';
 import { GAME_IDS } from '../games/types';
 import type { KeyAction } from '../input/bindings';
 import { KEY_ACTIONS, actionUsedBy } from '../input/bindings';
-import type { MobileLayout, MobilePos, RobotSpec } from '../types';
+import type { ArtifactColor, MobileLayout, MobilePos, RobotSpec } from '../types';
+import { HOPPER_CAPACITY } from '../config';
 import { DEFAULT_MOBILE_LAYOUT } from '../settings';
-import { BB_TOUCH_BUTTONS } from '../games/biobuzz/mobile';
-import { CHAIN_TOUCH_BUTTONS } from '../games/chain/mobile';
+import { BB_TOUCH } from '../games/biobuzz/mobile';
+import type { BiobuzzHud } from '../games/biobuzz/hudRobot';
+import { CHAIN_TOUCH } from '../games/chain/mobile';
 
 /** an action the pad HOLDS DOWN — one `VirtualInput` boolean, released on touch end. */
 export type TouchHoldField =
@@ -58,14 +80,43 @@ export type TouchHoldField =
  *  edge-triggered on the manager rather than bits on the command, so they cannot be held. */
 export type TouchTapField = 'flipFront' | 'park';
 
-/** what a `present` / `auto` predicate gets to ask about. The SPEC, not the HUD: every one of
- *  these questions is "does this BUILD have the mechanism", which is a property of the robot
- *  the player assembled and not of the tick. */
-export interface TouchCtx {
+/** what the caller knows about the build: the SPEC and the ASSISTS. Every one of these is fixed
+ *  for the match — a property of the robot the player assembled and of the menu, not the tick. */
+export interface TouchBuild {
   spec: RobotSpec;
-  /** the local robot's live assists — these GHOST a button, they never remove it (see below) */
+  /** the local robot's assists. One that does an action's whole job REMOVES its button. */
   autoIntake: boolean;
   autoFire: boolean;
+  /** FLIP only reverses ROBOT-centric drive (`GameController.frameLogic`); field-centric
+   *  translation is in the driver's frame already, so there it does nothing at all. */
+  fieldCentric: boolean;
+  /** Chain Reaction's drum and dumper only steer a held SHOOT onto the goal with aim assist on */
+  aimAssist: boolean;
+}
+
+/** what a `present` predicate gets to ask about: the build, and which season it is in. */
+export interface TouchCtx extends TouchBuild {
+  game: GameId;
+}
+
+/**
+ * What a `ready` predicate gets to ask about: the slice of the live HUD that decides whether a
+ * press would do anything THIS moment. Plain data, built by `touchLiveOf`, so `npm test` can
+ * hold every predicate against a synthetic one.
+ */
+export interface TouchLive {
+  /** robots may act (auto, teleop, free drive) — `robotsEnabled`. Outside it every sim swaps
+   *  the whole command for ZERO_CMD, so no HELD button does anything. */
+  enabled: boolean;
+  parked: boolean;
+  /** the local robot's hopper, in hopper order. BIOBUZZ: `yellow` is POLLEN, `red`/`blue` NECTAR */
+  held: readonly ArtifactColor[];
+  /** the hopper's capacity for this build */
+  cap: number;
+  /** DECODE only fires from a launch zone; true for every other season */
+  launchZoneOk: boolean;
+  chain?: { carrying: boolean; ringAction: 'pickup' | 'place' | 'fling' | null };
+  bb?: { flowerInReach: boolean; nectarOk: boolean };
 }
 
 export interface TouchButton {
@@ -89,18 +140,31 @@ export interface TouchButton {
   /** the `MobileLayout` key that positions it, for the controls that shipped with one. A
    *  button without one is packed automatically and cannot be dragged. */
   slot?: Exclude<keyof MobileLayout, 'scale'>;
-  /** does THIS build have the mechanism? Absent means always. */
+  /** could a press EVER change something for this build with these assists? Absent means
+   *  always. Fixed for the match, so a button never appears or vanishes mid-match. */
   present?(ctx: TouchCtx): boolean;
-  /** is the ROBOT handling this action itself right now? Such a button is GHOSTED, never
-   *  removed: hiding it is what left a default DECODE phone with no action buttons at all,
-   *  because auto intake and auto fire are both on by default and they were the only two. A
-   *  manual press still reaches the sim with the assist on. */
-  auto?(ctx: TouchCtx): boolean;
+  /** would a press act RIGHT NOW? A button that answers no is drawn IDLE, never removed. A HELD
+   *  button is also idle whenever robots are disabled (`touchReady`), so this only has to state
+   *  its own condition. Absent means always. */
+  ready?(live: TouchLive): boolean;
+}
+
+/** a season's touch table */
+export interface GameTouch {
+  /** its own buttons, in thumb order */
+  buttons: readonly TouchButton[];
+  /**
+   * Does holding SHOOT do something AUTO FIRE does not, on this build? Where it does, auto fire
+   * does not make the button redundant and it stays. Chain Reaction's drum and dumper, with aim
+   * assist on, turn the chassis onto the goal only while the BUTTON is held (`chainAimAssist`);
+   * auto fire only fires once the driver has lined it up. Absent means never.
+   */
+  manualFireCounts?(ctx: TouchCtx): boolean;
 }
 
 /**
- * The buttons every game gets. Order is thumb order — nearest the corner first — and the two
- * assisted ones stay at the front because they are the actions a driver presses most.
+ * The buttons every game gets. Order is thumb order — nearest the corner first — and SHOOT and
+ * INTAKE stay at the front because they are the actions a driver presses most.
  */
 export const SHARED_TOUCH_BUTTONS: readonly TouchButton[] = [
   {
@@ -113,7 +177,10 @@ export const SHARED_TOUCH_BUTTONS: readonly TouchButton[] = [
     primary: true,
     side: 'right',
     slot: 'shoot',
-    auto: (c) => c.autoFire,
+    // every sim reads `cmd.fire || r.autoFire`, so under auto fire the press adds nothing —
+    // unless this season's build does something with the button that auto fire does not
+    present: (c) => !c.autoFire || (GAME_TOUCH[c.game].manualFireCounts?.(c) ?? false),
+    ready: (l) => l.held.length > 0 && l.launchZoneOk,
   },
   {
     action: 'intake',
@@ -124,7 +191,9 @@ export const SHARED_TOUCH_BUTTONS: readonly TouchButton[] = [
     cls: 'intake',
     side: 'left',
     slot: 'intake',
-    auto: (c) => c.autoIntake,
+    // `cmd.intake || r.autoIntake` in all three sims (2D and 3D), with no reverse or outtake
+    present: (c) => !c.autoIntake,
+    ready: (l) => l.held.length < l.cap,
   },
   {
     action: 'flipFront',
@@ -134,6 +203,7 @@ export const SHARED_TOUCH_BUTTONS: readonly TouchButton[] = [
     glyph: '↻',
     cls: 'flip',
     side: 'left',
+    present: (c) => !c.fieldCentric,
   },
   {
     action: 'driveMode',
@@ -154,16 +224,19 @@ export const SHARED_TOUCH_BUTTONS: readonly TouchButton[] = [
     glyph: '■',
     cls: 'park',
     side: 'left',
+    // turning park ON waits for the robot to be able to move; turning it OFF always works
+    ready: (l) => l.parked || l.enabled,
   },
 ];
 
 /** the per-game tables, one per season. A new game is a compile error until it has a row. */
-const GAME_TOUCH_BUTTONS: Record<GameId, readonly TouchButton[]> = {
+const GAME_TOUCH: Record<GameId, GameTouch> = {
   // DECODE's only actions are the shared ones — its artifacts are intaken and shot, and the
-  // gate, basin and rail are field mechanisms the driver pushes with the chassis.
-  decode: [],
-  chain: CHAIN_TOUCH_BUTTONS,
-  biobuzz: BB_TOUCH_BUTTONS,
+  // gate, basin and rail are field mechanisms the driver pushes with the chassis. Its turret
+  // tracks on its own, so a held SHOOT never steers.
+  decode: { buttons: [] },
+  chain: CHAIN_TOUCH,
+  biobuzz: BB_TOUCH,
 };
 
 /**
@@ -191,8 +264,8 @@ export const TOUCH_OTHER_ACTIONS: Readonly<Record<string, string>> = {
  *  so the two columns stay ordered by how often a driver reaches for them. */
 export function touchButtonsFor(game: GameId): TouchButton[] {
   const shared = SHARED_TOUCH_BUTTONS.filter((b) => actionUsedBy(b.action, game));
-  const own = GAME_TOUCH_BUTTONS[game];
-  // the game's own mechanisms sit between the two assisted buttons and the three utilities:
+  const own = GAME_TOUCH[game].buttons;
+  // the game's own mechanisms sit between SHOOT/INTAKE and the three utilities:
   // they are what the season is about, and PARK/FLIP/WHEELS are pressed a handful of times.
   const utility = new Set<KeyAction>(['flipFront', 'driveMode', 'park']);
   return [
@@ -202,10 +275,42 @@ export function touchButtonsFor(game: GameId): TouchButton[] {
   ];
 }
 
-/** the buttons actually drawn for this build — `present` is the only filter, because an
- *  assisted action is ghosted rather than dropped. */
-export function visibleTouchButtons(game: GameId, ctx: TouchCtx): TouchButton[] {
+/** the buttons actually drawn for this build and these assists. `present` is the only filter:
+ *  a button that cannot act YET is drawn idle (`touchReady`), never dropped. */
+export function visibleTouchButtons(game: GameId, build: TouchBuild): TouchButton[] {
+  const ctx: TouchCtx = { ...build, game };
   return touchButtonsFor(game).filter((b) => !b.present || b.present(ctx));
+}
+
+/** would a press on `b` act right now? A HELD button needs the robots enabled as well as its
+ *  own condition; a TAP is handled by the controller, which decides for itself (PARK says). */
+export function touchReady(b: TouchButton, live: TouchLive): boolean {
+  if (b.hold !== undefined && !live.enabled) return false;
+  return b.ready?.(live) ?? true;
+}
+
+/**
+ * The `TouchLive` slice of one HUD snapshot. A season's own half is ABSENT for another season,
+ * and every game predicate treats absent as "ready": a button wrongly drawn live costs a press
+ * that does nothing, which is the state before this existed; one wrongly drawn idle tells the
+ * driver a working control is broken.
+ */
+export function touchLiveOf(hud: HudSnapshot): TouchLive {
+  const bb = hud.game === 'biobuzz' ? (hud.gameHud as BiobuzzHud | undefined) : undefined;
+  return {
+    // `canPark` IS `robotsEnabled` (`GameController.canPark`)
+    enabled: hud.canPark,
+    parked: hud.parked,
+    held: hud.hopper,
+    cap: hud.chain?.storage ?? bb?.robot?.cap ?? HOPPER_CAPACITY,
+    // `inLaunchZone` is DECODE geometry; another season's robot is never "in" one
+    launchZoneOk: hud.game === 'decode' ? hud.inLaunchZone : true,
+    chain: hud.chain && { carrying: hud.chain.carrying, ringAction: hud.chain.ringAction },
+    bb: bb && {
+      flowerInReach: bb.robot?.flowerInReach ?? false,
+      nectarOk: bb.field.nectarWhy[hud.alliance] === 'ok',
+    },
+  };
 }
 
 /**
@@ -221,7 +326,7 @@ export function touchCoverageGaps(game: GameId): KeyAction[] {
 
 /** every button declared anywhere, for the tests that check the table itself */
 export function allTouchButtons(): TouchButton[] {
-  return GAME_IDS.flatMap((g) => GAME_TOUCH_BUTTONS[g]).concat(SHARED_TOUCH_BUTTONS);
+  return GAME_IDS.flatMap((g) => GAME_TOUCH[g].buttons).concat(SHARED_TOUCH_BUTTONS);
 }
 
 // ── GEOMETRY ─────────────────────────────────────────────────────────────────────────
