@@ -1,4 +1,22 @@
-# HANDOFF — 2026-09-23e (touch pad existence vs readiness; BIOBUZZ chips; phone footer)
+# HANDOFF — 2026-09-23f (3D loading screen; perf read-out moved and filled out; prediction picker removed)
+
+**State: green, pushed to `alpha`** (32602e9d, d02eef48). `build`, `uiaudit` (after `uiindex`),
+`docaudit`, `contrast` (383), `bundleaudit` and `npm test` pass. Client-only, no deploy needed.
+
+- **In-match prediction picker removed.** Its buttons never took a click (`.hud` is
+  `pointer-events: none`). The setting is Configure › Network only; the PREDICT row in the
+  detailed read-out says what is running (`auto · full`).
+- **3D loading screen.** `GameController.sceneLoading` is true from the first `syncScene` load
+  until the scene mounts: the 2D pass draws nothing and solo does not step. `LoadingScreen` in
+  GameView replaces the old "Loading 3D physics…" card and covers field + HUD. First load only.
+  Measured in dev: physics ready at ~0.1 s, view at ~0.7–1.1 s, no 2D frame between.
+- **Perf read-out.** Simple line is now fps · 1% low · ping ±jitter. Desktop: bottom-right in
+  `.net-corner` above the net chips. Phone: unchanged spot, simple only. Frame gaps over 1 s
+  (hidden tab) are not sampled.
+- **Not verified:** the online ping ± jitter line (no game server in this dev build) and a room's
+  loading screen. Both paths are small; worth a look on alpha.
+
+# (previous) HANDOFF — 2026-09-23e (touch pad existence vs readiness; BIOBUZZ chips; phone footer)
 
 **State: green, committed on `alpha` (c56ccaa, 991e8bb, 58d45f6), NOT pushed.** `build`,
 `uiaudit` (after `uiindex`), `docaudit` and `contrast` (389) pass, and so does `shiftaudit`
