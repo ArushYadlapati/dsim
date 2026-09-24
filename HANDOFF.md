@@ -1,4 +1,63 @@
-# HANDOFF — 2026-09-23c (Controls status in the card title; Practice card on Match)
+# HANDOFF — 2026-09-23d (touch pad existence vs readiness; BIOBUZZ chips; phone footer)
+
+**State: green, committed on `alpha` (c56ccaa, 991e8bb, 58d45f6), NOT pushed.** `build`,
+`uiaudit` (after `uiindex`), `docaudit` and `contrast` (389) pass, and so does `shiftaudit`
+(646 state changes, 0 shifts). `server:check` was not run, because nothing it includes changed.
+`npm test`: the shared suite is 2402 checks with 1 failure, the `lan guide` backspace-byte check
+already reported in 23c. BIOBUZZ has 8 failures, all perf timing (`step3d` median/p95 ×4,
+`PREDICT_FULL_BUDGET` ×3, the Auto probe).
+⚠️ **This machine was on the Windows Battery Saver plan** (CPU held at 1.5 GHz). `npm test` took
+~400s wall instead of ~40s, and the shared suite alone took 216s. If a run looks hung, check the
+power plan before the code. The perf failures are that too.
+
+Tester feedback, all client-only (no deploy needed beyond the usual Vercel build):
+- **Touch pad: two questions, on two clocks** (`src/ui/mobileActions.ts`; the rule is written
+  up in `docs/area/ui.md`).
+  - `present(ctx)` is EXISTENCE, fixed per match by the build and the assists. INTAKE is gone
+    under auto intake, SHOOT under auto fire, FLIP in field-centric drive. A default DECODE phone
+    is now the two sticks and PARK. The exception is `GameTouch.manualFireCounts`: Chain drum
+    and dumper keep SHOOT when aim assist is on (a held fire steers the chassis,
+    `chainAimAssist`), and BIOBUZZ always keeps it. This reverses the 2026-09-21 "ghosted, never
+    hidden" ruling.
+  - `ready(live)` is READINESS, off `touchLiveOf(hud)` at the 10 Hz poll. The cases are an empty
+    hopper, no FLOWER in reach, nectar not ok, not carrying, robots disabled, and so on. An
+    unready button is drawn `.mobile-btn.idle` IN PLACE (with `aria-disabled`), still sends its
+    press, and never moves. A season predicate FAILS OPEN when its HUD half is missing.
+    `.mobile-btn.auto` is gone.
+- **BIOBUZZ NECTAR LOCKED / PENDING under the score bar.** The phone `.breakdown-row` had a
+  literal `bottom: 50px`, which is 6px below the 56px compact `--hud-bottom`. BIOBUZZ also
+  rendered its row BEFORE `.scorebar`, so the bar painted over it. The literal is gone and
+  `HudSlots.tsx` now renders the row after the bar. Measured: the chips clear the bar by 16px in
+  portrait, and in landscape they sit in the right gutter.
+- **Phone footer, three rows** (≤640px): the brand ("DSIM · PRESENTED BY" + the Offset mark, as the
+  owner chose), then Download · Contributors · (Support) · Changes, then Privacy · Data · Terms.
+  `AppShell.tsx` wraps the links in two `.ds-foot-group` spans. On desktop it is still one row.
+  Measured with no horizontal overflow at 375 and 320px. The `off-grid-gap` ratchet dropped to
+  110.
+
+New checks (smoke.ts, the touch block):
+- Stepping the sim with a button held and released proves each hidden button really was dead:
+  DECODE auto intake and auto fire, the Chain turret, and the Chain dumper with aim assist off.
+  The dumper with aim assist on DOES differ, which is why it keeps SHOOT.
+- The existence table per game, the readiness table per row plus fail-open, and `touchLiveOf`
+  on synthetic HUD snapshots for all three games.
+
+Gotchas:
+- **`coerceAssists` forces `aimAssist = true`** for every setup, so a test wanting aim assist
+  OFF must set `w.robots[0].aimAssist = false` after `createChainWorld`. That also means drum
+  and dumper SHOOT is always present in real play today.
+- A hidden Electron window (`show: false`) runs no rAF, so a match started in it freezes at the
+  countdown. That is fine for reading the pad's idle state, but not for anything mid-match.
+  Use a fresh `userData` per capture, because a stale profile carries old settings (it showed
+  FLIP because `fieldCentric` was false).
+
+Next:
+- The owner should try the pad on a real phone in all three games.
+- The `lan guide` byte fix from 23c is still open.
+
+---
+
+# (older) HANDOFF — 2026-09-23c (Controls status in the card title; Practice card on Match)
 
 **State: green, committed and pushed on `alpha` (205adb9, 54fc0fd, fa62da7).** `build`, `server:check`, `uiaudit` (after
 `uiindex`), `contrast` and `docaudit` pass. `npm test`: 5021 checks. The failures are the known
