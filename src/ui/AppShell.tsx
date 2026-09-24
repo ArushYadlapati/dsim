@@ -195,31 +195,36 @@ export function AppShell({
               (legalText.ts), and outside the EEA/UK/CH it lands on the same page as Privacy
               — so the two sit together at the legal weight instead of reading as six peers.
               No `.bold` on any of them: within a group they are peers. No Discord link
-              here: the home page carries it. */}
-          <FootLink href={`/${game}/download`} go={onDownload}>
-            Download
-          </FootLink>
-          <FootLink href={`/${game}/contributors`} go={onContributors}>
-            Contributors
-          </FootLink>
-          {/* hidden until the tier is actually open for business - see
-              SUPPORT_ENABLED. A link to a page that cannot take a payment is a
-              dead end, and a broken purchase path is a cited AdSense rejection. */}
-          {SUPPORT_ENABLED && (
-            <FootLink href={`/${game}/donate`} go={onDonate}>
-              Support
+              here: the home page carries it. Each group is its own element, so a phone can
+              give each one its own row instead of breaking wherever the width runs out. */}
+          <span className="ds-foot-group">
+            <FootLink href={`/${game}/download`} go={onDownload}>
+              Download
             </FootLink>
-          )}
-          <FootLink href={`/${game}/changelogs`} go={onChangelog}>
-            Changes
-          </FootLink>
-          <FootLink href={`/${game}/privacy`} go={onPrivacy} legal>
-            Privacy
-          </FootLink>
-          <ConsentLink onPrivacy={onPrivacy} />
-          <FootLink href={`/${game}/terms`} go={onTerms} legal>
-            Terms
-          </FootLink>
+            <FootLink href={`/${game}/contributors`} go={onContributors}>
+              Contributors
+            </FootLink>
+            {/* hidden until the tier is actually open for business - see
+                SUPPORT_ENABLED. A link to a page that cannot take a payment is a
+                dead end, and a broken purchase path is a cited AdSense rejection. */}
+            {SUPPORT_ENABLED && (
+              <FootLink href={`/${game}/donate`} go={onDonate}>
+                Support
+              </FootLink>
+            )}
+            <FootLink href={`/${game}/changelogs`} go={onChangelog}>
+              Changes
+            </FootLink>
+          </span>
+          <span className="ds-foot-group">
+            <FootLink href={`/${game}/privacy`} go={onPrivacy} legal>
+              Privacy
+            </FootLink>
+            <ConsentLink onPrivacy={onPrivacy} />
+            <FootLink href={`/${game}/terms`} go={onTerms} legal>
+              Terms
+            </FootLink>
+          </span>
         </span>
       </footer>
     </div>

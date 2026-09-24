@@ -1512,12 +1512,12 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--ds-s-4);
   flex-wrap: wrap;
-  padding: 16px 22px;
+  padding: var(--ds-s-4) 22px;
   border-top: 1px solid var(--ds-line);
   background: var(--ds-bar);
-  font-size: 13px;
+  font-size: var(--ds-t-md);
   color: var(--ds-mut);
 }
 /* THE UI FACE, not mono (design review 01-04): "DSIM" is the wordmark the app bar's `.ds-mark`
@@ -1540,11 +1540,15 @@
    row could not break, the 66px spilled out to `.ds-app` and scrolled the WHOLE
    page sideways with Discord off the right edge. A footer link row must be free to
    take a second line — it is the one part of the layout whose item COUNT changes
-   with build flags and region. */
-.ds-foot-links {
+   with build flags and region.
+   It breaks BETWEEN the two groups first (the product links, then Privacy · Data ·
+   Terms), and each group wraps inside itself only when it alone is wider than the
+   viewport. On a desktop the two groups read as one run, spaced like its links. */
+.ds-foot-links,
+.ds-foot-group {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 18px;
+  gap: var(--ds-s-2) var(--ds-s-4);
 }
 
 /* ---- chips + buttons ------------------------------------------------- */
@@ -5574,18 +5578,25 @@ button.bb-cell:where(:not(:disabled)):active {
   .ds-main-home {
     align-items: flex-start;
   }
-  /* the footer is already two stacked lines at this width (`.ds-foot` wraps), and
-     with the links row now wrapping too it can be three. `space-between` on a
-     wrapped column reads as ragged left-alignment, so centre the whole stack —
-     and tighten the gap so six links still take two lines rather than three. */
+  /* THREE ROWS, BY GROUP: the brand, the product links, then Privacy · Data · Terms.
+     Left to wrap on its own, the link row broke wherever the width ran out, so a legal
+     link could share a line with Changes or a product link fall in with the legal ones.
+     Both levels are columns here, and each group is a centred row of its own.
+     `space-between` on a wrapped column reads as ragged left-alignment, so the whole
+     stack is centred. */
   .ds-foot {
+    flex-direction: column;
     justify-content: center;
     text-align: center;
-    padding: 14px 16px;
+    padding: var(--ds-s-4);
   }
   .ds-foot-links {
+    flex-direction: column;
+    align-items: center;
+  }
+  .ds-foot-group {
     justify-content: center;
-    gap: 8px 14px;
+    column-gap: var(--ds-s-3);
   }
   /* the brand line and the sponsor credit are two flex items (see `.ds-foot-brand`), so
      centre them too, or a wrapped credit sits flush left under a centred brand */
