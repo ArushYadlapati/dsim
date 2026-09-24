@@ -417,7 +417,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready', 'seat'];
 
 /**
  * THE ONE CAPABILITY THAT IS A HARD GATE RATHER THAN A FEATURE FLAG.
@@ -647,7 +647,7 @@ export type ClientMsg =
   // socket and the server gates a `'3d'` room on it at every door. Absent (older clients) ⇒
   // no capabilities, which is what they had before this field and refuses them only from the
   // rooms they could never have joined in the first place.
-  | { t: 'rejoin'; room: string; clientId: string; caps?: string[] }
+  | { t: 'rejoin'; room: string; clientId: string; caps?: string[]; seatToken?: string }
   /**
    * GIVE UP A HELD SLOT ON PURPOSE — the "Abandon" on the game-in-progress card.
    *
@@ -661,7 +661,7 @@ export type ClientMsg =
    * next thing the player started was refused by advice about a game the UI had just
    * told them was gone.
    */
-  | { t: 'abandon'; room: string; clientId: string }
+  | { t: 'abandon'; room: string; clientId: string; seatToken?: string }
   // SPECTATE a live match: join a room read-only. The server adds a spectator (no
   // robot slot, never counted toward capacity/roster/persistence), sends the current
   // `matchStart`, and streams the same `snapshot`s the drivers get. Input is ignored.
@@ -875,10 +875,39 @@ export type ErrorCode =
    *  The client can act on it — rejoin that game or leave it — so it is worth a code
    *  instead of a screen that only reads the sentence back. Older servers send no code,
    *  so a handler must still recognise the message (see `RecordRun`). */
-  | 'active_game';
+  | 'active_game'
+  /**
+   * The room exists and is fine; it is simply MID-MATCH (or in its pre-match strategy
+   * window), so this join is refused by `canJoin`. Distinct from a full room because it
+   * ENDS ON ITS OWN: the one correct action is to wait, and the Discord activity turns this
+   * into "you'll be able to join when it finishes" with an automatic retry rather than an
+   * error screen. That matters most where it cannot be worked around — a signed-out
+   * participant past the 45 s reconnect grace has no seat left to reclaim, and the
+   * activity's room code is deterministic, so there is no second room to escape to.
+   */
+  | 'in_progress'
+  /**
+   * The room is playing a different SEASON than this client is set to. Actionable —
+   * switch season and rejoin — and the only refusal whose sentence a player could read
+   * twice and still not know which season to pick, so the message now names both and the
+   * code lets a screen offer the switch instead of just reading it back.
+   */
+  | 'game_mismatch';
 
 export type ServerMsg =
-  | { t: 'welcome'; clientId: string }
+  /**
+   * `seatToken` is the SEAT'S SECRET, and it is the credential `rejoin` and `abandon`
+   * actually check. The client id cannot be one: it rides in every `roster` frame, and a
+   * roster reaches every driver AND every spectator, and `spectate` needs no account and
+   * no invitation. So anyone who could watch a match could read the ids out of it and
+   * `abandon` its drivers one frame at a time, or `rejoin` onto their seat and drive their
+   * robot. This is sent ONLY to the client that owns the seat, and appears in no broadcast.
+   *
+   * Optional because an older server does not send one; a client that has none simply omits
+   * it and the server falls back to the pre-token rule for pre-token seats (see
+   * `Room.seatOwner`).
+   */
+  | { t: 'welcome'; clientId: string; seatToken?: string }
   /**
    * A `'3d'` MATCH IS HELD AT TICK 0 WHILE SEATS LOAD (`VIEWREADY_CAP`). Sent when the hold
    * begins, whenever a seat reports in, and when it ends (`waitMs: 0`). `loading` is the robot

@@ -427,7 +427,7 @@ export function Matchmaking({
         startedRef.current = true;
         clearStagedMatch();
         matchFound();
-        onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
+        onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, 'ranked', false, lobby.seatToken));
       });
       lobby.on('matchAssigned', (room) => {
         matchFound();
@@ -451,7 +451,7 @@ export function Matchmaking({
       clearStagedMatch();
       // the room code when the match is running in one, `'ranked'` on the single-region path
       onStart(
-        new ServerSession(lobby.transport, lobby.isHost(), p.start, lobby.clientId, p.assignedRoom ?? 'ranked'),
+        new ServerSession(lobby.transport, lobby.isHost(), p.start, lobby.clientId, p.assignedRoom ?? 'ranked', false, lobby.seatToken),
       );
     } else if (p.strategy) {
       const s = p.strategy;
@@ -598,7 +598,7 @@ export function Matchmaking({
       lobby.on('matchStart', (m: MatchStart) => {
         startedRef.current = true;
         clearStagedMatch();
-        onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, room));
+        onStart(new ServerSession(lobby.transport, lobby.isHost(), m, lobby.clientId, room, false, lobby.seatToken));
       });
       lobby.on('dodgeVerdict', (yours, others) => setDodge({ yours, others }));
       lobby.on('standingLock', (until, score) => { setLock({ until, score }); setSearching(false); });
@@ -859,7 +859,7 @@ export function Matchmaking({
       startedRef.current = true;
       clearStagedMatch();
       matchFound();
-      onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, 'ranked'));
+      onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, 'ranked', false, lobby.seatToken));
     });
     // normal path: reconnect to the assigned host region to play
     lobby.on('matchAssigned', (room) => {

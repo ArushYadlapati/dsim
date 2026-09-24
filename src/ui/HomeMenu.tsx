@@ -4,11 +4,11 @@ import type { GameId } from '../types';
 import { APP_NAME, LINKS, seasonFor } from '../seasons';
 import { visibleGames } from '../seasonVisibility';
 import { fetchGlobalStats, type GlobalStats } from '../net/api';
-import { RAIL_ITEMS } from './NavRail';
+import { railItems } from './NavRail';
 import { QueueCounts } from './QueueCounts';
 import { SponsorPresents } from './Sponsor';
 import type { ShellNav } from './AppShell';
-import { discordAvatarUrl, discordDisplayName, type DiscordParticipant } from '../net/discordActivity';
+import { discordAvatarUrl, discordDisplayName, inDiscordActivity, type DiscordParticipant } from '../net/discordActivity';
 
 /**
  * The main menu. The four top-level destinations sit CENTERED as chunky keycaps
@@ -148,7 +148,10 @@ export function HomeMenu({
       </div>
 
       <nav className="ds-menu" aria-label="Main">
-        {RAIL_ITEMS.map((it, i) => (
+        {/* the SAME filter the rail uses, so the two can never drift — and the home keycaps
+            are the FIRST thing a participant sees, so an entry that only ever reaches a
+            sign-in the embed cannot perform is the worst place to leave one */}
+        {railItems(inDiscordActivity()).map((it, i) => (
           <button
             key={it.id}
             className={`ds-menu-btn${i === 0 ? ' primary' : ''}`}

@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 import * as C from '../../src/config';
 import { datan2, hyp, wrapAngle } from '../../src/math';
 import { worldHash } from '../../src/net/checksum';
-import { defaultSettings, switchGame } from '../../src/settings';
-import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
+import { coerceSettings, defaultSettings, switchGame } from '../../src/settings';
+import { coerceSpec, DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
   BB_HIVE_CELL_LEN,
   BB_MASS_BASE,
@@ -3309,6 +3309,89 @@ export function robotChecks(check: Check): void {
     check('settings: ...and its saved robots', back.savedRobots.length === 1 && specKey(back.savedRobots[0]) === specKey(mine));
     check('settings: the active BIOBUZZ loadout is not ALSO left in the archive', back.loadouts?.biobuzz === undefined, `archived=${Object.keys(back.loadouts ?? {}).join(',')}`);
     check('settings: switching to the game already active is a no-op', switchGame(back, 'biobuzz') === back);
+  }
+
+  // ── A FIRST BIOBUZZ ROBOT IS BIOBUZZ'S, NOT DECODE'S CHASSIS CLAMPED (audit #29) ──────────
+  //
+  // `src/settings.ts` seeded every game's first loadout from `DEFAULT_SPEC`, which is DECODE's
+  // chassis: `coerceSpec` starts from `base` and overlays only what it reads off the raw input,
+  // so a fresh BIOBUZZ robot was DECODE's 14.5 × 16.5 / 500 rpm / 0.40 inertia bounded into this
+  // game's legal ranges. Legal and playable, on tuning nobody chose. `BB_DEFAULT_SPEC` was
+  // written to be that seed and nothing reached it — it is only `coerceBiobuzzSpec`'s default
+  // PARAMETER, and `coerceSpec` always passes its own `base` explicitly.
+  {
+    const fresh = switchGame(defaultSettings(), 'biobuzz').spec;
+    /** `BB_DEFAULT_SPEC` with the SHARED identity back on it — the seed as `src/settings.ts`
+     * builds it. Spelled out here rather than imported so the check states the contract itself. */
+    const seed = { ...BB_DEFAULT_SPEC, name: DEFAULT_SPEC.name, teamName: DEFAULT_SPEC.teamName, teamNumber: DEFAULT_SPEC.teamNumber };
+    const bb = coerceSpec(seed, seed, 'biobuzz');
+    check('settings: a first BIOBUZZ robot is the game’s own build', specKey(fresh) === specKey(bb), `${specKey(fresh)} vs ${specKey(bb)}`);
+    // the three numbers the audit measured, named so a regression says WHICH way it went
+    check(
+      'settings: ...so it is not DECODE’s frame, gearing or flywheel',
+      fresh.length === BB_DEFAULT_SPEC.length &&
+        fresh.width === BB_DEFAULT_SPEC.width &&
+        fresh.driveRpm === BB_DEFAULT_SPEC.driveRpm &&
+        fresh.flywheelInertia === BB_DEFAULT_SPEC.flywheelInertia,
+      `${fresh.length}x${fresh.width} ${fresh.driveRpm}rpm i=${fresh.flywheelInertia}`,
+    );
+    /** the seed as it WAS: DECODE's chassis as both raw input and base, bounded into BIOBUZZ. */
+    const legacy = coerceSpec(DEFAULT_SPEC, DEFAULT_SPEC, 'biobuzz');
+    check('settings: ...and it really differs from what DECODE’s chassis coerced to', specKey(fresh) !== specKey(legacy));
+    // ⚠️ THE IDENTITY IS STILL THE SHARED ONE. `BB_DEFAULT_SPEC` is `{ ...DEFAULT_SPEC,
+    // ...BB_PRESETS[0] }` and `BB_PRESETS[0]` is a preset CARD, so seeding straight from it would
+    // name a new player's own robot "Pollinator" — a name they never typed, in one game only.
+    check(
+      'settings: a first BIOBUZZ robot still carries the shared name and team',
+      fresh.name === DEFAULT_SPEC.name && fresh.teamName === DEFAULT_SPEC.teamName && fresh.teamNumber === DEFAULT_SPEC.teamNumber,
+      `${fresh.name} / ${fresh.teamName} / ${fresh.teamNumber}`,
+    );
+    /**
+     * ⚠️ THE SEED'S OWN TUNING MUST SURVIVE THE COERCER — the property that matters, and NOT
+     * "the seed is a fixed point", which is false: `coerceSpec` adds `accent`/`bbMech`/
+     * `chassisColor`/`decal`/`plate` and drops the fields BIOBUZZ does not use, so seed and
+     * coerced seed never key-compare equal. The old check compared the coerced output with
+     * ITSELF and so passed with a seed of `driveRpm: 99999`.
+     */
+    const seeded = BB_DEFAULT_SPEC;
+    check(
+      'settings: the seed’s own tuning survives coercion — it is not clamped away',
+      fresh.driveRpm === seeded.driveRpm &&
+        fresh.massLb === seeded.massLb &&
+        fresh.flywheelInertia === seeded.flywheelInertia &&
+        fresh.length === seeded.length &&
+        fresh.width === seeded.width,
+      `${fresh.driveRpm}rpm ${fresh.massLb}lb i=${fresh.flywheelInertia} ${fresh.length}x${fresh.width}`,
+    );
+    // and coercing it again changes nothing more (the builder must not rewrite it per keystroke)
+    check('settings: …and a second pass changes nothing more', specKey(bbCoerce(fresh)) === specKey(fresh));
+    // AND THE OTHER DOOR AGREES. A stored blob that names a game but carries no robot is the same
+    // "seed a fresh loadout" case reached through `coerceSettings` instead of `switchGame`.
+    check('settings: a stored blob with a game but no robot seeds the same build', specKey(coerceSettings({ game: 'biobuzz' }).spec) === specKey(fresh));
+    // ⚠️ AND AN EXISTING PLAYER'S ROBOT IS NOT RE-TUNED. The seed only applies where there is no
+    // stored spec; a saved one keeps `DEFAULT_SPEC` as its fallback base, so nothing people have
+    // already built moves under them.
+    const stored = JSON.parse(JSON.stringify({ ...switchGame(defaultSettings(), 'biobuzz'), spec: legacy })) as unknown;
+    check('settings: a robot saved under the old seed survives a load unchanged', specKey(coerceSettings(stored).spec) === specKey(legacy));
+    /**
+     * ⚠️ AND A PARTIAL ONE TOO, which is the only shape that can observe this at all. A
+     * COMPLETE stored spec makes `coerceSpec`'s BASE argument structurally unreachable, so
+     * the check above cannot see which base was used — it passed even with the seed wired in
+     * as the base, i.e. with every existing player's robot silently re-tuned. An older blob
+     * missing the fields a later build added is the real case, and it must fall back to
+     * DECODE's shared values rather than to BIOBUZZ's.
+     */
+    const partial = JSON.parse(
+      JSON.stringify({ game: 'biobuzz', spec: { driveRpm: legacy.driveRpm, massLb: legacy.massLb } }),
+    ) as unknown;
+    const loaded = coerceSettings(partial).spec;
+    check(
+      'settings: a PARTIAL saved robot falls back to the shared base, not the BIOBUZZ seed',
+      loaded.driveRpm === legacy.driveRpm &&
+        loaded.massLb === legacy.massLb &&
+        loaded.flywheelInertia === legacy.flywheelInertia,
+      `${loaded.driveRpm}rpm ${loaded.massLb}lb i=${loaded.flywheelInertia} (seed would be ${BB_DEFAULT_SPEC.flywheelInertia})`,
+    );
   }
 
   // ── THE DRAWN MOUTHS ARE THE CAPTURE AREAS ────────────────────────────────

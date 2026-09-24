@@ -342,7 +342,17 @@ import {
   stepTier,
   type GpuProbe,
 } from '../../src/games/biobuzz/graphics/auto';
-import { BASE_RIG, BB_ENVIRONMENTS, BB_ENVIRONMENT_IDS, environmentDef, hdriEnvironments, type VenueSpec } from '../../src/games/biobuzz/graphics/environments';
+import {
+  BASE_RIG,
+  BB_ENVIRONMENTS,
+  BB_ENVIRONMENT_IDS,
+  canFetchHdri,
+  environmentDef,
+  environmentDefFor,
+  hdriEnvironments,
+  pickableEnvironments,
+  type VenueSpec,
+} from '../../src/games/biobuzz/graphics/environments';
 import { bbVenueDetail, buildBiobuzzVenue } from '../../src/games/biobuzz/scene/renderVenue';
 import { ENVIRONMENT_IDS, type EnvironmentId } from '../../src/games/biobuzz/graphics/settings';
 import { drawBiobuzzFlowerReadout } from '../../src/games/biobuzz/drawFlowerReadout';
@@ -9762,6 +9772,160 @@ function environmentAndReadoutChecks(check: Check): void {
       // a CALL, not the words: the file's own header explains why the star field is hashed
       // rather than random, and the check must not fail on its own reasoning
       check('the dome is painted with no Math.random() call (an export must repaint the same sky)', !/Math\.random\(/.test(envSrc));
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  // THE HDRI THAT CAN NEVER ARRIVE — the Discord Activity's CSP (audit #12).
+  //
+  // The activity is served through a proxy that admits only dsim's two Activity URL Mappings, so
+  // `dl.polyhaven.org` is refused before the request leaves. `school-hall` is High's AND Ultra's
+  // `environment` column and an ordinary desktop lands on one of those, so in the embed this was
+  // the DEFAULT path: a blocked request per scene build, a silent substitution of three's generic
+  // `RoomEnvironment` under a school hall's venue geometry, and a picker still advertising two
+  // downloads that could not happen. `canFetchHdri` / `environmentDefFor` answer it up front.
+  // ─────────────────────────────────────────────────────────────────────────────────────────
+  {
+    /** run `fn` with `window` stubbed onto a host that IS (or is not) Discord's activity proxy.
+     * Node has no `window` at all, which is why `inDiscordActivity()` reads false in this suite
+     * by default — the embed branch is unreachable without this. */
+    const onHost = <T>(hostname: string, fn: () => T): T => {
+      const g = globalThis as { window?: unknown };
+      const had = Object.prototype.hasOwnProperty.call(g, 'window');
+      const prev = g.window;
+      g.window = {
+        location: { hostname, search: '' },
+        sessionStorage: { getItem: () => null, setItem: () => undefined },
+      };
+      try {
+        return fn();
+      } finally {
+        if (had) g.window = prev;
+        else delete g.window;
+      }
+    };
+
+    const fetched = BB_ENVIRONMENTS.filter((e) => e.hdri);
+
+    // EVERY FETCHED ENTRY NAMES A STAND-IN, AND THE STAND-IN COSTS NOTHING. A fallback that is
+    // itself an HDRI, or an id that does not exist, is a fallback with somewhere else to fall.
+    check(
+      'every fetched environment names a PAINTED stand-in',
+      fetched.length > 0 &&
+        fetched.every((e) => {
+          const alt = BB_ENVIRONMENTS.find((x) => x.id === e.hdri!.fallback);
+          return !!alt && !!alt.look && !alt.hdri;
+        }),
+      fetched.map((e) => `${e.id}→${e.hdri!.fallback}`).join(' '),
+    );
+    // AND IT STANDS IN THE SAME KIND OF ROOM. `renderScene` builds the VENUE off the same row it
+    // lights from, so a hall that fell back to an outdoor horizon would put a sky where the
+    // ceiling was — the substitution has to be a different picture of the same place.
+    check(
+      'a stand-in venue is the same KIND as the room it stands in for',
+      fetched.every((e) => environmentDef(e.hdri!.fallback).venue.kind === e.venue.kind),
+      fetched.map((e) => `${e.venue.kind}→${environmentDef(e.hdri!.fallback).venue.kind}`).join(' '),
+    );
+
+    // OFF-EMBED NOTHING MOVES. The photographs are still the High/Ultra default on the web and in
+    // the desktop build, and the fixed-High replay export still renders in the school hall.
+    check('outside an activity every id resolves to its own declared row', BB_ENVIRONMENT_IDS.every((id) => environmentDefFor(id) === environmentDef(id)));
+    check('outside an activity an HDRI is still fetchable', canFetchHdri());
+    check('...and the picker still offers all eleven', pickableEnvironments().length === BB_ENVIRONMENTS.length);
+    check(
+      'a plain website host is not an activity',
+      onHost('playdsim.com', () => canFetchHdri() && environmentDefFor('school-hall').id === 'school-hall'),
+    );
+
+    // IN THE EMBED THE SUBSTITUTION IS TOTAL: nothing resolves to a row that needs a download.
+    check('inside the activity an HDRI is known to be unfetchable up front', !onHost('1234.discordsays.com', () => canFetchHdri()));
+    check(
+      'inside the activity the school hall resolves to the painted school gym',
+      onHost('1234.discordsays.com', () => environmentDefFor('school-hall').id) === 'gym',
+      onHost('1234.discordsays.com', () => environmentDefFor('school-hall').id),
+    );
+    check(
+      'inside the activity the photo studio resolves to the painted dark studio',
+      onHost('1234.discordsays.com', () => environmentDefFor('monochrome-studio').id) === 'cyc-dark',
+      onHost('1234.discordsays.com', () => environmentDefFor('monochrome-studio').id),
+    );
+    check(
+      'inside the activity NO id resolves to a row that has to be downloaded',
+      onHost('1234.discordsays.com', () => BB_ENVIRONMENT_IDS.every((id) => !environmentDefFor(id).hdri)),
+    );
+    // and only the two move: a substitution that also re-pointed the painted entries would be
+    // changing the picture for a reason that has nothing to do with the CSP
+    check(
+      'inside the activity every PAINTED id is left exactly where it was',
+      onHost('1234.discordsays.com', () =>
+        BB_ENVIRONMENTS.filter((e) => !e.hdri).every((e) => environmentDefFor(e.id) === e),
+      ),
+    );
+    check(
+      'inside the activity the picker drops the two downloads and keeps the rest',
+      onHost('1234.discordsays.com', () => {
+        const list = pickableEnvironments();
+        return list.length === BB_ENVIRONMENTS.length - fetched.length && list.every((e) => !e.hdri);
+      }),
+    );
+    // NOTHING IS BUNDLED AND NOTHING IS REWRITTEN. The substitution is a read-time resolution:
+    // the stored setting still says `school-hall`, so the same profile opened outside the embed
+    // gets the photograph back, and no `.hdr` joined the repo to make this work.
+    {
+      const envDataSrc = readFileSync(join(BIOBUZZ_DIR, 'graphics', 'environments.ts'), 'utf8');
+      check('the fix stores nothing — no write of the resolved id anywhere in the data module', !/localStorage|setGraphicsSetting/.test(envDataSrc));
+      check(
+        'the two HDRIs are still fetched from Poly Haven, not from a bundled copy',
+        fetched.every((e) => /^https:\/\/dl\.polyhaven\.org\//.test(e.hdri!.url)),
+      );
+      // ⚠️ THE ONE PREDICATE. `discordGroup()` answers "which party", which can legitimately be
+      // unknown inside a live embed (a reload with third-party storage blocked); "which CSP is
+      // over this document" is `inDiscordActivity()` and only that.
+      check(
+        'the CSP question is asked of inDiscordActivity(), never of the party',
+        /export function canFetchHdri\(\): boolean \{\n\s*return !inDiscordActivity\(\);\n\}/.test(envDataSrc),
+      );
+    }
+
+    // THE RENDERER READS THE RESOLVED ROW FOR ALL THREE OF ITS JOBS. The rig, the venue and the
+    // surround come off one row; before this they disagreed in the embed, which is how a school
+    // hall's walls ended up around a field lit by three's generic box.
+    {
+      const sceneSrc = readFileSync(join(SCENE_DIR, 'renderScene.ts'), 'utf8');
+      check('applyQuality lights and builds the venue from the RESOLVED row', /const def = environmentDefFor\(s\.environment\)/.test(sceneSrc));
+      check('...and nothing in the scene reads the raw declared row any more', !/\benvironmentDef\(/.test(sceneSrc));
+      const envSrc = readFileSync(join(SCENE_DIR, 'renderEnvironment.ts'), 'utf8');
+      check('the loader resolves the same way before it considers fetching', /const def = environmentDefFor\(id\)/.test(envSrc));
+      // A FAILURE IS REMEMBERED. Only successes were cached, so a refused fetch was re-issued on
+      // every scene build and every graphics-settings change.
+      check(
+        'a failed .hdr is remembered for the document, not re-requested per scene',
+        /failedHdri\.set\(id, \(failedHdri\.get\(id\) \?\? 0\) \+ 1\)/.test(envSrc) &&
+          /if \(\(failedHdri\.get\(id\) \?\? 0\) >= HDRI_MAX_TRIES\) \{/.test(envSrc),
+      );
+      check(
+        'graphics: the environment picker offers only what this client can fetch',
+        /options=\{pickableEnvironments\(\)\.map\(/.test(readFileSync('src/ui/GraphicsSection.tsx', 'utf8')) &&
+          !/options=\{BB_ENVIRONMENTS\.map\(/.test(readFileSync('src/ui/GraphicsSection.tsx', 'utf8')),
+        'in the embed the HDRI host is not a URL mapping, so those tiles advertised a download that cannot happen',
+      );
+      check('...in MODULE scope, so it outlives the scene that learned it', /^const failedHdri = new Map<EnvironmentId, number>\(\);$/m.test(envSrc));
+      check(
+        '⚠️ ...but it COUNTS, so one blip does not cost the real environment for the whole run',
+        /^const HDRI_MAX_TRIES = 2;$/m.test(envSrc),
+        'a document is a whole Electron run; blacklisting on the first miss meant one bad second lasted until a restart',
+      );
+      check(
+        '⚠️ ...and only the FETCH counts, so a GPU failure never blacklists a download that worked',
+        // exactly ONE place records a failure, and it is the catch wrapped around the FETCH.
+        // (A "no set() near a catch(err)" test cannot work: the legitimate fetch-catch is
+        // itself a `catch (err)` with the set inside it — which is how this check first went
+        // red. Counting the sites and pinning the one is the discriminator that holds.)
+        (envSrc.match(/failedHdri\.set\(/g) ?? []).length === 1 &&
+          /loadAsync\(def\.hdri\.url\);\s*\} catch \(err\) \{\s*failedHdri\.set\(/.test(envSrc),
+      );
+      // and the failure lands on the entry's own stand-in rather than on the flattest row there is
+      check('a failed fetch falls back to the entry’s stand-in, not to `room`', /const alt = applyFallback\(def, lighting\);/.test(envSrc));
     }
   }
 

@@ -7,6 +7,8 @@ import { rewardEyebrow, rewardHeadline } from '../rewards';
 import { useAds } from '../ads/AdsProvider';
 import { AuthDisabled } from './AuthDisabled';
 import { AuthPanel } from './AuthPanel';
+import { inDiscordActivity } from '../net/discordActivity';
+import { SITE_HOST } from '../lib/authFlows';
 import { BadgeArt, BadgeMarks } from './BadgeMark';
 import { DisplayName, Username } from './ProfileName';
 import { ProfileTabs, type ProfileTab } from './ProfileTabs';
@@ -85,6 +87,27 @@ function SignedIn({
 
   if (session.isPending) return <p className="ds-loading">Loading…</p>;
   if (!user) {
+    /**
+     * INSIDE THE ACTIVITY THERE IS NOTHING TO OFFER, so this says so instead of asking.
+     *
+     * Discord's frame blocks the sign-in service outright, so the button below can only
+     * fail — and this page is reachable from the home menu's own keycap, which makes it one
+     * of the first things a participant can walk into. Same shape as the Account page's
+     * panel: name the limit, name where the account does work, and no live control that
+     * cannot succeed. Plain text rather than a link, because navigating the activity frame
+     * away from itself has no back button.
+     */
+    if (inDiscordActivity()) {
+      return (
+        <div className="ds-panel">
+          <div className="ds-empty">
+            <div className="big">Titles and badges aren’t available inside Discord</div>
+            They belong to an account, and Discord’s activity frame blocks the sign-in
+            service. Open {SITE_HOST} in a browser to use yours.
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="ds-panel">
         <div className="ds-empty">

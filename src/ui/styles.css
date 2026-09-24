@@ -1519,6 +1519,39 @@ button {
   }
 }
 
+/* YOUR KEYS ARE NOT REACHING THIS WINDOW (see `Keyboard.hasFocus` and GameView's note).
+   Embedded as a Discord Activity the game is a cross-origin iframe next to a chat box, so a
+   driver can be in a live match with the focus somewhere else and nothing on screen saying so.
+   Top-centre, which is the one edge of the field nothing owns: the MENU/RESET cluster keeps
+   the top-left, the status chips the top-right, the event log the left edge.
+
+   ⚠️ `pointer-events: none`, like everything else floating over the field: the click this
+   notice ASKS FOR has to land on the canvas, and a notice that swallowed it would be the bug
+   it is reporting. (`.hud` sets it for its own subtree; this is `.hud`'s sibling.)
+
+   Its ground is the canvas, so category 3 throughout — `--ds-stage-bg` fill, `--ds-on-field`
+   ink, `--ds-on-field-dim` edge — which are the three pairs `scripts/contrast.mjs` already
+   audits for the loading screen and the results stage. Nothing here themes, and nothing here
+   may: the field is hardcoded dark in both themes. */
+.focus-hint {
+  position: absolute;
+  top: var(--ds-s-3);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30; /* with the countdown, over the ranked intro overlay */
+  max-width: min(340px, calc(100% - var(--ds-s-6)));
+  padding: var(--ds-s-2) var(--ds-s-3);
+  border: 1px solid var(--ds-on-field-dim);
+  border-radius: var(--ds-round-full);
+  background: var(--ds-stage-bg);
+  color: var(--ds-on-field);
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-t-sm);
+  line-height: var(--ds-lh-prose);
+  text-align: center;
+  pointer-events: none;
+}
+
 /* quiet event log on the left edge — no popups over the field */
 .eventlog {
   position: absolute;

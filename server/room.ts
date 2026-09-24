@@ -286,6 +286,13 @@ export interface Client {
   /** protocol capabilities this client build advertised on join/queue (mixed-version
    * safe: a room opens the strategy window only if EVERY member supports 'strategy') */
   caps?: string[];
+  /** THE SEAT'S SECRET — see the `welcome` note in protocol.ts. Minted here, sent only to
+   * its owner, never broadcast. */
+  seatToken?: string;
+  /** did this seat's client advertise `'seat'`? Only then is the token REQUIRED to reclaim
+   * it. An older client has no token to send, and refusing its own reconnect would be a
+   * worse bug than the one this closes — it ages out as clients update. */
+  seatSecured?: boolean;
   /**
    * This client has said its 3D physics chunk is loaded (`{ t: 'physicsReady' }`).
    *
@@ -905,14 +912,45 @@ export class Room {
    * room is an open lobby (accepting drivers, not started) — so the browser lists
    * exactly the rooms a new arrival could walk into. Deliberately minimal: no player
    * names (a lobby list is public within an activity; the roster is seen on join). */
-  lobbySummary(): { code: string; players: number; capacity: number; kind: RoomKind; game: GameId } | null {
-    if (!this.canJoin()) return null;
+  lobbySummary(): {
+    code: string;
+    players: number;
+    capacity: number;
+    kind: RoomKind;
+    game: GameId;
+    joinable: boolean;
+    state: 'lobby' | 'strategy' | 'match' | 'full';
+  } {
+    /**
+     * ⚠️ EVERY ROOM IN THE GROUP GETS A ROW, INCLUDING ONE NOBODY CAN JOIN.
+     *
+     * This used to return null the moment `canJoin()` was false, so a room vanished from
+     * `/api/lobbies` the instant a match started in it — and the browser reads absence as
+     * NON-EXISTENCE. The result was the activity telling a latecomer "Nobody has opened the
+     * main lobby yet" about the room four of their friends were playing in, with the Join
+     * button enabled, labelled with the VIEWER's season rather than the room's, and a server
+     * refusal as the only feedback. It lasted the whole match and the whole results screen,
+     * because a room only becomes a lobby again when the host recycles it.
+     *
+     * The caller decides what to show; this says what is true.
+     *
+     * `players` counts SEATS, not sockets. A bot is a seat — `canJoin` has always counted
+     * them — so reporting `clients.size` made a host plus two bots read as "1/4" with room
+     * to spare, and the one game with bots is now the activity's default season.
+     */
+    const state: 'lobby' | 'strategy' | 'match' | 'full' =
+      this.world !== null ? 'match'
+      : this.phase === 'strategy' ? 'strategy'
+      : this.seatsTaken >= roomCapacity(this.config) ? 'full'
+      : 'lobby';
     return {
       code: this.code,
-      players: this.clients.size,
+      players: this.seatsTaken,
       capacity: roomCapacity(this.config),
       kind: this.config.kind,
       game: this.config.game ?? 'decode',
+      joinable: this.canJoin(),
+      state,
     };
   }
 
@@ -982,9 +1020,28 @@ export class Room {
    * per-client secret the server minted, and holding it is the same proof of ownership
    * `rejoin` already accepts.
    */
-  abandonSlot(clientId: string): boolean {
+  /**
+   * IS THIS FRAME FROM THE SEAT'S OWNER? — the check `rejoin` and `abandon` were missing.
+   *
+   * The old rule was "knowing the client id is proof", and the comment that said so was
+   * wrong: `broadcastRoster` puts every driver's id on the wire and `broadcast` fans it out
+   * to spectators too, so the credential was published to anyone who could watch. A seat
+   * minted for a client that advertises `'seat'` therefore requires its TOKEN, which is sent
+   * only to its owner in `welcome` and appears in no broadcast.
+   *
+   * A seat WITHOUT `seatSecured` is an older client's: it has no token to send, so it keeps
+   * the old rule rather than being locked out of its own reconnect. That window closes as
+   * clients update, and the version gate makes that fast.
+   */
+  private seatOwner(c: Client, token?: string): boolean {
+    if (!c.seatSecured) return true;
+    return !!c.seatToken && token === c.seatToken;
+  }
+
+  abandonSlot(clientId: string, token?: string): boolean {
     const c = this.clients.get(clientId);
     if (!c) return false;
+    if (!this.seatOwner(c, token)) return false;
     if (c.userId) {
       this.activeUserIds.delete(c.userId);
       this.onUserInactive?.(c.userId);
@@ -1092,9 +1149,11 @@ export class Room {
     // rooms are single-channel by construction — the matchmaker segregates ranked)
     if (this.clients.size === 0 && client.channel) this.channel = client.channel;
     client.conn = ++this.connSeq;
+    if (!client.seatToken) client.seatToken = randomUUID();
+    client.seatSecured = !!client.caps?.includes('seat');
     this.clients.set(client.id, client);
     if (!this.hostId) this.hostId = client.id;
-    client.send({ t: 'welcome', clientId: client.id });
+    client.send({ t: 'welcome', clientId: client.id, seatToken: client.seatToken });
     this.broadcastRoster();
     this.moderatePlayerNames(client);
   }
@@ -1109,23 +1168,51 @@ export class Room {
    * the durable record is scrubbed again at persist time regardless.
    */
   private moderatePlayerNames(client: Client): void {
+    // ONE CHECK PER SEAT AT A TIME. The in-room name editor patches on every KEYSTROKE, so
+    // a rename that goes through `update` would otherwise cost one provider round trip per
+    // character typed. A patch that lands while a check is running is remembered instead,
+    // and re-run once against the CURRENT names — so the value that ends up on the roster is
+    // always the value that was checked, at one call per round trip rather than per keystroke.
+    if (this.modInFlight.has(client.id)) {
+      this.modQueued.add(client.id);
+      return;
+    }
+    this.modInFlight.add(client.id);
     void (async () => {
       const p = client.player;
-      const [name, teamName, specName, specTeam] = await Promise.all([
-        scrubName(p.name, 'Driver'),
-        scrubName(p.teamName, ''),
-        scrubName(p.spec.name, DEFAULT_SPEC.name),
-        scrubName(p.spec.teamName, ''),
-      ]);
-      if (!this.clients.has(client.id)) return; // left before the check returned
-      if (name === p.name && teamName === p.teamName && specName === p.spec.name && specTeam === p.spec.teamName) {
-        return; // all clean (or moderation disabled) — nothing to do
+      try {
+        const [name, teamName, specName, specTeam] = await Promise.all([
+          scrubName(p.name, 'Driver'),
+          scrubName(p.teamName, ''),
+          scrubName(p.spec.name, DEFAULT_SPEC.name),
+          scrubName(p.spec.teamName, ''),
+        ]);
+        if (!this.clients.has(client.id)) return; // left before the check returned
+        if (name === p.name && teamName === p.teamName && specName === p.spec.name && specTeam === p.spec.teamName) {
+          return; // all clean (or moderation disabled) — nothing to do
+        }
+        p.name = name;
+        p.teamName = teamName;
+        p.spec = { ...p.spec, name: specName, teamName: specTeam };
+        this.broadcastRoster();
+      } finally {
+        this.modInFlight.delete(client.id);
+        // a patch arrived mid-flight: the names on the roster now are not the ones that were
+        // checked, so check the ones that are
+        if (this.modQueued.delete(client.id) && this.clients.has(client.id)) this.moderatePlayerNames(client);
       }
-      p.name = name;
-      p.teamName = teamName;
-      p.spec = { ...p.spec, name: specName, teamName: specTeam };
-      this.broadcastRoster();
     })();
+  }
+
+  /** seats with a moderation check in flight, and seats whose names moved while one ran. */
+  private modInFlight = new Set<string>();
+  private modQueued = new Set<string>();
+
+  /** the free-text names a roster carries, as one string: the cheap "did this patch change
+   *  anything moderation cares about" test. ` ` separates the fields so text cannot slide
+   *  between two of them and hash the same. */
+  private static nameFingerprint(p: LobbyPlayer): string {
+    return [p.name, p.teamName ?? '', p.spec.name ?? '', p.spec.teamName ?? ''].join(' ');
   }
 
   /** true when this room's results must NOT be written to the leaderboard/ELO DB — an
@@ -1503,9 +1590,25 @@ export class Room {
     send: (m: ServerMsg) => void,
     sendRaw?: (s: string) => void,
     backlog?: () => number,
+    token?: string,
+    trusted = false,
   ): number | null {
     const c = this.clients.get(id);
     if (!c) return null;
+    /**
+     * The seat's own secret, not the id that rides in every roster — see `seatOwner`.
+     *
+     * ⚠️ `trusted` IS FOR A CALLER THAT ALREADY PROVED MORE THAN THE TOKEN PROVES. The
+     * account reclaim in `server/index.ts` is the only one: it found this seat by the
+     * VERIFIED user id off a signed auth token, which is a strictly stronger claim than
+     * "holds the seat's secret" — the token only ever answers "is this the same browser".
+     * Without the bypass that path silently returned null for every seat a current client
+     * had taken, so a signed-in player reloading during the ranked strategy window was
+     * refused their own rated match, and a custom-lobby reconnect took a SECOND seat
+     * instead of reclaiming its own. Caught in review, not in testing, because the two
+     * behavioural tests for it build clients that advertise no caps.
+     */
+    if (!trusted && !this.seatOwner(c, token)) return null;
     /**
      * TELL THE SOCKET THIS ONE IS REPLACING, while it still has a sender.
      *
@@ -1544,7 +1647,7 @@ export class Room {
     c.conn = ++this.connSeq; // this socket now owns the slot (stale old close ignored)
     this.snapPrimed.delete(id); // lost its baseline — force a full keyframe
     this.snapAck.delete(id); // drop its stale pre-drop ack so it doesn't re-keyframe
-    send({ t: 'welcome', clientId: id });
+    send({ t: 'welcome', clientId: id, seatToken: c.seatToken });
     // SAY WHICH MATCH THE SLOT IS IN. A client returning through the Home rejoin card
     // built its session from a SAVED matchStart, so its generation is whatever that
     // record held — and an input stamped with a stale one is dropped by `onInput`, which
@@ -1704,7 +1807,25 @@ export class Room {
         // the matchmaker) — a client may re-pick its spec / pose / ready, never its
         // side, or two partners could stack one alliance.
         if (this.pendingMatch && this.phase === 'strategy') delete patch.alliance;
+        const namesBefore = Room.nameFingerprint(c.player);
         Object.assign(c.player, patch);
+        /**
+         * ⚠️ A RENAME IS MODERATED TOO — ONLY THE JOIN USED TO BE.
+         *
+         * `add` runs `moderatePlayerNames`; this path ran `sanitizePlayerPatch` and nothing
+         * else, and that is LENGTH coercion (`coerceName`) — no word list, no provider. So a
+         * player could arrive clean and then rename to anything at all, live, onto every
+         * roster and every in-match label in the room.
+         *
+         * It is worst exactly where the backstops are gone: the live in-room name editor is
+         * the Discord activity's, everybody in an embed is SIGNED OUT, and `resolveReport`
+         * needs a signed-in filer — so nobody in that room could even report it.
+         *
+         * Gated on the names having actually MOVED, so a ready toggle, a pose edit or a spec
+         * swap costs nothing; the editor's keystroke stream is coalesced inside
+         * `moderatePlayerNames` rather than billed a provider call per character.
+         */
+        if (Room.nameFingerprint(c.player) !== namesBefore) this.moderatePlayerNames(c);
         // AUTHORITATIVE ready gate: a player can't be ready with a start pose that's
         // illegal for their (possibly just-swapped) chassis — otherwise createWorld
         // would silently relocate their robot at spawn. Runs on every patch (ready
@@ -1753,6 +1874,26 @@ export class Room {
         // physics WASM may still be loading in the first moment after boot; refuse
         // rather than throw inside step() (which would kill the tick loop)
         if (id === this.hostId && this.world === null && this.phase === 'connecting') {
+          /**
+           * ⚠️ EVERYBODY ELSE HAS TO HAVE READIED, AND ONLY THE CLIENT USED TO CHECK.
+           *
+           * `Lobby` disables START until `players.every(p => p.ready)` and the server took the
+           * frame on the host's word — so a `join` landing in the same instant as the click
+           * (the window is one roster broadcast's round trip) committed somebody who had seen
+           * NOTHING: default alliance, default chassis, default start pose, straight into a
+           * match. Same window for a seat that just dropped, whose ready `detach` clears.
+           *
+           * The gate is the client's own, stated authoritatively — so it refuses nothing an
+           * up-to-date lobby would have let you press, and it is the HOST's own seat that is
+           * exempt: a solo record run (`RecordRun`) opens its room and sends `start` straight
+           * off the first roster without ever readying, on every build in the fleet. Bots are
+           * not in `this.clients` and a spectator never was.
+           */
+          const unready = [...this.clients.values()].some((o) => o.id !== this.hostId && !o.player.ready);
+          if (unready) {
+            c.send({ t: 'error', message: 'Everyone has to be ready before the match can start.' });
+            break;
+          }
           if (this.physicsReadyForRoom()) this.startMatch();
           else c.send({ t: 'error', message: 'Server is starting up - try again in a moment.' });
         }

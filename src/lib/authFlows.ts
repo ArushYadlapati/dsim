@@ -43,6 +43,7 @@
  * `authClient` is already in the main chunk (App, Account and AuthPanel import it
  * statically), so this resolves to the module that is loaded either way.
  */
+import { inDiscordActivity } from '../net/discordActivity';
 import { SITE_URL } from '../seo';
 
 // ---------------------------------------------------------------- the SDK ---
@@ -124,10 +125,44 @@ const MESSAGES: Record<AuthFlowFailure, string> = {
   unknown: 'Couldn’t complete that. Try again in a moment.',
 };
 
+/**
+ * The site's bare host, for copy that tells somebody where to go ('playdsim.com').
+ *
+ * Derived from `SITE_URL` rather than typed out, so a domain change moves ONE constant —
+ * and exported because the three embed surfaces that name it (`Account`, `FriendsPanel`
+ * and the sentence below) would otherwise each carry their own literal. It is deliberately
+ * NOT a link: `target="_blank"` is unreliable inside Discord's frame, and an anchor without
+ * a target would navigate the activity away from itself.
+ */
+export const SITE_HOST = SITE_URL.replace(/^https?:\/\/(?:www\.)?/, '');
+
+/**
+ * ⚠️ "CHECK YOUR CONNECTION" IS A LIE INSIDE A DISCORD ACTIVITY.
+ *
+ * The embed is a cross-origin iframe whose CSP admits only Discord's own URL mappings, and
+ * the auth host is not one of them — so the sign-in fetch is refused by the BROWSER, before
+ * any network is involved, and rejects with a bare `TypeError` carrying no status and no
+ * code. That is exactly the shape this module reads as "the transport failed", which is how
+ * a player sitting in a working voice call, on a page showing a live player count, was told
+ * to check their connection and try again. Retrying cannot work: signing in there is not
+ * slow or flaky, it is impossible.
+ *
+ * The replacement states what is TRUE and what to do instead, and claims no cause it cannot
+ * observe — `inDiscordActivity()` says where we are, never why a particular fetch failed.
+ * Outside the embed the original sentence is right and is kept.
+ */
+export function authUnreachableMessage(): string {
+  return inDiscordActivity()
+    ? `Accounts aren’t available inside Discord. Open ${SITE_HOST} in a browser to sign in.`
+    : MESSAGES.network;
+}
+
 const fail = (reason: AuthFlowFailure): AuthFlowResult => ({
   ok: false,
   reason,
-  message: MESSAGES[reason],
+  // the REASON is unchanged (the UI switches on it, never on the string) — only the
+  // sentence differs, because in the embed that failure has a different remedy
+  message: reason === 'network' ? authUnreachableMessage() : MESSAGES[reason],
 });
 
 /**
@@ -211,8 +246,9 @@ export function thrownAsSdkError(e: unknown): SdkError | null {
  */
 export function describeAuthError(e: unknown, fallback: string): string {
   const err = thrownAsSdkError(e);
-  // no status and no code ⇒ the transport failed, the same judgement `run` makes
-  if (!err) return MESSAGES.network;
+  // no status and no code ⇒ the transport failed, the same judgement `run` makes — and
+  // inside the embed that is the CSP refusing the host, which has its own sentence
+  if (!err) return authUnreachableMessage();
   const code = (err.code ?? '').toUpperCase();
   const status = err.status ?? 0;
   // ORDER, as in `classifySdkError`: `over_email_send_rate_limit` contains EMAIL.
@@ -223,7 +259,7 @@ export function describeAuthError(e: unknown, fallback: string): string {
   if (code.includes('EMAIL') && !code.includes('VERIF') && !code.includes('EXIST')) {
     return MESSAGES['invalid-email'];
   }
-  if (status >= 500 || status === 0) return MESSAGES.network;
+  if (status >= 500 || status === 0) return authUnreachableMessage();
   // ⚠️ AN ALREADY-TAKEN ADDRESS IS A 400 TOO, and it is not a wrong password — so it takes
   // the caller's sentence rather than the credential one. It gets no sentence of its own
   // here on purpose: "an account already uses that email" is the enumeration disclosure the

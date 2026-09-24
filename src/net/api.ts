@@ -283,10 +283,17 @@ export function fetchLiveRooms(): Promise<{ region: string; rooms: LiveRoom[] }>
 /** one open, joinable lobby in a Discord Activity group (see `fetchLobbies`) */
 export interface DiscordLobby {
   code: string;
+  /** SEATS taken, bots included — a bot is a seat, and the browser must not offer one that
+   * is not there. Older servers send sockets only; the difference is a bot-filled room. */
   players: number;
   capacity: number;
   kind: 'versus' | 'record';
   game: GameId;
+  /** can a new driver actually walk in? Absent from an older server ⇒ treat as true, which
+   * is what that server meant: it only ever listed joinable rooms. */
+  joinable?: boolean;
+  /** why not, when it is not. Absent ⇒ unknown, render it as a plain lobby. */
+  state?: 'lobby' | 'strategy' | 'match' | 'full';
 }
 
 /**
@@ -295,7 +302,7 @@ export interface DiscordLobby {
  * Empty for an unknown/empty group — this never lists the global custom-room set.
  * In-activity `getJson` rides the same `/gs` proxy origin as every other read.
  */
-export async function fetchLobbies(group: string): Promise<DiscordLobby[]> {
+export async function fetchLobbies(group: string): Promise<DiscordLobby[] | null> {
   if (!group) return [];
   try {
     // PIN to the fixed activity region (same as the socket): the read is anycast,
@@ -305,7 +312,13 @@ export async function fetchLobbies(group: string): Promise<DiscordLobby[]> {
     const r = await getJson<{ lobbies: DiscordLobby[] }>(`/api/lobbies?${q}`);
     return r.lobbies ?? [];
   } catch {
-    return []; // unreachable server / no lobbies read the same to the browser
+    /**
+     * ⚠️ NULL, NOT `[]`. A failed read and an empty activity are different facts, and
+     * returning `[]` for both let one dropped poll overwrite a good list with "nobody has
+     * opened the main lobby yet" — the browser had no error branch and no stale retention,
+     * unlike every other poller in this app. The caller keeps its last good list.
+     */
+    return null;
   }
 }
 

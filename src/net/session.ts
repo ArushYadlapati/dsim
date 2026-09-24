@@ -112,6 +112,9 @@ export interface NetSession {
    * persist an "active game" record so the player can REJOIN this same match later */
   readonly room?: string;
   readonly clientId?: string;
+  /** the SEAT'S SECRET — what a rejoin/abandon is actually checked against. Persisted with
+   * the active-game record so a reclaim survives a reload. */
+  readonly seatToken?: string;
   readonly region?: string;
   /** the match seed the world was built from (updated on a host restart) */
   seed: number;

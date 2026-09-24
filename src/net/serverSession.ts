@@ -98,6 +98,10 @@ export class ServerSession implements NetSession {
   private restartCb: (() => void) | null = null;
   /** the room went back to its lobby — see `onLobby` */
   private lobbyCb: ((clientId: string) => void) | null = null;
+  /** the seat's secret (see protocol.ts `welcome`). Carried in, and refreshed by every
+   * `welcome` the server sends — including the one a reattach re-sends — so a reclaimed
+   * seat always holds a working credential. */
+  seatToken = '';
   /** fired once per `matchResult` — see `onMatchResult` */
   private resultCb: ((info: MatchResultInfo) => void) | null = null;
   private connected = true;
@@ -178,7 +182,9 @@ export class ServerSession implements NetSession {
     readonly clientId: string,
     readonly room: string,
     spectator = false,
+    seatToken = '',
   ) {
+    this.seatToken = seatToken;
     this.spectator = spectator;
     this.game = start.game ?? 'decode';
     this.physics = start.physics ?? '2d';
@@ -221,7 +227,9 @@ export class ServerSession implements NetSession {
         this.failed = false;
         // re-advertise this build's capabilities: a reclaim arrives on a FRESH socket, and the
         // server gates a `'3d'`-physics room at every door it has.
-        transport.send(encodeMsg({ t: 'rejoin', room: this.room, clientId: this.clientId, caps: CLIENT_CAPS }));
+        transport.send(
+          encodeMsg({ t: 'rejoin', room: this.room, clientId: this.clientId, caps: CLIENT_CAPS, seatToken: this.seatToken }),
+        );
       });
     }
     transport.onFail(() => {
@@ -424,7 +432,9 @@ export class ServerSession implements NetSession {
    */
   abandonSlot(): void {
     if (!this.room || !this.clientId) return;
-    this.transport.send(encodeMsg({ t: 'abandon', room: this.room, clientId: this.clientId }));
+    this.transport.send(
+      encodeMsg({ t: 'abandon', room: this.room, clientId: this.clientId, seatToken: this.seatToken }),
+    );
   }
 
   /** host only: ask the server to send this finished room back to its lobby. */
@@ -567,6 +577,9 @@ export class ServerSession implements NetSession {
       // (`Room.passCrown`) — so without this the player who INHERITED the room would be
       // shown no host controls and the room would look stuck to everyone in it.
       this.host = m.hostId !== '' && m.hostId === this.clientId;
+    } else if (m.t === 'welcome') {
+      // a reattach re-sends this; keep the seat credential current (see the field note)
+      if (m.seatToken) this.seatToken = m.seatToken;
     } else if (m.t === 'lobby') {
       /**
        * THE ROOM IS A LOBBY AGAIN. The match this session was built around no longer

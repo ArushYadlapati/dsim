@@ -12,7 +12,7 @@ import { initPhysics } from '../src/sim/physicsEngine';
 import { initPhysics3d } from '../src/games/biobuzz/sim3d/engine';
 import { migrate } from './db/migrate';
 import { persistMatch, persistDodges, persistBehaviour } from './persist';
-import { routeTarget } from './routing';
+import { legalRegion, routeTarget } from './routing';
 import { SERVER_CHANNEL, isAlphaServer } from './channel';
 import { LAN_MODE, enforceLanPolicy } from './lanMode';
 import { LAN_SIGNALLING, LAN_UPLOADS } from './lanUploads';
@@ -27,7 +27,7 @@ import { serveClient, servingClient } from './static';
 import { Matchmaker } from './matchmaking';
 import { MATCHMAKER_REGION } from './regions';
 import { BALANCE_VERSION } from '../src/config';
-import { periodLabel } from '../src/seasons';
+import { periodLabel, seasonFor } from '../src/seasons';
 import { coerceGameId, isGameId, serverPhysics } from '../src/games/types';
 import { simModuleFor } from '../src/games/sim';
 import { runStarSweep, warnNoToken, STAR_SWEEP_MS } from './stargazers';
@@ -920,7 +920,10 @@ const httpServer = createServer((req, res) => {
     // answers with its own x-region. Locally (REGION='') we just answer here.
     const want = new URL(req.url, 'http://x').searchParams.get('region');
     const already = !!req.headers['fly-replay-src'];
-    if (REGION && want && want !== REGION && !already) {
+    // ⚠️ VALIDATED, because this value reaches a `fly-replay` header — the same guard
+    // `/api/lobbies` carries, and the one this handler was flagged for missing. An unvalidated
+    // CRLF here throws inside the handler and leaves the socket hanging with no response.
+    if (REGION && want && legalRegion(want) && want !== REGION && !already) {
       res.writeHead(200, {
         'fly-replay': `region=${want}`,
         'access-control-allow-origin': '*',
@@ -2222,12 +2225,9 @@ const httpServer = createServer((req, res) => {
       return;
     }
     const group = (u.searchParams.get('group') ?? '').replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64);
-    const lobbies = group
-      ? [...rooms.values()]
-          .filter((r) => r.group === group)
-          .map((r) => r.lobbySummary())
-          .filter((s): s is NonNullable<ReturnType<Room['lobbySummary']>> => s !== null)
-      : [];
+    // every room in the group, joinable or not — the browser needs to SAY a match is running,
+    // not silently omit the room and let the client call it non-existent (see `lobbySummary`)
+    const lobbies = group ? [...rooms.values()].filter((r) => r.group === group).map((r) => r.lobbySummary()) : [];
     res.writeHead(200, {
       'content-type': 'application/json',
       'cache-control': 'no-store',
@@ -2832,6 +2832,15 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       // downstream may treat it as the room's answer.
       physics: msg.config?.physics === '3d' ? '3d' : undefined,
     };
+    /**
+     * READ BEFORE THE CAPACITY REFUSAL, not just before the group guard below, because the
+     * refusal's SENTENCE depends on it: "pick a different region" is an instruction only a
+     * client with a region picker can follow, and a grouped joiner is a Discord participant
+     * who has none (`parseServers()` collapses to one entry in the embed and `DISCORD_REGION`
+     * is a constant, so every activity in the world is pinned to one machine). The guard's own
+     * reasoning is in the comment below; this is only its value moved earlier.
+     */
+    const wantGroup = typeof msg.group === 'string' ? msg.group.replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64) : '';
     if (!r && MAX_ROOMS > 0 && rooms.size >= MAX_ROOMS) {
       // AT CAPACITY. Refuse to HOST anything new; joining a room that already exists
       // here is always allowed, because that player's partner is already on this
@@ -2840,11 +2849,19 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       // `code` lets a new client offer another region — the same room code is joinable
       // elsewhere, so this is a "try over there", not a dead end. `message` stays
       // self-sufficient for every client that predates the field.
+      //
+      // ⚠️ AND IT IS A DEAD END FOR A GROUPED JOINER, so it must not say otherwise. There is
+      // one region in the embed and the activity's room code is DETERMINISTIC, so if the first
+      // participant to open an instance's lobby is refused, nobody in that voice channel can
+      // reach a room at all. Waiting is the only move they have; the sentence says so.
       console.warn(`[admit] refused room ${code}: at cap (${rooms.size}/${MAX_ROOMS})`);
       send({
         t: 'error',
         code: 'region_full',
-        message: 'This region is busy. Pick a different region and try again.',
+        message:
+          wantGroup ?
+            'Every server for the Discord activity is busy right now. Try again in a minute.'
+          : 'This region is busy. Pick a different region and try again.',
       });
       return;
     }
@@ -2868,8 +2885,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
      * ⚠️ Only for rooms that HAVE a group. Every web, LAN and matchmade room has `group === ''`
      * and is completely unaffected, which is why this is not gated on `caps`: an older client
      * has no `group` to send and could never have been in an activity room in the first place.
+     *
+     * (`wantGroup` itself is read above the capacity refusal — see the note there.)
      */
-    const wantGroup = typeof msg.group === 'string' ? msg.group.replace(/[^A-Za-z0-9._:-]/g, '').slice(0, 64) : '';
     if (r && r.group && r.group !== wantGroup) {
       console.warn(`[admit] refused room ${code}: grouped room, group mismatch`);
       send({ t: 'error', message: 'That code belongs to a Discord activity. Open it from the activity to join.' });
@@ -2931,11 +2949,31 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     // IS the joiner's.)
     if (!created) {
       const want = cfg;
-      if (
-        r.config.kind !== want.kind ||
-        r.config.record !== want.record ||
-        (r.config.game ?? 'decode') !== (want.game ?? 'decode')
-      ) {
+      const theirGame = r.config.game ?? 'decode';
+      const ourGame = want.game ?? 'decode';
+      /**
+       * ⚠️ A SEASON MISMATCH IS NOT A "GAME MODE" MISMATCH, AND SAYING SO NAMED NOTHING.
+       *
+       * One sentence used to answer both halves of this guard — a versus code typed into the
+       * duo-record box, and a BIOBUZZ client arriving at a DECODE room — and for the second it
+       * was unactionable in every word: it named neither season, carried no code, and landed
+       * on a screen with no season control. In the Discord activity that is a dead end for the
+       * whole voice channel, because the room code is deterministic: retrying in place fails
+       * identically, forever, since the client's own season is what is wrong.
+       *
+       * So the season case gets its own sentence, which NAMES BOTH SEASONS, and its own code
+       * so a client can offer the switch. `message` stays self-sufficient for every build that
+       * predates the code — it says what to change and what to change it to.
+       */
+      if (theirGame !== ourGame && r.config.kind === want.kind && r.config.record === want.record) {
+        send({
+          t: 'error',
+          code: 'game_mismatch',
+          message: `That room is playing ${seasonFor(theirGame).name}, and you are set to ${seasonFor(ourGame).name}. Switch to ${seasonFor(theirGame).name} and try again.`,
+        });
+        return; // unreachable for a just-created room — its config IS the joiner's
+      }
+      if (r.config.kind !== want.kind || r.config.record !== want.record || theirGame !== ourGame) {
         send({ t: 'error', message: 'That code is for a different game mode.' });
         return; // unreachable for a just-created room — its config IS the joiner's
       }
@@ -3037,7 +3075,9 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     if (user) {
       const seat = r.seatFor(user.userId);
       if (seat) {
-        const nc = r.reattach(seat, send, sendRaw, backlog);
+        // TRUSTED: `seatFor` matched a VERIFIED user id off the signed auth token, which
+        // proves more than the seat secret does. See the note in `Room.reattach`.
+        const nc = r.reattach(seat, send, sendRaw, backlog, undefined, true);
         if (nc !== null) {
           liveSockets.delete(id);
           id = seat; // adopt the reclaimed identity on this socket
@@ -3054,7 +3094,35 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
       }
     }
     if (!r.canJoin()) {
-      send({ t: 'error', message: 'Room is full or a match is already in progress.' });
+      /**
+       * ⚠️ "FULL OR MID-MATCH" IS TWO DIFFERENT ANSWERS, AND ONLY ONE OF THEM ENDS.
+       *
+       * One sentence covered both, so a client could do nothing with either. A full room is a
+       * standing state somebody has to leave; a room mid-match (or in its strategy window) is
+       * a room that WILL open again, on its own, in a couple of minutes — and in the Discord
+       * activity that difference is the whole thing. A participant whose phone backgrounded
+       * the iframe past `RECONNECT_GRACE_MS` (45 s) has no seat to reclaim any more, the
+       * account-based reclaim above is `if (user)`-gated and nobody in an embed is signed in,
+       * and the activity's room code is DETERMINISTIC — there is no other room to go to. The
+       * generic sentence left them tapping JOIN and being refused with no idea it would ever
+       * stop, until a host they may not have pressed "Back to lobby".
+       *
+       * `lobbySummary()` is the room's own answer to "what state are you in" and is already
+       * what `GET /api/lobbies` reports, so the refusal and the lobby browser cannot drift.
+       *
+       * The code is what the activity retries on; `message` stays self-sufficient for every
+       * build that predates it, as `region_full` and `active_game` already do.
+       */
+      const state = r.lobbySummary().state;
+      const busy = state === 'match' || state === 'strategy';
+      send({
+        t: 'error',
+        ...(busy ? { code: 'in_progress' as const } : {}),
+        message:
+          busy ?
+            'A match is already running in this room. You can join when it finishes.'
+          : 'This room is full.',
+      });
       abandon(); // don't leave an empty just-created room behind
       return;
     }
@@ -3308,7 +3376,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
           return;
         }
         // hand over EVERY sender, not just `send` — see the note in `Room.reattach`
-        const nc = r ? r.reattach(msg.clientId, send, sendRaw, backlog) : null;
+        const nc = r ? r.reattach(msg.clientId, send, sendRaw, backlog, msg.seatToken) : null;
         if (r && nc !== null) {
           liveSockets.delete(id);
           id = msg.clientId; // adopt the reclaimed identity on this socket
@@ -3324,12 +3392,18 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
          * already left as far as it is concerned, and the only thing left is to stop the
          * server holding a lock on its behalf for the rest of the reconnect grace.
          *
-         * Not gated on `room` being null, and not on an auth token: the client id is the
-         * secret, the same one `rejoin` accepts as proof, and a wrong one simply finds no
-         * slot. Answering nothing at all is what keeps it from being a probe for which
-         * rooms and which client ids exist.
+         * ⚠️ THE CLIENT ID WAS NEVER A SECRET, AND THIS COMMENT USED TO SAY IT WAS.
+         *
+         * `broadcastRoster` puts every driver's id on the wire, `broadcast` fans it out to
+         * spectators as well, and `spectate` needs no account and no invitation — so anyone
+         * who could watch a match could read the ids out of the first roster frame and boot
+         * its drivers one frame at a time. The credential is now the SEAT TOKEN, which is
+         * sent only to its owner and appears in no broadcast (`Room.seatOwner`).
+         *
+         * Still no reply, for the original reason: answering nothing keeps it from being a
+         * probe for which rooms and which seats exist.
          */
-        rooms.get(msg.room.toLowerCase())?.abandonSlot(msg.clientId);
+        rooms.get(msg.room.toLowerCase())?.abandonSlot(msg.clientId, msg.seatToken);
       } else if (msg.t === 'reportScore') {
         /**
          * A MISSCORE claim from this room. No target to resolve — see the protocol note —

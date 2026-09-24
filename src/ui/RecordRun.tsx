@@ -127,7 +127,7 @@ export function RecordRun({
       lobby.on('matchStart', (m: MatchStart) => {
         startedRef.current = true;
         if (timer) window.clearTimeout(timer);
-        onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room));
+        onStart(new ServerSession(transport, lobby.isHost(), m, lobby.clientId, room, false, lobby.seatToken));
       });
       lobby.on('error', (msg, code) => {
         if (/starting up/i.test(msg)) return; // startup ⇒ the retry loop handles it

@@ -5,7 +5,8 @@ import { StarReward } from './StarReward';
 import type { GameSettings } from '../game';
 import { defaultSettings } from '../settings';
 import { authEnabled, authClient } from '../lib/authClient';
-import { requestPasswordReset } from '../lib/authFlows';
+import { requestPasswordReset, SITE_HOST } from '../lib/authFlows';
+import { inDiscordActivity } from '../net/discordActivity';
 import { multiServer, selectedServerId } from '../net/env';
 import {
   deleteMyAccount,
@@ -50,16 +51,32 @@ export function Account({
   /** the Appearance | Account strip */
   onTab?: (t: ProfileTab) => void;
 }) {
+  /**
+   * ⚠️ EVERY ACCOUNT CONTROL ON THIS PAGE IS OFF INSIDE A DISCORD ACTIVITY. The embed is a
+   * cross-origin iframe whose CSP admits only Discord's own URL mappings; the auth host is
+   * not one, so the participant is ALWAYS signed out and no panel here can do its job — the
+   * signed-out `Identity` offers a sign-in that cannot succeed, and the rest render nothing
+   * while each still mounts a session hook that fires a request the frame refuses.
+   *
+   * The PAGE stays, and says so, rather than 404-ing or vanishing: the rail item is gone
+   * (see `NavRail`), but somebody who has an account on the website and went looking for it
+   * is owed an answer, and "Reset all settings" below is local-only and works here. That is
+   * the whole judgement — remove what cannot work, explain it, keep what can.
+   */
+  const inActivity = inDiscordActivity();
+  const showAuth = authEnabled && !inActivity;
   return (
     <>
       <h1 className="ds-h1">Profile</h1>
-      <ProfileTabs active="account" onPick={onTab} />
+      {/* the strip's other page is Appearance — name, title, badges: account-held, every one
+          of them — so in the embed it is a second door onto the same dead end */}
+      {!inActivity && <ProfileTabs active="account" onPick={onTab} />}
 
       {/* ABOVE the identity panel, because it is about the address that panel shows,
           and because this is the page the ranked refusal sends people to. */}
-      {authEnabled && <VerifyEmailBanner />}
+      {showAuth && <VerifyEmailBanner />}
 
-      {authEnabled ? <Identity /> : <IdentityDisabled />}
+      {inActivity ? <AccountInDiscord /> : authEnabled ? <Identity /> : <IdentityDisabled />}
 
       {multiServer() && (
         // `ds-panel-open` drops the panel's `overflow: hidden` so the region
@@ -83,14 +100,16 @@ export function Account({
           because `LinkedAccounts` strips `?link` from the URL once it has read it, and it has to
           READ first because this is the thing somebody is coming back to see. The reward itself
           arrives through the claim dialog; this panel only says what to do when there is none. */}
-      {authEnabled && <StarReward />}
-      {authEnabled && <LinkedAccounts />}
-      {authEnabled && <ReplayPrivacy />}
+      {showAuth && <StarReward />}
+      {showAuth && <LinkedAccounts />}
+      {showAuth && <ReplayPrivacy />}
 
-      {authEnabled && SUPPORT_ENABLED && <Membership onDonate={onDonate} />}
+      {showAuth && SUPPORT_ENABLED && <Membership onDonate={onDonate} />}
 
       {/* THE TWO IRREVERSIBLE ACTIONS, grouped under one heading at the foot of the page
-          (design review 08-15) rather than as two more peers of Server and Privacy */}
+          (design review 08-15) rather than as two more peers of Server and Privacy.
+          Reset is LOCAL — it rewrites this device's settings blob and needs no account —
+          so it is the one thing on this page that still works inside a Discord activity. */}
       <h2 className="ds-h2 ds-danger-head">Danger zone</h2>
       <div className="ds-panel">
         <div className="ds-panel-h">
@@ -117,8 +136,38 @@ export function Account({
         </div>
       </div>
 
-      {authEnabled && <DeleteAccount />}
+      {showAuth && <DeleteAccount />}
     </>
+  );
+}
+
+/**
+ * THE ACCOUNT PANEL INSIDE A DISCORD ACTIVITY — an explanation, not a sign-in.
+ *
+ * Same shape as `AuthDisabled` (the panel a build with no auth shows) on purpose: this is
+ * not a third state, it is the same "there is no account here" answer arrived at for a
+ * different reason, and reusing the shape keeps one look for one situation.
+ *
+ * The copy names the FRAME, never the player's connection: the sign-in fetch is refused by
+ * the browser before a packet leaves, so "check your connection and try again" — the
+ * sentence that used to arrive here through `describeAuthError` — was advice that could
+ * never work. It also does not guess at anything it cannot see; it states where accounts
+ * do work and leaves the player to go there. A plain address rather than a link: an anchor
+ * with no target would navigate the activity away from itself, and `target="_blank"` is
+ * unreliable inside Discord's frame.
+ */
+function AccountInDiscord() {
+  return (
+    <div className="ds-panel">
+      <div className="ds-panel-h">
+        <span className="ds-panel-title">Account</span>
+      </div>
+      <div className="ds-empty">
+        <div className="big">Accounts aren’t available inside Discord</div>
+        Discord’s activity frame blocks the sign-in service, so records, ranked rating and
+        friends aren’t saved here. Open {SITE_HOST} in a browser to use your account.
+      </div>
+    </div>
   );
 }
 

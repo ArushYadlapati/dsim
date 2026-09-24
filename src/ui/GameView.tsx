@@ -878,6 +878,21 @@ export function GameView({
           {hud.countdown > 3 ? 'MATCH BEGINS IN' : hud.countdown}
         </div>
       )}
+      {/* THE KEYS ARE GOING SOMEWHERE ELSE, AND NOTHING USED TO SAY SO.
+          A non-host never clicks into a match — the session is built straight off the server's
+          `matchStart` — so in a Discord Activity a driver who tapped the chat box beside the
+          iframe to type "ready" is pulled into a live match with the focus still over there.
+          The sim keeps stepping, W goes to Discord, and the robot sits still.
+
+          Not on a COARSE pointer: a phone has no keyboard to lose and nothing to click, and
+          the touch pad's own presses reach the canvas whatever the window thinks. Not in
+          `post` either — the results overlay is up, it is interactive, and the match is over,
+          so there is nothing left to drive. */}
+      {hud && !hud.windowFocused && !coarsePointer && hud.phase !== 'post' && (
+        <div className="focus-hint">
+          Your keystrokes are going somewhere else. Click the field to drive.
+        </div>
+      )}
       {hud?.phase === 'post' && (
         <Results
           hud={hud}
