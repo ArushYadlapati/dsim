@@ -850,6 +850,15 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     9.634 in level, 8.466 at 57.6° and 7.554 at the 80° cap, and it retreats along the heading as it
     drops. Same "one predictor, two drawings" rule the shot path follows, and the RENDER lane proves
     the drawn lip sits on the sim's muzzle at every pitch rather than assuming it.
+  - ⚠️ **THE LOCAL ROBOT'S PREDICTED CHASSIS HAS AN OPEN MOUTH** (owner, 2026-09-24: full hopper,
+    drive into a row of POLLEN on the wall, "my whole robot jumps upwards"). The one `robotExtents`
+    cuboid put a solid face where the authority's pocket is, the wall-pinned row could not move, and
+    the solver lifted the predicted chassis over it: 2.1–2.2 in at a 20-tick lead while the
+    authority's z stayed 0. `fitChassis` now builds the authority's frame, mechanisms, ARMS and
+    pocket filler for the local robot, with the lintel folded into the filler (`predictChassisShapes`).
+    The arms are not optional: without them the prediction drove 1.1 in deeper into a wall row
+    every window. Cost in the PREDICT lane's push scene: 3 ms → 4 ms against the 8 ms budget (the
+    full compound was 5). Remote robots keep the cuboid. Pinned by the PREDICT lane's wall-row check.
   - ⚠️ **A SEATED ELEMENT IS KINEMATIC IN THE FULL PREDICTOR — DYNAMIC PUT IT IN FREE FALL.**
     The near set is every non-`held`/`stock` ball within `PREDICT_ELEMENT_RADIUS`, and it used to
     build all of them DYNAMIC. An `element` tag means the AUTHORITY is holding it (latched in a
