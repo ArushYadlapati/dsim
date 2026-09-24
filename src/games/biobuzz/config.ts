@@ -4013,6 +4013,19 @@ export const BB3_HIVE_DAMPING = 4.466;
 export const PREDICT_ELEMENT_RADIUS = 36;
 
 /**
+ * An element already in the FULL prediction world STAYS in it past `PREDICT_ELEMENT_RADIUS` while
+ * it is moving faster than this (in/s).
+ *
+ * The client draws a predicted element at the prediction's clock and every other element at the
+ * interpolation clock, and the two are `INTERP_DELAY_TICKS` plus the prediction lead apart. For a
+ * ball at rest that gap is nothing; for a shot at 200 in/s it is 30–40 in, so a shot that left the
+ * radius mid-flight jumped back that far the frame it changed clocks (owner report 2026-09-24:
+ * "the balls on the field keep teleporting"). Kept until it slows below this, the switch happens
+ * where the two clocks agree to within about 2 in, which the draw eases in.
+ */
+export const PREDICT_ELEMENT_KEEP_SPEED = 12;
+
+/**
  * The budget one FULL reconcile of 40 ticks may cost (ms) — plan §3.10 and §5's Auto decision.
  *
  * It is a DECISION THRESHOLD, not an assertion: `probeFullReconcileMs` times one real reconcile

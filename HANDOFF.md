@@ -1,4 +1,15 @@
-# HANDOFF — 2026-09-23g (3D HUD sponsor logo follows the scrim; records Watch column)
+# HANDOFF — 2026-09-24 (3D multiplayer: balls teleporting, shots flashing at the intake spot)
+
+**State: green.** `npm test` 5030 checks all pass. `build`, `server:check`, `docaudit` and `bundleaudit` pass. Client-only, so no server deploy is needed.
+
+Two owner reports, both from the networked 3D draw path (`displayWorld` / `drawPredictedElements` in `src/game.ts`):
+- **"The balls on the field keep teleporting."** Balls near your robot are drawn on the prediction clock and all others on the interpolation clock, ~10 ticks apart. Every switch between the two was snapped once it passed 6 in: a shot leaving `PREDICT_ELEMENT_RADIUS`, a shot landing in a hive (re-tagged `element`), a shot entering the radius. Fixes: the Full predictor keeps a ball past the radius while it moves faster than `PREDICT_ELEMENT_KEEP_SPEED` (12 in/s, `config.ts`). A ball that lands while drawn predicted stays predicted. Switches ease in up to `BALL_SWITCH_MAX` (48 in), and a single correction now snaps only past `BALL_SMOOTH_MAX` (6 → 12 in).
+- **"When I shoot, the ball sometimes appears for a split second where I intaked it."** The newest snapshot said `flight`, but both snapshots the render clock sat between still said `held`, and the lerp drew the held pose. Now the ball stays hidden (it keeps the held state from the snapshot the render clock is on) until the render clock reaches the launch. Your own shot is drawn from the predictor at once.
+- Measured with `scratch/teleprobe.ts` (not committed), a real `Room`, a 2v2 of scripted drivers, two seeds, 3 min each. Pops over 6 in per run went from 40–45 to 3–7 at 66–130 ms RTT, and from 46 to 6 at 200 ms. "Ghost" frames, a visible ball more than 6 in from anywhere the server had it loose in the last 20 ticks, went from ~120 to 2–17.
+- Checks: `scripts/smoke-biobuzz/net3d.ts` §14 (source rules, release) and §16 (the predictor keeps a moving ball, drops it at rest, and never adds one from outside the radius).
+- **Not verified in a live browser match.** The probe copies the client's draw logic rather than running `GameController` itself.
+
+# 2026-09-23g (3D HUD sponsor logo follows the scrim; records Watch column)
 
 **State: green, pushed to `alpha`.** `build`, `uiaudit`, `contrast`, `docaudit` pass; `npm test` fails
 only the known BIOBUZZ perf flakes (2v2 ROOM tick ratio 1.23–1.25 vs 1.2 under load; flips between runs).

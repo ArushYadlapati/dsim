@@ -1397,8 +1397,19 @@ export function net3dChecks(check: Check): void {
     const game = readFileSync('src/game.ts', 'utf8');
     check(
       'retag: the SNAP is gated on a CARRIED kind, not on any kind change',
-      /if \(p\.kind !== q\.kind && \(isCarried\(p\.kind\) \|\| isCarried\(q\.kind\)\)\)/.test(game),
+      /if \(p\.kind !== q\.kind && isCarried\(p\.kind\)\)/.test(game),
       'the kind-change snap is not where it was',
+    );
+    // owner report 2026-09-24: "when i shoot the balls, they sometimes appear for a split second
+    // where i intaked them". The newest snapshot said loose, the bracketing one still said held,
+    // and the lerp drew the held pose. It stays hidden with that snapshot's state instead.
+    check(
+      'release: a ball the render clock still has HELD is drawn held (hidden), not lerped from the hopper pose',
+      /if \(isCarried\(q\.kind\)\) \{\s*released\.add\(ball\.id\);\s*return predicted\.has\(ball\.id\) \? ball : \{ \.\.\.ball, pos: \{ x: q\.x, y: q\.y \}, z: q\.z, state: q\.state \};/.test(game),
+    );
+    check(
+      'release: ...and a released ball never eases in from where it was last drawn',
+      /const prev = released\.has\(ball\.id\) \? undefined : this\.ballDrawn\.get\(ball\.id\);/.test(game),
     );
     check(
       'retag: ...and `isCarried` names exactly the two kinds that are CARRIED',
@@ -1415,8 +1426,8 @@ export function net3dChecks(check: Check): void {
         (game.match(/this\.clearElementSmoothing\(\)/g) ?? []).length >= 2,
     );
     check(
-      'balls: ...and only `ground` and `flight` are drawn from it — never one seated in a structure',
-      /const use = !!e && \(kind === 'ground' \|\| kind === 'flight'\);/.test(game),
+      'balls: ...`ground`/`flight` are drawn from it, and a seated `element` only if it LANDED predicted',
+      /const use =\s*!!e && \(kind === 'ground' \|\| kind === 'flight' \|\| \(kind === 'element' && this\.ballPredicted\.has\(ball\.id\)\)\);/.test(game),
     );
     check(
       'balls: nothing about this touches `this.world` (it is cosmetic, like `localSmooth`)',
@@ -1486,6 +1497,58 @@ export function net3dChecks(check: Check): void {
           `(authoritative z itself moved ${authMoved.toFixed(4)}in)`,
       );
     }
+  }
+
+  /**
+   * 16. A MOVING ELEMENT STAYS IN THE PREDICTION PAST THE RADIUS (owner report 2026-09-24: "the
+   * balls on the field keep teleporting"). The client draws a predicted element on the
+   * prediction's clock and every other one ~10 ticks behind it, so a shot dropped from the near
+   * set mid-flight jumped back 14–25 in the frame it changed clocks. Each negative is paired with
+   * its positive: kept while moving, dropped once at rest, and never ADDED from outside.
+   */
+  {
+    const w = mkWorld3d('match', 4243);
+    const me = w.robots[0];
+    const loose = w.balls.filter((b) => b.state.kind === 'ground');
+    const [shot, stranger] = loose;
+    const far = { x: me.pos.x + PREDICT_ELEMENT_RADIUS + 30, y: me.pos.y };
+    const place = (b: Artifact, x: number, y: number, vx: number): void => {
+      b.pos.x = x;
+      b.pos.y = y;
+      b.vel.x = vx;
+      b.vel.y = 0;
+      b.vz = 0;
+      b.z = 0;
+    };
+    // everything else well out of the way, at rest
+    for (const b of loose) if (b !== shot && b !== stranger) place(b, me.pos.x - 200, me.pos.y, 0);
+    place(shot, me.pos.x + 12, me.pos.y, 150);
+    place(stranger, far.x, far.y + 10, 150);
+    const p = createFullPredictor(w, me.id);
+    const has = (id: number): boolean => (p.elements() ?? []).some((e) => e.id === id);
+    const inAtStart = has(shot.id);
+    const strangerAtStart = has(stranger.id);
+    place(shot, far.x, far.y, 150);
+    p.reset(w, w.tick);
+    const keptMoving = has(shot.id);
+    const strangerStill = has(stranger.id);
+    place(shot, far.x, far.y, 0);
+    p.reset(w, w.tick);
+    const droppedAtRest = !has(shot.id);
+    p.dispose();
+    check(
+      'predict: a moving element in the near set STAYS in it past the radius',
+      inAtStart && keptMoving,
+      `in at start ${inAtStart}, kept at ${(PREDICT_ELEMENT_RADIUS + 30).toFixed(0)} in moving ${keptMoving}`,
+    );
+    check(
+      'predict: ...is dropped once it comes to rest out there',
+      keptMoving && droppedAtRest,
+    );
+    check(
+      'predict: ...and a moving element that was never in the set is not added from outside it',
+      !strangerAtStart && !strangerStill,
+    );
   }
 }
 

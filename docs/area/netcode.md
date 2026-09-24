@@ -60,13 +60,26 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     never decays, and each element is pinned a tick behind for the rest of the match — measured,
     that put the artifact straight back (p95 8.1 in against 0.99). A ball crossing
     `PREDICT_ELEMENT_RADIUS`, or re-tagged into a structure, is the one discontinuity the
-    reconcile cannot see, so `displayWorld` absorbs that switch whole. Past `BALL_SMOOTH_MAX`
-    (6 in — twice a POLLEN's diameter) the offset is dropped and the element snaps, which is what
-    should happen when a capture or a launch has genuinely moved it.
-  - **ONLY `ground` AND `flight` ARE DRAWN FROM THE PREDICTION.** An `element` — seated in a
-    FLOWER's bore or latched in a HIVE cell — stays interpolated: its position there is the
-    authority's derived structure, not a free body the local chassis is about to hit, and a stack
-    the prediction let settle differently would be a new artifact in place of the fixed one.
+    reconcile cannot see, so `displayWorld` absorbs that switch whole, up to `BALL_SWITCH_MAX`
+    (48 in). A single reconcile correction past `BALL_SMOOTH_MAX` (12 in) snaps.
+  - ⚠️ **A SWITCH BETWEEN THE TWO CLOCKS IS NOT AN ERROR, AND SNAPPING IT WAS "THE BALLS KEEP
+    TELEPORTING"** (owner, 2026-09-24). The two clocks are ~10 ticks apart, so a shot at 150 in/s
+    sits ~25 in apart on them. The cap used to be 6 in for switches too, so a shot leaving the
+    radius mid-flight, or landing in a hive, jumped back up its own path. Three rules now:
+    the predictor KEEPS an element past the radius while it moves faster than
+    `PREDICT_ELEMENT_KEEP_SPEED` (it changes clocks at rest, where they agree); an `element`
+    that landed PREDICTED stays predicted (one already seated stays interpolated, or a tipping
+    tray's contents would step at 30 Hz); and every non-carried ball's drawn pose is remembered,
+    so a switch INTO the prediction is eased too. Measured with a real `Room` over 3 minutes:
+    >6 in pops 40–45 → 3–7 at 66–130 ms RTT.
+  - ⚠️ **A RELEASE IS DRAWN FROM THE SNAPSHOT THE RENDER CLOCK IS ON, NOT THE NEWEST ONE**
+    (owner, 2026-09-24: "when i shoot the balls, they sometimes appear for a split second where
+    i intaked them"). The newest world says `flight`, both bracketing snapshots still say
+    `held`, and lerping them drew the ball at its snapshot pose while held, inside the robot.
+    `displayWorld` now keeps it HELD (hidden, with that snapshot's state) until the render clock
+    reaches the launch, which is the moment the interpolated robot fires it. A ball the
+    predictor already has (your own shot) is drawn predicted at once, and neither case eases in
+    from a previous drawn pose (`released`).
   - **A LIGHT PREDICTOR CARRIES NO ELEMENTS**, so `elements()` returns `null` (not an empty list)
     and it keeps the old drawing. That is the honest limit of this fix: Auto picks Full whenever
     the machine holds `PREDICT_FULL_BUDGET_MS`, and a machine that cannot afford Full cannot
