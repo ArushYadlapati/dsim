@@ -3411,11 +3411,11 @@ button {
    this size a colour difference alone is not something a colour-blind reader can
    rely on, and the badge is ~16px of surface with no text to fall back on.
 
-   THE SHAPE IS AN SVG, not a text glyph, and the sizing below depends on that:
-   a glyph's size and its position inside the disc come from the FONT's metrics,
-   which is why the first cut had a star riding high and a heart overflowing the
-   circle. The SVG is drawn centred in a 24×24 box, so `width`/`height` as a
-   percentage of the disc is genuinely centred at any size.
+   THE BADGE IS ONE 128×128 SVG — the disc (`circle`, filled by `fill`) and the
+   glyph (`.sup-glyph`, filled by `color`) in the same coordinate space, so where
+   the glyph sits is geometry. A CSS disc holding a separate glyph SVG, centred by
+   flexbox at 58%, drifted per surface. Owner, admin, supporter and the stargazer
+   title (`BadgeIcon`) all render through this one rule.
 
    `vertical-align: middle` puts the badge's centre on the parent's baseline plus
    half its x-height — the optical middle of the adjacent name. It replaced
@@ -3424,11 +3424,10 @@ button {
    without changing the line's height, which `npm run shiftaudit` would otherwise
    see as a row moving. */
 .sup-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--ds-gold);
+  display: inline-block;
+  fill: var(--ds-gold);
   color: var(--ds-gold-ink);
+  /* only so the `.resx-half` ring below follows the disc */
   border-radius: var(--ds-round-full);
   vertical-align: middle;
   flex: 0 0 auto;
@@ -3440,12 +3439,7 @@ button {
   user-select: none;
   align-self: center;
 }
-/* the shape reads as a mark ON a disc, not as a disc-shaped hole: at much past
-   60% the star's points and the heart's shoulders touch the rim */
-.sup-badge svg {
-  display: block;
-  width: 58%;
-  height: 58%;
+.sup-badge .sup-glyph {
   fill: currentColor;
 }
 /* 1em, the one base size the three sibling marks share (`.award-badge.award-sm`, `.badge-glyph`)
@@ -3497,14 +3491,25 @@ button {
    them an alliance colour: admin USED to be `--ds-blue-chip`, and on the results
    board's blue half that was a blue disc on the same blue — only the diamond left. */
 .sup-badge.owner {
-  background: var(--ds-accent);
+  fill: var(--ds-accent);
   color: var(--ds-accent-ink);
 }
 .sup-badge.admin {
-  background: var(--ds-staff);
+  fill: var(--ds-staff);
   color: var(--ds-staff-ink);
 }
-/* ON AN ALLIANCE FILL (the results roster) no badge hue is safe — the owner's green is
+/* THE STARGAZER TITLE (`TitleChip`): a yellow ★ on the award violet, the ledger's
+   hue. Yellow on that violet is ~2.4:1, so the star carries an award-ink outline —
+   the outline is what separates it (both pairs in `contrast.mjs`). */
+.sup-badge.stargazer {
+  fill: var(--ds-award);
+  color: var(--ds-star);
+}
+.sup-badge.stargazer .sup-glyph {
+  stroke: var(--ds-award-ink);
+  stroke-width: 6;
+  stroke-linejoin: round;
+}/* ON AN ALLIANCE FILL (the results roster) no badge hue is safe — the owner's green is
    ~1.3:1 on the red half — so the disc takes a light ring, the way a HUD card is told
    apart from the field by its edge. Fixed on-field ink: the alliance fills never theme. */
 .resx-half .sup-badge {

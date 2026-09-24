@@ -376,6 +376,10 @@ const serverPairs = (t) => {
     // a 12px disc is a meaningful graphic: each badge FILL has to read against the panel
     ['SupporterBadge admin disc on the panel (1.4.11)', t('--ds-staff'), panel, NON_TEXT],
     ['AwardBadge hexagon on the panel (1.4.11)', t('--ds-award'), panel, NON_TEXT],
+    // the stargazer ★ (`.sup-badge.stargazer`): yellow on the award violet, and the award-ink
+    // outline is what separates the two, so the outline is checked against both
+    ['Stargazer star outline on the award disc (1.4.11)', t('--ds-award-ink'), t('--ds-award'), NON_TEXT],
+    ['Stargazer star on its outline (1.4.11)', t('--ds-star'), t('--ds-award-ink'), NON_TEXT],
     // on the results roster's alliance halves every badge wears an --ds-on-field ring
     ['Badge ring on the red roster half (1.4.11)', t('--ds-on-field'), t('--ds-red-chip'), NON_TEXT],
     ['Badge ring on the blue roster half (1.4.11)', t('--ds-on-field'), t('--ds-blue-chip'), NON_TEXT],

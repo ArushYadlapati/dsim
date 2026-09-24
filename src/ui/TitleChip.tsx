@@ -2,6 +2,7 @@ import { parseAwardTitleId } from '../awards';
 import { titleLabel } from '../cosmetics';
 import { AwardBadge } from './AwardBadge';
 import { BadgeMarks } from './BadgeMark';
+import { BadgeIcon } from './SupporterBadge';
 
 /**
  * A LEDGER TITLE beside a name — `title:stargazer` and whatever the rewards ledger grants
@@ -15,22 +16,19 @@ import { BadgeMarks } from './BadgeMark';
  * on ("A title you have earned shows beside your name on the leaderboards"). The picker was
  * no better: it fell back to `id.replace(/^title:/, '')` and printed the raw slug, lowercase.
  *
- * ── WHY A TEXT CHIP AND NOT A GLYPH ─────────────────────────────────────────────────────────
- * An award badge can be a bare hexagon with a numeral because the RANK is the whole message
- * and a shape carries it. A ledger title's message is its NAME, so there is nothing for a
- * silhouette to say and the word has to be on screen.
+ * ── STARGAZER IS AN ICON, THE REST A TEXT CHIP ──────────────────────────────────────────────
+ * `title:stargazer` renders as a disc badge (`BadgeIcon`, the same 128×128 SVG as owner/admin/
+ * supporter): an outlined yellow ★ on the award violet. The owner asked for it by name
+ * (2026-09-24); hue and the outline tell it from the owner's white star. Its hover tip
+ * carries the words. Any OTHER ledger title stays a text chip, because its NAME is the message.
  *
- * ⚠️ AND IT DELIBERATELY DOES NOT CARRY A STAR. ★ beside a name already means OWNER
- * (`SupporterBadge`, precedence owner ★ > admin ◆ > supporter ♥), and a stargazer chip
- * wearing the same glyph in the same row would read as staff at a glance. The mockup this was
- * agreed from had one; it does not survive contact with the badge that is already there.
- *
- * It takes `--ds-award`/`--ds-award-ink`, the award family's one hue, for the reason
+ * The text chip takes `--ds-award`/`--ds-award-ink`, the award family's one hue, for the reason
  * `AwardBadge` gives for having a single hue at all: it is ONE measured `contrast.mjs` pair
  * rather than a new one per reward, and the two things are the same KIND of claim — something
  * earned, as against something paid for.
  */
 export function TitleChip({ id }: { id: string }) {
+  if (id === 'title:stargazer') return <BadgeIcon kind="stargazer" />;
   const label = titleLabel(id);
   if (!label) return null;
   return (

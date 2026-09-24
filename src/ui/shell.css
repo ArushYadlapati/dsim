@@ -200,6 +200,10 @@
      as well (a hexagon), which that guide also requires. */
   --ds-award: #a96bff;
   --ds-award-ink: #2a1065;
+  /* THE STARGAZER ★ — yellow, on the --ds-award disc, outlined in --ds-award-ink
+     (`.sup-badge.stargazer`, styles.css). CATEGORY 2, declared here only. Its own name
+     rather than --ds-podium-gold or --ds-gold, so neither hue picks up a second job. */
+  --ds-star: #ffd23f;
   /* THE RANKED PODIUM (0048) — gold / silver / bronze, on the podium badge and an act
      podium title. CATEGORY 2 like --ds-award above: fills with ONE fixed dark ink, declared
      here only, so they do not invert. The owner asked for the metals by name (2026-09-22:
@@ -8047,10 +8051,9 @@ a.ds-cta {
    The sibling of `.award-badge`, and it takes the same `--ds-award` hue on purpose: the two
    are the same KIND of claim (earned, as against paid for), and one hue is ONE measured
    `contrast.mjs` pair rather than a new one per reward.
-   ⚠️ IT CARRIES ITS NAME AS TEXT, not a glyph. An award badge can be a bare hexagon because
-   the RANK is the whole message; a ledger title's message is its NAME, so there is nothing
-   for a silhouette to say. It also must not wear a ★ — that glyph beside a name already
-   means OWNER (`.sup-badge`), and a stargazer chip would read as staff at a glance. */
+   IT CARRIES ITS NAME AS TEXT: a ledger title's message is its NAME. The one exception is
+   `title:stargazer`, which the owner asked to be a ★ badge (2026-09-24). It renders as a
+   `.sup-badge.stargazer` (styles.css) and never reaches this rule. */
 .title-chip {
   display: inline-flex;
   align-items: center;

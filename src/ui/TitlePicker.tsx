@@ -65,8 +65,8 @@ export function TitlePicker() {
               return (
                 <button key={id} className={`ds-opt${title === id ? ' on' : ''}`} aria-pressed={title === id} onClick={() => pick(id)}>
                   <span className="ot title-pick-ot">
-                    {award && <AwardBadge award={award} />}
-                    {award ? awardShortText(award) : titleLabel(id) ? <TitleChip id={id} /> : id}
+                    {award ? <AwardBadge award={award} /> : id === 'title:stargazer' && <TitleChip id={id} />}
+                    {award ? awardShortText(award) : titleLabel(id) ?? id}
                   </span>
                   <span className="od">{row ? awardTitleText(row) : award ? '' : LEDGER_FROM[id] ?? ''}</span>
                 </button>

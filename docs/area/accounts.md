@@ -142,7 +142,9 @@ and nag them to link a Ko-fi account that will never pay). `getSupporter` return
 `LobbyPlayer.role` is **server-authored** exactly like `supporter` (a self-declared
 "owner" beside a driver's name is an impersonation primitive). UI: ONE
 `SupporterBadge` renders owner ★ > admin ◆ > supporter ♥ — exactly one, since staff are
-also `supporter: true`. **Badge colours must be SATURATED IN BOTH THEMES**: the audit
+also `supporter: true`. All three, plus the `title:stargazer` ★ badge (`TitleChip`), are ONE
+128×128 SVG each drawn by `BadgeIcon` (disc and glyph in one coordinate space; a CSS disc
+holding a separate glyph drifted). **Badge colours must be SATURATED IN BOTH THEMES**: the audit
 checks the glyph against its own fill, NOT the badge against the card behind it, so the
 lavender pastel (#34305c in dark) passed contrast while being invisible on the dark
 panel. Distinguish by SHAPE as well as hue.

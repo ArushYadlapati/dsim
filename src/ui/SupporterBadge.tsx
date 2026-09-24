@@ -44,7 +44,18 @@ export function SupporterBadge({
   size?: 'sm' | 'md';
 }) {
   const kind = role === 'owner' ? 'owner' : role === 'admin' ? 'admin' : supporter ? 'supporter' : null;
-  const ref = useRef<HTMLSpanElement>(null);
+  return kind ? <BadgeIcon kind={kind} size={size} /> : null;
+}
+
+export type BadgeKind = keyof typeof BADGES;
+
+/**
+ * THE ONE WAY A DISC BADGE IS DRAWN — the three above, and the stargazer title
+ * (`TitleChip`). Same markup, same sizing, same hover tip for all four; only the
+ * glyph, the two colours and the tip's words differ by kind.
+ */
+export function BadgeIcon({ kind, size = 'sm' }: { kind: BadgeKind; size?: 'sm' | 'md' }) {
+  const ref = useRef<SVGSVGElement>(null);
   // viewport coords of the hovered badge; null = no tip on screen
   const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
 
@@ -63,7 +74,6 @@ export function SupporterBadge({
     };
   }, [tip]);
 
-  if (!kind) return null;
   const { label, title, glyph } = BADGES[kind];
 
   const show = (e: React.PointerEvent): void => {
@@ -76,16 +86,19 @@ export function SupporterBadge({
 
   return (
     <>
-      <span
+      <svg
         ref={ref}
+        viewBox="0 0 128 128"
         className={`sup-badge ${kind} sup-${size}`}
         aria-label={label}
         role="img"
+        focusable="false"
         onPointerEnter={show}
         onPointerLeave={() => setTip(null)}
       >
-        {glyph}
-      </span>
+        <circle cx="64" cy="64" r="64" />
+        <path className="sup-glyph" d={glyph} />
+      </svg>
       {tip &&
         createPortal(
           // PORTALLED to <body> and `position: fixed` because the badge lives
@@ -102,43 +115,37 @@ export function SupporterBadge({
 }
 
 /**
- * Inline SVG, not text glyphs.
+ * ONE 128×128 SVG PER BADGE — the disc and its glyph in the same coordinate space.
  *
- * The first cut used ♥ / ◆ / ★ characters and they were wrong in three ways at
- * once: the shape's size and its position inside the disc are decided by the
- * FONT's metrics (so the star sat high and the heart overflowed the circle), a
- * glyph is drawn on the text baseline rather than centred, and ◆ is not in every
- * font — a fallback would silently change the badge's look per platform.
- *
- * Each path is drawn in a 24×24 box centred on (12,12), so centring is geometry
- * rather than a per-glyph nudge, and the size is a fixed fraction of the disc.
+ * The first cut used ♥ / ◆ / ★ characters, whose size and position come from the
+ * FONT (a star riding high, a heart overflowing the circle). The second put a 24×24
+ * glyph SVG inside a CSS disc, centred by flexbox at 58% — two layout systems that
+ * drifted apart per surface, so the glyph read as shifted. Now the disc is
+ * `<circle r=64>` and each glyph below is drawn in the same 128 box, centred by its
+ * own bounding box: where it sits is geometry, and nothing in CSS can move it.
  */
 const BADGES = {
   owner: {
     label: 'Owner',
     title: 'Owner · builds and runs DSIM',
-    glyph: (
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="M12 4 L14 9.25 L19.61 9.53 L15.23 13.05 L16.7 18.47 L12 15.4 L7.3 18.47 L8.77 13.05 L4.39 9.53 L10 9.25 Z" />
-      </svg>
-    ),
+    glyph: 'M64 35 71.2 57.1 94.4 57.1 75.6 70.8 82.8 92.9 64 79.2 45.2 92.9 52.4 70.8 33.6 57.1 56.8 57.1Z',
   },
   admin: {
     label: 'Admin',
     title: 'Admin · helps run DSIM',
-    glyph: (
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="M12 3.5 L20.5 12 L12 20.5 L3.5 12 Z" />
-      </svg>
-    ),
+    glyph: 'M64 34 94 64 64 94 34 64Z',
   },
   supporter: {
     label: 'Supporter',
     title: 'Supporter · helps pay for the servers',
-    glyph: (
-      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="M12 20.2 C12 20.2 3.6 14.6 3.6 9.3 C3.6 6.4 5.9 4.2 8.6 4.2 C10.2 4.2 11.4 5 12 5.9 C12.6 5 13.8 4.2 15.4 4.2 C18.1 4.2 20.4 6.4 20.4 9.3 C20.4 14.6 12 20.2 12 20.2 Z" />
-      </svg>
-    ),
+    glyph:
+      'M64 88.7C64 88.7 38 71.4 38 55 38 46.1 45.1 39.3 53.5 39.3 58.4 39.3 62.1 41.7 64 44.5 65.9 41.7 69.6 39.3 74.5 39.3 82.9 39.3 90 46.1 90 55 90 71.4 64 88.7 64 88.7Z',
+  },
+  /* the ledger title `title:stargazer`, drawn by `TitleChip` — a bigger star than the
+     owner's, yellow on the award violet with an ink outline (`.sup-badge.stargazer`) */
+  stargazer: {
+    label: 'Stargazer',
+    title: 'Stargazer · Starred DSIM on GitHub',
+    glyph: 'M64 25.5 73.4 54.5 103.9 54.5 79.3 72.5 88.7 101.5 64 83.5 39.3 101.5 48.7 72.5 24.1 54.5 54.6 54.5Z',
   },
 } as const;
