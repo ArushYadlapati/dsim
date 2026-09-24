@@ -1,3 +1,21 @@
+# HANDOFF — 2026-09-23g (3D HUD sponsor logo follows the scrim; records Watch column)
+
+**State: green, pushed to `alpha`.** `build`, `uiaudit`, `contrast`, `docaudit` pass; `npm test` fails
+only the known BIOBUZZ perf flakes (2v2 ROOM tick ratio 1.23–1.25 vs 1.2 under load; flips between runs).
+
+- **Bug:** in a 3D match in light theme, the sponsor logo in the MENU/RESET row was the dark-ink cut on the
+  dark 3D scrim. Its swap was keyed on `:root[data-theme]`, the only theme-keyed CSS that reaches `.game-root`.
+  Fix: `.game-root.view-3d [data-hud-band] .sponsor-logo-swap …` in `shell.css` pins the light-ink cut there.
+  Smoke check in `scripts/smoke-biobuzz/sponsor.ts`; rule written into `docs/area/ui.md` HUD section.
+- **Also:** `.mobile-edit-bar` joined the 3D scrim list in `styles.css` (it was the one white card in a 3D
+  view). `.eventlog` must stay the LAST selector of that list, because `contrast.mjs` regex-finds the block by it.
+- `docs/ui-components.md` regenerated (`npm run uiindex`).
+- Verified in Electron (offscreen has no WebGL2, so `view-3d` was added by hand): light and dark 3D both show
+  the light cut; 2D light still shows the dark cut on the white chip.
+- **Records board:** Watch has its own column (`Leaderboard.tsx` + `shell.css`), so the right-aligned Score header sits over the numbers and the button no longer crowds them. Visually hidden header reads "Replay"; the detail row spans 5. On phones Score and Watch pin to the right edge together. Rating board unchanged.
+
+---
+
 # HANDOFF — 2026-09-23f (3D loading screen; perf read-out moved and filled out; prediction picker removed)
 
 **State: green, pushed to `alpha`** (32602e9d, d02eef48, and the 2D-lock fix after them). `build`, `uiaudit` (after `uiindex`),
