@@ -2536,16 +2536,6 @@ button {
   font-size: calc(2 * var(--resx-u));
   color: var(--ds-on-field);
 }
-/* "You won by 14" — the local driver's result, the first line of the block the eye lands on
-   once the totals settle. Absent for a spectator, a tie, and a one-sided board. */
-.resx-outcome {
-  margin: 0;
-  text-align: center;
-  font-size: calc(3 * var(--resx-u));
-  font-weight: 800;
-  letter-spacing: 0.03em;
-  color: var(--ds-on-field);
-}
 .resx-note {
   margin: 0;
   text-align: center;
