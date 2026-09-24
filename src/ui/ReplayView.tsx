@@ -18,7 +18,7 @@ import {
   subscribeViewPref,
   type ViewPref,
 } from '../games/biobuzz/graphics/store';
-import { installViewKey, toggleViewPref } from '../games/biobuzz/graphics/viewKey';
+import { installViewKey, toggleViewPref, viewKeyName } from '../games/biobuzz/graphics/viewKey';
 // the lazy 3D physics chunk — fetched only for a `'3d'` container (see `ensurePhysics`)
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { Renderer } from '../render/renderer';
@@ -1277,7 +1277,7 @@ export function ReplayView({
                     className={`ds-seg${view === v ? ' on' : ''}`}
                     aria-pressed={view === v}
                     disabled={recording}
-                    title="Press T to switch"
+                    title={viewKeyName('viewToggle') ? `Press ${viewKeyName('viewToggle')} to switch` : undefined}
                     onClick={() => {
                       if (view !== v) toggleViewPref();
                     }}

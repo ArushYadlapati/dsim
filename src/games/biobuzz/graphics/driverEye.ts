@@ -41,8 +41,8 @@
  */
 
 import type { Alliance } from '../../../types';
-import { datan2, hyp } from '../../../math';
-import { ALLIANCE_AREA } from '../fieldDims.gen';
+import { datan, datan2, dcos, dsin, dtan, hyp } from '../../../math';
+import { ALLIANCE_AREA, HIVE } from '../fieldDims.gen';
 
 /** a plain field-inches point — no `Vec2`/`Vec3` import, this file has nothing else to share
  * that shape with. */
@@ -188,9 +188,116 @@ export function driverEyeAim(eye: Eye3, robot: Eye3 | null): DriverEyeAim {
   return { yaw, pitch };
 }
 
-/** the height-accurate camera's own vertical FOV, degrees — a NAMED DISPLAY CHOICE, not a
- * measurement: the eye's position is exact, but a monitor is not a human visual field (a real
- * eye's usable vertical field is well over 100°, which no screen shows usefully). ~55° is a
- * conventional "normal lens" figure or roughly a 50 mm-equivalent, picked for looking like a
- * photograph rather than for matching anatomy. */
-export const DRIVER_EYE_VFOV_DEG = 55;
+// ──────────────────────────────────────────────────────────────────────────── the HIVE in view ──
+
+/**
+ * THE HIVE HAS TO BE IN THE PICTURE (owner, 2026-09-24: "keep in mind that the hive should be
+ * fully visible ideally as a driver").
+ *
+ * The aim above looks at a blend of field centre and the driver's own robot, which is right for
+ * a person, and from 5 ft of eye height it tilts the view far enough down that the top of the
+ * HIVE (66 in, above eye level) left the frame whenever the robot was near its own wall. These are
+ * the corners of the box both hives stand in: the trays' outer ends across the field, their
+ * tipped ends along it, the floor to the top of a tipped tray. `driverEyeAimFit` turns the aim as
+ * little as it has to to keep all eight in frame.
+ */
+const HIVE_HALF_X = HIVE.PIVOT_X + HIVE.CELL_W / 2;
+const HIVE_HALF_Y = HIVE.CELL_FAR;
+/** a tipped tray's highest point, APPROX — the same 66 `scene/renderCameras.ts` fits against */
+const HIVE_TOP_Z = 66;
+export const HIVE_VIEW_POINTS: readonly Eye3[] = (() => {
+  const pts: Eye3[] = [];
+  for (const x of [-HIVE_HALF_X, HIVE_HALF_X]) {
+    for (const y of [-HIVE_HALF_Y, HIVE_HALF_Y]) {
+      for (const z of [0, HIVE_TOP_Z]) pts.push({ x, y, z });
+    }
+  }
+  return pts;
+})();
+
+/** the frame margin a hive corner must clear, as a fraction of the half-FOV (the solved driver
+ * camera's own 4 %, doubled: this camera does not move its eye to make room) */
+const HIVE_MARGIN = 0.08;
+
+/**
+ * Is every point inside the frame of a camera at `eye` looking along (`yaw`, `pitch`) — pitch
+ * DOWN from horizontal — with vertical FOV `vFov` (radians) on a screen of `aspect`? The same
+ * basis `scene/renderCameras.ts` builds with `lookAt` (world up is +z), projected exactly.
+ */
+export function pointsInFrame(
+  eye: Eye3,
+  yaw: number,
+  pitch: number,
+  vFov: number,
+  aspect: number,
+  points: readonly Eye3[],
+  margin = 0,
+): boolean {
+  const cy = dcos(yaw);
+  const sy = dsin(yaw);
+  const cp = dcos(pitch);
+  const sp = dsin(pitch);
+  const f = { x: cy * cp, y: sy * cp, z: -sp };
+  const r = { x: sy, y: -cy, z: 0 }; // forward × up
+  const u = { x: cy * sp, y: sy * sp, z: cp }; // right × forward
+  const tv = dtan(vFov / 2) * (1 - margin);
+  const th = dtan(vFov / 2) * aspect * (1 - margin);
+  for (const p of points) {
+    const dx = p.x - eye.x;
+    const dy = p.y - eye.y;
+    const dz = p.z - eye.z;
+    const zc = dx * f.x + dy * f.y + dz * f.z;
+    if (zc <= 1e-6) return false;
+    if (Math.abs((dx * r.x + dy * r.y) / zc) > th) return false;
+    if (Math.abs((dx * u.x + dy * u.y + dz * u.z) / zc) > tv) return false;
+  }
+  return true;
+}
+
+/**
+ * `driverEyeAim`, turned just far enough that both HIVES are in frame (see `HIVE_VIEW_POINTS`).
+ *
+ * The allowed centre range is read off the hive corners' own angles from the eye — yaw from their
+ * bearings, pitch from their elevations — shrunk by the half-FOV, and the blended aim is CLAMPED
+ * into it, so the camera still leans toward the driver's robot as far as it can without losing the
+ * hive. Angles are an approximation of the projection off the frame's centre line, so the answer
+ * is checked with `pointsInFrame` and the margin tightened until it passes. When the hive cannot
+ * fit at all (a narrow FOV on a narrow screen), the camera centres on it: "ideally" visible means
+ * as much of it as the lens allows, evenly cropped.
+ */
+export function driverEyeAimFit(eye: Eye3, robot: Eye3 | null, vFov: number, aspect: number): DriverEyeAim {
+  const base = driverEyeAim(eye, robot);
+  // already in frame by the exact projection: keep the aim exactly (the angle clamp below is an
+  // approximation and would nudge an aim that needs nothing)
+  if (pointsInFrame(eye, base.yaw, base.pitch, vFov, aspect, HIVE_VIEW_POINTS, HIVE_MARGIN)) return base;
+  const hHalf = datan(dtan(vFov / 2) * aspect);
+  const vHalf = vFov / 2;
+  let yawLo = Infinity;
+  let yawHi = -Infinity;
+  let elLo = Infinity;
+  let elHi = -Infinity;
+  for (const p of HIVE_VIEW_POINTS) {
+    const dx = p.x - eye.x;
+    const dy = p.y - eye.y;
+    // bearings relative to the base yaw, so a hive straddling ±π does not wrap
+    let yaw = datan2(dy, dx) - base.yaw;
+    while (yaw > Math.PI) yaw -= 2 * Math.PI;
+    while (yaw < -Math.PI) yaw += 2 * Math.PI;
+    const el = datan2(p.z - eye.z, hyp(dx, dy));
+    yawLo = Math.min(yawLo, yaw);
+    yawHi = Math.max(yawHi, yaw);
+    elLo = Math.min(elLo, el);
+    elHi = Math.max(elHi, el);
+  }
+  const clampOrCentre = (v: number, lo: number, hi: number): number =>
+    lo <= hi ? Math.min(hi, Math.max(lo, v)) : (lo + hi) / 2;
+  let out: DriverEyeAim = base;
+  for (let m = HIVE_MARGIN; m <= 0.5; m += 0.06) {
+    const dYaw = clampOrCentre(0, yawHi - hHalf * (1 - m), yawLo + hHalf * (1 - m));
+    // the camera's own elevation is -pitch
+    const el = clampOrCentre(-base.pitch, elHi - vHalf * (1 - m), elLo + vHalf * (1 - m));
+    out = { yaw: base.yaw + dYaw, pitch: -el };
+    if (pointsInFrame(eye, out.yaw, out.pitch, vFov, aspect, HIVE_VIEW_POINTS)) return out;
+  }
+  return out;
+}

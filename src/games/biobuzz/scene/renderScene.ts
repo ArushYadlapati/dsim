@@ -455,7 +455,7 @@ class BiobuzzScene implements GameScene {
     }
 
     this.tuneMaterials();
-    setCameraTuning(s.fov, s.cameraMotion);
+    setCameraTuning(s.hfov, s.cameraMotion);
     this.stats.setMode(s.perfOverlay);
     this.syncTarget();
     this.syncSize();

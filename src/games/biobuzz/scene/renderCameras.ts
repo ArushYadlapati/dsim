@@ -17,7 +17,9 @@ import {
   type FreeCamNav,
   type FreeCamState,
 } from '../graphics/freeCam';
-import { DRIVER_EYE_VFOV_DEG, driverEyeAim, driverEyePoint, type DriverRole } from '../graphics/driverEye';
+import { driverEyeAimFit, driverEyePoint, type DriverRole } from '../graphics/driverEye';
+import { vFovFromH } from '../graphics/fov';
+import { GFX_FOV_DEFAULT, GFX_FOV_MAX, GFX_FOV_MIN } from '../graphics/settings';
 
 /**
  * BIOBUZZ 3D SCENE — cameras (Day 1, `docs/biobuzz/plan-3d.md` §4.3, §13.1).
@@ -111,12 +113,33 @@ const FOV_MAX_RAD = (DRIVER_FOV_MAX * Math.PI) / 180;
 // BACK (the fit's own second lever) instead of narrowing the lens, and the setting reads as
 // "how wide a lens will you allow" — which is what it is.
 
-/** the driver fit's FOV ceiling, in radians. Defaults to the fit's own hard maximum, so a build
- * that never touches the setting behaves exactly as it did. */
-let tunedFovMaxRad = FOV_MAX_RAD;
-/** chase/orbit FOV in DEGREES, applied per frame. */
-let tunedChaseFov = 68;
-let tunedOrbitFov = 55;
+/**
+ * The player's FOV setting, HORIZONTAL degrees (`graphics/fov.ts`), or `null` before any has been
+ * applied — the fit then keeps its own hard maximum and chase/orbit their old fixed values, so a
+ * build that never touches the setting behaves exactly as it did.
+ */
+let tunedHfovDeg: number | null = null;
+
+/** the driver fit's VERTICAL ceiling on a screen of `aspect`, radians. Never above the fit's own
+ * hard maximum; allowed BELOW its minimum, because on an ultrawide screen a human-width view is
+ * a narrow vertical one, and the fit's other lever (stepping the eye back) is what then frames
+ * the field. */
+function fovCapRad(aspect: number): number {
+  if (tunedHfovDeg == null) return FOV_MAX_RAD;
+  return Math.min(FOV_MAX_RAD, (vFovFromH(tunedHfovDeg, aspect) * Math.PI) / 180);
+}
+/** the chase camera's vertical FOV, degrees — the slider exactly, for this screen */
+function chaseFovDeg(aspect: number): number {
+  return tunedHfovDeg == null ? 68 : vFovFromH(tunedHfovDeg, aspect);
+}
+/** orbit and free cam: a framing shot, so the tighter of the two, as before */
+function orbitFovDeg(aspect: number): number {
+  return tunedHfovDeg == null ? 55 : Math.max(DRIVER_FOV_MIN - 15, vFovFromH(tunedHfovDeg, aspect) - 15);
+}
+/** the height-accurate driver eye's vertical FOV, degrees — the slider exactly, for this screen */
+function driverEyeFovDeg(aspect: number): number {
+  return Math.min(DRIVER_FOV_MAX, vFovFromH(tunedHfovDeg ?? GFX_FOV_DEFAULT, aspect));
+}
 /** the player's own "reduced" pick, OR-ed with `prefers-reduced-motion` (which always wins). */
 let tunedReducedMotion = false;
 /** "Your height" (owner, 2026-09-21) — per-device, `null` = unset. Set by `renderScene.ts` on
@@ -130,13 +153,9 @@ let tunedDriverHeightIn: number | null = null;
  * enough to call every time rather than diffing, and it invalidates the driver fit's cache so
  * the next frame re-solves against the new ceiling.
  */
-export function setCameraTuning(fovDeg: number, motion: 'full' | 'reduced'): void {
-  const deg = Math.min(DRIVER_FOV_MAX, Math.max(DRIVER_FOV_MIN, fovDeg));
-  tunedFovMaxRad = (deg * Math.PI) / 180;
-  // chase sits closer to the robot than the driver eye does to the field, so it reads a few
-  // degrees wider at the same setting; orbit is a framing shot and stays the tighter of the two
-  tunedChaseFov = deg;
-  tunedOrbitFov = Math.max(DRIVER_FOV_MIN - 15, deg - 15);
+export function setCameraTuning(hfovDeg: number | null, motion: 'full' | 'reduced'): void {
+  // `null` is "never set" — the state a fresh module starts in, which a test restores
+  tunedHfovDeg = hfovDeg == null ? null : Math.min(GFX_FOV_MAX, Math.max(GFX_FOV_MIN, hfovDeg));
   tunedReducedMotion = motion === 'reduced';
   cachedAspect = NaN; // force `fitDriverCamera` to re-solve against the new ceiling
 }
@@ -256,7 +275,7 @@ function solveFit(eyeH: number, setback: number, aspect: number, viewAngle: numb
   const vFovForHorizontal = 2 * Math.atan(maxHorizRatio / (aspect * marginScale));
 
   const vFov = Math.max(vFovForVertical, vFovForHorizontal);
-  const fits = vFov <= tunedFovMaxRad + 1e-9 && minZc > 1e-3 && Number.isFinite(vFov);
+  const fits = vFov <= fovCapRad(aspect) + 1e-9 && minZc > 1e-3 && Number.isFinite(vFov);
   return { pitch, vFov, fits };
 }
 
@@ -329,7 +348,7 @@ export function fitDriverCamera(_alliance: Alliance, viewAngle: number, aspect: 
     r = solveFit(eyeH, setback, aspect, viewAngle);
   }
 
-  const vFov = Math.min(tunedFovMaxRad, Math.max(FOV_MIN_RAD, r.vFov));
+  const vFov = Math.min(fovCapRad(aspect), Math.max(FOV_MIN_RAD, r.vFov));
   cached.eyeH = eyeH;
   cached.setback = setback;
   cached.pitch = r.pitch;
@@ -612,14 +631,20 @@ export function createCameras(): BbCameras {
    * every case that must fall back to the fit — no height set, no local robot (a spectator, a
    * replay with no viewpoint), or a role the game has not locked yet.
    */
-  function driverEyePoseFor(frame: SceneFrame, world: World): { eye: { x: number; y: number; z: number }; yaw: number; pitch: number } | null {
+  function driverEyePoseFor(
+    frame: SceneFrame,
+    world: World,
+    vFovDeg: number,
+    aspect: number,
+  ): { eye: { x: number; y: number; z: number }; yaw: number; pitch: number } | null {
     if (tunedDriverHeightIn == null) return null;
     const robot = localRobot(world, frame);
     if (!robot) return null;
     const role = bbRoleLabel(frame.localStartCat, robot.alliance);
     if (role !== 'TOP' && role !== 'BOTTOM') return null;
     const eye = driverEyePoint(robot.alliance, role as DriverRole, tunedDriverHeightIn);
-    const aim = driverEyeAim(eye, { x: robot.pos.x, y: robot.pos.y, z: robot.z ?? 0 });
+    // turned only as far as it takes to keep both HIVES in frame (`driverEyeAimFit`)
+    const aim = driverEyeAimFit(eye, { x: robot.pos.x, y: robot.pos.y, z: robot.z ?? 0 }, (vFovDeg * Math.PI) / 180, aspect);
     return { eye, yaw: aim.yaw, pitch: aim.pitch };
   }
 
@@ -630,15 +655,16 @@ export function createCameras(): BbCameras {
     resolveSafeRect(frame);
     const aspect = Math.max(1e-3, safe.w / safe.h);
 
-    const heightPose = driverEyePoseFor(frame, world);
+    const eyeFov = driverEyeFovDeg(aspect);
+    const heightPose = driverEyePoseFor(frame, world, eyeFov, aspect);
     if (heightPose) {
       // THE EYE STAYS PUT — no fit search, no `i`/`o` nudge, no re-centring: a standing person
-      // turns their head, they do not float or slide. Vertical FOV is a named DISPLAY choice
-      // (`DRIVER_EYE_VFOV_DEG`'s own comment); the eye POSITION is exact. `driver.near` (set at
-      // construction, 1 in) already clears "the wall top a foot in front of the eye" — no
-      // change needed for it to render.
+      // turns their head, they do not float or slide. The lens is the player's own FOV setting,
+      // horizontal and capped at what two human eyes see (`graphics/fov.ts`); it used to be a
+      // fixed 55° vertical that ignored the slider. `driver.near` (set at construction, 1 in)
+      // already clears "the wall top a foot in front of the eye".
       driver.aspect = aspect;
-      driver.fov = DRIVER_EYE_VFOV_DEG;
+      driver.fov = eyeFov;
       applyViewOffset(driver);
       driver.position.set(heightPose.eye.x, heightPose.eye.y, heightPose.eye.z);
       driver.up.set(0, 0, 1);
@@ -761,7 +787,7 @@ export function createCameras(): BbCameras {
     chase.aspect = aspect;
     applyViewOffset(chase);
     // §4.4's FOV row, applied live — `updateProjectionMatrix` below is already being called
-    chase.fov = tunedChaseFov;
+    chase.fov = chaseFovDeg(aspect);
     chase.position.copy(chaseEye);
     chase.up.set(0, 0, 1);
     chase.lookAt(chaseAim);
@@ -778,7 +804,7 @@ export function createCameras(): BbCameras {
   function updateOrbit(frame: SceneFrame, dt: number): void {
     resolveSafeRect(frame);
     orbit.aspect = Math.max(1e-3, safe.w / safe.h);
-    orbit.fov = tunedOrbitFov;
+    orbit.fov = orbitFovDeg(orbit.aspect);
     if (orbitAuto && !reducedMotion()) orbitYaw += ORBIT_AUTO_RATE * dt;
     const ce = Math.cos(orbitElev);
     const se = Math.sin(orbitElev);
@@ -804,7 +830,7 @@ export function createCameras(): BbCameras {
   function updateFree(frame: SceneFrame, dt: number): void {
     resolveSafeRect(frame);
     free.aspect = Math.max(1e-3, safe.w / safe.h);
-    free.fov = tunedOrbitFov;
+    free.fov = orbitFovDeg(free.aspect);
     applyViewOffset(free);
     if (!freeHave) {
       freeGoal = defaultFreeCam(frame.viewAngle);

@@ -65,7 +65,7 @@ import {
   type FreeCamNav,
   type FreeCamPreset,
 } from '../games/biobuzz/graphics/freeCam';
-import { installViewKey } from '../games/biobuzz/graphics/viewKey';
+import { installViewKey, viewKeyName } from '../games/biobuzz/graphics/viewKey';
 import { OptRow, ToggleRow } from './OptRow';
 import { rangeFill } from './rangeFill';
 import { useCoarsePointer } from './useCoarsePointer';
@@ -663,7 +663,14 @@ export function GraphicsSection() {
             onPick={setViewPref}
             options={[
               { v: '2d' as const, t: '2D', d: 'Top-down. No GPU needed' },
-              { v: '3d' as const, t: '3D', d: 'BIOBUZZ only. Press T in a match to switch' },
+              {
+                v: '3d' as const,
+                t: '3D',
+                // the player's own bind (Controls ▸ BIOBUZZ ▸ 3D view), not a literal T
+                d: viewKeyName('viewToggle')
+                  ? `BIOBUZZ only. Press ${viewKeyName('viewToggle')} in a match to switch`
+                  : 'BIOBUZZ only. Bind a key under Controls to switch in a match',
+              },
             ]}
           />
           <OptRow
@@ -883,7 +890,7 @@ export function GraphicsSection() {
         <div className="ds-panel-body stack">
           <label className="ds-field">
             <span className="cap">
-              Field of view <span className="val">{s.fov}°</span>
+              Field of view <span className="val">{s.hfov}° wide</span>
             </span>
             <input
               className="ds-range"
@@ -891,13 +898,15 @@ export function GraphicsSection() {
               min={GFX_FOV_MIN}
               max={GFX_FOV_MAX}
               step={1}
-              value={s.fov}
-              style={rangeFill(s.fov, GFX_FOV_MIN, GFX_FOV_MAX)}
+              value={s.hfov}
+              style={rangeFill(s.hfov, GFX_FOV_MIN, GFX_FOV_MAX)}
               aria-label="Field of view"
-              aria-valuetext={`${s.fov} degrees`}
-              onChange={(e) => setGraphicsSetting('fov', Number(e.target.value))}
+              aria-valuetext={`${s.hfov} degrees wide`}
+              onChange={(e) => setGraphicsSetting('hfov', Number(e.target.value))}
             />
           </label>
+          {/* the one fact the number needs: what a person sees, which is also where the slider stops */}
+          <p className="ds-hint">Measured across the screen. Both of your eyes together see about {GFX_FOV_MAX}°.</p>
           <OptRow
             label="Camera motion"
             value={s.cameraMotion}

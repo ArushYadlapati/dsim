@@ -277,8 +277,10 @@ import {
 import {
   coerceDriverHeightIn,
   driverEyeAim,
+  driverEyeAimFit,
   driverEyePoint,
-  DRIVER_EYE_VFOV_DEG,
+  HIVE_VIEW_POINTS,
+  pointsInFrame,
   DRIVER_HEIGHT_MAX_IN,
   DRIVER_HEIGHT_MIN_IN,
   EYE_VERTEX_OFFSET_IN,
@@ -287,12 +289,13 @@ import {
   type DriverRole,
 } from '../../src/games/biobuzz/graphics/driverEye';
 import { ALLIANCE_AREA } from '../../src/games/biobuzz/fieldDims.gen';
+import { hFovFromV, vFovFromH, HUMAN_BINOCULAR_HFOV_DEG } from '../../src/games/biobuzz/graphics/fov';
 // the wheel block below needs the preset COLUMNS (to assert the tier mapping) and the sim's own
 // wheel diameter (to assert the drawn mecanum IS the wheel the drive model is derived from)
 import { GFX_PRESETS } from '../../src/games/biobuzz/graphics/settings';
 import * as C from '../../src/config';
 import { bbRoleLabel } from '../../src/games/biobuzz/config';
-import { createCameras, setDriverHeightIn } from '../../src/games/biobuzz/scene/renderCameras';
+import { createCameras, setCameraTuning, setDriverHeightIn } from '../../src/games/biobuzz/scene/renderCameras';
 import type { SceneFrame } from '../../src/games/module';
 import { viewAngleOf } from '../../src/sim/field';
 import {
@@ -3139,6 +3142,89 @@ function driverEyeChecks(check: Check): void {
     check('driverEye/aim: yaw stays finite and pitch stays finite for an ordinary eye/robot pair', Number.isFinite(withRobot.yaw) && Number.isFinite(withRobot.pitch));
   }
 
+  // ---- THE HIVE STAYS IN FRAME (owner, 2026-09-24: "the hive should be fully visible ideally as
+  //      a driver"). Every standing position, every height the setting allows, three screen shapes,
+  //      and the robot anywhere on the field — including hard against its own wall, which is what
+  //      tilted the old aim down far enough to cut the top of the hive off.
+  {
+    let misses = 0;
+    let oldMisses = 0;
+    let cases = 0;
+    let tooTall = 0;
+    let centred = 0;
+    const worst: string[] = [];
+    for (const alliance of ['red', 'blue'] as const) {
+      for (const role of ['TOP', 'BOTTOM'] as const) {
+        for (const h of [DRIVER_HEIGHT_MIN_IN, 66, 72, DRIVER_HEIGHT_MAX_IN]) {
+          const eye = driverEyePoint(alliance, role, h);
+          for (const aspect of [16 / 9, 4 / 3, 21 / 9]) {
+            const vFov = (vFovFromH(100, aspect) * Math.PI) / 180;
+            for (let gx = -60; gx <= 60; gx += 30) {
+              for (let gy = -60; gy <= 60; gy += 30) {
+                const robot = { x: gx, y: gy, z: 0 };
+                const aim = driverEyeAimFit(eye, robot, vFov, aspect);
+                const old = driverEyeAim(eye, robot);
+                cases++;
+                // the hive's own vertical span from this eye: past the lens, no aim can hold all of
+                // it, and the camera is meant to CENTRE on it instead ("ideally" visible)
+                const el = HIVE_VIEW_POINTS.map((q) => Math.atan2(q.z - eye.z, Math.hypot(q.x - eye.x, q.y - eye.y)));
+                const mid = (Math.max(...el) + Math.min(...el)) / 2;
+                if (Math.max(...el) - Math.min(...el) > vFov * 0.92) {
+                  tooTall++;
+                  if (Math.abs(-aim.pitch - mid) < 0.02) centred++;
+                  continue;
+                }
+                if (!pointsInFrame(eye, aim.yaw, aim.pitch, vFov, aspect, HIVE_VIEW_POINTS)) {
+                  misses++;
+                  if (worst.length < 4) worst.push(`${alliance} ${role} h${h} a${aspect.toFixed(2)} robot(${gx},${gy})`);
+                }
+                if (!pointsInFrame(eye, old.yaw, old.pitch, (55 * Math.PI) / 180, aspect, HIVE_VIEW_POINTS)) oldMisses++;
+              }
+            }
+          }
+        }
+      }
+    }
+    check(
+      '⚠️ driverEye/hive: at the default FOV both HIVES are fully in frame from every driver position the lens can hold them from',
+      misses === 0 && tooTall < cases / 4,
+      `${misses}/${cases - tooTall} cases cut the hive${worst.length ? ': ' + worst.join(', ') : ''} (${tooTall} taller than the lens)`,
+    );
+    check(
+      'driverEye/hive: ...and where the hive is taller than the lens (a short driver on an ultrawide screen), the view centres on it',
+      centred === tooTall,
+      `${centred}/${tooTall} centred`,
+    );
+    check(
+      'driverEye/hive: ...which the old aim at a fixed 55° did not (so the check above is not vacuous)',
+      oldMisses > cases / 4,
+      `${oldMisses}/${cases} cases cut the hive before`,
+    );
+    // and it leans toward the driver's robot as far as it can: an aim that already shows the hive
+    // is kept exactly
+    // (searched, not assumed: a robot whose blended aim ALREADY shows the hive, or the check
+    // below would pass on nothing)
+    const eye = driverEyePoint('red', 'TOP', 72);
+    const vFov = (vFovFromH(110, 16 / 9) * Math.PI) / 180;
+    let kept = 0;
+    let found = 0;
+    for (let gx = -60; gx <= 60; gx += 10) {
+      for (let gy = -60; gy <= 60; gy += 10) {
+        const robot = { x: gx, y: gy, z: 0 };
+        const base = driverEyeAim(eye, robot);
+        if (!pointsInFrame(eye, base.yaw, base.pitch, vFov, 16 / 9, HIVE_VIEW_POINTS, 0.08)) continue;
+        found++;
+        const fit = driverEyeAimFit(eye, robot, vFov, 16 / 9);
+        if (Math.abs(fit.yaw - base.yaw) < 1e-9 && Math.abs(fit.pitch - base.pitch) < 1e-9) kept++;
+      }
+    }
+    check(
+      'driverEye/hive: an aim that already shows the hive is left exactly as it was — it leans toward the robot',
+      found > 0 && kept === found,
+      `${kept}/${found} kept`,
+    );
+  }
+
   // ---- graphics/ still imports neither three nor scene/ ---------------------------------------
   {
     const src = readFileSync(join(BIOBUZZ_DIR, 'graphics', 'driverEye.ts'), 'utf8');
@@ -3183,7 +3269,6 @@ function driverEyeChecks(check: Check): void {
       `${got.toArray()} vs ${JSON.stringify(expected)}`,
     );
     check('driverEye/wiring: the height-accurate pose is NOT the legacy pose (the fallback did not silently win)', !got.equals(posUnset));
-    check('driverEye/wiring: the height-accurate camera uses DRIVER_EYE_VFOV_DEG, not the solved fit', cams.driver.fov === DRIVER_EYE_VFOV_DEG, String(cams.driver.fov));
 
     // an UNRESOLVABLE role (no locked start category) falls back to the legacy pose too.
     setDriverHeightIn(68);
@@ -3194,7 +3279,17 @@ function driverEyeChecks(check: Check): void {
       String(cams.driver.position.toArray()),
     );
 
+    // the lens is the player's FOV setting now (horizontal), not a fixed 55° vertical
+    setCameraTuning(90, 'full');
+    cams.update(frameFor({ localRobotId: robot.id, localStartCat: 'close' }), world, 'driver');
+    check(
+      'driverEye/wiring: the height-accurate camera takes its lens from the FOV setting, for this screen',
+      Math.abs(cams.driver.fov - vFovFromH(90, cams.driver.aspect)) < 1e-6,
+      `${cams.driver.fov} vs ${vFovFromH(90, cams.driver.aspect)}`,
+    );
+
     // clean up module-scope state so no other lane in this same process observes it.
+    setCameraTuning(null, 'full');
     setDriverHeightIn(null);
   }
 }
@@ -3384,11 +3479,31 @@ function graphicsChecks(check: Check, allFiles: string[]): void {
 
   // ---- coercion: a stored blob from another build keeps what it can ------------------------
   {
-    const stored = { shadows: 'off', aa: 'smaa', renderScale: 9999, fov: 12, nonsense: true };
+    const stored = { shadows: 'off', aa: 'smaa', renderScale: 9999, hfov: 12, nonsense: true };
     const out = coerceGraphicsSettings(stored, GFX_PRESETS.high);
     check('coercion keeps a value it understands', out.shadows === 'off');
     check('coercion drops a value it does not (an `aa` from a build that offered SMAA)', out.aa === GFX_PRESETS.high.aa);
-    check('coercion clamps rather than resets (render scale, FOV)', out.renderScale === 200 && out.fov === 60, `${out.renderScale}/${out.fov}`);
+    check('coercion clamps rather than resets (render scale, FOV)', out.renderScale === 200 && out.hfov === 60, `${out.renderScale}/${out.hfov}`);
+    // THE FOV SLIDER WENT HORIZONTAL (owner, 2026-09-24: "keep human fov in mind"). A blob from
+    // before carries a VERTICAL `fov`: the old default becomes the new one (an untouched preset
+    // still reads as that preset), anything else is what it showed across a 16:9 screen, and
+    // nothing lands past what two human eyes see.
+    const legacy = (fov: number): number => coerceGraphicsSettings({ fov }, GFX_PRESETS.high).hfov;
+    check(
+      'fov: a stored VERTICAL 70 (the old default) becomes the new default, and a stored 60 what it showed on 16:9',
+      legacy(70) === GFX_PRESETS.high.hfov && legacy(60) === Math.round(hFovFromV(60, 16 / 9)),
+      `70 -> ${legacy(70)}, 60 -> ${legacy(60)}`,
+    );
+    check(
+      'fov: ...and a stored vertical 90 (121° across on 16:9) is held to the human binocular 120',
+      legacy(90) === HUMAN_BINOCULAR_HFOV_DEG && HUMAN_BINOCULAR_HFOV_DEG === 120,
+      String(legacy(90)),
+    );
+    check(
+      'fov: vertical and horizontal convert both ways (100° across a 16:9 screen is ~67.6° tall)',
+      Math.abs(vFovFromH(100, 16 / 9) - 67.67) < 0.05 && Math.abs(hFovFromV(vFovFromH(100, 16 / 9), 16 / 9) - 100) < 1e-6,
+      vFovFromH(100, 16 / 9).toFixed(3),
+    );
     check('coercion of nothing at all is the base preset', matchesPreset(coerceGraphicsSettings(undefined, GFX_PRESETS.medium), 'medium'));
   }
 

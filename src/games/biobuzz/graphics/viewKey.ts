@@ -22,7 +22,7 @@
  * for this listener and for the scene's.
  */
 
-import { DEFAULT_BINDINGS, VIEW_ACTIONS, type KeyAction, type ViewAction } from '../../../input/bindings';
+import { DEFAULT_BINDINGS, VIEW_ACTIONS, keyName, type KeyAction, type ViewAction } from '../../../input/bindings';
 import { getViewPref, setViewPref } from './store';
 
 let viewKeys: Record<ViewAction, readonly string[]> = pickViewKeys(DEFAULT_BINDINGS.keys);
@@ -36,6 +36,12 @@ function pickViewKeys(keys: Record<KeyAction, readonly string[]>): Record<ViewAc
 /** adopt the player's binds (the MAIN map: view actions are BIOBUZZ-only, so never overridden) */
 export function setViewBindings(keys: Record<KeyAction, readonly string[]>): void {
   viewKeys = pickViewKeys(keys);
+}
+
+/** the key a player reads for `action` ("T"), or null when it is unbound — for copy that names it */
+export function viewKeyName(action: ViewAction): string | null {
+  const k = viewKeys[action][0];
+  return k === undefined ? null : keyName(k);
 }
 
 /** which view action `e` presses, if any — null under a modifier or while typing */

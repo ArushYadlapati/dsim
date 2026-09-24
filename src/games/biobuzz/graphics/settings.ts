@@ -304,8 +304,14 @@ export interface GraphicsSettings {
   /** the environment map's SPECULAR contribution on metals (`envMapIntensity`). */
   reflections: boolean;
   effects: EffectsLevel;
-  /** 60–90°, §4.3's own envelope. Caps the driver camera's solved FOV and sets chase/orbit. */
-  fov: number;
+  /**
+   * HORIZONTAL degrees, `GFX_FOV_MIN`–`GFX_FOV_MAX` (60–120, the top being what both human eyes
+   * see together — `graphics/fov.ts`). Each camera turns it into a vertical FOV for its own screen:
+   * a ceiling on the solved driver camera, the lens of the height-accurate driver eye, and the
+   * chase/orbit FOV. Stored as `hfov`; a blob from before 2026-09-24 has a VERTICAL `fov` instead,
+   * which `coerceGraphicsSettings` converts once.
+   */
+  hfov: number;
   cameraMotion: CameraMotion;
   /** the picture-in-picture overhead map in a corner. */
   /**
@@ -347,6 +353,10 @@ export const GFX_PIXEL_BUDGET: Record<GraphicsTier, number> = {
  * itself hedges (`GFX_NOT_OFFERED`): Ultra's AA is `msaa4` rather than "MSAA 4x + SMAA", and
  * Ultra's AO is `off` rather than "on".
  */
+/** the FOV slider's default, HORIZONTAL degrees — what the old default showed on a 16:9 screen
+ * (70° vertical is 102° across), rounded. Declared here, above the presets that read it. */
+export const GFX_FOV_DEFAULT = 100;
+
 export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
   low: {
     renderScale: 75,
@@ -362,7 +372,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     envLighting: false,
     reflections: false,
     effects: 'minimal',
-    fov: 70,
+    hfov: GFX_FOV_DEFAULT,
     cameraMotion: 'reduced',
     minimap: false,
     perfOverlay: 'off',
@@ -381,7 +391,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     envLighting: false,
     reflections: false,
     effects: 'standard',
-    fov: 70,
+    hfov: GFX_FOV_DEFAULT,
     cameraMotion: 'full',
     minimap: false,
     perfOverlay: 'off',
@@ -400,7 +410,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     envLighting: true,
     reflections: true,
     effects: 'standard',
-    fov: 70,
+    hfov: GFX_FOV_DEFAULT,
     cameraMotion: 'full',
     minimap: false,
     perfOverlay: 'off',
@@ -419,7 +429,7 @@ export const GFX_PRESETS: Record<GraphicsTier, GraphicsSettings> = {
     envLighting: true,
     reflections: true,
     effects: 'full',
-    fov: 70,
+    hfov: GFX_FOV_DEFAULT,
     cameraMotion: 'full',
     minimap: false,
     perfOverlay: 'off',
@@ -461,6 +471,7 @@ export const GFX_NOT_OFFERED: readonly { label: string; why: string }[] = [
 // ────────────────────────────────────────────────────────────────────────────── the store ──
 
 import { GRAPHICS_KEY } from '../../../storageKeys';
+import { HUMAN_BINOCULAR_HFOV_DEG, hFovFromV } from './fov';
 import { desktop } from '../../../desktop';
 
 export interface GraphicsState {
@@ -496,7 +507,18 @@ const clampNum = (v: unknown, lo: number, hi: number, fallback: number): number 
 export const GFX_RENDER_SCALE_MIN = 50;
 export const GFX_RENDER_SCALE_MAX = 200;
 export const GFX_FOV_MIN = 60;
-export const GFX_FOV_MAX = 90;
+export const GFX_FOV_MAX = HUMAN_BINOCULAR_HFOV_DEG;
+
+/**
+ * A blob from before the slider went horizontal carries `fov`, VERTICAL degrees (60–90). Read it
+ * as what it showed on a 16:9 screen, the common case, and map the old default (70) onto the new
+ * one so an untouched preset still reads as that preset rather than as "Custom".
+ */
+function legacyHfov(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return undefined;
+  if (Math.round(v) === 70) return GFX_FOV_DEFAULT;
+  return hFovFromV(Math.min(90, Math.max(60, v)), 16 / 9);
+}
 
 export function coerceGraphicsSettings(raw: unknown, base: GraphicsSettings): GraphicsSettings {
   const o = (raw ?? {}) as Partial<Record<keyof GraphicsSettings, unknown>>;
@@ -514,7 +536,7 @@ export function coerceGraphicsSettings(raw: unknown, base: GraphicsSettings): Gr
     envLighting: typeof o.envLighting === 'boolean' ? o.envLighting : base.envLighting,
     reflections: typeof o.reflections === 'boolean' ? o.reflections : base.reflections,
     effects: oneOf<EffectsLevel>(['minimal', 'standard', 'full'], o.effects, base.effects),
-    fov: clampNum(o.fov, GFX_FOV_MIN, GFX_FOV_MAX, base.fov),
+    hfov: clampNum(o.hfov ?? legacyHfov((o as { fov?: unknown }).fov), GFX_FOV_MIN, GFX_FOV_MAX, base.hfov),
     cameraMotion: oneOf<CameraMotion>(['full', 'reduced'], o.cameraMotion, base.cameraMotion),
     minimap: typeof o.minimap === 'boolean' ? o.minimap : base.minimap,
     perfOverlay: oneOf<PerfOverlay>(['off', 'fps', 'full'], o.perfOverlay, base.perfOverlay),

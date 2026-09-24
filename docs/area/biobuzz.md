@@ -548,6 +548,20 @@ newest-first — it is never ranked, which is what keeps the two eras from meeti
     its orientation and its tracked position, so its release is a continuation and its hole
     pattern does not flip the tick it is parked in a cell; and the starting orientation is a hash
     of the ball's own `id`, so 40 fresh POLLEN do not show 40 copies of the same face.
+  - ⚠️ **THE FOV SLIDER IS HORIZONTAL DEGREES, 60–120** (owner, 2026-09-24: "keep human fov in
+    mind"). `GraphicsSettings.hfov` (was a VERTICAL `fov`, 60–90, converted once on load: the old
+    default 70 maps to the new default 100, anything else to what it showed across 16:9). 120 is
+    what both human eyes see together (`graphics/fov.ts`); the old vertical 90 was 150° across on
+    21:9. Every camera converts it for its own screen shape: the solved driver camera's ceiling
+    (`fovCapRad`, allowed below the fit's 60° floor so an ultrawide steps the eye back instead of
+    going fish-eye), chase, orbit/free (15° tighter), and the height-accurate driver eye.
+  - ⚠️ **THE HEIGHT-ACCURATE DRIVER EYE KEEPS BOTH HIVES IN FRAME** (owner, 2026-09-24: "the hive
+    should be fully visible ideally as a driver"). It used a fixed 55° vertical lens aimed at a blend
+    of field centre and the robot, which cut the top of the hive off in 976 of 1,200 sampled cases.
+    It now takes the slider's lens, and `driverEyeAimFit` keeps the blended aim when the eight
+    `HIVE_VIEW_POINTS` are already in frame, otherwise turns it the least that brings them in. When
+    the hive is taller than the lens (a short driver on 21:9) it centres on it. The eye never moves.
+    Pinned by the RENDER lane's `driverEye/hive` checks.
   - ⚠️ **MSAA is a render target this scene owns, not the canvas's `antialias`.** The context is
     created with `antialias: false` always: WebGL cannot be asked for a particular sample count
     on the default framebuffer and the attribute is fixed for the life of the context, so that
