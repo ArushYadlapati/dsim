@@ -868,6 +868,7 @@ export function GameView({
           eloResults={controllerRef.current?.getEloResults() ?? null}
           canRematch={!session}
           onRematch={() => controllerRef.current?.rematch()}
+          onRunAgain={onRestartRun}
           rematchVote={hud.rematch}
           onQueueAgain={session?.ranked ? onQueueAgain : undefined}
           /* Host only, and read fresh on every results render rather than captured once:

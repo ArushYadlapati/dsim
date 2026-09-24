@@ -600,6 +600,7 @@ export function Results({
   eloResults,
   canRematch,
   onRematch,
+  onRunAgain,
   rematchVote,
   onRematchVote,
   onQueueAgain,
@@ -631,6 +632,9 @@ export function Results({
    *  layout switch: a solo run has nobody to show an opposing half for. */
   canRematch: boolean;
   onRematch: () => void;
+  /** SOLO RECORD run only: start a fresh run (GameView's `onRestartRun`). A record run is
+   *  server-hosted, so `canRematch` is false for it and RUN AGAIN needs its own callback. */
+  onRunAgain?: () => void;
   /** duo-record co-op vote (null unless this run has one) */
   rematchVote: { votes: number; need: number; mine: boolean } | null;
   onRematchVote: () => void;
@@ -755,6 +759,7 @@ export function Results({
         matchResult={matchResult}
         canRematch={canRematch}
         onRematch={onRematch}
+        onRunAgain={onRunAgain}
         rematchVote={rematchVote}
         onRematchVote={onRematchVote}
         onExit={onExit}
@@ -1178,6 +1183,7 @@ function RecordResults({
   practiceRun,
   canRematch,
   onRematch,
+  onRunAgain,
   rematchVote,
   onRematchVote,
   onExit,
@@ -1200,6 +1206,9 @@ function RecordResults({
   practiceRun: { replay: Replay; result: ReplayResult } | null;
   canRematch: boolean;
   onRematch: () => void;
+  /** SOLO RECORD run only: start a fresh run (GameView's `onRestartRun`). A record run is
+   *  server-hosted, so `canRematch` is false for it and RUN AGAIN needs its own callback. */
+  onRunAgain?: () => void;
   /** duo-record co-op vote (null unless this run has one) */
   rematchVote: { votes: number; need: number; mine: boolean } | null;
   onRematchVote: () => void;
@@ -1334,8 +1343,8 @@ function RecordResults({
               {/* CO-OP: the run belongs to both drivers, so restarting is a vote —
                   the same control (and the same R binding) as mid-match. */}
               {rematchVote && <RematchVote vote={rematchVote} onToggle={onRematchVote} primary={!canRematch} />}
-              {canRematch && (
-                <button className="primary" onClick={onRematch}>
+              {(canRematch || onRunAgain) && (
+                <button className="primary" onClick={onRunAgain ?? onRematch}>
                   RUN AGAIN
                 </button>
               )}
