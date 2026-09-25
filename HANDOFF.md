@@ -1,4 +1,4 @@
-# HANDOFF — 2026-09-24l (BIOBUZZ Act 1's 2D records stay on the boards; Act 2 release prep)
+# HANDOFF — 2026-09-24n (BIOBUZZ Act 1's 2D records stay on the boards; Act 2 release prep)
 
 **State: pushed on `alpha`.** `dbtest` ALL PASS (10 new era checks), `server:check`, `build`, `docaudit` pass. Server change: `dsim-alpha` needs a redeploy, and production gets it with the `main` deploy. Nothing merged to `main`, nothing deployed.
 
