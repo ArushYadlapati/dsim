@@ -11,7 +11,6 @@ import {
   BB_MASS_BASE,
   BB_MASS_BOX_TUBE,
   BB_MASS_DUMPER,
-  BB_MASS_INERTIA,
   BB_MASS_SWEEPER_EDGE,
   BB_MASS_TURRET,
   BB_MASS_TURRET2,
@@ -563,15 +562,20 @@ export function robotChecks(check: Check): void {
           floor({ drivetrain: 'mecanum', ...ONE_TURRET }),
         BB_MASS_BOX_TUBE,
       ],
-      [
-        'the FLYWHEEL at full inertia',
-        floor({ drivetrain: 'mecanum', ...ONE_TURRET, flywheelInertia: 1 }) -
-          floor({ drivetrain: 'mecanum', ...ONE_TURRET, flywheelInertia: 0 }),
-        BB_MASS_INERTIA,
-      ],
     ];
     for (const [what, got, want] of deltas) {
       check(`mass: ${what} costs ${want} lb and nothing else moves`, Math.abs(got - want) < 1e-9 && want > 0, `${got}`);
+    }
+
+    // ⚠️ `flywheelInertia` IS NOT PRICED (owner, 2026-09-24). BIOBUZZ has no inertia dial, and a
+    // fresh BIOBUZZ spec is seeded from DECODE's `DEFAULT_SPEC` at 0.4, which floored a mecanum
+    // turret build at 18.6 and a tank one at 20.1. The second check starts from that seed.
+    {
+      const at = (i: number): number => floor({ drivetrain: 'mecanum', ...ONE_TURRET, flywheelInertia: i });
+      check('mass: flywheelInertia 0 / 0.4 / 1 all floor at the same 18.00', at(0) === 18 && at(0.4) === 18 && at(1) === 18, `${at(0)} ${at(0.4)} ${at(1)}`);
+      const seeded = bbCoerce({ ...DEFAULT_SPEC });
+      const m = bbMassLimits(seeded).min;
+      check('mass: the DECODE-seeded default floors on a half-pound grid', seeded.flywheelInertia === DEFAULT_SPEC.flywheelInertia && Math.abs(m * 2 - Math.round(m * 2)) < 1e-9, `${m} (inertia ${seeded.flywheelInertia})`);
     }
 
     // THE HEAVY END LANDS SOMEWHERE PLAUSIBLE. Not a chosen number — a sanity band on the sum,
@@ -855,6 +859,18 @@ export function robotChecks(check: Check): void {
     const flank = bbCoerce({ ...oldMax, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: { kind: 'vslide', mount: 'left' } }) });
     const fl = extent(flank);
     check('R105.A: a flank Box Tube on a maxed chassis keeps its size (18 × 24 either way round)', inPrism(flank) && flank.length === 15 && flank.width === 17, `${flank.length} × ${flank.width} → ${fl.ex.toFixed(2)} × ${fl.ey.toFixed(2)}`);
+    // THE CEILING IS R102's 18 AND THE WIDTH RANGE FOLLOWS THE LENGTH (owner, 2026-09-24). A front
+    // sweeper with no tube reaches 18 × 18; the same flank-tube build can go 18 long, and then
+    // only the length-long rectangle holds it, so its width range narrows to fit.
+    {
+      const plain = bbCoerce({ ...oldMax, length: 99, width: 99, ...mech({ launcher: { kind: 'turret', mount: 'center', hoodDeg: 75 }, lift: null }) });
+      check('size: a front sweeper, no tube, dials to 18 × 18 (R102, not DECODE’s 15 or the old 17)', plain.length === 18 && plain.width === 18 && inPrism(plain), `${plain.length} × ${plain.width}`);
+      const long = bbCoerce({ ...flank, length: 18, width: 18 });
+      const ll = extent(long);
+      check('size: the flank-tube build at 18 long gets the width that rectangle allows, and stays in the prism', long.length === 18 && long.width === 15.5 && inPrism(long), `${long.length} × ${long.width} → ${ll.ex.toFixed(2)} × ${ll.ey.toFixed(2)}`);
+      check('size: ...and its dial range agrees with the coercer', bbSizeLimits(long).maxWidth === 15.5 && bbSizeLimits(flank).maxWidth === 18 && bbSizeLimits(flank).maxLength === 18, `${bbSizeLimits(long).maxWidth} / ${bbSizeLimits(flank).maxWidth} / ${bbSizeLimits(flank).maxLength}`);
+      check('size: coercion is still idempotent across the dependent range', JSON.stringify(bbCoerce(long)) === JSON.stringify(long));
+    }
     // NO 15-DIGIT SIZES (owner report, 2026-09-13): a corner tube's reach is 2.36·√½, and the
     // clamp used to land a chassis on 16.331227996399747. Every size limit sits on the slider grid.
     const onGrid = (v: number): boolean => Math.abs(v / BB_SIZE_STEP - Math.round(v / BB_SIZE_STEP)) < 1e-9;

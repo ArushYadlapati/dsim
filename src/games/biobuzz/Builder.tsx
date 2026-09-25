@@ -6,6 +6,7 @@ import {
   BB_DUMP_MAX_DIST,
   BB_HOOD_DEFAULT_DEG,
   BB_SIZE_STEP,
+  BB_MASS_STEP,
   BB_STORAGE_MIN,
   bbDeployedHeightIn,
 } from './config';
@@ -41,7 +42,6 @@ import {
 import {
   BB_INTAKE_KIND_BLURBS,
   BB_INTAKE_LABELS,
-  BB_INTAKE_MOUNT_BLURBS,
   BB_INTAKE_MOUNT_LABELS,
   BB_MODE_BLURBS,
   BB_MODE_LABELS,
@@ -402,16 +402,16 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
         </label>
         <label className="ds-field">
           <span className="cap">
-            Mass <span className="val">{dialText(spec.massLb, 0.1)} lb</span>
+            Mass <span className="val">{dialText(spec.massLb, BB_MASS_STEP)} lb</span>
           </span>
           <input
             className="ds-range"
             type="range"
             min={dials.mass.min}
             max={dials.mass.max}
-            step={1}
+            step={BB_MASS_STEP}
             value={spec.massLb}
-            aria-valuetext={`${dialText(spec.massLb, 0.1)} pounds`}
+            aria-valuetext={`${dialText(spec.massLb, BB_MASS_STEP)} pounds`}
             style={rangeFill(spec.massLb, dials.mass.min, dials.mass.max)}
             onChange={(e) => setSpec({ massLb: Number(e.target.value) })}
           />
@@ -489,7 +489,6 @@ export function BiobuzzBuilder({ spec, setSpec }: BiobuzzBuilderProps) {
             onClick={() => setSpec({ intakeMount: m })}
           >
             <span className="ot">{BB_INTAKE_MOUNT_LABELS[m]}</span>
-            {BB_INTAKE_MOUNT_BLURBS[m] ? <span className="od">{BB_INTAKE_MOUNT_BLURBS[m]}</span> : null}
           </button>
         ))}
       </div>

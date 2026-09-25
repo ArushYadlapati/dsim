@@ -1630,19 +1630,17 @@ shooter.
 `bbMassLimits(spec)` (`config.ts`) is the one model, read by the coercer, by `bbDials` (the
 builder's slider) and by both preset lists. `bbMassFloorBump`, `BB_TWIN_MASS_FLOOR` and
 `BB_LIFT_MASS_FLOOR` are gone. Floor = BARE CHASSIS + one `BB_MASS_SWEEPER_EDGE` per mounted
-edge + the launcher + a Box Tube + `BB_MASS_INERTIA · flywheelInertia`, rounded to 0.01 for the
-reason `massLimits` documents. Every constant is APPROX with its reason on its own line:
+edge + the launcher + a Box Tube, rounded to 0.01 for the reason `massLimits` documents. Every constant is APPROX with its reason on its own line:
 
 | part | lb | | drivetrain (bare) | lb |
 |---|---|---|---|---|
 | sweeper edge (`frontback`/`side` pay twice) | 1.5 | | mecanum / xdrive | 11.5 |
-| single turret | 4.0 | | tank | 13.0 |
+| single turret | 5.0 | | tank | 13.0 |
 | second turret of a double | +3.5 | | swerve | 15.5 |
-| dumper | 2.5 | | butterfly | 17.0 |
+| dumper | 3.5 | | butterfly | 17.0 |
 | Box Tube | 2.5 | | | |
-| flywheel at inertia 1 | 4.0 (`INERTIA_MASS_FLOOR`) | | | |
 
-Resulting floors at `BB_INERTIA_DEFAULT` (0.25): mecanum one sweeper one turret **18.00**
+Resulting floors: mecanum one sweeper one turret **18.00**
 (the calibration point, asserted EXACTLY), xdrive 18.00, tank 19.50, swerve 22.00, butterfly
 23.50; mecanum + dumper 16.50; + a tube 20.50; swerve + two sweepers + a double + a tube 29.50.
 The CEILING is the shared per-drivetrain envelope (42, swerve 40) because **R104 sets no robot
@@ -1657,10 +1655,12 @@ coercer moves is a card that can never read as selected. `out.massLb = sp.massLb
 `bbMech` / `heightIn` / pass-target carry-across lines in that arm and the game's own clamp does
 the work. Nothing outside `game === 'biobuzz'` is touched.
 
-⚠️ **`flywheelInertia` IS NOT A DIAL IN THIS GAME AND NOTHING IN THE SIM READS IT** — its only
-effect is that term. `BB_INERTIA_DEFAULT` is what every preset carries so their masses are
-comparable; a spec arriving from DECODE or Chain Reaction keeps its own value and can therefore
-be up to 4 lb heavier at the floor than any build made here.
+⚠️ **`flywheelInertia` IS NOT A DIAL IN THIS GAME AND NOTHING READS IT, THE MASS FLOOR INCLUDED**
+(owner, 2026-09-24). The floor used to add `4 · flywheelInertia`, and a fresh BIOBUZZ spec is
+seeded from DECODE's `DEFAULT_SPEC` at 0.4, so the builder showed mecanum + turret at 18.6 and
+tank + turret at 20.1 — a stray ".1 lb" the owner could not explain. The term is gone and its
+1 lb at `BB_INERTIA_DEFAULT` moved into the turret (4 → 5) and dumper (2.5 → 3.5), so every
+preset's floor is unchanged.
 
 **THE PRESETS** are the StarterBot (`presets.ts`, the one real kit robot, still alone in front of
 the rule-off) and four demos in `config.ts`. Scored head-to-head against the StarterBot with HARD
@@ -1739,10 +1739,17 @@ pinned the chassis half an inch over the ceiling. The game's own floor is capped
 own ceiling now. It only ever reached a spec carried over from another game, because the BIOBUZZ
 builder has no intake-STYLE picker.
 
-**STILL OPEN, stated rather than fixed:** `BB_MAX_LENGTH` (17) is DEAD — `src/sim/spawn.ts` still
-sizes a BIOBUZZ spec with DECODE's per-intake `lengthLimits`, so the real ceiling is 15 (sloped),
-14.5 (vector) or 13 (triangle). `bbSizeLimits`' header says term 2 stops binding "the moment the
-BIOBUZZ arm lands"; the arm landed and the size clamp was never switched over with it. Doing so
-is the same one-line shape as the mass carry-across above, but it widens every chassis and moves
-footprints, start poses and hopper volume with it. And the HOPPER slider is 1–4 for every build in
-the legal envelope, so it still tells no two builds apart (`BB_STORAGE_MAX`, owner ruling).
+**THE CHASSIS GOES TO 18 × 18** (owner, 2026-09-24: "why is max width/length 17 not 18?").
+`BB_MAX_LENGTH`/`BB_MAX_WIDTH` are `ROBOT_MAX_SIZE` (R102's cube); the 17 was a "working inch"
+no rule asks for. And length was never reaching even that: `src/sim/spawn.ts` sized a BIOBUZZ
+spec with DECODE's `lengthLimits`, whose ceiling (15 sloped) is DECODE's in-cube roller rule. The
+BIOBUZZ arm now carries the raw `length`/`width` across like `massLb`, and `bbEnvelope` keeps only
+the shared FLOORS. R105.A's prism still binds: chassis + deployed sweepers + tube fit 18 × 24.
+
+⚠️ **THE WIDTH RANGE DEPENDS ON THE LENGTH.** The legal set is the union of the two R105.A
+rectangles (24 along the length, or along the width). `bbEnvelope` used to pick ONE per build;
+at an 18 ceiling that made a front sweeper + flank tube build choose 18 × 15.5 over 15 × 18 and
+shrink every saved 15 × 17 build of that shape. Now the length range is the union's and the width
+range is the widest one any rectangle holding that length allows; `coerceBiobuzzSpec` clamps
+length first and then reads width off it. The HOPPER slider is still 1–4 for every build
+(`BB_STORAGE_MAX`, owner ruling).

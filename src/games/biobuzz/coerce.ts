@@ -165,7 +165,9 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   out.intakeSide = out.intakeMount === 'side';
 
   // 2) SIZE, from the resolved intake mount (which is why step 1 runs first).
-  const size = bbSizeLimits(out);
+  // LENGTH FIRST, then the width range read off the clamped length: which R105.A rectangle can
+  // hold the build depends on it (`bbSizeLimits`).
+  const lenLim = bbSizeLimits(out);
   // When a mount leaves nothing legal, `bbSizeLimits` reports max < min on purpose. Clamping
   // to an inverted range would produce the MAX (i.e. a robot smaller than the floor), so
   // widen to the floor.
@@ -175,7 +177,8 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   // which an older coercer wrote and a save still carries — sailed through every later pass and
   // the builder printed it. Snapping heals the stored spec on load, and it happens HERE rather
   // than in the builder so that what is sent, saved, simulated and keyed is the snapped number.
-  out.length = bbSnapSize(clampFinite(out.length, size.minLength, Math.max(size.minLength, size.maxLength), base.length));
+  out.length = bbSnapSize(clampFinite(out.length, lenLim.minLength, Math.max(lenLim.minLength, lenLim.maxLength), base.length));
+  const size = bbSizeLimits(out);
   out.width = bbSnapSize(clampFinite(out.width, size.minWidth, Math.max(size.minWidth, size.maxWidth), base.width));
 
   // 3) MASS, from the BUILD — a bare chassis per drivetrain plus every mechanism bolted to it
