@@ -85,6 +85,7 @@ import {
   BB_TURRET_BRACES,
   BB_SHOOTER_PLATE_T,
   BB_TURRET_MOTOR_R,
+  BB_DEG,
   BB_TURRET_PITCH_MIN,
   BB_TURRET_PLATE_T,
   BB_TURRET_PLATE_TOP_Z,
@@ -2363,6 +2364,20 @@ const BB_BELT_CLEAR = 0.25;
 const TH_EXIT = Math.PI / 2;
 
 /**
+ * THE HOOD'S ELEVATION ON A ROBOT NOTHING IS AIMING — the builder preview and the saved-robot
+ * thumbnails, which never run `sync`.
+ *
+ * It used to be the node's own zero, `BB_TURRET_PITCH_MIN`: a LEVEL shot, which puts the hood's
+ * lip straight over the wheel and is the TALLEST pose the hood has. The sim never goes there. A
+ * turret re-solves its aim at the HIVE cell every tick (`bbTurretSolution`), and a 53.5–65.6-in
+ * cell cannot be reached level. MEASURED over a 6-in field grid × four headings, 2,116 poses per
+ * turret on a double turret: min 58.6°, p25 65.0°, **p50 68.7°**, p75 74.4°, max 80.0° (the
+ * stop), the same for both exits. So the picture shows the median (owner, 2026-09-24: "The hood is
+ * WAY too high. It never goes that high").
+ */
+export const BB_HOOD_SHOW_PITCH = 69 * BB_DEG;
+
+/**
  * THE FIXED SIDE PLATE'S OUTER BOUNDARY at one axle-frame angle — FIVE HALF-PLANES, and nothing
  * else. The plate is CONVEX and the axle is inside it, so one radius per angle is the whole shape:
  *
@@ -3155,6 +3170,10 @@ export function buildRobotGroup(
     group.add(d);
     group.userData.dumpArm = d.userData.dumpArm;
   }
+  // A BUILT ROBOT'S HOOD STARTS AT AN ELEVATION THE SIM ACTUALLY AIMS AT — see `BB_HOOD_SHOW_PITCH`.
+  // The match's `sync` overwrites it on its first frame; the builder preview and the saved-robot
+  // thumbnails never sync, so this is the pose they show.
+  for (const p of pitches) p.rotation.y = -BB_HOOD_SHOW_PITCH;
   group.userData.turretHeads = heads;
   group.userData.turretPitches = pitches;
   group.userData.launcher = launcher;

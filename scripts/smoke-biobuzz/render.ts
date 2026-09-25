@@ -192,6 +192,7 @@ import {
   BB_TURRET_BRACES,
   BB_TURRET_MOTOR_R,
   BB_TURRET_PITCH_MAX,
+  BB_DEG,
   BB_TURRET_PITCH_MIN,
   BB_TURRET_PLATE_TOP_Z,
   BB3_HEIGHT_DEFAULT,
@@ -206,6 +207,7 @@ import {
 // geometry were signed off by a lane that could only grep the source — see its own header, and
 // the SHOOTER block below.
 import {
+  BB_HOOD_SHOW_PITCH,
   BB_INTAKE_ARM_INSET,
   BB_SIGN_DIGIT_H,
   BB_SIGN_H,
@@ -1167,6 +1169,38 @@ export function renderChecks(check: Check): void {
       !solveShotPath(w2, w2.robots[0]) && !SHOT.made && SHOT.points === 0,
       `points=${SHOT.points}`,
     );
+
+    // ⚠️ THE HOOD A BUILT ROBOT SHOWS BEFORE ANYTHING AIMS IT (`BB_HOOD_SHOW_PITCH`) IS ONE THE
+    // AIM SOLVE ACTUALLY PRODUCES. It was the level pose — the tallest the hood has, and one no
+    // HIVE shot reaches — so the builder preview drew a hood the sim never raises that far
+    // (owner, 2026-09-24). Swept over the field on a DOUBLE turret, both exits.
+    {
+      const twin = { scoreMode: 'twinturret', bbMech: { launcher: { kind: 'twinturret', mount: 'left', mount2: 'right', hoodDeg: 75 }, lift: null } } as unknown as Partial<RobotSpec>;
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (let x = -60; x <= 60; x += 12) {
+        for (let y = -60; y <= 60; y += 12) {
+          for (const h of [0, 2.4]) {
+            const wt = mkWorld('practice', 11, twin);
+            const rt = wt.robots[0];
+            rt.pos.x = x;
+            rt.pos.y = y;
+            rt.heading = h;
+            for (const which of [0, 1] as const) {
+              const s = bbTurretSolution(rt, bbAimTarget(wt, rt), which);
+              if (!s) continue;
+              lo = Math.min(lo, s.pitch);
+              hi = Math.max(hi, s.pitch);
+            }
+          }
+        }
+      }
+      check(
+        'turret: the resting hood pose is inside the elevation band the HIVE aim solve produces',
+        BB_HOOD_SHOW_PITCH >= lo && BB_HOOD_SHOW_PITCH <= hi && lo > BB_TURRET_PITCH_MIN,
+        `show ${(BB_HOOD_SHOW_PITCH / BB_DEG).toFixed(1)}° vs solved ${(lo / BB_DEG).toFixed(1)}°…${(hi / BB_DEG).toFixed(1)}°`,
+      );
+    }
 
     // ⚠️ THE PATH'S VERDICT IS THE FIRE GATE'S, POSE FOR POSE (owner ruling, 2026-09-19: the path
     // is drawn "in the case that we can make the shot assuming that the hive is completely up on
@@ -2320,7 +2354,8 @@ function hoodPlateChecks(check: Check): void {
   // the four the owner's report names, in the order the release table in `config.ts` lists them
   const PITCHES: readonly [string, number][] = [
     ['min', BB_TURRET_PITCH_MIN],
-    ['default', BB_TURRET_PITCH_MIN],
+    // the pose a built robot SHOWS before anything aims it (`BB_HOOD_SHOW_PITCH`) — was the level pose
+    ['default', BB_HOOD_SHOW_PITCH],
     ['57.6°', 57.6 * DEG],
     ['80° cap', BB_TURRET_PITCH_MAX],
   ];
