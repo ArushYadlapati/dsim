@@ -10,17 +10,17 @@
 - **Release plan, patch notes, Discord posts:** `docs/releases/biobuzz-act2.md`. Open items for the owner are in its §1: production Fly secrets for linking/star/boost (missing on `dohun-sim-decode`), satellite sizes, the mis-merged `update_rc` block in `fly-deploy.sh`, and leaving the Discord Activity unannounced.
 - **Roll BIOBUZZ Act 2 right after the Fly deploy, under maintenance,** before anyone sets a 3D record in season 4.
 
-# HANDOFF — 2026-09-24m (BIOBUZZ builder: 18-in chassis, mass floor ignores inertia, no mount blurbs)
+# HANDOFF — 2026-09-24m (BIOBUZZ builder: 18-in chassis, no inertia, no mount blurbs)
 
 **State: committed and pushed on `alpha`.** `npm test` 5090/5090, `build`, `server:check`, `uiaudit`, `docaudit` pass. The predict lane's timing checks failed twice under full load before the rebase and pass alone. ⚠️ **Server change** (`src/sim/spawn.ts`, the BIOBUZZ size clamp): alpha needs `./scripts/fly-deploy.sh --alpha`, production a deploy from `main`. An old server clamps an 18-in BIOBUZZ chassis back to 15 × 17.
 
 - **Owner:** "Single turret single intake no boxtube should be as low as 18 lbs… I dont know where this .1 lbs comes from… why is max width/length 17 not 18?" and remove the text under the SIDES / FRONT+BACK mount buttons.
-- **The .1 lb:** `bbMassLimits` added `4 · flywheelInertia`, and a fresh BIOBUZZ spec is seeded from DECODE's `DEFAULT_SPEC` (inertia 0.4), so mecanum + turret floored at 18.6 and tank + turret at 20.1. The term is gone. Its 1 lb at `BB_INERTIA_DEFAULT` moved into `BB_MASS_TURRET` (4 → 5) and `BB_MASS_DUMPER` (2.5 → 3.5), so preset floors are unchanged. The mass slider steps 0.5 (`BB_MASS_STEP`) instead of 1 anchored at the floor.
+- **The .1 lb:** BIOBUZZ has no inertia, but `bbMassLimits` added `4 · flywheelInertia` and a new BIOBUZZ spec is seeded from DECODE's `DEFAULT_SPEC` (0.4), so mecanum + turret floored at 18.6 and tank + turret at 20.1. The term is gone, `coerceBiobuzzSpec` pins `flywheelInertia` to 0, `BB_INERTIA_DEFAULT` is deleted, and `bbSpecMatches` no longer compares it. `BB_MASS_TURRET` is 5 and `BB_MASS_DUMPER` 3.5, so preset floors are unchanged. The mass slider steps 0.5 (`BB_MASS_STEP`) instead of 1 anchored at the floor.
 - **18 in:** `BB_MAX_LENGTH/WIDTH` = `ROBOT_MAX_SIZE`. The BIOBUZZ arm of `coerceSpec` carries raw `length`/`width` across (DECODE's `lengthLimits` capped sloped at 15), and `bbEnvelope` keeps only the shared floors.
 - **Width depends on length now.** The R105.A envelope is the union of both rectangles. Picking one per build made a front sweeper + flank tube choose 18 × 15.5 over 15 × 18 and shrink saved 15 × 17 builds. The coercer clamps length first, then reads width off it.
 - Masses are NOT snapped: replays re-coerce specs through `createWorld`, so a saved 20.1 stays 20.1 until the slider moves. No legal spec moves under the new clamps.
 - `BB_INTAKE_MOUNT_BLURBS` is deleted.
-- Checks: robot lane "mass: flywheelInertia…", "mass: the DECODE-seeded default…", "size: …" ×4. Rules in `docs/area/biobuzz.md` (mass table, "THE CHASSIS GOES TO 18 × 18").
+- Checks: robot lane "mass: a DECODE-seeded spec coerces to no inertia…", "size: …" ×4. Rules in `docs/area/biobuzz.md` ("BIOBUZZ HAS NO INERTIA", "THE CHASSIS GOES TO 18 × 18").
 
 # HANDOFF — 2026-09-24l (a turret SPAWNS at the elevation it aims at, and the preview draws it there)
 

@@ -1656,12 +1656,12 @@ coercer moves is a card that can never read as selected. `out.massLb = sp.massLb
 `bbMech` / `heightIn` / pass-target carry-across lines in that arm and the game's own clamp does
 the work. Nothing outside `game === 'biobuzz'` is touched.
 
-⚠️ **`flywheelInertia` IS NOT A DIAL IN THIS GAME AND NOTHING READS IT, THE MASS FLOOR INCLUDED**
-(owner, 2026-09-24). The floor used to add `4 · flywheelInertia`, and a fresh BIOBUZZ spec is
-seeded from DECODE's `DEFAULT_SPEC` at 0.4, so the builder showed mecanum + turret at 18.6 and
-tank + turret at 20.1 — a stray ".1 lb" the owner could not explain. The term is gone and its
-1 lb at `BB_INERTIA_DEFAULT` moved into the turret (4 → 5) and dumper (2.5 → 3.5), so every
-preset's floor is unchanged.
+⚠️ **BIOBUZZ HAS NO INERTIA** (owner, 2026-09-24). `flywheelInertia` is a DECODE field on the
+shared `RobotSpec`; `coerceBiobuzzSpec` pins it to 0 and nothing in this game reads it. It used
+to feed the mass floor (`4 · flywheelInertia`), and a new BIOBUZZ spec is seeded from DECODE's
+`DEFAULT_SPEC` at 0.4, so the builder showed mecanum + turret at 18.6 and tank + turret at 20.1.
+The turret (5) and dumper (3.5) absorbed the pound the presets' old value added, so preset
+floors did not move.
 
 **THE PRESETS** are the StarterBot (`presets.ts`, the one real kit robot, still alone in front of
 the rule-off) and four demos in `config.ts`. Scored head-to-head against the StarterBot with HARD

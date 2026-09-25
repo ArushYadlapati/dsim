@@ -101,7 +101,7 @@ export const BB_DEFAULT_SPEC: RobotSpec = { ...DEFAULT_SPEC, ...BB_PRESETS[0] };
  *                                 BEFORE anything below reads it
  *   1. INTAKE MOUNT             → an enum, and it feeds the ranges below
  *   2. SIZE                     → per-mount envelope (`bbSizeLimits`)
- *   3. MASS                     → drivetrain × inertia × the loadout's mechanism floor
+ *   3. MASS                     → drivetrain × the loadout's mechanism floor
  *   4. HOPPER                   → footprint × launcher × mount (`bbStorageMax`)
  *
  * ⚠️ WHY THE LOADOUT IS STEP 0. Mass (`bbMassLimits`) and storage (`bbStorageMax`) both read
@@ -191,6 +191,9 @@ export function coerceBiobuzzSpec(raw: RobotSpec, base: RobotSpec = BB_DEFAULT_S
   // prices in a DECODE shooter — it is ABOVE this model's floor for every drivetrain, so it would
   // raise a light BIOBUZZ build before this line ever saw it and a preset it moved would be a card
   // that never reads as selected.
+  // `flywheelInertia` is a DECODE field. BIOBUZZ has no inertia, so it is pinned to 0 rather
+  // than left as whatever the spec arrived with (DECODE's default seeds 0.4).
+  out.flywheelInertia = 0;
   const mass = bbMassLimits(out);
   out.massLb = clampFinite(out.massLb, mass.min, mass.max, base.massLb);
 

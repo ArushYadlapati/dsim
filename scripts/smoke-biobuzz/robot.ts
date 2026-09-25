@@ -7,7 +7,6 @@ import { defaultSettings, switchGame } from '../../src/settings';
 import { DEFAULT_ASSISTS, DEFAULT_SPEC } from '../../src/sim/spawn';
 import {
   BB_HIVE_CELL_LEN,
-  BB_INERTIA_DEFAULT,
   BB_MASS_BASE,
   BB_MASS_BOX_TUBE,
   BB_MASS_DUMPER,
@@ -501,7 +500,7 @@ export function robotChecks(check: Check): void {
       }) as unknown as Partial<RobotSpec>;
     /** a build, THROUGH the coercer, so what is measured is what would spawn. */
     const build = (o: Partial<RobotSpec>): RobotSpec =>
-      bbCoerce({ ...BB_DEFAULT_SPEC, flywheelInertia: BB_INERTIA_DEFAULT, ...o });
+      bbCoerce({ ...BB_DEFAULT_SPEC, ...o });
     const floor = (o: Partial<RobotSpec>): number => bbMassLimits(build(o)).min;
     const ONE_TURRET = { intakeMount: 'front', ...mech('turret', 'center', false) } as Partial<RobotSpec>;
 
@@ -566,16 +565,11 @@ export function robotChecks(check: Check): void {
     for (const [what, got, want] of deltas) {
       check(`mass: ${what} costs ${want} lb and nothing else moves`, Math.abs(got - want) < 1e-9 && want > 0, `${got}`);
     }
-
-    // ⚠️ `flywheelInertia` IS NOT PRICED (owner, 2026-09-24). BIOBUZZ has no inertia dial, and a
-    // fresh BIOBUZZ spec is seeded from DECODE's `DEFAULT_SPEC` at 0.4, which floored a mecanum
-    // turret build at 18.6 and a tank one at 20.1. The second check starts from that seed.
+    // BIOBUZZ HAS NO INERTIA (owner, 2026-09-24). A new BIOBUZZ spec is seeded from DECODE's
+    // `DEFAULT_SPEC` (0.4), which used to price into the floor: mecanum + turret at 18.6.
     {
-      const at = (i: number): number => floor({ drivetrain: 'mecanum', ...ONE_TURRET, flywheelInertia: i });
-      check('mass: flywheelInertia 0 / 0.4 / 1 all floor at the same 18.00', at(0) === 18 && at(0.4) === 18 && at(1) === 18, `${at(0)} ${at(0.4)} ${at(1)}`);
-      const seeded = bbCoerce({ ...DEFAULT_SPEC });
-      const m = bbMassLimits(seeded).min;
-      check('mass: the DECODE-seeded default floors on a half-pound grid', seeded.flywheelInertia === DEFAULT_SPEC.flywheelInertia && Math.abs(m * 2 - Math.round(m * 2)) < 1e-9, `${m} (inertia ${seeded.flywheelInertia})`);
+      const seeded = bbCoerce({ ...DEFAULT_SPEC, drivetrain: 'mecanum', ...ONE_TURRET });
+      check('mass: a DECODE-seeded spec coerces to no inertia and floors at 18.00', seeded.flywheelInertia === 0 && bbMassLimits(seeded).min === 18, `inertia ${seeded.flywheelInertia}, floor ${bbMassLimits(seeded).min}`);
     }
 
     // THE HEAVY END LANDS SOMEWHERE PLAUSIBLE. Not a chosen number — a sanity band on the sum,
@@ -621,7 +615,6 @@ export function robotChecks(check: Check): void {
       const light = bbCoerce({
         ...BB_DEFAULT_SPEC,
         drivetrain: 'tank',
-        flywheelInertia: BB_INERTIA_DEFAULT,
         massLb: 1,
         ...ONE_TURRET,
       });

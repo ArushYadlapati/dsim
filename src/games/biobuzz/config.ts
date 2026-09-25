@@ -2890,13 +2890,7 @@ export const BB_MASS_BASE: Readonly<Record<DrivetrainType, number>> = {
 export const BB_MASS_SWEEPER_EDGE = 1.5;
 /** a SINGLE TURRET (lb): the flywheel and its hood, the rotor ring the head yaws on, and the
  * two motors. The heaviest single mechanism in the game — it is a whole aiming assembly, not a
- * chute. APPROX.
- *
- * It was 4 plus a hidden `4 · flywheelInertia` term (1 lb at `BB_INERTIA_DEFAULT`). That term is
- * gone (owner, 2026-09-24): BIOBUZZ has no inertia dial, but a fresh BIOBUZZ spec is seeded from
- * DECODE's `DEFAULT_SPEC` (inertia 0.4), so the builder showed a mecanum turret build flooring at
- * 18.6 and a tank one at 20.1 — the stray ".1 lb". The pound it added at the default moved into
- * the two launchers, so every preset's floor is unchanged. */
+ * chute. APPROX. */
 export const BB_MASS_TURRET = 5;
 /** the SECOND turret of a DOUBLE (lb), on top of `BB_MASS_TURRET`. A whole second assembly —
  * its own flywheel, hood, ring and motors — but it shares the hopper and the feed the first one
@@ -2904,20 +2898,11 @@ export const BB_MASS_TURRET = 5;
 export const BB_MASS_TURRET2 = 3.5;
 /** a DUMPER (lb): a tilting hopper on a pivot and one motor to heave it. No stored energy and
  * no aiming hardware, so it is well under a turret — which is the archetype's real tradeoff.
- * APPROX. (Was 2.5 plus the old 1-lb inertia term; see `BB_MASS_TURRET`.) */
+ * APPROX. */
 export const BB_MASS_DUMPER = 3.5;
 /** a BOX TUBE (lb): the three nested tubes (`BB_BOX_TUBE_SECTIONS`), the pivot plates and its
  * motor, the spool, the wrist servo and the claw. APPROX. */
 export const BB_MASS_BOX_TUBE = 2.5;
-/**
- * the `flywheelInertia` every BIOBUZZ preset carries.
- *
- * ⚠️ IT IS NOT A DIAL IN THIS GAME, AND NOTHING READS IT. `bbDials` offers no inertia slider, no
- * BIOBUZZ sim code reads the field, and `bbMassLimits` no longer prices it either — a spec that
- * arrives with another value (DECODE's `DEFAULT_SPEC` seeds 0.4) weighs the same as one built
- * here. The presets carry one value so the field is uniform on the wire.
- */
-export const BB_INERTIA_DEFAULT = 0.25;
 
 /**
  * THE MASS RANGE THIS BUILD MAY BE DIALLED TO (lb) — the ONE model, read by the coercer
@@ -3174,7 +3159,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     //   mass: 20.5 lb of hardware, built properly, is 24.5.
     name: 'Pollinator', teamName: 'Turret and Box Tube · the hive and the flowers', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 24.5, drivetrain: 'mecanum',
-    driveRpm: 435, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
+    driveRpm: 435, flywheelInertia: 0, canSort: false,
     scoreMode: 'turret',
     intakeMount: 'front', shooterMount: 'center',
     assists: BB_PRESET_ASSISTS,
@@ -3197,7 +3182,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     // eight seeds, the second best on the list.
     name: 'Forager', teamName: 'Dumper · sweeps both ends, shifts to push', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 30.5, drivetrain: 'butterfly',
-    driveRpm: 420, tankRpm: 300, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
+    driveRpm: 420, tankRpm: 300, flywheelInertia: 0, canSort: false,
     scoreMode: 'dumper',
     intakeMount: 'frontback', shooterMount: 'front',
     assists: BB_PRESET_ASSISTS,
@@ -3210,7 +3195,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     //   mass: two whole flywheel assemblies, and it shows.
     name: 'Skimmer', teamName: 'Double turret · both elements on the strafe', teamNumber: 0,
     length: 15, width: 16, intake: 'sloped', massLb: 27.5, drivetrain: 'xdrive',
-    driveRpm: 520, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
+    driveRpm: 520, flywheelInertia: 0, canSort: false,
     scoreMode: 'twinturret',
     intakeMount: 'front', shooterMount: 'right',
     assists: BB_PRESET_ASSISTS,
@@ -3224,7 +3209,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     //   mass: four steering modules and two sweeper assemblies is a genuinely heavy chassis.
     name: 'Sniper', teamName: 'Single turret · collect driving either way', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 26.5, drivetrain: 'swerve',
-    driveRpm: 480, flywheelInertia: BB_INERTIA_DEFAULT, canSort: false,
+    driveRpm: 480, flywheelInertia: 0, canSort: false,
     scoreMode: 'turret',
     intakeMount: 'frontback', shooterMount: 'center',
     assists: BB_PRESET_ASSISTS,
@@ -3234,7 +3219,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
 /**
  * The shipped builds, with MASS and HOPPER derived rather than typed out.
  *
- * Both are FUNCTIONS of the build — the mass floor of a drivetrain × inertia × mechanism, and
+ * Both are FUNCTIONS of the build — the mass floor of a drivetrain × mechanism, and
  * the capacity of a footprint × archetype × mount — so a hard-coded number would quietly stop
  * being "the minimum" / "the maximum" the moment any of those constants moved, and a preset
  * whose value the coercer then clamps is a card that stops highlighting as selected.
