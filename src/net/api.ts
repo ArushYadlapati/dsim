@@ -153,9 +153,17 @@ async function maybeAuthedJson<T>(path: string): Promise<T> {
   const base = gameServerHttpUrl();
   if (!base) throw new Error('Leaderboards need the game server, and this build has none.');
   const token = await getAuthToken().catch(() => null);
-  const res = await fetch(base + path, {
+  let res = await fetch(base + path, {
     headers: token ? { authorization: `Bearer ${token}` } : {},
   });
+  // A signed-in player whose token could not be read, or was stale, is refused as a stranger,
+  // and their OWN match then reads as "private". Ask once more with a freshly fetched token.
+  if (res.status === 403) {
+    const fresh = await getAuthToken(true).catch(() => null);
+    if (fresh && fresh !== token) {
+      res = await fetch(base + path, { headers: { authorization: `Bearer ${fresh}` } });
+    }
+  }
   if (res.status === 403) {
     const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
     throw new ReplayPrivateError(body.message ?? 'This replay is private.');

@@ -236,6 +236,14 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
   into the same situation and it bypassed detach, deleting the client and taking the room with
   it. RESTART pressed in the seconds after the buzzer therefore lost the score. The LOCK still
   goes — that is all the caller needs — and the seat is left for the close that follows.
+- ⚠️ **A DECIDED MATCH IS SAVED WHOEVER WALKS AWAY, IN EVERY ROOM** (2026-09-24, "some replays
+  are not saving"). `finishing` used to be solo-record only, so a custom game, a bot game, a
+  duo run or a ranked match whose LAST connected driver left between the buzzer and the settle
+  (up to `MATCH_SETTLE_MAX_S`, while the results screen is still waiting) froze as a ghost room
+  and was deleted unsaved: no replay, no history row, no ELO. Now `detach` sets `finishing` in
+  any room once nobody is connected inside `inFinishWindow`, and `abandonSlot` leaves the seat
+  in any room inside it. A match everybody left MID-match is still not saved. Checks:
+  `smoke.ts` "versus buzzer".
 - **THE ONE-GAME REFUSAL CARRIES `code: 'active_game'`.** It is one of the few a client can act
   on, so the record launcher offers the way back into that match instead of a dead card; the
   sentence stays self-sufficient and the launcher matches on it too, because most of the fleet

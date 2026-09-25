@@ -17241,6 +17241,55 @@ const recordDrive: CommandSource = (tick) => {
     check('record buzzer: a run ABANDONED mid-match is not saved, and its room is freed at once', reached && r.saved() === 0 && r.gone() === 1, `reached=${reached} saved=${r.saved()} gone=${r.gone()}`);
   }
 
+  // ⚠️ EVERY ROOM, NOT ONLY A SOLO RUN (2026-09-24, "some replays are not saving"). A custom
+  // game, a game against bots, a duo run or a ranked match whose LAST connected driver left
+  // between the buzzer and the settle froze with nobody connected and was deleted unsaved: no
+  // replay, no history row, no ELO. The results screen only appears after the settle, so
+  // pressing MENU at the buzzer is ordinary, and in a bot game the leaver is the only human.
+  const vsRun = (code: string, ids: string[]): { room: Room; saved: () => number; gone: () => number } => {
+    let saved = 0;
+    let gone = 0;
+    const room = new Room(code, () => { gone++; }, { kind: 'versus' }, () => { saved++; });
+    for (const id of ids) room.add(mkS(id));
+    room.onMessage(ids[0], { t: 'start' });
+    return { room, saved: () => saved, gone: () => gone };
+  };
+  {
+    const r = vsRun('smoke-vs-buzzer-both', ['a', 'b']);
+    forceMatch(r.room, 'post');
+    const reached = runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.detach('b'); // a network drop first...
+    r.room.detach('a', undefined, true); // ...then the last one out presses MENU
+    r.room.pumpForTest(maxMatchTicks());
+    check('⚠️ versus buzzer: everybody leaving after the buzzer still SAVES the match', reached && r.saved() === 1, `reached=${reached} saved=${r.saved()}`);
+    check('versus buzzer: ...and frees the room once it is saved (the last close was deliberate)', r.gone() === 1, `${r.gone()}`);
+  }
+  {
+    const r = vsRun('smoke-vs-buzzer-drop', ['a']);
+    forceMatch(r.room, 'post');
+    runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.detach('a');
+    r.room.pumpForTest(maxMatchTicks());
+    check('versus buzzer: a NETWORK drop after the buzzer saves it and holds the seat for the grace', r.saved() === 1 && r.gone() === 0, `saved=${r.saved()} gone=${r.gone()}`);
+  }
+  {
+    const r = vsRun('smoke-vs-buzzer-abandon', ['a']);
+    forceMatch(r.room, 'post');
+    runUntil(r.room, (w) => w.match.phase === 'post');
+    r.room.abandonSlot('a'); // Abandon / restart from another screen, then the socket closes
+    r.room.detach('a', undefined, true);
+    r.room.pumpForTest(maxMatchTicks());
+    check('⚠️ versus buzzer: ABANDON after the buzzer still saves the match', r.saved() === 1 && r.gone() === 1, `saved=${r.saved()} gone=${r.gone()}`);
+  }
+  {
+    const r = vsRun('smoke-vs-midmatch', ['a']);
+    forceMatch(r.room, 'teleop', 90);
+    runUntil(r.room, (w) => w.match.phase === 'teleop');
+    r.room.detach('a', undefined, true);
+    r.room.pumpForTest(maxMatchTicks());
+    check('versus buzzer: a match everybody left MID-MATCH is still not saved (unchanged)', r.saved() === 0, `saved=${r.saved()}`);
+  }
+
   // ---- THE SETTLE: a match is finalized when the field comes to REST, not on a timer -------
   // The buzzer ends driving, not scoring. The server (and solo practice) finalize once the game
   // says nothing left can change the score and that has HELD, or at the cap. `src/sim/settle.ts`.

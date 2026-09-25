@@ -1003,7 +1003,9 @@ export class Room {
      * starting another run and this one can no longer be in their way. The seat is left for
      * the close that is about to follow, where detach does the right thing with it.
      */
-    if (this.soloRecord && this.inFinishWindow()) {
+    // ...and the same holds for every room, for the reason `detach` gives: a decided match is
+    // saved whoever walked away from it, so the seat is left for the close that follows.
+    if (this.inFinishWindow()) {
       this.broadcastRoster();
       return true;
     }
@@ -1416,10 +1418,21 @@ export class Room {
       // lose the run outright: the loop FREEZES a room with no connected driver (the ghost-room
       // guard in `startLoop`), so the match never reached finalize and the room died unsaved
       // — reported as "record runs are not updating their personal best or the leaderboard".
-      if (soloRecord && this.inFinishWindow()) {
+      //
+      // ⚠️ AND IT IS EVERY ROOM, NOT ONLY A SOLO RUN (2026-09-24). A custom game, a game against
+      // bots, a duo run and a ranked match were all lost the same way when the LAST connected
+      // driver left in the seconds between the buzzer and the field settling: no replay, no
+      // history row, no ELO. Reported as "some replays are not saving". The results screen only
+      // appears once the field settles (up to `MATCH_SETTLE_MAX_S`), so pressing MENU at the
+      // buzzer is an ordinary thing to do, and in a bot game the leaver is the only human. With
+      // somebody still connected the loop keeps running anyway, so this only matters for the
+      // last one out.
+      if (this.inFinishWindow() && !this.anyConnected()) {
         this.finishing = { reap: clean };
-        this.broadcastRoster();
-        return;
+        if (soloRecord) {
+          this.broadcastRoster();
+          return;
+        }
       }
       if (clean && soloRecord) {
         c.disconnectAt = -Infinity;

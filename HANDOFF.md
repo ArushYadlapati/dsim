@@ -1,3 +1,14 @@
+# HANDOFF — 2026-09-24j (games left at the buzzer were never saved)
+
+**State: committed and pushed on `alpha`, alpha game server deployed.** `server:check`, `build`, `dbtest`, `docaudit` pass; `npm test` all pass except the known `PREDICT_FULL_BUDGET_MS` load flake. Server change: production gets it with the `main` deploy.
+
+- **Report (beta tester):** some replays are not saving, or not viewable sometimes.
+- **Cause, reproduced headlessly:** only SOLO record runs kept stepping to finalize after their driver left. In every other room (custom, vs bots, duo record, ranked), the last connected driver leaving between the buzzer and the field settling (up to 10 s, before the results screen appears) froze the room and it was deleted unsaved. That meant no replay, no history row and no ELO. Closing the tab, a network drop and Abandon all lost it.
+- **Fix (`server/room.ts`):** `detach` sets `finishing` in any room once nobody is connected inside `inFinishWindow`; `abandonSlot` leaves the seat in any room inside it. Mid-match walkouts are still not saved. Checks: `smoke.ts` "versus buzzer" (they fail on the old code).
+- **Ruled out:** the recorder and playback are sound. Real `Room` matches (record, vs bots, mid-match drop and reconnect, late loader, leave at buzzer) re-simulate to the server's exact hash after a JSON round trip. Alpha DB (read-only, aggregates): every match and record in 14 days has a replay; the 11 orphan replays are all Sep 12–19 and match already-fixed bugs.
+- **Also:** `fetchReplay` retries a 403 once with a freshly fetched token (`maybeAuthedJson`), because a failed or stale token made a player's OWN versus replay read as "private".
+- **Left as is:** deleting an account deletes the versus replays other players were in (`deleteAccount`), which is deliberate.
+
 # HANDOFF — 2026-09-24i (3D matches wait for every driver's physics AND view; 20 s cap)
 
 **State: committed and pushed on `alpha`, alpha game server deployed.** `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass. `npm test`: all pass except the known `PREDICT_FULL_BUDGET_MS` load flake (10 ms under 18 processes, 4 ms alone). Server + protocol change: production gets it with the `main` deploy.
