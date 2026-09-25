@@ -241,6 +241,20 @@ const matchmaker = new Matchmaker(
 // userId, so multiple tabs count once).
 let onlineCount = 0;
 const authedUsers = new Map<string, number>(); // userId -> live socket count
+/**
+ * Has a signed-in player been on THIS machine since the last hourly reward sweep? The sweeps
+ * read Postgres, so an unconditional hourly pass on every machine wakes Neon for five billed
+ * minutes an hour, per machine, with nobody playing. A grant only matters to somebody who is
+ * here to see it, and a GitHub link sweeps on its own (`server/api.ts`), so an idle machine
+ * skips the pass. See "IDLE MEANS SILENT" below.
+ */
+const authedSinceSweep = { star: false, boost: false };
+/** consume one sweep's flag: has this machine had a signed-in player since that sweep last ran? */
+const sweepWanted = (kind: keyof typeof authedSinceSweep): boolean => {
+  const want = authedSinceSweep[kind] || authedUsers.size > 0;
+  authedSinceSweep[kind] = false;
+  return want;
+};
 /** Publish this machine's presence row RIGHT NOW. Installed by the heartbeat below;
  *  a no-op until then (and in tests, which never start it). Called on the
  *  empty -> occupied edge so the first player of a quiet period is visible to the
@@ -2711,6 +2725,7 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const sock = liveSockets.get(id);
     if (sock) sock.authed = true; // no longer a guest row
     authedUsers.set(userId, (authedUsers.get(userId) ?? 0) + 1);
+    authedSinceSweep.star = authedSinceSweep.boost = true;
   };
   // the one place a frame actually reaches the socket. `compress` is decided here rather
   // than by ws's `threshold` option, which is inert while context takeover is on — see
@@ -3762,7 +3777,9 @@ if (dbEnabled) {
  * `unref()` like every other interval here, so it never holds the process open. It is a
  * no-op with no database and a no-op until somebody has actually linked a GitHub account
  * — which is the state this sits in until the provider is enabled in the Neon Auth
- * project, so switching the feature on takes no code change here.
+ * project, so switching the feature on takes no code change here. It also skips any hour in
+ * which this machine had no signed-in player (`sweepWanted`), because even the "anyone linked?"
+ * read wakes the database.
  *
  * ⚠️ IT NEVER THROWS INTO THE TIMER. An unhandled rejection from a scheduled task is an
  * `uncaughtException` the process-level hook only logs, and a sweep that dies quietly is
@@ -3796,7 +3813,7 @@ const starBoot = setTimeout(() => {
 }, 30_000);
 starBoot.unref();
 const starSweeper = setInterval(() => {
-  if (!dbEnabled) return;
+  if (!dbEnabled || !sweepWanted('star')) return;
   void runStarSweep(STAR_REPO, process.env.GITHUB_TOKEN, fetch, 'hourly').catch((e) =>
     console.error('[rewards] star sweep failed:', e),
   );
@@ -3810,7 +3827,7 @@ starSweeper.unref();
  */
 const BOOST_GUILD = process.env.DISCORD_GUILD_ID ?? '';
 const boostSweeper = setInterval(() => {
-  if (!dbEnabled || !BOOST_GUILD || !process.env.DISCORD_BOT_TOKEN) return;
+  if (!dbEnabled || !BOOST_GUILD || !process.env.DISCORD_BOT_TOKEN || !sweepWanted('boost')) return;
   void runBoostSweep(BOOST_GUILD, process.env.DISCORD_BOT_TOKEN).catch((e) =>
     console.error('[rewards] boost sweep failed:', e),
   );

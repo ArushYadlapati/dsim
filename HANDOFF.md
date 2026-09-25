@@ -1,3 +1,17 @@
+# HANDOFF — 2026-09-24h (pre-merge pass over the background work alpha added)
+
+**State: committed and pushed on `alpha`.** `npm test` 5055/5055, `dbtest`, `build`, `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass. Server change: needs `./scripts/fly-deploy.sh --alpha`, and production gets it with the `main` deploy.
+
+Reviewed every timer, poll and spawned process in `origin/main...alpha`. Fixed:
+- **Analytics job, advisory lock** (`server/analytics.ts`): lock and unlock went through `q()`, i.e. any pooled connection, so the unlock could land on another session and leave the lock held. Now a dedicated client, as `migrate()` does. A machine that loses the lock race re-arms instead of dropping its rows.
+- **Analytics rollup window**: the job rolled "the last three hours" unaligned, and the upsert replaces a bucket, so every pass overwrote the oldest hourly bucket and TODAY'S DAILY ROW with a 3-hour slice. `runRollupGrain` widens to whole buckets. The day rollup and the retention sweep now run at most once per UTC hour (were every 5 min), rolling from a watermark so a quiet spell loses nothing. New `analyticsTick(now)` is exported for dbtest.
+- **Star/boost hourly sweeps** (`server/index.ts`): every machine read Postgres hourly with nobody online, waking Neon for 5 billed minutes per machine per hour. They now skip an hour with no signed-in player on that machine (`sweepWanted`). The boot sweep and the on-link sweep are unchanged.
+- **Client**: AdminAnalytics auto-refresh and the Discord lobby list (3 s) skip hidden tabs. The builder's 3D turntable skips drawing while scrolled off screen (IntersectionObserver).
+- **`npm test`**: the two runners together started 18 processes regardless of core count. Below 19 threads the budget is now split 2:1. No change on a 32-thread box.
+- `docs/ui-components.md` regenerated (it was stale from the stow-slider removal and failing `uiaudit`).
+
+Looked at and left alone: the presence heartbeat and pending reaper (already activity-gated), room start retries (bounded; a failed server wasm load exits the process), pad-nav polls (only while a pad is connected), `usePolled` (already visibility-aware), Electron's unlimited-FPS switches (opt-in, default off).
+
 # HANDOFF — 2026-09-24g (titles folded into badges; stargazer is a badge; one claim card per item)
 
 **State: committed and pushed on `alpha`.** `npm test` 5055/5055, `dbtest`, `build`, `server:check`, `uiaudit`, `docaudit`, `contrast` all pass. ⚠️ **Server change + migration 0049**: the alpha game server needs `./scripts/fly-deploy.sh --alpha`, and production needs a deploy from `main` once it gets there.

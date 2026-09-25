@@ -2924,6 +2924,22 @@ async function main(): Promise<void> {
     await an.runRollup(day0, day1);
     check('⚠️ analytics/rollup: re-running a bucket replaces it rather than adding to it', (await daily('*', 'total', '*'))?.views === 5);
 
+    // ⚠️ A RANGE THAT STARTS MID-BUCKET. The job rolls "the last three hours", which starts
+    // mid-hour and mid-day on every pass, and the upsert REPLACES a bucket with what the range
+    // held. 12:15–12:25 holds one of the day's five views; unaligned, it overwrote both the
+    // 12:00 bucket and the whole day with that one.
+    await an.runRollup(mins(15), mins(25));
+    const hour12 = (
+      await db.query<{ views: number }>(
+        `select views from analytics_hourly where hour = '2026-09-10T12:00:00Z' and game = '*' and dim = 'total' and val = '*'`,
+      )
+    ).rows[0];
+    check(
+      '⚠️ analytics/rollup: a range starting mid-bucket re-rolls WHOLE buckets instead of overwriting them with a slice',
+      (await daily('*', 'total', '*'))?.views === 5 && hour12?.views === 4,
+      `day=${(await daily('*', 'total', '*'))?.views} hour12=${hour12?.views}`,
+    );
+
     // ---- the dashboard read ---------------------------------------------------------------
     {
       const rep = await an.analyticsReport({ from: day0, to: day1, game: '*', filters: [], grain: 'day' });
@@ -2966,6 +2982,22 @@ async function main(): Promise<void> {
       'analytics/retention: the aggregates outlive the raw rows they were built from',
       (await daily('*', 'total', '*'))?.views === 5,
     );
+
+    // ---- the maintenance pass itself ----------------------------------------------------------
+    {
+      an.stopAnalyticsJobs();
+      const advisory = async (): Promise<number> =>
+        Number((await db.query<{ n: string }>(`select count(*) as n from pg_locks where locktype = 'advisory'`)).rows[0].n);
+      await an.analyticsTick(mins(140).getTime()); // no traffic noted: must not touch the database
+      an.noteTraffic();
+      await an.analyticsTick(mins(140).getTime());
+      check(
+        'analytics/job: a pass three hours into the day leaves the day whole',
+        (await daily('*', 'total', '*'))?.views === 5,
+      );
+      check('⚠️ analytics/job: the pass gives its advisory lock back', (await advisory()) === 0);
+      an.stopAnalyticsJobs();
+    }
 
     // ---- ⚠️ THE SCHEMA ITSELF CANNOT HOLD AN IDENTIFIER ------------------------------------
     // The strongest statement this feature makes is "no account id is ever attached to

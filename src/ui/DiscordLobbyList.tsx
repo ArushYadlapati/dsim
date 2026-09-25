@@ -54,6 +54,8 @@ export function DiscordLobbyList({
   useEffect(() => {
     let alive = true;
     const poll = (): void => {
+      // a minimised activity has nobody looking at the list; skip the request
+      if (document.visibilityState === 'hidden') return;
       fetchLobbies(group).then((l) => {
         if (alive) setLobbies(l);
       });

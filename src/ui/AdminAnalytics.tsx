@@ -251,7 +251,10 @@ export function AdminAnalytics() {
   // (`server/db/pool.ts`), and a page left open in a tab would otherwise pin it on by itself.
   useEffect(() => {
     if (!auto) return;
-    const t = setInterval(() => void load(), 60_000);
+    // ...and a hidden tab skips its turn, the same rule `usePolled` follows
+    const t = setInterval(() => {
+      if (document.visibilityState !== 'hidden') void load();
+    }, 60_000);
     return () => clearInterval(t);
   }, [auto, load]);
 

@@ -383,7 +383,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-field` | src/ui/shell.css:2163 | 68 |
+| `.ds-field` | src/ui/shell.css:2163 | 67 |
 | `.ds-field-row` | src/ui/shell.css:2078 | 5 |
 
 ## `ds-fold` — 2
@@ -404,7 +404,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-hint` | src/ui/shell.css:2114 | 165 |
+| `.ds-hint` | src/ui/shell.css:2114 | 163 |
 | `.ds-hint-caption` | src/ui/shell.css:4128 | 1 |
 
 ## `ds-homestats` — 2
@@ -761,7 +761,7 @@ The look and the depth model are `DESIGN.md`. This file is only the inventory.
 
 | class | declared | used |
 |---|---|---|
-| `.ds-range` | src/ui/shell.css:5025 | 23 |
+| `.ds-range` | src/ui/shell.css:5025 | 22 |
 
 ## `ds-rejoin` — 1
 

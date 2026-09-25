@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
-import { dbEnabled, q } from './db/pool';
+import { dbEnabled, pool, q, type DbClient } from './db/pool';
 
 /**
  * FIRST-PARTY ANALYTICS — who a visitor is (for one day, and never beyond it), what their
@@ -594,10 +594,33 @@ export const SALT_RETENTION_DAYS = 2;
  */
 export const ANALYTICS_LOCK_KEY = 0x414e4c59; // 'ANLY'
 
-/** roll the last few buckets up at both grains. Re-runs are free — the upsert is idempotent. */
+const HOUR_MS = 3_600_000;
+const DAY_MS = 86_400_000;
+
+/**
+ * WIDEN A RANGE TO WHOLE BUCKETS. The upsert REPLACES a bucket with whatever the range held,
+ * so a range that starts mid-bucket overwrites that bucket with a fraction of it. The job
+ * rolls "the last three hours", which starts mid-hour and mid-day on every pass: before this,
+ * each pass overwrote the oldest hourly bucket and TODAY'S DAILY ROW with the last three hours
+ * only. Epoch-aligned is UTC-aligned, matching `bucketExpr`.
+ */
+function bucketRange(grain: 'hour' | 'day', from: Date, to: Date): [Date, Date] {
+  const size = grain === 'hour' ? HOUR_MS : DAY_MS;
+  return [
+    new Date(Math.floor(from.getTime() / size) * size),
+    new Date(Math.ceil(to.getTime() / size) * size),
+  ];
+}
+
+/** roll one grain's buckets over a range. Re-runs are free — the upsert is idempotent. */
+export async function runRollupGrain(grain: 'hour' | 'day', from: Date, to: Date): Promise<void> {
+  await q(rollupSql(grain), bucketRange(grain, from, to));
+}
+
+/** roll a range up at both grains */
 export async function runRollup(from: Date, to: Date): Promise<void> {
-  await q(rollupSql('hour'), [from, to]);
-  await q(rollupSql('day'), [from, to]);
+  await runRollupGrain('hour', from, to);
+  await runRollupGrain('day', from, to);
 }
 
 /**
@@ -665,6 +688,14 @@ const ROLLUP_EVERY_MS = 5 * 60_000;
 let jobTimer: NodeJS.Timeout | null = null;
 let sawTraffic = false;
 let busy = false;
+/**
+ * When this process last ran the DAILY pass (the day-grain rollup and the retention sweep).
+ * Those run at most once per UTC hour, not every five minutes: the day rollup scans the whole
+ * day's raw rows, the daily table is only read for ranges older than the raw tier, and
+ * retention is counted in days. The next daily pass rolls from this watermark, so traffic that
+ * arrived after one pass and before a long quiet spell still reaches the day it belongs to.
+ */
+let lastDailyAt: number | null = null;
 
 export function noteTraffic(): void {
   sawTraffic = true;
@@ -673,7 +704,7 @@ export function noteTraffic(): void {
 export function ensureAnalyticsJobs(): void {
   if (jobTimer || !dbEnabled) return;
   jobTimer = setInterval(() => {
-    void tick();
+    void analyticsTick();
   }, ROLLUP_EVERY_MS);
   jobTimer.unref();
 }
@@ -684,33 +715,53 @@ export function stopAnalyticsJobs(): void {
   jobTimer = null;
   sawTraffic = false;
   busy = false;
+  lastDailyAt = null;
 }
 
-async function tick(): Promise<void> {
-  if (busy || !dbEnabled) return;
+/** one maintenance pass, exported so the tests can drive it without a timer */
+export async function analyticsTick(now = Date.now()): Promise<void> {
+  if (busy || !dbEnabled || !pool) return;
   // Nothing has arrived since the last pass, so there is nothing to roll up and nobody to
   // count. Stay quiet: an idle machine must not be the reason the database is awake.
   if (!sawTraffic) return;
   sawTraffic = false;
   busy = true;
+  // ⚠️ THE LOCK NEEDS ITS OWN CLIENT. A session-level advisory lock belongs to the connection
+  // that took it, and `q()` hands each statement to whichever pooled connection is free — so
+  // the unlock could land on a different session, fail, and leave the lock held by an idle
+  // pooled connection that every other machine then fails to take. Same shape as `migrate()`.
+  let lock: DbClient | null = null;
   try {
-    const held = await q<{ ok: boolean }>('select pg_try_advisory_lock($1) as ok', [ANALYTICS_LOCK_KEY]);
-    if (!held[0]?.ok) return; // another machine has it — come back in five minutes
+    lock = await pool.connect();
+    const held = await lock.query<{ ok: boolean }>('select pg_try_advisory_lock($1) as ok', [ANALYTICS_LOCK_KEY]);
+    if (!held.rows[0]?.ok) {
+      // another machine has it. Its pass may have started before our rows landed, so ask again
+      // next tick rather than dropping them until the next beacon.
+      sawTraffic = true;
+      return;
+    }
     try {
       // Re-roll the last three hours rather than only the one that just closed: a machine that
       // was restarting when a bucket ended would otherwise leave a permanent hole, and the
       // upsert makes redoing recent work free.
-      const to = new Date();
-      const from = new Date(to.getTime() - 3 * 60 * 60_000);
-      await runRollup(from, to);
+      const to = new Date(now);
+      const from = new Date(now - 3 * HOUR_MS);
+      await runRollupGrain('hour', from, to);
       if ((await sampleConcurrency()) > 0) sawTraffic = true; // people are on — keep sampling
-      await sweepAnalytics();
+      const dailyDue = lastDailyAt === null || Math.floor(lastDailyAt / HOUR_MS) !== Math.floor(now / HOUR_MS);
+      if (dailyDue) {
+        const dayFrom = new Date(Math.min(from.getTime(), lastDailyAt ?? from.getTime()));
+        await runRollupGrain('day', dayFrom, to);
+        await sweepAnalytics();
+        lastDailyAt = now;
+      }
     } finally {
-      await q('select pg_advisory_unlock($1)', [ANALYTICS_LOCK_KEY]).catch(() => {});
+      await lock.query('select pg_advisory_unlock($1)', [ANALYTICS_LOCK_KEY]).catch(() => {});
     }
   } catch (e) {
     console.error('[analytics] maintenance failed:', e);
   } finally {
+    lock?.release();
     busy = false;
   }
 }
