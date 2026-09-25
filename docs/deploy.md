@@ -202,8 +202,10 @@ The order, then:
 
 ⚠️ **Every BIOBUZZ record and personal best set before this publish disappears from the
 boards** — not deleted, filtered: they are `'2d'` rows on a board that now shows `'3d'`.
-There is no 2D BIOBUZZ board any more. That is the owner's ruling, not a bug; if it is
-not wanted, `boardPhysics` is the one predicate to change, before the deploy.
+They come back when the season holding them is archived: `boardPhysics` reads an archived
+season as the solve it was played on (2026-09-24), so rolling BIOBUZZ into Act 2 right after
+the deploy turns Act 1 into a 2D board and pays its record holders. Roll before anyone sets a
+3D record in the old season.
 
 If a zero-window deploy is ever needed, the alternative is an env flag in front of
 `serverPhysics`/`boardPhysics`/`stagedPhysics` (deploy dark, flip after Vercel). It was

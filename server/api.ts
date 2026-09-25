@@ -14,6 +14,7 @@ import { dbEnabled } from './db/pool';
 import {
   acceptFriendRequest,
   actForSeason,
+  boardPhysics,
   blockUser,
   cancelFriendRequest,
   cancelRoomInvite,
@@ -1706,11 +1707,16 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse): Prom
        * `&physics=2d` gets the live board instead of an error — and `physics` is echoed back
        * as what the board actually IS, not as what was asked for, so such a client's chip and
        * its rows cannot disagree.
+       *
+       * What the board IS depends on the season (2026-09-24): the live one is the live solve,
+       * an archived one is the solve it was played on — BIOBUZZ Act 1 is a 2D board. The client
+       * keeps the rows of the era echoed here.
        */
       const rows = dbEnabled
         ? await recordLeaderboard({ mode, drivetrain, balanceVersion: season, limit, game })
         : [];
-      const physics = serverPhysics(simModuleFor(game));
+      const physics =
+        (dbEnabled ? await boardPhysics(game, season) : undefined) ?? serverPhysics(simModuleFor(game));
       return json(200, { season, mode, drivetrain, physics, rows, game }), true;
     }
 

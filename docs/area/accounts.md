@@ -29,6 +29,11 @@ half all read it, because the era filter used to be an optional argument that `/
 filled from a QUERY PARAMETER and every path that forgot to ask silently mixed both eras. The
 filter sits INSIDE the per-player `best` CTE: filtering after it would find a player's 2D
 personal best, reject it, and leave them off a board they have a legitimate 3D score on.
+**THE ERA IS PER SEASON** (owner, 2026-09-24: "BIOBUZZ Act 1's 2D records should NOT get
+filtered off the boards"). The LIVE season is the live solve; an ARCHIVED season is the solve
+most of its rows were played on, so Act 1 reads as a 2D board and pays its record awards off it.
+Reading it as `'3d'` emptied the board and claimed the period with zero winners, permanently.
+`/api/records` echoes the era and `Leaderboard.tsx` keeps rows of that era.
 `submitRecord` refuses a 2D container at the table, read off the replay and never off a body.
 Pre-ruling 2D rows are KEPT (no season reset); they just stop appearing. Covered in
 `npm run dbtest`.

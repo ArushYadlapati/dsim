@@ -88,8 +88,9 @@ ranked, matchmade, custom code rooms, spectators and LAN all run `'3d'` for a ga
 it, and the custom lobby's 3D/2D picker is gone. The reason is the RECORD BOARD: two solves
 feeding one board is two boards, so `recordLeaderboard`, `personalBest`, `recordRank` and the
 career panel all filter to `'3d'` server-side (`boardPhysics`, `server/db/repo.ts`) and
-`submitRecord` refuses a 2D container outright. Pre-ruling 2D rows are kept, not deleted — they
-simply stop appearing on a board; no season was reset. An old client without the `'bb3d'` cap is
+`submitRecord` refuses a 2D container outright. Pre-ruling 2D rows are kept, not deleted. They
+are off the LIVE board only: an archived season shows the solve it was played on, so Act 1 is a
+2D board (`accounts.md`, "THE ERA IS PER SEASON"). An old client without the `'bb3d'` cap is
 now REFUSED (`BB3D_REFUSAL`) rather than downgraded to a silent 2D room.
 
 **2D survives exactly where nothing reaches a board:** solo practice and free drive, via

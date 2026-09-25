@@ -184,7 +184,7 @@ export function fetchRecords(
   drivetrain: Board,
   season?: number,
   game?: GameId,
-): Promise<{ rows: RecordRow[] }> {
+): Promise<{ rows: RecordRow[]; physics?: string }> {
   const s = season != null ? `&season=${season}` : '';
   return getJson(`/api/records?mode=${mode}&drivetrain=${drivetrain}${s}${gameParam(game)}`);
 }

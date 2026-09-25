@@ -318,8 +318,14 @@ export function Leaderboard({
              * the field is present; a row that carries no `physics` at all is older still and
              * is kept, because dropping it would blank the board for a game whose rows are all
              * 2D anyway (DECODE, Chain Reaction) and for pre-0039 rows that are what they are.
+             *
+             * The era kept is the one the server ECHOES, because it is per season now: an
+             * archived season is the solve it was played on (BIOBUZZ Act 1 is 2D). A server that
+             * echoes nothing predates the ruling; its board is the 3D one.
              */
-            rows: threeD ? r.rows.filter((x) => x.physics !== '2d') : r.rows,
+            rows: threeD
+              ? r.rows.filter((x) => !x.physics || x.physics === (r.physics ?? '3d'))
+              : r.rows,
             me: null as EloStanding | null,
           }))
         : fetchElo(eloMode, s, myUserId, game);

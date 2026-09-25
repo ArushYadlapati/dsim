@@ -1011,7 +1011,7 @@ export function Lobby({
                 )}
               </div>
               <p className="ds-hint">
-                A room with a bot in it is unrated and its result is not saved.
+                A room with a bot in it is unrated. It is still saved to Match history.
               </p>
             </>
           )}

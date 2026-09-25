@@ -1,3 +1,15 @@
+# HANDOFF — 2026-09-24l (BIOBUZZ Act 1's 2D records stay on the boards; Act 2 release prep)
+
+**State: pushed on `alpha`.** `dbtest` ALL PASS (10 new era checks), `server:check`, `build`, `docaudit` pass. Server change: `dsim-alpha` needs a redeploy, and production gets it with the `main` deploy. Nothing merged to `main`, nothing deployed.
+
+- **Owner:** "Biobuzz Act 1's 2D records should NOT get filtered off the boards."
+- **Bug:** `boardPhysics` was per GAME, so after the 3D cutover every BIOBUZZ season read as `'3d'`. Act 1's archived board came back empty, and rolling into Act 2 would have claimed its record awards with `winners = 0`, which is permanent.
+- **Fix (`server/db/repo.ts`):** `boardPhysics(game, balanceVersion)` is per season. The live season is the live solve. An archived season is the solve most of its rows were played on, so a few 3D runs set between the deploy and the roll can't take the board. `submitRecord` keeps the live-only rule (`livePhysics`). `/api/records` echoes the era, and `Leaderboard.tsx` keeps rows of that era.
+- **Also fixed:** `recordRank` threw on the `'overall'` board (a mixed-drivetrain duo). `$4` was left out of the SQL, and Postgres refuses a parameter it can't type.
+- **Also:** the Lobby hint said bot rooms aren't saved. They have been since 09-24e.
+- **Release plan, patch notes, Discord posts:** `docs/releases/biobuzz-act2.md`. Open items for the owner are in its §1: production Fly secrets for linking/star/boost (missing on `dohun-sim-decode`), satellite sizes, the mis-merged `update_rc` block in `fly-deploy.sh`, and leaving the Discord Activity unannounced.
+- **Roll BIOBUZZ Act 2 right after the Fly deploy, under maintenance,** before anyone sets a 3D record in season 4.
+
 # HANDOFF — 2026-09-24m (BIOBUZZ builder: 18-in chassis, mass floor ignores inertia, no mount blurbs)
 
 **State: committed and pushed on `alpha`.** `npm test` 5090/5090, `build`, `server:check`, `uiaudit`, `docaudit` pass. The predict lane's timing checks failed twice under full load before the rebase and pass alone. ⚠️ **Server change** (`src/sim/spawn.ts`, the BIOBUZZ size clamp): alpha needs `./scripts/fly-deploy.sh --alpha`, production a deploy from `main`. An old server clamps an 18-in BIOBUZZ chassis back to 15 × 17.

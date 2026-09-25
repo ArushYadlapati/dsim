@@ -40,9 +40,36 @@ const g = (game?: Game): Game => game ?? 'decode';
  *
  * The pre-0039 rows are NOT deleted: a 2D BIOBUZZ run keeps its row, its replay and its place
  * in the player's own match history. It simply stops being ranked against 3D runs.
+ *
+ * ⚠️ **THE ERA IS A PROPERTY OF THE SEASON, NOT OF THE GAME** (owner, 2026-09-24). The LIVE
+ * season is always the game's live solve (`livePhysics`), because that is the only solve a new
+ * record can be written in. An ARCHIVED season is the solve its runs were played on: BIOBUZZ
+ * Act 1 was a 2D season, and reading it as `'3d'` emptied its board and paid its record awards
+ * to nobody. "Played on" is the era holding most of the season's rows, so the handful of 3D
+ * runs a season picks up between a deploy and the roll that closes it cannot take the board
+ * over. Still one era per board, and every reader still goes through here.
  */
-function boardPhysics(game: Game): '3d' | undefined {
+function livePhysics(game: Game): '3d' | undefined {
   return serverPhysics(simModuleFor(game)) === '3d' ? '3d' : undefined;
+}
+
+/** which era the board of `game` × `balanceVersion` is made of — see above. `current` saves the
+ *  lookup for a caller that already knows the live season. */
+export async function boardPhysics(
+  game: Game,
+  balanceVersion: number,
+  current?: number,
+): Promise<'2d' | '3d' | undefined> {
+  const live = livePhysics(game);
+  if (!live) return undefined;
+  const cur = current ?? (await currentSeasonNumber(BALANCE_VERSION, game));
+  if (balanceVersion >= cur) return live;
+  const rows = await q<{ physics: string }>(
+    `select physics from records where game = $1 and balance_version = $2
+     group by physics order by count(*) desc, physics desc limit 1`,
+    [game, balanceVersion],
+  );
+  return rows[0]?.physics === '2d' ? '2d' : live;
 }
 
 /** the robot configuration a record run used (denormalized onto the row) */
@@ -1487,6 +1514,8 @@ async function rankedActGrants(game: Game, act: number, lastSeason: number): Pro
  * THE RECORD AWARDS OF ONE CLOSED SEASON: the overall board's top 3 and each drivetrain
  * board's #1, through `recordLeaderboard` with NO `physics` argument — its `boardPhysics`
  * default is the board the site shows, so the award cannot name a holder the board hides.
+ * For a closed season that default is the era the season was played in, so BIOBUZZ Act 1's
+ * 2D records pay their holders.
  *
  * ONE GRANT PER PLAYER PER SEASON, however many boards they placed on: every placement is its
  * own trophy-case row (off `reason.placements`), but the Record Holder badge counts SEASONS,
@@ -2659,7 +2688,7 @@ export async function submitRecord(r: RecordSubmit): Promise<string> {
    * it counted, so the honest outcome is a refusal that shows up in the server log, not a row
    * quietly relabelled `'3d'` for a match that was not.
    */
-  const want = boardPhysics(g(r.game));
+  const want = livePhysics(g(r.game));
   if (want && (r.physics ?? '2d') !== want) {
     throw new Error(
       `record refused: ${g(r.game)} runs on ${want} physics, this one is ${r.physics ?? '2d'}`,
@@ -2740,7 +2769,7 @@ export async function recordLeaderboard(opts: {
     dtFilter = `and r.drivetrain = $${params.length}`;
   }
   let physFilter = '';
-  const phys = opts.physics ?? boardPhysics(g(opts.game));
+  const phys = opts.physics ?? (await boardPhysics(g(opts.game), opts.balanceVersion));
   if (phys) {
     params.push(phys);
     physFilter = `and r.physics = $${params.length}`;
@@ -2785,7 +2814,7 @@ export async function personalBest(
   // old 2D run would tell a player their first 3D run was not a personal best, against a row
   // they cannot see on any board and can never beat on this solve.
   const overall = drivetrain === 'overall';
-  const phys = boardPhysics(g(game));
+  const phys = await boardPhysics(g(game), balanceVersion);
   const params: unknown[] = [userId, mode, balanceVersion, g(game)];
   if (!overall) params.push(drivetrain);
   const dtFilter = overall ? '' : `and drivetrain = $${params.length}`;
@@ -2819,12 +2848,14 @@ export async function recordRank(
   // the "#3 of 57" a player is shown after a run is a position on the board they can go and
   // look at rather than a rank over a population the board does not contain.
   const overall = drivetrain === 'overall';
-  const phys = boardPhysics(g(game));
+  const phys = await boardPhysics(g(game), balanceVersion);
+  // $4 is always REFERENCED and typed: an overall read (a mixed-drivetrain duo) used to leave it
+  // out of the SQL, and Postgres refuses a parameter it cannot type, so that rank threw
   const rows = await q<{ rank: number; total: number }>(
     `with best as (
        select user_id, max(score) as s from records
        where balance_version = $1 and mode = $2 and game = $5
-         ${overall ? '' : 'and drivetrain = $4'}
+         and ($4::text is null or drivetrain = $4)
          ${phys ? 'and physics = $6' : ''}
        group by user_id
      ), me as (select s from best where user_id = $3)
@@ -4708,7 +4739,7 @@ export async function getUserStats(
    * the board does not contain. The value is PARAMETERISED (`$4` in both queries) — the SQL
    * fragment is chosen here, the era itself is bound.
    */
-  const phys = boardPhysics(gm);
+  const phys = await boardPhysics(gm, balanceVersion, current);
   const recPhys = phys ? 'and physics = $4' : '';
   const [profile, elo, recPb, recRank, match, recent] = await Promise.all([
     q<{ handle: string; username: string | null; supporter: boolean; role: string | null }>(

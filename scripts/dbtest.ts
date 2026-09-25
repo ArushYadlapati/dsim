@@ -3782,6 +3782,62 @@ async function main(): Promise<void> {
   }
 
 
+  // ---- AN ARCHIVED SEASON'S BOARD IS THE SOLVE IT WAS PLAYED ON (owner, 2026-09-24) -----
+  /**
+   * BIOBUZZ Act 1 was a 2D season. With the era decided per GAME, the 3D cutover read it as
+   * `'3d'`: its board came back empty and the roll into Act 2 claimed its record awards with
+   * zero winners, for good. Built on `biobuzz` at balance versions nothing else writes:
+   *   bv 951  Act 1 · Season 1  ← closed, 2D rows plus one 3D straggler (a run set between the
+   *                                deploy and the roll)
+   *   bv 952  Act 2 · Season 1  ← live
+   */
+  {
+    const G = 'biobuzz' as const;
+    for (const u of ['era-a', 'era-b', 'era-c', 'era-x']) await repo.ensureProfile(u, u.toUpperCase());
+    for (const [bv, act] of [[951, 1], [952, 2]] as const) {
+      await db.query(
+        `insert into seasons (game, balance_version, act, active) values ($1, $2, $3, $4)
+         on conflict (game, balance_version) do update set act = excluded.act, active = excluded.active`,
+        [G, bv, act, bv === 952],
+      );
+    }
+    await db.query(`update seasons set active = false where game = $1 and balance_version <> 952`, [G]);
+    const rec = (u: string, bv: number, score: number, physics: '2d' | '3d') =>
+      db.query(`insert into records (user_id, mode, drivetrain, score, balance_version, game, physics) values ($1, 'solo', 'mecanum', $2, $3, $4, $5)`,
+        [u, score, bv, G, physics]);
+    await rec('era-a', 951, 300, '2d');
+    await rec('era-b', 951, 250, '2d');
+    await rec('era-c', 951, 200, '2d');
+    await rec('era-x', 951, 999, '3d'); // the straggler: highest score, wrong era
+    await rec('era-a', 952, 120, '3d');
+    await rec('era-b', 952, 500, '2d'); // cannot happen through submitRecord; the live board must not show it anyway
+
+    check('era: the live BIOBUZZ season is 3D', (await repo.boardPhysics(G, 952)) === '3d');
+    check('⚠️ era: an archived BIOBUZZ season is the solve most of its runs were played on', (await repo.boardPhysics(G, 951)) === '2d');
+    check('era: a one-solve game has no era filter, live or archived', (await repo.boardPhysics('decode', 1)) === undefined);
+
+    const old = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: 951, game: G });
+    check('⚠️ era: the archived Act 1 board shows its 2D runs', old.map((r) => r.userId).join(',') === 'era-a,era-b,era-c',
+      old.map((r) => `${r.userId}:${r.score}:${String(r.physics)}`).join(','));
+    const live = await repo.recordLeaderboard({ mode: 'solo', balanceVersion: 952, game: G });
+    check('era: the live board is still 3D only', live.length === 1 && live[0].userId === 'era-a' && live[0].physics === '3d',
+      live.map((r) => `${r.userId}:${String(r.physics)}`).join(','));
+    check('era: a personal best on the archived season reads its own era', (await repo.personalBest('era-x', 'solo', 'overall', 951, G)) === null);
+    check('era: ...and so does the rank', (await repo.recordRank('era-c', 'solo', 'overall', 951, G)).rank === 3);
+
+    await repo.runRewardJob({ games: [G] });
+    const period = await db.query<{ winners: number }>(
+      `select winners from reward_periods where game = $1 and board = 'record_season' and period = 951`, [G],
+    );
+    check('⚠️ era: the closed 2D season pays its record holders instead of claiming zero winners',
+      Number(period.rows[0]?.winners) === 3, JSON.stringify(period.rows));
+    const paidTo = async (u: string) =>
+      (await repo.pendingRewards(u)).some((p) => p.reason.kind === 'record_season' && p.reason.balanceVersion === 951);
+    check('era: ...its #1 is paid', await paidTo('era-a'));
+    check('⚠️ era: ...and the 3D straggler is not', !(await paidTo('era-x')));
+  }
+
+
   // ---- PROVIDER LINKS + THE STAR SWEEP (0047) --------------------------------------
   /**
    * The anti-farm and the fail-safe. `docs/rewards-round2-plan.md` §3.1/§6 asks for both by
