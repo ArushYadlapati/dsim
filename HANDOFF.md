@@ -1,11 +1,12 @@
-# HANDOFF — 2026-09-24k (the builder preview's turret hood sits where the sim aims it)
+# HANDOFF — 2026-09-24l (a turret SPAWNS at the elevation it aims at, and the preview draws it there)
 
-**State: build passes; `npm test` 5055/5056, the one failure the known `PREDICT_FULL_BUDGET` timing flake (10 ms under 12-process load).** Renderer-only change, no sim or server change, no deploy needed beyond Vercel.
+**State: pushed on `alpha`, alpha game server redeployed.** `build`, `server:check` pass; `npm test` passes except the known `PREDICT_FULL_BUDGET` timing flake.
 
-- **Bug (owner):** "The hood is WAY too high. It never goes that high." The builder preview and saved-robot thumbnails never run `sync`, so a turret's `bb-turret-pitch` node stayed at 0, the LEVEL pose, which is the hood's tallest. In a match the turret re-solves at the HIVE every tick and never goes below ~58.6°.
-- **Fix:** `buildRobotGroup` (`scene/renderRobots.ts`) starts every hood at `BB_HOOD_SHOW_PITCH` = 69°, the measured median aim pitch (min 58.6°, p50 68.7°, max 80°; 2,116 poses per exit on a double turret). The match's `sync` overwrites it on the first frame.
-- **Checks (render lane):** the shown pose lies inside the band `bbTurretSolution` produces over a field sweep, and `hoodPlateChecks`' `default` pitch is now the shown pose, so hood-to-plate clearance is measured where the preview draws it.
-- **Not changed:** a spawned robot has no `bbTurretPitch` until its first aim tick, so a match frame drawn before any tick still shows the level hood. Seeding it at spawn is a sim change, left for the owner.
+- **Bug (owner):** "The hood is WAY too high. It never goes that high." A turret's pitch was absent at spawn (read as 0, LEVEL), which is the hood's tallest pose and one no HIVE shot uses: the aim solve never goes below ~58.6° (2,116 poses per exit on a double turret; p50 68.7°, max the 80° stop). The builder preview and thumbnails never run `sync`, so they sat there permanently; a match sat there until its first aim tick and swung ~69° up.
+- **Fix:** `BB_TURRET_PITCH_REST` (69°, `config.ts`) is the one value. `spawn.ts` seeds `bbTurretPitch` (and a double turret's `bbTurret2Pitch`, which was 0) at it; `buildRobotGroup` builds every hood at it, so preview and spawn cannot disagree. Turretless builds still carry no pitch field.
+- ⚠️ **IT CHANGES PLAY, SO REPLAYS OF TURRETED ROBOTS RECORDED BEFORE THIS DIVERGE.** A/B over 2D and 3D bot matches: traces split at tick 30 (first shots leave ~0.5 s sooner) and final scores differ. `SIM_VERSION` stays 3, the same call as 2026-09-20. Production is untouched; it needs this on `main` plus a Fly deploy.
+- **Checks:** robot lane — a turret and a double turret spawn at REST, a dumper carries no pitch; render lane — REST lies inside the band `bbTurretSolution` produces, and `hoodPlateChecks`' `default` pitch is REST. The AIPLAY 2v2 foul check moved 7007 → 7005: 7007 picked up one AUTO G402 when the match diverged; the rate over 7000–7019 is 2/20, against 3/20 before.
+
 # HANDOFF — 2026-09-24j (games left at the buzzer were never saved)
 
 **State: committed and pushed on `alpha`, alpha game server deployed.** `server:check`, `build`, `dbtest`, `docaudit` pass; `npm test` all pass except the known `PREDICT_FULL_BUDGET_MS` load flake. Server change: production gets it with the `main` deploy.

@@ -2060,6 +2060,19 @@ export const BB_TURRET_PITCH_MIN = 0;
 export const BB_TURRET_PITCH_MAX = 80 * BB_DEG;
 
 /**
+ * THE ELEVATION A TURRET SPAWNS AT, and the one the 3D builder preview draws (`renderRobots.ts`).
+ *
+ * It used to be `BB_TURRET_PITCH_MIN`: a LEVEL shot, which puts the hood's lip straight over the
+ * wheel and is the TALLEST pose the hood has. Nothing aims there. A turret re-solves at the HIVE
+ * cell every tick (`bbTurretSolution`), and a 53.5–65.6-in cell cannot be reached level. MEASURED
+ * over a 6-in field grid × four headings, 2,116 poses per turret on a double turret: min 58.6°,
+ * p25 65.0°, **p50 68.7°**, p75 74.4°, max 80.0° (the stop), the same for both exits. So a robot
+ * spawns at the median (owner, 2026-09-24: "The hood is WAY too high. It never goes that high"),
+ * and the first aim tick has ~10° to cover rather than ~69°.
+ */
+export const BB_TURRET_PITCH_REST = 69 * BB_DEG;
+
+/**
  * EVERY LAUNCHER'S TOP SPEED (in/s) — a turret's flywheel ceiling AND a dumper's, and the reason
  * a launcher's range is a number rather than an infinity. (It was `BB_TURRET_SPEED_MAX` while
  * only a turret solved its speed; the dumper solves its own per shot now too, so it is shared.)

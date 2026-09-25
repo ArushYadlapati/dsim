@@ -194,6 +194,7 @@ import {
   BB_TURRET_PITCH_MAX,
   BB_DEG,
   BB_TURRET_PITCH_MIN,
+  BB_TURRET_PITCH_REST,
   BB_TURRET_PLATE_TOP_Z,
   BB3_HEIGHT_DEFAULT,
   BB3_HEIGHT_MAX,
@@ -207,7 +208,6 @@ import {
 // geometry were signed off by a lane that could only grep the source — see its own header, and
 // the SHOOTER block below.
 import {
-  BB_HOOD_SHOW_PITCH,
   BB_INTAKE_ARM_INSET,
   BB_SIGN_DIGIT_H,
   BB_SIGN_H,
@@ -1170,7 +1170,7 @@ export function renderChecks(check: Check): void {
       `points=${SHOT.points}`,
     );
 
-    // ⚠️ THE HOOD A BUILT ROBOT SHOWS BEFORE ANYTHING AIMS IT (`BB_HOOD_SHOW_PITCH`) IS ONE THE
+    // ⚠️ THE HOOD A ROBOT SPAWNS WITH, AND THE BUILDER PREVIEW SHOWS, (`BB_TURRET_PITCH_REST`) IS ONE THE
     // AIM SOLVE ACTUALLY PRODUCES. It was the level pose — the tallest the hood has, and one no
     // HIVE shot reaches — so the builder preview drew a hood the sim never raises that far
     // (owner, 2026-09-24). Swept over the field on a DOUBLE turret, both exits.
@@ -1196,9 +1196,9 @@ export function renderChecks(check: Check): void {
         }
       }
       check(
-        'turret: the resting hood pose is inside the elevation band the HIVE aim solve produces',
-        BB_HOOD_SHOW_PITCH >= lo && BB_HOOD_SHOW_PITCH <= hi && lo > BB_TURRET_PITCH_MIN,
-        `show ${(BB_HOOD_SHOW_PITCH / BB_DEG).toFixed(1)}° vs solved ${(lo / BB_DEG).toFixed(1)}°…${(hi / BB_DEG).toFixed(1)}°`,
+        'turret: the spawn/preview hood pose is inside the elevation band the HIVE aim solve produces',
+        BB_TURRET_PITCH_REST >= lo && BB_TURRET_PITCH_REST <= hi && lo > BB_TURRET_PITCH_MIN,
+        `show ${(BB_TURRET_PITCH_REST / BB_DEG).toFixed(1)}° vs solved ${(lo / BB_DEG).toFixed(1)}°…${(hi / BB_DEG).toFixed(1)}°`,
       );
     }
 
@@ -2354,8 +2354,8 @@ function hoodPlateChecks(check: Check): void {
   // the four the owner's report names, in the order the release table in `config.ts` lists them
   const PITCHES: readonly [string, number][] = [
     ['min', BB_TURRET_PITCH_MIN],
-    // the pose a built robot SHOWS before anything aims it (`BB_HOOD_SHOW_PITCH`) — was the level pose
-    ['default', BB_HOOD_SHOW_PITCH],
+    // the pose a built robot SHOWS before anything aims it (`BB_TURRET_PITCH_REST`) — was the level pose
+    ['default', BB_TURRET_PITCH_REST],
     ['57.6°', 57.6 * DEG],
     ['80° cap', BB_TURRET_PITCH_MAX],
   ];

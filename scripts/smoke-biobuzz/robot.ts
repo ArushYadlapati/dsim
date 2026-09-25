@@ -66,6 +66,7 @@ import {
   BB_TURRET_PITCH_ACCEL,
   BB_TURRET_PITCH_MAX,
   BB_TURRET_PITCH_MIN,
+  BB_TURRET_PITCH_REST,
   BB_TURRET_PITCH_SLEW,
   BB_TURRET_SLEW,
   BB_TURRET_SOLVE_PASSES,
@@ -1600,6 +1601,13 @@ export function robotChecks(check: Check): void {
     park(r, 40, 50, Math.PI); // blue, on its own cell's OPEN side
     const yaw0 = r.turretHeading;
     const pitch0 = r.bbTurretPitch ?? 0;
+    // ⚠️ A TURRET SPAWNS AT `BB_TURRET_PITCH_REST`, NOT LEVEL — level is the hood's tallest pose and
+    // one no HIVE shot uses (owner, 2026-09-24). A turretless build carries no pitch at all.
+    check('turret: spawn seeds the elevation at BB_TURRET_PITCH_REST, not level', pitch0 === BB_TURRET_PITCH_REST, `${pitch0}`);
+    {
+      const wd = mkWorld('free', 43, mech({ launcher: { kind: 'dumper', mount: 'front', hoodDeg: BB_HOOD_DEFAULT_DEG }, lift: null }));
+      check('turret: ...and a DUMPER spawns with no pitch field at all', wd.robots[0].bbTurretPitch === undefined && wd.robots[0].bbTurret2Pitch === undefined);
+    }
     run(w, cmd({}), 1.5);
     const target = bbAimTarget(w, r);
     check('turret: the test pose aims at the own up cell (the nearer one, from its open side)', target.pos.y > 0);
@@ -1644,7 +1652,8 @@ export function robotChecks(check: Check): void {
   {
     const w = mkWorld('free', 47, mech({ launcher: TWIN, lift: null }));
     const r = w.robots[0];
-    check('twin: spawn seeds the NECTAR turret\'s yaw and pitch', typeof r.bbTurret2Heading === 'number' && r.bbTurret2Pitch === 0, `${r.bbTurret2Heading}/${r.bbTurret2Pitch}`);
+    check('twin: spawn seeds the NECTAR turret\'s yaw and pitch', typeof r.bbTurret2Heading === 'number' && r.bbTurret2Pitch === BB_TURRET_PITCH_REST, `${r.bbTurret2Heading}/${r.bbTurret2Pitch}`);
+    check('twin: ...and the POLLEN turret spawns at the same rest elevation, not level', r.bbTurretPitch === BB_TURRET_PITCH_REST, `${r.bbTurretPitch}`);
     emptyHopper(w, r);
     park(r, 40, 50, Math.PI);
     const yaw0 = r.turretHeading;
