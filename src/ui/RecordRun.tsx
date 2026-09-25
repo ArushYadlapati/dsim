@@ -11,6 +11,7 @@ import { moduleFor } from '../games';
 import { serverPhysics } from '../games/types';
 import { initPhysics3d, physics3dReady } from '../games/biobuzz/sim3d/engine';
 import { announcePhysicsReady } from '../net/roomPhysics';
+import { preloadRoomView } from '../net/roomView';
 import { ConsoleHead } from './ConsoleHead';
 import { useEscape } from './useEscape';
 
@@ -176,6 +177,8 @@ export function RecordRun({
       };
     };
 
+    // the view downloads beside the physics; the room holds the run until it is built
+    preloadRoomView(settings.game);
     if (serverPhysics(moduleFor(settings.game)) === '3d' && !physics3dReady()) {
       setLoading3d(true);
       setStatus('Loading 3D physics…');

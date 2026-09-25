@@ -1945,6 +1945,10 @@ export class GameController {
       this.acc = 0;
       return;
     }
+    // THIS CLIENT CAN PLAY THE MATCH once the view is up too — built, on the 2D view, or failed
+    // back to it. The room holds a `'3d'` match at tick 0 until every seat has said so
+    // (`VIEWREADY_CAP`). Sent once per match generation; a no-op every other frame.
+    if (!this.sceneLoading) s.viewReady?.();
     // NOTE: no IN-PLACE restart in multiplayer — a local or host-authored rebuild
     // desynced everyone (post-restart stuck/jitter). Players return to the lobby to
     // start a fresh match instead.
@@ -1992,6 +1996,24 @@ export class GameController {
       this.bufferSnapshot(snap); // capture authoritative poses BEFORE reconcile mutates them
       this.remoteCmds = snap.cmds; // hold each robot's command to predict it forward
       this.reconcile(snap);
+    }
+
+    // THE ROOM IS HOLDING THE MATCH AT TICK 0 while a seat loads. Predicting now would run the
+    // countdown locally against a server that is not running it, and snap back on release.
+    const late = s.takeLateStart?.();
+    if (late && late.length > 0) {
+      if (late.includes(this.localRobotId)) {
+        this.netEvents.push('The match started while you were still loading.');
+      }
+      const others = late.filter((rid) => rid !== this.localRobotId);
+      if (others.length > 0) {
+        const names = others.map((rid) => s.driverName?.(rid) ?? `Robot ${rid + 1}`);
+        this.netEvents.push(`Started without ${names.join(', ')}: still loading. They join when ready.`);
+      }
+    }
+    if (s.loadHeld?.()) {
+      this.acc = 0;
+      return;
     }
 
     // SPECTATOR: no local robot to predict + nothing to send. Advance the world with the

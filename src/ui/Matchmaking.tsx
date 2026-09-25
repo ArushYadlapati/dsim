@@ -14,6 +14,7 @@ import { STANDING_MAX, WINDOW_HOURS, lockRemaining, tierOf } from '../standing';
 import { BB3D_CAP, RANKED_JOIN_GRACE_MS, STRATEGY_DURATION_MS } from '../net/protocol';
 import { serverCaps } from '../net/api';
 import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
+import { preloadRoomView } from '../net/roomView';
 import { moduleFor } from '../games';
 import { widenHint, queuesFor } from './queueDepth';
 import {
@@ -829,6 +830,7 @@ export function Matchmaking({
      * deadline rather than by refusing to queue.
      */
     void preloadRoomPhysics(queueGame);
+    preloadRoomView(queueGame);
     setError('');
     setElapsed(0);
     setBumps(0);

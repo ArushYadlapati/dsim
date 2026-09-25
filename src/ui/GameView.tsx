@@ -132,7 +132,18 @@ function MatchOverlay({
  * dialog: there is nothing to answer, and Esc still leaves the match. `role="status"` so a step
  * finishing is announced.
  */
-function LoadingScreen({ game, physics, view }: { game: string; physics: boolean; view: boolean }) {
+function LoadingScreen({
+  game,
+  physics,
+  view,
+  hold,
+}: {
+  game: string;
+  physics: boolean;
+  view: boolean;
+  /** the room is holding the match for other drivers (`NetStatus.hold`) */
+  hold?: { secs: number; waiting: number } | null;
+}) {
   // a step is listed once it has been waited on, and stays listed (as Ready) after. A 2D-physics
   // practice on the 3D view never waits on physics, and a room on the 2D view never waits on a
   // view, so neither gets a line claiming something it did not do.
@@ -142,6 +153,7 @@ function LoadingScreen({ game, physics, view }: { game: string; physics: boolean
   const steps: { k: string; busy: boolean }[] = [];
   if (seen.current.physics) steps.push({ k: '3D physics', busy: physics });
   if (seen.current.view) steps.push({ k: '3D view', busy: view });
+  const waiting = hold && hold.waiting > 0 ? hold : null;
   return (
     <div className="game-loading" role="status">
       <div className="game-loading-card">
@@ -157,6 +169,12 @@ function LoadingScreen({ game, physics, view }: { game: string; physics: boolean
               <span>{st.busy ? 'Loading…' : 'Ready'}</span>
             </li>
           ))}
+          {waiting && (
+            <li className="busy">
+              <span>{waiting.waiting === 1 ? 'Another driver' : `${waiting.waiting} drivers`}</span>
+              <span>{`Loading… starts in ${waiting.secs}s`}</span>
+            </li>
+          )}
         </ul>
       </div>
     </div>
@@ -671,11 +689,12 @@ export function GameView({
           exists, a room's answer comes back from the controller (`roomPhysicsLoading`). The
           view is always the controller's. It covers the field and the HUD, so a 3D match no
           longer opens on a flash of the 2D render. */}
-      {(physicsLoading || roomPhysicsLoading || sceneLoading) && (
+      {(physicsLoading || roomPhysicsLoading || sceneLoading || !!hud?.net?.hold) && (
         <LoadingScreen
           game={seasonFor(hud?.game ?? settings.game).name}
           physics={physicsLoading || roomPhysicsLoading}
           view={sceneLoading}
+          hold={hud?.net?.hold}
         />
       )}
       {coarsePointer && controllerRef.current && (

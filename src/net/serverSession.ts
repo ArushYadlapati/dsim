@@ -143,6 +143,16 @@ export class ServerSession implements NetSession {
   private readonly rttSamples: number[] = [];
   /** wall-clock of the previous snapshot, to time inter-arrival gaps */
   private lastSnapAt: number | null = null;
+  /**
+   * THE ROOM'S LOAD HOLD (`loadHold`): when, on OUR clock, the room will start anyway, and who
+   * it is waiting on. Null ⇒ not held. A snapshot past tick 0 also clears it, so a lost release
+   * cannot keep this client frozen in front of a running match.
+   */
+  private hold: { until: number; loading: number[] } | null = null;
+  /** robots a released hold started without, until the controller logs them */
+  private lateStart: number[] | null = null;
+  /** the match generation `viewReady` was last sent for (-1 ⇒ never, or re-send after a rejoin) */
+  private viewSentGen = -1;
   /** recent snapshot inter-arrival gaps (ms) — feeds snapHz + jitter */
   private readonly snapGaps: number[] = [];
 
@@ -353,7 +363,36 @@ export class ServerSession implements NetSession {
       quality,
       rttHistory: this.rttSamples.length ? this.rttSamples.slice() : null,
       server: this.serverLabel || null,
+      hold: this.holdStatus(),
     };
+  }
+
+  /** the hold as the HUD shows it: seconds to the cap, and the OTHER drivers still loading */
+  private holdStatus(): NetStatus['hold'] {
+    if (!this.loadHeld() || !this.hold) return null;
+    return {
+      secs: Math.ceil(Math.max(0, this.hold.until - performance.now()) / 1000),
+      waiting: this.hold.loading.filter((r) => r !== this.localRobotId).length,
+    };
+  }
+
+  viewReady(): void {
+    if (this.spectator || this.viewSentGen === this.gen || !this.connected) return;
+    this.viewSentGen = this.gen;
+    this.transport.send(encodeMsg({ t: 'viewReady', gen: this.gen }));
+  }
+
+  loadHeld(): boolean {
+    if (!this.hold) return false;
+    // the room's cap is the room's; a release we never heard about must not hold us past it
+    if (performance.now() > this.hold.until + 2000) this.hold = null;
+    return this.hold !== null;
+  }
+
+  takeLateStart(): number[] | null {
+    const late = this.lateStart;
+    this.lateStart = null;
+    return late;
   }
 
   dispose(): void {
@@ -415,7 +454,18 @@ export class ServerSession implements NetSession {
       return;
     }
     if (!m || typeof (m as { t?: unknown }).t !== 'string') return;
+    if (m.t === 'loadHold') {
+      if (m.gen !== this.gen) return; // a hold for a match this session is no longer playing
+      if (m.waitMs > 0) {
+        this.hold = { until: performance.now() + m.waitMs, loading: m.loading };
+      } else {
+        this.hold = null;
+        this.lateStart = m.loading.length ? m.loading : null;
+      }
+      return;
+    }
     if (m.t === 'snapshot') {
+      if (this.hold && m.serverTick > 0) this.hold = null;
       // discard a stale/duplicate snapshot: the client reconciles to the NEWEST
       // authoritative world, and a delta is keyed to a baseline at-or-before this
       // one, so applying an older frame after a newer one would regress the balls.
@@ -508,6 +558,8 @@ export class ServerSession implements NetSession {
       this.recordResult = null;
       this.baseBalls.clear();
       this.appliedTick = -1; // fresh world starts at tick 0; don't reject its snapshots
+      this.hold = null; // a rematch is held (or not) on its own terms; the room will say
+      this.lateStart = null;
       this.restartCb?.();
     } else if (m.t === 'roster') {
       // THE ONLY THING THIS SESSION WANTS FROM A ROSTER: who holds the crown. The room
@@ -544,6 +596,8 @@ export class ServerSession implements NetSession {
          */
         this.gen = m.gen;
       }
+      // a reclaimed seat says it can play again, in case the report was lost with the socket
+      if (m.ok) this.viewSentGen = -1;
     }
     // 'drop' is reflected in the next snapshot already; nothing to do here
   }

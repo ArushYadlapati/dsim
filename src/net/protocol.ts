@@ -417,7 +417,7 @@ export type PlayerPatch = Partial<
  * client is never stranded waiting for a `strategyStart` it can't render. Absent/old
  * clients send nothing ⇒ treated as no caps. Add new capability strings here as the
  * protocol grows. */
-export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d'];
+export const CLIENT_CAPS: string[] = ['strategy', 'startpose', 'game', 'standing', 'recycle', 'bb3d', 'ready3d', 'viewready'];
 
 /**
  * THE ONE CAPABILITY THAT IS A HARD GATE RATHER THAN A FEATURE FLAG.
@@ -486,6 +486,43 @@ export const READY3D_DEADLINE_MS = 45000;
  *  counts as ready at once — see `READY3D_CAP`. */
 export function reportsPhysicsReady(caps: readonly string[] | undefined): boolean {
   return !!caps?.includes(READY3D_CAP);
+}
+
+/**
+ * `'viewready'` — THIS CLIENT WILL SAY WHEN IT CAN ACTUALLY PLAY THE MATCH: its 3D physics AND
+ * its view (the Three.js chunk, the field GLB, the scene build) are up.
+ *
+ * `'ready3d'` only covers the physics chunk, and it is sent from the lobby. The 3D VIEW cannot
+ * load there: the game screen, and the scene it owns, only exist once `matchStart` has arrived.
+ * So a room that waited for `physicsReady` and started still opened on a loading panel while
+ * the countdown ran. That was reported twice, and in record runs too.
+ *
+ * So a `'3d'` room HOLDS THE NEW MATCH AT TICK 0 after `matchStart` (`loadHold`), and the
+ * client sends `{ t: 'viewReady', gen }` once its controller has physics and has either
+ * built the scene or is on the 2D view. The hold ends when every connected seat that
+ * advertises this has reported for the current generation, or at `LOAD_HOLD_MAX_MS`.
+ *
+ * Degrades like `'ready3d'`: a client without it is ready at once (an older build never sends
+ * the message), and so is a dropped seat or a bot.
+ */
+export const VIEWREADY_CAP = 'viewready';
+
+/**
+ * The longest a `'3d'` room holds a started match for a seat that has not reported
+ * `viewReady`. After it the match STARTS ANYWAY, for the reasons `READY3D_DEADLINE_MS` gives:
+ * a view that has not loaded by now is not going to, the others have done nothing wrong, and
+ * cancelling would be a free dodge. The late seat joins the running match when it finishes
+ * loading, and the ticks it spent loading are not counted against it as idle
+ * (`Room.loadingTicks`).
+ *
+ * Shorter than the pre-start wait because the physics chunk is normally in hand by now
+ * (`seatWaiting3d` waited for it) and the view is a cached chunk plus one GLB.
+ */
+export const LOAD_HOLD_MAX_MS = 20000;
+
+/** does a client advertising `caps` report `viewReady`? Without it, the seat is ready at once. */
+export function reportsViewReady(caps: readonly string[] | undefined): boolean {
+  return !!caps?.includes(VIEWREADY_CAP);
 }
 
 /**
@@ -681,6 +718,12 @@ export type ClientMsg =
    * message rather than refusing it — so there is no `SERVER_CAPS` gate on sending it.
    */
   | { t: 'physicsReady' }
+  /**
+   * THIS SEAT CAN PLAY THE CURRENT MATCH (`VIEWREADY_CAP`): physics and view are both up.
+   * `gen` is the match generation it is ready for, so a report for a match that has since been
+   * rematched does not release the new one's hold. Idempotent; an older server ignores it.
+   */
+  | { t: 'viewReady'; gen: number }
   | { t: 'start' } // host only: build + broadcast the match world
   | { t: 'restart' } // host only: re-author the match with a fresh seed
   /**
@@ -836,6 +879,14 @@ export type ErrorCode =
 
 export type ServerMsg =
   | { t: 'welcome'; clientId: string }
+  /**
+   * A `'3d'` MATCH IS HELD AT TICK 0 WHILE SEATS LOAD (`VIEWREADY_CAP`). Sent when the hold
+   * begins, whenever a seat reports in, and when it ends (`waitMs: 0`). `loading` is the robot
+   * ids still loading: on the release, a non-empty list means the cap ran out and the match
+   * started without them. `waitMs` is time left until the cap, relative, so the two clocks do
+   * not have to agree. A client that is held does not predict.
+   */
+  | { t: 'loadHold'; gen: number; waitMs: number; loading: number[] }
   | { t: 'roster'; players: LobbyPlayer[]; hostId: string }
   /**
    * THE ROOM IS A LOBBY AGAIN — tear down the match view and show the roster.

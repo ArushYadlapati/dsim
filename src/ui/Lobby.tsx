@@ -33,6 +33,7 @@ import { useEscape } from './useEscape';
 import { DISCORD_REGION } from '../net/discordActivity';
 import { serverCaps } from '../net/api';
 import { announcePhysicsReady, preloadRoomPhysics } from '../net/roomPhysics';
+import { preloadRoomView } from '../net/roomView';
 import { MatchStrategy } from './MatchStrategy';
 import { botLabel } from './MatchSetup';
 import type { RoomInvite } from '../net/api';
@@ -285,6 +286,7 @@ export function Lobby({
    */
   useEffect(() => {
     void preloadRoomPhysics(roomGame);
+    preloadRoomView(roomGame);
   }, [roomGame]);
 
   useEscape(onCancel); // Esc leaves the lobby, same as ← Back

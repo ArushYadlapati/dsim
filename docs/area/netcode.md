@@ -160,6 +160,32 @@ The old P2P lockstep/mesh/TURN/Supabase-lobby is DELETED. Full roadmap: `docs/ne
     unrelated reason would pass "it did not start"), plus the old-client, mixed-roster, 2D-game
     and deadline cases, and the ranked window's extension end to end.
 
+- ⚠️ **THE LOAD HOLD: A STARTED `'3d'` MATCH WAITS AT TICK 0 UNTIL EVERY SEAT CAN PLAY IT**
+  (owner, 2026-09-24). The gate above was not enough and matches, record runs included, still
+  opened behind the loading panel. `physicsReady` is sent from the LOBBY and covers the physics
+  chunk only. The 3D VIEW (Three.js chunk, field GLB, scene build) cannot load there, because
+  the game screen that owns it is built from `matchStart`. So after `matchStart` the room
+  holds (`Room.beginLoadHold`, `loadHeld` in the tick loop, same clock reset as the ghost
+  freeze) until every connected seat advertising `'viewready'` has sent
+  `{ t: 'viewReady', gen }` for THIS generation. The controller sends it from `stepServer` once
+  `physicsPending` and `sceneLoading` are both false (2D view and a failed scene both count).
+  - `{ t: 'loadHold', gen, waitMs, loading }` goes out at the start, on each report, **every
+    second** while held (a lost frame must not strand a client), and on release (`waitMs: 0`).
+    A held client does not predict: running the countdown locally against a frozen server
+    snaps back on release. The session also drops a hold on any snapshot past tick 0 and at
+    its own copy of the cap, so a lost release cannot freeze it.
+  - ⚠️ **THE CAP STARTS THE MATCH; IT NEVER CANCELS ONE** (`LOAD_HOLD_MAX_MS`, 20 s), for the
+    free-dodge reason above. The release names the seats it left behind: the server logs them,
+    the others' event log says so, and the late client joins the running match when it
+    loads. Its loading ticks (`loadingTicks`) come off the live ticks its AFK verdict is judged
+    against, so a slow load is never a standing charge.
+  - Not waited on: a client without the cap, a dropped seat, a bot, any non-`'3d'` room.
+  - `preloadRoomView` (`src/net/roomView.ts`) fetches the scene chunk from the same three
+    screens as the physics preload, so the hold is usually the scene build and nothing else.
+  - Checks: `net3d.ts` §2c (hold, stale generation, release, cap, dropped seat, old client,
+    DECODE) plus source pins for the client half, since `ServerSession` cannot be imported
+    headlessly.
+
 - **DELTA SNAPSHOTS**: `slimWorld`/`unslimWorld` strip static robot `spec` (client re-injects
   from setups) + delta the balls (send the id ORDER every frame — determinism — but only
   CHANGED ball data); reconnect re-primes with a keyframe.

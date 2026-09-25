@@ -35,8 +35,10 @@ import {
   DEFAULT_ROOM_CONFIG,
   RANKED_JOIN_GRACE_MS,
   READY3D_DEADLINE_MS,
+  LOAD_HOLD_MAX_MS,
   STRATEGY_DURATION_MS,
   reportsPhysicsReady,
+  reportsViewReady,
   type BallDelta,
   type ClientMsg,
   type EloDelta,
@@ -293,6 +295,12 @@ export interface Client {
    * clearing it could only hold a returning driver up for something already done.
    */
   ready3d?: boolean;
+  /**
+   * The match generation this client last reported `viewReady` for (`VIEWREADY_CAP`): its
+   * physics and its view are up and it can play that match. Kept across a drop like `ready3d`.
+   * Only read for a client that advertised the capability — see `seatsLoading`.
+   */
+  viewGen?: number;
   /** release channel this client build reported ('alpha' | 'stable' | …). The first
    * client to join sets the ROOM's channel; alpha rooms are never persisted. */
   channel?: string;
@@ -523,6 +531,21 @@ export class Room {
    */
   private ready3dDeadline = 0;
   private ready3dTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * ⚠️ THE LOAD HOLD — the epoch ms until which a started `'3d'` match stays at tick 0 while
+   * seats load their view (`VIEWREADY_CAP`). 0 ⇒ not holding. Set in `beginMatch`, released by
+   * the tick loop when every seat has reported or the cap passes (`loadHeld`). Like
+   * `ready3dDeadline` it STARTS the match on expiry and never cancels it.
+   */
+  private holdUntil = 0;
+  /** when the hold last told the room where it stood, so a lost `loadHold` is re-sent */
+  private holdSaidAt = 0;
+  /**
+   * Live ticks each robot spent with its driver still loading, after the hold ran out. They
+   * are taken off that robot's `liveTicks` in the behaviour report: a driver whose view took
+   * too long was not idle, and must not be charged as AFK for it.
+   */
+  private readonly loadingTicks = new Map<number, number>();
   /** a CUSTOM room whose host pressed START while a seat was still loading its 3D chunk: the
    *  room is in `phase === 'strategy'` with no `pendingMatch`, waiting to build the world it
    *  was already asked for. See `startMatch`. */
@@ -1516,6 +1539,7 @@ export class Room {
     // so it answers with it rather than hoping the client's copy is current.
     send({ t: 'rejoined', ok: true, gen: this.matchGen });
     if (this.world) this.sendSnapshotTo(c); // immediate full resync (re-primes)
+    if (this.holdUntil) this.sayHold(); // a seat back inside the load hold must hold too
     /**
      * A SEAT RECLAIMED INSIDE THE STRATEGY WINDOW HAS TO BE TOLD WHAT IT CAME BACK TO.
      *
@@ -1701,6 +1725,16 @@ export class Room {
           if (this.pendingMatch) this.maybeBeginRanked();
           else if (this.customStart) this.beginCustomStart();
         }
+        break;
+      /**
+       * THIS SEAT CAN PLAY THE CURRENT MATCH (`VIEWREADY_CAP`). Only a report for THIS
+       * generation counts: one still in flight from before a rematch must not release the new
+       * match's hold. The tick loop does the releasing; this only tells the room who is left.
+       */
+      case 'viewReady':
+        if (typeof msg.gen !== 'number' || msg.gen !== this.matchGen || c.viewGen === msg.gen) break;
+        c.viewGen = msg.gen;
+        if (this.holdUntil) this.sayHold();
         break;
       case 'start':
         // physics WASM may still be loading in the first moment after boot; refuse
@@ -2037,7 +2071,70 @@ export class Room {
     this.broadcastRematch();
     // spectators already watching a lobby/strategy room get the match start too (yourRobotId -1)
     for (const c of this.spectators.values()) c.send(this.matchStartMsg(-1));
+    this.beginLoadHold();
     this.startLoop();
+  }
+
+  // ─────────────────────────────────────────────────────────── THE LOAD HOLD ──
+  //
+  // Owner, 2026-09-24: server matches still started while a driver's 3D physics and view were
+  // loading, record runs included. The start gate above (`seatWaiting3d`) only covers the
+  // physics chunk, which can load in the lobby; the VIEW cannot, because the game screen that
+  // owns it is built from `matchStart`. So a `'3d'` match now waits at tick 0 after
+  // `matchStart` until every seat says it can play, or `LOAD_HOLD_MAX_MS` passes.
+
+  /** robots whose driver is connected, reports `viewReady`, and has not yet for this match */
+  private seatsLoading(): number[] {
+    const out: number[] = [];
+    for (const c of this.clients.values()) {
+      if (!c.connected || !reportsViewReady(c.caps) || c.viewGen === this.matchGen) continue;
+      const rid = this.robotOf.get(c.id);
+      if (rid !== undefined) out.push(rid);
+    }
+    return out;
+  }
+
+  /** start holding a match that has just begun, if it is a `'3d'` one and anyone is loading */
+  private beginLoadHold(): void {
+    this.holdUntil = 0;
+    this.loadingTicks.clear();
+    if (this.physics !== '3d' || this.seatsLoading().length === 0) return;
+    this.holdUntil = Date.now() + LOAD_HOLD_MAX_MS;
+    this.sayHold();
+  }
+
+  /** tell every client and spectator where the hold stands (`waitMs: 0` ⇒ released) */
+  private sayHold(released = false): void {
+    this.holdSaidAt = Date.now();
+    this.broadcast({
+      t: 'loadHold',
+      gen: this.matchGen,
+      waitMs: released ? 0 : Math.max(1, this.holdUntil - this.holdSaidAt),
+      loading: this.seatsLoading(),
+    });
+  }
+
+  /**
+   * IS THE MATCH HELD THIS TICK? Releases the hold, and says so, when every seat has reported
+   * or the cap has passed. On a cap release the late seats are named in the log and in the
+   * release message; their clients join the running match when they finish loading.
+   */
+  private loadHeld(): boolean {
+    if (!this.holdUntil) return false;
+    const loading = this.seatsLoading();
+    const now = Date.now();
+    if (loading.length > 0 && now < this.holdUntil) {
+      if (now - this.holdSaidAt >= 1000) this.sayHold(); // a lost message must not strand anyone
+      return true;
+    }
+    if (loading.length > 0) {
+      console.warn(
+        `[room ${this.code}] load hold ran out after ${LOAD_HOLD_MAX_MS} ms; starting without robot(s) ${loading.join(', ')}`,
+      );
+    }
+    this.sayHold(true);
+    this.holdUntil = 0;
+    return false;
   }
 
   // ---- region-aware ranked: host-side build from a staged roster --------------
@@ -2569,6 +2666,14 @@ export class Room {
           this.lastSnapAt = 0; // a ghost freeze is not a late snapshot — see `snapGap`
           return;
         }
+        // THE LOAD HOLD: the match exists at tick 0 but does not run until every seat can
+        // play it (or the cap passes). Same clock reset as the freeze above.
+        if (this.loadHeld()) {
+          last = Date.now();
+          acc = 0;
+          this.lastSnapAt = 0;
+          return;
+        }
         const now = Date.now();
         acc += (now - last) / 1000;
         last = now;
@@ -2624,6 +2729,10 @@ export class Room {
       // "left the match".
       const away = this.departed.has(r.id) || !this.driverConnected(r.id);
       if (away) this.awayTicks.set(r.id, (this.awayTicks.get(r.id) ?? 0) + 1);
+    }
+    // a driver the load hold started without is loading, not idle — see `loadingTicks`
+    if (this.physics === '3d') {
+      for (const rid of this.seatsLoading()) this.loadingTicks.set(rid, (this.loadingTicks.get(rid) ?? 0) + 1);
     }
   }
 
@@ -2838,7 +2947,7 @@ export class Room {
       const rid = this.robotOf.get(p.clientId) ?? this.robotIdOfUser(p.userId);
       if (rid === undefined) continue;
       const kind = judgeParticipation({
-        liveTicks: this.liveTicks,
+        liveTicks: Math.max(0, this.liveTicks - (this.loadingTicks.get(rid) ?? 0)),
         driveTicks: this.driveTicks.get(rid) ?? 0,
         awayTicks: this.awayTicks.get(rid) ?? 0,
       });
@@ -3113,6 +3222,8 @@ export class Room {
     this.liveTicks = 0;
     this.driveTicks.clear();
     this.awayTicks.clear();
+    this.loadingTicks.clear();
+    this.holdUntil = 0;
     // `matchGen` is deliberately NOT reset — it must stay monotonic, or an input still in
     // flight from the match just finished would be accepted by the next one as fresh.
 
@@ -3159,9 +3270,19 @@ export class Room {
     this.stopLoop();
     for (let i = 0; i < maxTicks && this.world && !this.finalized; i++) {
       this.checkGrace();
-      if (this.clients.size === 0 || this.frozenForNobody()) return;
+      if (this.clients.size === 0 || this.frozenForNobody() || this.loadHeld()) return;
       if (this.stepOnce()) this.broadcastSnapshot();
     }
+  }
+
+  /** TEST SEAM: is a started match being held for a loading seat? */
+  loadHoldForTest(): { held: boolean; loading: number[]; gen: number } {
+    return { held: this.holdUntil !== 0, loading: this.seatsLoading(), gen: this.matchGen };
+  }
+
+  /** TEST SEAM: run the load hold's cap out now. The real one is `LOAD_HOLD_MAX_MS` away. */
+  expireLoadHoldForTest(): void {
+    if (this.holdUntil) this.holdUntil = Date.now() - 1;
   }
 
   /** the ghost-room freeze (`startLoop`): nobody connected, and nothing still owed to anyone */
@@ -3274,6 +3395,7 @@ export class Room {
 
   private stop(): void {
     this.stopLoop();
+    this.holdUntil = 0; // a hold belongs to the match that is ending
     this.clearReady3d(); // nothing left to wait for; an unref'd timer still holds a closure
     // free the match's Rapier 3D world. The engine map is a WeakMap keyed on the World, so
     // dropping the World drops the only handle without calling free(), and wasm linear memory

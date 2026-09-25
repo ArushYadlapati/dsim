@@ -1,3 +1,15 @@
+# HANDOFF — 2026-09-24i (3D matches wait for every driver's physics AND view; 20 s cap)
+
+**State: committed and pushed on `alpha`, alpha game server deployed.** `build`, `server:check`, `docaudit`, `uiaudit`, `bundleaudit` pass. `npm test`: all pass except the known `PREDICT_FULL_BUDGET_MS` load flake (10 ms under 18 processes, 4 ms alone). Server + protocol change: production gets it with the `main` deploy.
+
+- **Owner:** server matches, record runs included, still started while 3D physics/render were loading. Also: cap the wait and start anyway.
+- **Cause:** the 2026-09-22 gate (`physicsReady`) is sent from the lobby and covers only the physics chunk. The 3D view loads in the game screen, which is only built on `matchStart`, so it always loaded after the match had started.
+- **Fix:** a `'3d'` match now holds at tick 0 after `matchStart` (`Room.beginLoadHold`/`loadHeld`) until every connected `'viewready'` seat sends `{ t: 'viewReady', gen }`. The controller sends it once physics and the scene are up (2D view or a failed scene count). `loadHold` messages drive the loading screen ("Another driver · Loading… starts in Ns") and stop client prediction.
+- **Cap:** `LOAD_HOLD_MAX_MS` = 20 s, then the match starts. Late seats are logged server-side and named in the others' event log. The late client joins when loaded, and its loading ticks are excused from the AFK verdict.
+- `preloadRoomView` fetches the scene chunk from Lobby/Matchmaking/RecordRun.
+- Verified over a real socket against a local server: held at tick 0 for 3 s with no snapshots, released within a tick of `viewReady`; the silent client was started without at 20 s. A browser record run released on its own report.
+- Rules: `docs/area/netcode.md` ("THE LOAD HOLD"). Checks: `net3d.ts` §2c.
+
 # HANDOFF — 2026-09-24h (pre-merge pass over the background work alpha added)
 
 **State: committed and pushed on `alpha`.** `npm test` 5055/5055, `dbtest`, `build`, `server:check`, `bundleaudit`, `docaudit`, `uiaudit` pass. Server change: needs `./scripts/fly-deploy.sh --alpha`, and production gets it with the `main` deploy.
