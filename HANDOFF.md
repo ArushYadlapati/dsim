@@ -20,6 +20,8 @@
 - **Width depends on length now.** The R105.A envelope is the union of both rectangles. Picking one per build made a front sweeper + flank tube choose 18 × 15.5 over 15 × 18 and shrink saved 15 × 17 builds. The coercer clamps length first, then reads width off it.
 - Masses are NOT snapped: replays re-coerce specs through `createWorld`, so a saved 20.1 stays 20.1 until the slider moves. No legal spec moves under the new clamps.
 - `BB_INTAKE_MOUNT_BLURBS` is deleted.
+- **Box Tube 2.5 → 1.5 lb** (owner: "1.5 lbs max"). Offset lists the 2-stage kit at ~475 g, 275 g moving. Pollinator floor 20.5 → 19.5; its declared 24.5 is unchanged.
+- ⚠️ `npm test` has one non-timing failure that is NOT from this work: net3d "ruling: ...and it drops a 2D row an OLDER server still serves" greps `Leaderboard.tsx` for the 2D-row filter that `172c6ca1` (09-24n) removed on purpose. The check needs updating to the new per-season era rule.
 - Checks: robot lane "mass: a DECODE-seeded spec coerces to no inertia…", "size: …" ×4. Rules in `docs/area/biobuzz.md` ("BIOBUZZ HAS NO INERTIA", "THE CHASSIS GOES TO 18 × 18").
 
 # HANDOFF — 2026-09-24l (a turret SPAWNS at the elevation it aims at, and the preview draws it there)

@@ -1639,11 +1639,11 @@ edge + the launcher + a Box Tube, rounded to 0.01 for the reason `massLimits` do
 | single turret | 5.0 | | tank | 13.0 |
 | second turret of a double | +3.5 | | swerve | 15.5 |
 | dumper | 3.5 | | butterfly | 17.0 |
-| Box Tube | 2.5 | | | |
+| Box Tube (OFFSET kit ~475 g + claw) | 1.5 | | | |
 
 Resulting floors: mecanum one sweeper one turret **18.00**
 (the calibration point, asserted EXACTLY), xdrive 18.00, tank 19.50, swerve 22.00, butterfly
-23.50; mecanum + dumper 16.50; + a tube 20.50; swerve + two sweepers + a double + a tube 29.50.
+23.50; mecanum + dumper 16.50; + a tube 19.50; swerve + two sweepers + a double + a tube 28.50.
 The CEILING is the shared per-drivetrain envelope (42, swerve 40) because **R104 sets no robot
 weight limit in BIOBUZZ** (`docs/biobuzz-reference.md` §6) — there is no rules number to use, so
 what is left is the sim's own statement of what a drivetrain can still move.
@@ -1671,7 +1671,7 @@ StarterBot 43.0.**
 | card | build | mass | rpm | floor | score |
 |---|---|---|---|---|---|
 | StarterBot | tank · front sweeper · front dumper | 18 (ON its floor — no kit publishes a weight) | 286 | 18.00 | 43.0 |
-| **Pollinator** (`BB_PRESETS[0]`) | mecanum · front sweeper · centre turret · back Box Tube | 24.5 | 435 | 20.50 | 55.0 |
+| **Pollinator** (`BB_PRESETS[0]`) | mecanum · front sweeper · centre turret · back Box Tube | 24.5 | 435 | 19.50 | 55.0 |
 | Forager | butterfly · FRONT+BACK sweepers · front dumper | 30.5 | 420 / 300 | 23.50 | 63.6 |
 | Skimmer | xdrive · front sweeper · right+left double turret | 27.5 | 520 | 21.50 | 68.0 |
 | Sniper | swerve · FRONT+BACK sweepers · centre turret | 26.5 | 480 | 23.50 | 70.4 |

@@ -2900,9 +2900,11 @@ export const BB_MASS_TURRET2 = 3.5;
  * no aiming hardware, so it is well under a turret — which is the archetype's real tradeoff.
  * APPROX. */
 export const BB_MASS_DUMPER = 3.5;
-/** a BOX TUBE (lb): the three nested tubes (`BB_BOX_TUBE_SECTIONS`), the pivot plates and its
- * motor, the spool, the wrist servo and the claw. APPROX. */
-export const BB_MASS_BOX_TUBE = 2.5;
+/** a BOX TUBE (lb): the three nested tubes (`BB_BOX_TUBE_SECTIONS`), the pivot plates, the
+ * spool, the wrist servo and the claw. Offset lists its 2-stage Box Tube Slide Kit at about
+ * 475 g (1.05 lb, 275 g of it moving); the wrist and claw take it to 1.5 (owner, 2026-09-24:
+ * "the whole mechanism should be somewhat light… 1.5 lbs max"). It was 2.5. */
+export const BB_MASS_BOX_TUBE = 1.5;
 
 /**
  * THE MASS RANGE THIS BUILD MAY BE DIALLED TO (lb) — the ONE model, read by the coercer
@@ -3156,7 +3158,7 @@ const BB_PRESET_BUILDS: readonly RobotSpec[] = [
     // all-rounder wants to strafe up to a FLOWER without giving up its heading and without
     // paying for swerve, and 435 rpm because this robot spends the match crossing the field
     // rather than winning a shove.
-    //   mass: 20.5 lb of hardware, built properly, is 24.5.
+    //   mass: 19.5 lb of hardware, built properly, is 24.5.
     name: 'Pollinator', teamName: 'Turret and Box Tube · the hive and the flowers', teamNumber: 0,
     length: 15, width: 17, intake: 'sloped', massLb: 24.5, drivetrain: 'mecanum',
     driveRpm: 435, flywheelInertia: 0, canSort: false,
